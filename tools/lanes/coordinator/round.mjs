@@ -8,6 +8,7 @@ import { execute } from '../lanes.mjs';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const sha256 = text => createHash('sha256').update(text).digest('hex');
 const KEEP_EVENTS = 400;
+const sameCommit = /^[0-9a-f]{40}$/;
 
 const target = event => `${event.kernel}/${event.session_id}/${event.agent_id}`;
 const compact = e => ({ cursor: e.cursor, at_ms: e.at_ms, type: e.type, state: e.value?.state, summary: e.summary, agent_id: e.agent_id });
@@ -22,6 +23,7 @@ export async function runRound(spec, options = {}) {
   const now = options.now || Date.now;
   const respond = options.respond || ((input) => execute([new URL('../lane-respond.mjs', import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const coordinator = (operation, args) => coordinate(operation, args, options);
+  const adapter = options.adapter || (async (op, input) => execute([new URL(`../lane-${op}.mjs`, import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const home = options.home || spec.home;
   const roundDirectory = join(home, 'rounds');
   await mkdir(roundDirectory, { recursive: true });
@@ -107,6 +109,23 @@ export async function runRound(spec, options = {}) {
     return touched;
   };
 
+  // A lane can change a second repository (e.g. OSS and Cloud); each tip gets its own verified bundle.
+  const bundleExtras = async lane => {
+    const results = [];
+    const record = await read(join(home, `${lane.entry.lane}.json`));
+    for (const extra of lane.entry.extraBundles || []) {
+      if (!sameCommit.test(extra.base)) { results.push({ name: extra.name, error: 'invalid_base' }); continue; }
+      try {
+        const bundle = await adapter('bundle', {
+          kernel: record.launch.kernel, taskId: `${lane.entry.lane}-${extra.name}`, sessionId: record.launch.operationsSessionId, attachmentId: record.launch.attachmentId, agentId: record.launch.agentId,
+          worktree: extra.worktree, base: extra.base, remoteBundle: `${record.laneDirectory}/${extra.name}.bundle`, localBundle: join(home, 'artifacts', lane.entry.lane, `${extra.name}.bundle`), repository: extra.repository, timeout: 300,
+        });
+        results.push({ name: extra.name, base: bundle.base, head: bundle.head, sha256: bundle.sha256, path: bundle.path });
+      } catch (error) { results.push({ name: extra.name, error: error.code || 'bundle_failed', message: String(error.message).slice(0, 200) }); }
+    }
+    return results;
+  };
+
   const collect = async (lane, reason) => {
     try {
       if (reason === 'hard_stop') { lane.run.stop = await coordinator('stop', [lane.entry.lane]); lane.run.stopped = true; await archived(lane.run.stop?.removal?.archives); }
@@ -115,6 +134,7 @@ export async function runRound(spec, options = {}) {
       lane.run.bundle = finished.bundle?.path;
       lane.run.bundleSha256 = finished.bundle?.sha256;
       lane.run.files = Object.keys(finished.files || {});
+      lane.run.extraBundles = await bundleExtras(lane);
       if (reason !== 'hard_stop') lane.run.stop = await coordinator('stop', [lane.entry.lane]);
       lane.run.stopped = true;
       lane.run.finishReason = reason;
@@ -134,6 +154,7 @@ export async function runRound(spec, options = {}) {
   };
 
   const pending = () => lanes.filter(lane => !lane.finished);
+  try {
   while (pending().length) {
     const batch = await coordinator('watch', [String(spec.wakeMinutes ?? 5)]);
     const touched = await handle(batch.events || []);
@@ -147,6 +168,11 @@ export async function runRound(spec, options = {}) {
       if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
     }
     for (const lane of lanes) await persist(lane);
+  }
+  } catch (error) {
+    // The round is resumable: a rerun reuses every receipt. Say why this driver stopped.
+    for (const lane of pending()) { lane.run.driverError = { code: error.code || 'driver_failed', message: String(error.message).slice(0, 300), at_ms: now() }; await persist(lane); }
+    throw error;
   }
   return lanes.map(lane => lane.run);
 }

@@ -107,6 +107,21 @@ test('lanefin after stop collects without a status read of the removed worker', 
   assert.equal(r.calls.some(c => c.op === 'status'), false);
 });
 
+test('round: extra repositories get their own verified bundle', async t => {
+  const r = await rig(t, ['alpha']);
+  r.spec.lanes[0].extraBundles = [{ name: 'cloud', worktree: '/work/alpha-cloud', base: 'd'.repeat(40), repository: '/repo/cloud.git' }, { name: 'bad', worktree: '/x', base: 'nope', repository: '/r' }];
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  r.idle.add('alpha');
+  const [run] = await runRound(r.spec, r.options);
+  const bundle = r.calls.filter(c => c.op === 'bundle' && c.input.taskId === 'alpha-cloud');
+  assert.equal(bundle.length, 1);
+  assert.equal(bundle[0].input.worktree, '/work/alpha-cloud');
+  assert.match(bundle[0].input.remoteBundle, /cloud\.bundle$/);
+  assert.equal(run.extraBundles[0].sha256, 'c'.repeat(64));
+  assert.deepEqual(run.extraBundles[1], { name: 'bad', error: 'invalid_base' });
+  assert.equal(run.finishReason, 'finished');
+});
+
 test('a lane profile overrides the provider model for that lane only', async t => {
   const r = await rig(t);
   const { coordinate } = await import('./loop.mjs');
