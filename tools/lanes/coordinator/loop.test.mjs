@@ -224,3 +224,15 @@ test('stop does not confirm another worker removal and reports a bounded timeout
   await assert.rejects(coordinate('stop', ['lane'], r.options), { code: 'stop_confirmation_timeout' });
   assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).stopped, true);
 });
+test('stop retry confirms a removal another consumer archived and acknowledged', async t => {
+  const r = await launched(t), cli = r.options.cli;
+  const event = { cursor: 9, kernel: r.launch.kernel, session_id: r.launch.sessionId, agent_id: r.launch.agentId, type: 'session', value: { state: 'agent_removed' } };
+  r.options.cli = async argv => argv[1] === 'wait' ? { events: [], next_cursor: 0, timed_out: true } : cli(argv);
+  await assert.rejects(coordinate('stop', ['lane'], r.options), { code: 'stop_confirmation_timeout' });
+  await save(join(r.home, 'events', '1000-other-consumer.json'), { events: [event], next_cursor: 9 });
+  const waits = r.calls.filter(c => c.argv?.[1] === 'wait').length, stops = r.calls.filter(c => c.op === 'stop').length;
+  const result = await coordinate('stop', ['lane'], r.options);
+  assert.deepEqual(result.removal.event, event);
+  assert.equal(r.calls.filter(c => c.argv?.[1] === 'wait').length, waits);
+  assert.equal(r.calls.filter(c => c.op === 'stop').length, stops);
+});

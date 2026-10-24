@@ -50,14 +50,28 @@ export async function confirmSteer({ home, cli, now, target, steerId, confirmed 
   throw new LaneError('steer_confirmation_timeout', 'Steer accepted but no matching event arrived in 120 seconds; resume this delivery to confirm it.');
 }
 
+const isRemoval = target => e => e.type === 'session' && e.value?.state === 'agent_removed' && e.kernel === target.kernel && e.session_id === target.sessionId && e.agent_id === target.agentId;
+
+// Another consumer may have archived and acknowledged the removal after an earlier stop timed out.
+async function archivedRemoval(home, target) {
+  let names; try { names = (await readdir(join(home, 'events'))).filter(f => f.endsWith('.json')).sort(); } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
+  for (const name of names) {
+    const archive = join(home, 'events', name);
+    const event = (await read(archive)).events?.find(isRemoval(target));
+    if (event) return { event, archives: [archive] };
+  }
+}
+
 export async function confirmRemoval({ home, cli, now, target, confirmed }) {
+  const archived = await archivedRemoval(home, target);
+  if (archived) { await confirmed(archived); return; }
   const deadline = Date.now() + 120_000;
   const archives = [];
   let remaining = 120;
   while (remaining > 0) {
     const { batch, archive } = await waitBatch(home, cli, now, remaining);
     archives.push(archive);
-    const event = batch.events.find(e => e.type === 'session' && e.value?.state === 'agent_removed' && e.kernel === target.kernel && e.session_id === target.sessionId && e.agent_id === target.agentId);
+    const event = batch.events.find(isRemoval(target));
     if (event) {
       await confirmed({ event, archives });
       await cli(['events', 'ack', String(batch.next_cursor)]);
