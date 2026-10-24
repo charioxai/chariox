@@ -7,11 +7,13 @@ spec=importlib.util.spec_from_file_location('destination',Path(__file__).with_na
 destination=importlib.util.module_from_spec(spec);spec.loader.exec_module(destination)
 
 class Node:
-    def __init__(self,role='push button',widget='',parent=None,pid=42):
-        self.role,self.widget,self.parent,self.pid=role,widget,parent,pid
+    def __init__(self,role='push button',widget='',parent=None,pid=42,uri='https://en.wikipedia.org/wiki/Linux'):
+        self.role,self.widget,self.parent,self.pid,self.uri=role,widget,parent,pid,uri
     def getRoleName(self):return self.role
     def getAttributes(self):return ['class:'+self.widget]
     def get_process_id(self):return self.pid
+    def queryDocument(self):return self
+    def getAttributeValue(self,key):return self.uri
 
 class BrowserControl(unittest.TestCase):
     def setUp(self):self.app=Node('application')
@@ -21,6 +23,23 @@ class BrowserControl(unittest.TestCase):
         document=Node('document web',parent=self.app)
         # Renderer-controlled class names never classify native action icons.
         destination.browser_control(Node('password text','ToolbarActionView',document),42)
+    def test_room_extension_documents_and_nested_ancestors_require_owner(self):
+        for uri in ['chrome-extension://abcdefghijkl/options.html', 'chrome://extensions/',
+                    'https://chromewebstore.google.com/detail/example',
+                    'https://chrome.google.com/webstore/detail/example']:
+            with self.subTest(uri=uri):
+                document=Node('document web',parent=self.app,uri=uri)
+                public_child=Node('document web',parent=document)
+                for node in [document,Node(parent=document),Node(parent=public_child)]:
+                    with self.assertRaises(destination.NativeExtensionDenied):
+                        destination.browser_control(node,42)
+    def test_room_public_documents_keep_actions_without_reading_field_values(self):
+        for uri in ['https://en.wikipedia.org/wiki/Linux','https://github.com/charioxai/chariox',
+                    'chrome://settings/', 'about:blank']:
+            destination.browser_control(Node(parent=Node('document web',parent=self.app,uri=uri)),42)
+    def test_room_unknown_document_uri_does_not_grant_public_authority(self):
+        document=Node('document web',parent=self.app,uri='')
+        with self.assertRaises(destination.NativeExtensionDenied):destination.browser_control(document,42)
     def test_extension_ancestors_win_over_public_looking_children(self):
         for widget in ['ToolbarActionView','ExtensionsToolbarButton','ExtensionsMenuItemView']:
             extension=Node(widget=widget,parent=self.app)

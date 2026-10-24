@@ -1,6 +1,7 @@
 """MP-08/MP-10/MP-11: recipient admission for physical agent input."""
 import importlib.util
 from pathlib import Path
+from urllib.parse import urlsplit
 _spec=importlib.util.spec_from_file_location("native_clipboard",Path(__file__).with_name("native-clipboard.py"))
 _clipboard=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(_clipboard)
 owner_pid=_clipboard.owner_pid
@@ -9,8 +10,8 @@ class NativeExtensionDenied(ValueError):
 
 
 # Chromium's native widget classes are browser-owned AX metadata, unlike page
-# labels. Page contents are admitted only under a document boundary; the host
-# inventory independently excludes extension documents before this helper runs.
+# labels. Every document boundary is checked here: the Room action path
+# does not pass through the host browser inventory guard.
 _NAVIGATION = {'OmniboxViewViews', 'LocationBarView', 'LocationIconView',
                'BackButton', 'ForwardButton', 'ReloadButton', 'ToolbarButton',
                'Tab', 'TabCloseButton', 'TabStripControlButton',
@@ -18,6 +19,25 @@ _NAVIGATION = {'OmniboxViewViews', 'LocationBarView', 'LocationIconView',
                'BrowserAppMenuButton', 'OmniboxResultView', 'OmniboxPopupView', 'WebUIToolbarWebView'}
 _EXTENSION = {'ToolbarActionView', 'ExtensionsToolbarButton',
               'ExtensionsMenuView', 'ExtensionsMenuItemView'}
+
+
+def public_document(node):
+    """MP-11: use browser-owned document URI, including every nested ancestor."""
+    try:
+        uri = node.queryDocument().getAttributeValue('URI')
+        if not isinstance(uri, str) or not uri or any(ord(c) < 32 for c in uri):
+            raise ValueError('document URI unavailable')
+        url = urlsplit(uri)
+        scheme, host = url.scheme.lower(), (url.hostname or '').lower()
+        if not scheme:
+            raise ValueError('document URI unavailable')
+        extension = scheme == 'chrome-extension' or scheme == 'chrome' and host == 'extensions'
+        store = scheme in ('http', 'https') and (host == 'chromewebstore.google.com' or
+                host == 'chrome.google.com' and (url.path == '/webstore' or url.path.startswith('/webstore/')))
+        if extension or store:
+            raise ValueError('extension document')
+    except Exception:
+        raise NativeExtensionDenied('browser document requires owner input') from None
 
 
 def browser_control(node, pid):
@@ -37,6 +57,8 @@ def browser_control(node, pid):
     # CSS classes below a document boundary belong to the page. Read only
     # browser-owned widget metadata beyond it; labels never grant authority.
     documents = [i for i, item in enumerate(chain) if item.getRoleName() == 'document web']
+    for index in documents:
+        public_document(chain[index])
     native = chain[max(documents)+1:] if documents else chain
     public = bool(documents)
     for item in native:

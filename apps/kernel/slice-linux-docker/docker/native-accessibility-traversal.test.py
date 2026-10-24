@@ -210,6 +210,29 @@ class TraversalTest(unittest.TestCase):
         self.desktop = Node('Desktop', 'desktop', applications)
         return self.driver.snapshot([{'pid': 200, 'started': '1'}, {'pid': 201, 'started': '2'}])
 
+    def test_mp11_room_ax_actions_refuse_extension_document_before_dispatch(self):
+        from unittest.mock import Mock
+        for uri in ['chrome-extension://abcdefghijkl/options.html', 'chrome://extensions/']:
+            with self.subTest(uri=uri):
+                pressed=Mock(return_value=True)
+                button=Node('Remove extension','push button')
+                button.queryAction=lambda: types.SimpleNamespace(nActions=1,getName=lambda _: 'click',doAction=pressed)
+                document=Node('Extension','document web',[button])
+                document.queryDocument=lambda: types.SimpleNamespace(getAttributeValue=lambda _: uri)
+                app=Node('Chromium','application',[document])
+                button.parent=document;document.parent=app;app.parent=None
+                self.desktop=Node('Desktop','desktop',[app])
+                tree={'available':True,'nodes':[{'pid':200,'started':'1','path':[0,0],
+                      'role':'push button','name':'Remove extension','protected':False,
+                      'actions':['click'],'browser':True}]}
+                with patch.object(self.driver,'snapshot',return_value=tree):
+                    with self.assertRaisesRegex(ValueError, 'browser document requires owner input'):
+                        self.driver.act({'processes':[{'pid':200,'started':'1'}],
+                                         'pid':200,'started':'1','path':[0,0],
+                                         'action':'click','agent_input':True,
+                                         'expected_tree_digest':self.driver.tree_digest(tree)})
+                pressed.assert_not_called()
+
     def test_mp11_unresolved_child_blocks_clipboard_paste_and_live_press_fence(self):
         # Exercise the producer, not a fabricated traversed=False receipt.
         from unittest.mock import Mock
