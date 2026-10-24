@@ -20,7 +20,7 @@ saved before acknowledgement; timeouts simply wake the coordinator.
 | --- | --- | --- | --- |
 | brief.sh | `coordinator/brief.mjs`: lane-launch + files put; original launch checkpoint and kernel deadline | Choose lane, source, linked profile and brief. Restart means a new round identity, not extending the deadline. | A01 Room delegation/admission and A02 durable inbox; source `amint/c2` @4bea22d44. |
 | watch.sh | `coordinator/watch.mjs`: one WaitEvents/AckEvents inbox across workers; archive every batch | GitHub review lookup stays on Mac. File-only HOST_REQUEST/OWNER_SESSION changes need an event bridge; working state alone is not progress. | A02 ledger/wakes and A03 process/timer watchers are producers; EA2 §14 exposes outside subscriptions. |
-| deliver.sh | `coordinator/deliver.mjs`: read supplied review, status once, compare-and-steer the active prompt | Fetch review text on Mac; a finished turn needs a new round, never an implicit prompt submission. | A01 send_agent_message correlation / steer; no duplicate delivery core. |
+| deliver.sh | `coordinator/deliver.mjs`: read supplied review, status once, compare-and-steer the active prompt | Fetch review text on Mac; a finished turn needs a new round, never an implicit prompt submission. Accepted steer has no distinct §14 event on the runtime pin; extagent must add its receipt producer/projection. | A01 send_agent_message correlation / steer and A02 admission records exist; their outside steer-receipt projection is missing. No duplicate delivery core. |
 | lanefin.sh | `coordinator/lanefin.mjs`: status + fetch notes/head + SHA-verified bundle/import | Publication, independent review and central acceptance merge stay on Mac. Final message must be written into fetched notes; no transcript scrape. | A02 explicit done/waiting/blocked; A03 process-exit wake for bundle commands. |
 | lanehealth.sh | `coordinator/lanehealth.mjs`: state, last activity and deadline with LONG-ROUND/SILENT flags | Decide whether a silent worker is stuck; no claim that last activity proves useful progress. | A02 /goal completion assessor and no-progress check-ins; A03 watchers can improve evidence. |
 | stop | Kernel SetAgentDeadline/GetAgentDeadline, then `coordinator/stop.mjs` | Exact owned-resource cleanup audit remains necessary; agent destruction alone is not a complete host cleanup receipt. | A04 sudo is permission duration, not a hard stop. EA2 durable deadline supplies the missing unconditional wall-clock bound. |
@@ -60,3 +60,44 @@ outside git at `dogfood/r6/`; the acceptance update uses a full tracker id.
 Source tests and prior rounds alone do not establish r6 acceptance or broad
 Path-1 parity. Provider model ids, exact commits, one-inbox events and cleanup
 must be included before recording a live PASS.
+
+## R6 result and required scenario
+
+MP-08 / MP-09 / MP-10 / MP-11. Required new scenario
+`external-agents-v2/EA2-16C` is the complete coordinator round: three concurrent
+real frozen-PR review workers, one grant/inbox, accepted and distinctly observable
+mid-round steer, one active worker stopped by its kernel deadline, two ordinary
+finishes, fetch/bundle verification and observable explicit stop for all three.
+
+On 2026-10-24 the exact runtime pin and adapters `ccd6239cfb` completed the control
+flow over hosted WSS: 15.727 seconds of three-worker overlap, 21 strictly ordered
+events, all launch/removal events, all three fetched outputs and verified bundles.
+The 20-second deadline reached at 269 ms after its due time and recorded physical
+stop at 354 ms after due. Those are observations on b3, not performance gates.
+The worker's partial notes remained explicitly incomplete; the other two workers
+finished normally. All selected models were the exact id `gpt-6-luna`, effort
+`low`. Acknowledgements followed durable local batch archival. No SSH or state
+polling controlled the workers.
+
+**EA2-16C is FAIL.** The mid-round steer command succeeded and the worker's fetched
+notes explicitly acknowledge it, but no distinct steer event appeared in the
+complete §14 inbox. The schema exposes agent state, interaction, terminal,
+session, gap and subscription-end values; task publication suppresses an
+unchanged state/reason. A01/A02 can supply admission evidence, but extagent owns
+its outside producer/projection (and any coordinated protocol change). A failed
+live assertion and exact event/command evidence are under `dogfood/r6/`.
+Do not substitute a locally manufactured event or mark the full round accepted.
+
+The first attempt is retained as FAIL: its short worker finished 3.331 seconds
+before its 35-second deadline. A later reached receipt on an already idle worker
+did not prove active cancellation. The second attempt used the measured shorter
+deadline and exercised real active cancellation. Neither attempt regressed the
+inherited grant/inbox binding: one stable subscription id was used per round.
+
+A subsequent input-compatibility follow-up accepts the Mac watcher's maximum
+minutes and the all-lane health invocation; its fake-adapter tests supplement the
+live default path above. It does not change the pinned kernel/client results or
+close the missing steer-event requirement. Source checks: 44 adapter/coordinator
+tests, 2,682 compiled TypeScript CLI tests and process-signal lint pass. The
+coordinator handoff carries exact source identities, cleanup and tracker update;
+no broad MP parity or real-Mac workday acceptance is claimed.

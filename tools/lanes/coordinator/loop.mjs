@@ -22,6 +22,10 @@ export async function coordinate(operation, args, options = {}) {
   const adapter = options.adapter || (async (op, input) => execute([new URL(`../lane-${op}.mjs`, import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const cli = options.cli || (argv => execute(argv, '', process.env.CHARIOX_BIN || 'chariox', false, argv[0] === 'events' && argv[1] === 'wait' ? [0, 5] : [0]));
   const now = options.now || Date.now;
+  if (operation === 'lanehealth' && !args.length) {
+    const records = await Promise.all((await readdir(home)).filter(f => f.endsWith('.json')).map(f => read(join(home, f))));
+    return Promise.all(records.filter(r => r.lane && r.launch).map(r => coordinate(operation, [r.lane], options)));
+  }
   const lane = operation === 'watch' ? null : validLane(args[0]);
   const path = lane && join(home, `${lane}.json`);
   const load = async () => {
@@ -52,7 +56,7 @@ export async function coordinate(operation, args, options = {}) {
   }
   if (operation === 'watch') {
     const timeout = Number(args[0] || 15) * 60;
-    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 900) throw new LaneError('invalid_watch_timeout', 'watch takes 1/60..15 minutes');
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 14400) throw new LaneError('invalid_watch_timeout', 'watch takes 1/60..240 minutes');
     // Requests and launch automatically add targets to this grant's single inbox.
     const statePath = join(home, 'subscription.json');
     const current = await cli(['events', 'subscription']);
@@ -65,12 +69,17 @@ export async function coordinate(operation, args, options = {}) {
       if (!subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === r.launch.sessionId && (!t.agent_id || t.agent_id === r.launch.agentId))) throw new LaneError('subscription_target_missing', `Launch target ${r.lane} is missing from the inbox; subscribe before waiting.`);
     }
     await save(statePath, { subscription_id: subscription.subscription_id });
-    const batch = await cli(['events', 'wait', '--timeout', String(timeout)]);
-    if (!Array.isArray(batch.events) || !Number.isSafeInteger(batch.next_cursor)) throw new LaneError('invalid_event_batch');
-    await save(join(home, 'events', `${now()}-${randomUUID()}.json`), batch);
-    if (batch.events.some(e => ['gap', 'subscription_ended'].includes(e.type))) throw new LaneError('event_stream_incomplete', 'Inbox gap or end archived; inspect before acknowledging.');
-    if (batch.events.length) await cli(['events', 'ack', String(batch.next_cursor)]);
-    return batch;
+    let remaining = timeout;
+    while (remaining > 0) {
+      const seconds = Math.min(remaining, 900);
+      const batch = await cli(['events', 'wait', '--timeout', String(seconds)]);
+      if (!Array.isArray(batch.events) || !Number.isSafeInteger(batch.next_cursor)) throw new LaneError('invalid_event_batch');
+      await save(join(home, 'events', `${now()}-${randomUUID()}.json`), batch);
+      if (batch.events.some(e => ['gap', 'subscription_ended'].includes(e.type))) throw new LaneError('event_stream_incomplete', 'Inbox gap or end archived; inspect before acknowledging.');
+      if (batch.events.length) await cli(['events', 'ack', String(batch.next_cursor)]);
+      remaining -= seconds;
+      if (batch.events.length || !batch.timed_out || remaining === 0) return batch;
+    }
   }
   const record = await load();
   if (!record.launch) throw new LaneError('launch_incomplete', 'Resume brief with its original inputs first.');

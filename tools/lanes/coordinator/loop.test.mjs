@@ -90,3 +90,24 @@ test('stop: only recorded lane adapter identity; durable stop receipt', async t 
   assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'))).stopped, true);
   await assert.rejects(coordinate('stop', ['../other'], r.options), { code: 'invalid_lane' });
 });
+
+test('watch accepts the Mac max-minutes input and only re-arms WaitEvents', async t => {
+  const r = await launched(t); const cli = r.options.cli;
+  r.options.cli = async argv => { if (argv[1] === 'wait') { r.calls.push({ argv }); return { events: [], next_cursor: 0, timed_out: true }; } return cli(argv); };
+  await coordinate('watch', ['30'], r.options);
+  assert.deepEqual(r.calls.map(c => c.argv?.[1]), ['subscription', 'wait', 'wait']);
+  assert.deepEqual(r.calls.filter(c => c.argv?.[1] === 'wait').map(c => c.argv.at(-1)), ['900', '900']);
+});
+test('lanehealth without arguments snapshots every recorded lane once', async t => {
+  const r = await launched(t);
+  const results = await coordinate('lanehealth', [], r.options);
+  assert.equal(results.length, 1); assert.equal(results[0].lane, 'lane');
+  assert.deepEqual(r.calls.map(c => c.op), ['status']);
+});
+test('deliver reuses the same command id for the same review and current prompt', async t => {
+  const r = await launched(t); const review = join(r.home, 'review.md'); await writeFile(review, 'review');
+  const adapter = r.options.adapter;
+  r.options.adapter = (op, input) => op === 'status' ? { currentPrompt: 'current' } : adapter(op, input);
+  await coordinate('deliver', ['lane', review], r.options); await coordinate('deliver', ['lane', review], r.options);
+  assert.equal(r.calls[0].input.steerId, r.calls[1].input.steerId);
+});
