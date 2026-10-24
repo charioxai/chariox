@@ -12,20 +12,22 @@ export const mirror2ObserverExpression = () => `(${installMirror2.toString()})($
 export function sanitizeMirrorCss(text, base, resource) {
   // Known namespace URIs are identifiers, never fetched; any other @namespace drops.
   const namespaces = new Set(['http://www.w3.org/1999/xhtml', 'http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML', 'http://www.w3.org/1999/xlink']);
-  let out = text.replace(/@namespace\s+([a-zA-Z_][\w-]*\s+)?(?:url\(\s*)?["']?([^"')\s;]*)["']?\s*\)?\s*;/gi, (_, prefix = '', uri) => namespaces.has(uri) ? `@namespace ${prefix}"${uri}";` : '');
+  // Each rewrite runs only when its token occurs: most sheets have no escapes, namespaces or legacy constructs.
+  let out = !/@namespace/i.test(text) ? text : text.replace(/@namespace\s+([a-zA-Z_][\w-]*\s+)?(?:url\(\s*)?["']?([^"')\s;]*)["']?\s*\)?\s*;/gi, (_, prefix = '', uri) => namespaces.has(uri) ? `@namespace ${prefix}"${uri}";` : '');
   // Escaped function names (custom properties keep raw tokens: `u\\72l(`) are
-  // decoded first, so the url() rewrite below sees every fetching function.
-  out = out.replace(/((?:[a-zA-Z_-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+)\(/g, (match, name) => {
+  // decoded first, so the url() rewrite below sees every fetching function. A name is matched from its first
+  // character only (a match inside a name implies one a character earlier), not retried at every character of it.
+  if (out.includes('\\')) out = out.replace(/(?<![a-zA-Z_-])((?:[a-zA-Z_-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+)\(/g, (match, name) => {
     if (!name.includes('\\')) return match;
     const plain = name.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, char) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : char);
     return /^[a-zA-Z_-]+$/.test(plain) ? `${plain}(` : 'x-invalid(';
   });
   // Custom properties and var()-bearing declarations keep their source tokens,
   // so every url() spelling occurs; image-set() strings are URLs too.
-  out = out.replace(/((?:-webkit-)?image-set\()([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_, open, body) => `${open}${body.replace(/(^|[,\s(])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, (m, lead, string) => `${lead}url(${string})`)})`);
-  const fontFaces = [...out.matchAll(/@font-face\s*\{[^}]*\}/g)].map(match => [match.index, match.index + match[0].length]);
+  if (/image-set\(/i.test(out)) out = out.replace(/((?:-webkit-)?image-set\()([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_, open, body) => `${open}${body.replace(/(^|[,\s(])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, (m, lead, string) => `${lead}url(${string})`)})`);
+  const urls = /url\(/i.test(out), fontFaces = !urls ? [] : [...out.matchAll(/@font-face\s*\{[^}]*\}/g)].map(match => [match.index, match.index + match[0].length]);
   const unescape = value => value.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, char) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : char);
-  out = out.replace(/url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|((?:[^)\s"'\\]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n])*))\s*\)/gi, (_, double, single, bare, at) => {
+  if (urls) out = out.replace(/url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|((?:[^)\s"'\\]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n])*))\s*\)/gi, (_, double, single, bare, at) => {
     const value = unescape(double ?? single ?? bare ?? '');
     if (!value) return 'none';
     if (value.startsWith('#')) return `url("#${value.slice(1).replace(/[^\w-]/g, '')}")`;
@@ -33,16 +35,16 @@ export function sanitizeMirrorCss(text, base, resource) {
     return key ? `url("mr:${key}")` : 'none';
   });
   // `:target` follows the document fragment (protocol 492 `fragment` header): the viewer marks that element.
-  out = out.replace(/(?<!:):target(?![\w-])/gi, '[chariox-target]');
+  if (/:target/i.test(out)) out = out.replace(/(?<!:):target(?![\w-])/gi, '[chariox-target]');
   // `:defined` follows the kernel's definition state (protocol 492 `state.defined`): the viewer marks undefined
   // custom elements instead of registering tags in a registry its next document would reuse.
-  out = out.replace(/(?<!:):defined(?![\w-])/gi, ':not([chariox-undefined])');
+  if (/:defined/i.test(out)) out = out.replace(/(?<!:):defined(?![\w-])/gi, ':not([chariox-undefined])');
   // Invalidates (never rewrites) legacy executable/binding constructs.
-  out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
-  out = out.replace(/@import[^;]*;/gi, '');
+  if (/expression|behavior|-moz-binding|javascript/i.test(out)) out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
+  if (/@import/i.test(out)) out = out.replace(/@import[^;]*;/gi, '');
   // Residual spellings the rewrites cannot parse (an unterminated url( inside a
   // string, a bare @import) are neutralized; the client refuses any that remain.
-  out = out.replace(/url(\s*)\((?!"(?:mr:r[0-9]{1,9}|#[\w-]*)"\))/gi, 'urlx$1(').replace(/@import/gi, '@x-import');
+  if (/url\s*\(|@import/i.test(out)) out = out.replace(/url(\s*)\((?!"(?:mr:r[0-9]{1,9}|#[\w-]*)"\))/gi, 'urlx$1(').replace(/@import/gi, '@x-import');
   return out;
 }
 
