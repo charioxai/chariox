@@ -15,6 +15,7 @@ Keep inputs, state and transferred artifacts in your own directory outside git.
 | Operation | Additional input | Result |
 | --- | --- | --- |
 | `launch` | `alias`, `worktree`, `provider`, `profile`, `model`, `effort`, `permission`, local `brief`, absolute `remoteBrief`, local `stateFile`, epoch `deadlineMs` | Durable local receipt with Room, attachment, agent and submitted prompt; partial ownership survives a failed step. |
+| `deadline` | `sessionId`, `agentId`, local launch `stateFile` | Foreground coordinator timer for a kernel without deadline support; waits, stops the lane, and records its result. |
 | `steer` | `sessionId`, `attachmentId`, `agentId`, `expectedPromptId`, `prompt`, unique `steerId` | Kernel compare-and-steer response. A race remains a refusal. |
 | `status` | `sessionId`, `agentId` | State, current prompt, last activity and durable deadline receipt. |
 | `fetch` | `worktree`, local `directory` | Downloads `LANE_STATUS.md`, `PUSH_READY.md`, `ACCEPTANCE_UPDATE.json` with file hashes. |
@@ -32,15 +33,20 @@ An uncertain submission first replays the original command bytes and identity.
 
 Without the capability, neither adapter sends the unknown deadline requests.
 Both report `deadline.mode:"coordinator"` and plainly say the lane has no kernel
-deadline. Launch starts a background coordinator timer and records its exact PID
-and result path in `coordinatorTimer`; it uses the normal public CLI to stop the
-lane at `deadlineMs`. This is best-effort coordinator policy, requiring that
-process, network and access grant to remain available, and cannot replace a
-kernel hard stop after coordinator/access loss. Results (including typed cleanup
-failures) go to `<stateFile>.deadline.json`. Stop/clean that timer only by its
-verified owned PID when ending a run early. Pass `stateFile` to status to include
-the saved coordinator deadline; without it the deadline time is unknown. Timer
-failures require restoring access and an explicit unconditional `stop`.
+deadline. Launch returns `coordinatorTimer.state:"required"`, its `argv` and JSON
+`input`. Start that `lane-deadline` command as a **foreground coordinator job**
+(the tool may yield a running-job handle), and keep the job alive while doing
+other work. It waits until `deadlineMs`, stops the exact lane through the public
+CLI, and writes `<stateFile>.deadline.json` with `waiting`, `stopped` or a typed
+failure. A waiting receipt includes the exact coordinator timer PID for owned
+cleanup. The timer is pending until this job is started. Never orphan it with
+shell `&` or detach it: that loses the OS ancestry of the coordinator's access
+grant. This is best-effort coordinator policy, requiring its process, network
+and grant to remain available, and cannot replace a kernel hard stop after
+coordinator/access loss. Stop/clean the job only by its verified owned PID when
+ending early. Pass `stateFile` to status for the saved coordinator deadline;
+without it the deadline time is unknown. Timer failures require restoring
+access and an explicit unconditional `stop`.
 The durable deadline branch uses allocated local584 and advertises
 `agent_deadline_v1`; it is optional, not a dependency of these adapters.
 

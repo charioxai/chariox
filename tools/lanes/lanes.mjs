@@ -96,19 +96,9 @@ export async function verifyOwnedPid(entry, owner) {
   return fields[0] !== 'Z';
 }
 
-async function startCoordinatorTimer(stateFile) {
-  const child = spawn(process.execPath, [fileURLToPath(new URL('./coordinator-deadline.mjs', import.meta.url)), resolve(stateFile)], {
-    stdio: 'ignore', env: { ...process.env, NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=4096' },
-  });
-  await new Promise((ok, bad) => { child.once('spawn', ok); child.once('error', () => bad(new LaneError('coordinator_timer_unavailable'))); });
-  if (!Number.isSafeInteger(child.pid) || child.pid <= 1) fail('pid_ownership_refused');
-  child.unref();
-  return { pid: child.pid, receipt: `${resolve(stateFile)}.deadline.json` };
-}
-
 const coordinatorDeadline = deadlineMs => ({
   mode: 'coordinator', deadline_ms: deadlineMs ?? null,
-  state: deadlineMs == null ? 'unknown' : Date.now() >= deadlineMs ? 'overdue' : 'armed',
+  state: deadlineMs == null ? 'unknown' : Date.now() >= deadlineMs ? 'overdue' : 'pending',
   message: 'This lane has no kernel deadline. A coordinator-side timer requires its process, network and access grant to remain available; it is not a durable kernel hard stop.',
 });
 
@@ -228,12 +218,26 @@ export async function run(operation, input, dependencies = {}) {
     if (replayingPrompt) {
       await refreshAttachment(); await attach();
     }
-    if (state.deadline.mode === 'coordinator' && !state.coordinatorTimer) {
-      // The same task/stop command ids make an interrupted timer start safe to retry.
-      state.coordinatorTimer = await (dependencies.startTimer || startCoordinatorTimer)(input.stateFile);
+    if (state.deadline.mode === 'coordinator') {
+      // Foreground coordinator jobs retain the OS ancestry of its access grant.
+      // An orphaned timer would lose that authority when this CLI exits.
+      state.coordinatorTimer = {
+        state: 'required', receipt: `${resolve(input.stateFile)}.deadline.json`,
+        argv: [process.execPath, fileURLToPath(new URL('./lane-deadline.mjs', import.meta.url))],
+        input: { kernel, taskId, sessionId: session(), agentId: agent(), stateFile: resolve(input.stateFile) },
+      };
       await save(input.stateFile, state);
     }
     return state;
+  }
+  if (operation === 'deadline') {
+    const saved = JSON.parse(await readFile(text(input.stateFile, 'stateFile'), 'utf8'));
+    if (saved.kernel !== kernel || saved.taskId !== taskId || saved.sessionId !== session() || saved.agentId !== agent()) fail('launch_conflict');
+    if (saved.deadline?.mode !== 'coordinator') fail('invalid_operation', 'the kernel owns this lane deadline');
+    const { enforceCoordinatorDeadline } = await import('./coordinator-deadline.mjs');
+    const receipt = await enforceCoordinatorDeadline(input.stateFile, { stop: value => run('stop', value, dependencies) });
+    if (receipt.status === 'failed') fail(receipt.code, receipt.message);
+    return receipt;
   }
   if (operation === 'steer') return request('SteerActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), expected_active_prompt_id: text(input.expectedPromptId, 'expectedPromptId'), prompt: text(input.prompt, 'prompt'), attachments: [] }, text(input.steerId, 'steerId'));
   if (operation === 'status') {
@@ -322,7 +326,7 @@ export async function run(operation, input, dependencies = {}) {
     if (input.expectedPromptId) return {
       stopped: false, agentRetained: true, agentId: agent(),
       promptCancelled: !cancelRefusal, cancelRefusal, signalled: [],
-      message: 'Only the expected prompt was cancelled. Agent and owned processes retained; unconditional cleanup requires a separate stop without expectedPromptId.',
+      message: 'Guarded cancellation requested. Agent and owned processes retained; unconditional cleanup requires a separate stop without expectedPromptId.',
     };
     try { await request('DestroyAgent', { session_id: session(), agent_id: agent() }, 'destroy'); }
     catch (error) { if (error.code !== 'agent_not_found') throw error; }

@@ -350,7 +350,8 @@ test('launch and status negotiate deadline support without sending unknown reque
       const dependencies = {execute, startTimer:async (file)=>{timers.push(file);return {pid:1234,receipt:`${file}.deadline.json`};}};
       const launched = await run('launch',input,dependencies);
       assert.equal(launched.deadline.mode,supported?'kernel':'coordinator');
-      assert.equal(timers.length,supported?0:1);
+      assert.equal(timers.length,0);
+      if (!supported) assert.equal(launched.coordinatorTimer.state,'required');
       if (!supported) assert.match(launched.deadline.message,/no kernel deadline/i);
       const status = await run('status',{kernel:'b',taskId:'lane',sessionId:'s',agentId:'a',stateFile:input.stateFile},dependencies);
       assert.equal(status.deadline.mode,supported?'kernel':'coordinator');
