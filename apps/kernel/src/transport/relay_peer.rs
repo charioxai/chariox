@@ -345,6 +345,10 @@ pub struct LeasedSkillNativeInventory {
     /// before a turn: the run that takes the turn. Absent from older workers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_run_id: Option<String>,
+    /// IDs of the native compactions the worker observed in that run's session.
+    /// The home owns the recovery: it records each ID once and reloads Skills.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

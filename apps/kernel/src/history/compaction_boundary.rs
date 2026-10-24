@@ -53,13 +53,7 @@ impl OperationalHistoryStore {
         origin: AgentCompactionOrigin<'_>,
         provider_turn_id: &str,
     ) -> Result<bool, DaemonError> {
-        let native_session = origin.native_session.ok_or_else(|| {
-            compaction_error(
-                session_id,
-                "record observed compaction",
-                "native session ID is required",
-            )
-        })?;
+        let native_session = origin.native_session.unwrap_or("");
         let family =
             crate::provider::canonical_provider_family(origin.provider).unwrap_or(origin.provider);
         let mut connection = self
@@ -104,6 +98,35 @@ impl OperationalHistoryStore {
             |row| Ok(AgentCompactionBoundary { revision: row.get::<_, i64>(0)?.max(0) as u64,
                 source_provider: row.get(1)?, source_model: row.get(2)? }),
         ).optional().map_err(|e| compaction_error(session_id, "load compaction boundary", e))
+    }
+
+    /// The compactions already observed in one native session, by native record ID.
+    pub(crate) fn observed_agent_compaction_ids(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider: &str,
+        account: &str,
+        native_session: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let family = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT provider_turn_id FROM history_agent_compaction_observations
+                 WHERE session_id = ?1 AND agent_id = ?2 AND provider_family = ?3
+                   AND account_profile = ?4 AND provider_session_id = ?5
+                 ORDER BY provider_turn_id",
+            )
+            .map_err(|e| compaction_error(session_id, "list observed compactions", e))?;
+        let ids = statement
+            .query_map(
+                params![session_id, agent_id, family, account, native_session],
+                |row| row.get(0),
+            )
+            .map_err(|e| compaction_error(session_id, "list observed compactions", e))?
+            .collect::<Result<_, _>>();
+        ids.map_err(|e| compaction_error(session_id, "read observed compactions", e))
     }
 
     /// A late acknowledgement must never erase a newer compaction epoch.
@@ -276,6 +299,14 @@ mod tests {
                 .record_observed_agent_compaction_boundary("s", "a", origin(native), turn)
                 .unwrap());
         }
+        let ids = |native| {
+            store
+                .observed_agent_compaction_ids("s", "a", "claude-headless", "account", native)
+                .unwrap()
+        };
+        assert_eq!(ids("native-a"), ["compact-a"]);
+        assert_eq!(ids("native-b"), ["compact-b"]);
+        assert!(ids("native-c").is_empty());
         let (a, b) = (load("native-a").unwrap(), load("native-b").unwrap());
         assert_ne!(a.revision, b.revision);
         store

@@ -181,6 +181,7 @@ impl SkillDispatchService {
                 // record_load is idempotent by agent/run/generation/ID/full digest.
                 // If fsync fails, the existing provider completion queue retains
                 // this ACK and retries settlement without re-submitting the task.
+                let mut delivered = false;
                 for record in records {
                     if current.pending_loads.iter().any(|pending| {
                         pending.skill_id == record.skill_id
@@ -199,9 +200,16 @@ impl SkillDispatchService {
                             current.catalog_revision,
                         )?;
                         self.changes.record_change();
+                        delivered = true;
                     }
                 }
-                Ok(())
+                // The worker's harness took this turn's reload, so the epoch is recovered.
+                match current.compaction_revision.filter(|_| delivered) {
+                    Some(revision) => self
+                        .history
+                        .deliver_agent_compaction_boundary(session_id, agent_id, revision),
+                    None => Ok(()),
+                }
             })
     }
     /// OpenCode loads a deduped or `From OpenCode` skill with its own `skill` tool; the

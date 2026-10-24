@@ -92,6 +92,7 @@ async fn fixture_with_dispatch(
         prompt_delivery_skill_ids: ["explicit".into()].into(),
         remote_roots: Default::default(),
         native_tool_loads: Default::default(),
+        compaction_revision: None,
     };
     runtime
         .owned
@@ -1165,7 +1166,15 @@ async fn leased_turn_re_attaches_a_load_when_the_worker_reports_a_new_run_at_tur
     leased_load_is_delivered_once_per_worker_run(Relaunch::ReportedAtTurnStart).await;
 }
 
+// The worker's harness compacted its conversation inside the run the home still sees:
+// the load rides the next turn once, and a replayed report does not repeat it.
+#[tokio::test]
+async fn leased_turn_re_attaches_a_load_after_a_worker_compaction_exactly_once() {
+    leased_load_is_delivered_once_per_worker_run(Relaunch::Compacted).await;
+}
+
 enum Relaunch {
+    Compacted,
     Settled,
     Projected,
     ReportedAtTurnStart,
@@ -1316,6 +1325,50 @@ async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
         .is_none_or(|turn| !roots(&turn).contains("Review source.")),
         "the worker run already holds the load"
     );
+    if matches!(relaunch, Relaunch::Compacted) {
+        settle(&second, "worker-run-1");
+        let compacted = |ids: &[&str]| {
+            super::super::skills_dispatch::record_worker_compactions(
+                &runtime,
+                &session_id,
+                &agent_id,
+                &binding.leased_agent_id,
+                &ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        let live = || ReportedWorkerRun::Live("worker-run-1".into());
+        compacted(&["compact-1"]);
+        let third = submit("after-compaction", "continue reviewing", vec![]);
+        assert!(
+            roots(&remote_reported(&third.prompt_id, live()).unwrap()).contains("Review source."),
+            "a compacted worker conversation lost the load"
+        );
+        runtime
+            .owned
+            .settle_remote_dispatch_if_current(&third, Some("worker-run-1"))
+            .unwrap();
+        let third_context = RemoteWorkspaceLiveSyncContext {
+            home_prompt_id: Some(third.prompt_id.clone()),
+            ..context.clone()
+        };
+        acknowledge(
+            &runtime,
+            &third_context,
+            serde_json::json!({"delivery":"prompt"}),
+        )
+        .await
+        .unwrap();
+        complete("worker-run-1");
+        compacted(&["compact-1"]);
+        let fourth = submit("after-recovery", "continue reviewing", vec![]);
+        assert!(
+            remote_reported(&fourth.prompt_id, live())
+                .is_none_or(|turn| !roots(&turn).contains("Review source.")),
+            "one compaction reloads once"
+        );
+        return;
+    }
     // The worker relaunched: the home sees it as the next settlement or projection, or
     // only from the worker's own report when the next turn starts.
     let reported = match relaunch {
@@ -1324,6 +1377,7 @@ async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
             project_run("worker-run-2");
             ReportedWorkerRun::Unknown
         }
+        Relaunch::Compacted => unreachable!("returned above"),
         Relaunch::Settled => {
             settle(&second, "worker-run-2");
             ReportedWorkerRun::Unknown
@@ -1706,6 +1760,7 @@ async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
         prompt_delivery_skill_ids: [skill.id.clone()].into(),
         remote_roots: Default::default(),
         native_tool_loads: Default::default(),
+        compaction_revision: None,
     };
     runtime
         .owned

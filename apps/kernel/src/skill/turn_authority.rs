@@ -26,6 +26,9 @@ pub(crate) struct SkillTurnAuthority {
     /// the name the harness invokes, mapped to the pending load's skill ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native_tool_loads: BTreeMap<String, String>,
+    /// A leased turn that reloads after a worker compaction: acknowledged with its first delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_revision: Option<u64>,
 }
 /// Leased turns have no home provider run; the run ID names the lease instead.
 pub(crate) const LEASED_RUN_PREFIX: &str = "leased:";
@@ -67,6 +70,7 @@ mod tests {
             prompt_delivery_skill_ids: Default::default(),
             remote_roots: Default::default(),
             native_tool_loads: Default::default(),
+            compaction_revision: None,
         };
         turn.reserve_body("first", 5).unwrap();
         turn.reserve_body("first", 5).unwrap();
