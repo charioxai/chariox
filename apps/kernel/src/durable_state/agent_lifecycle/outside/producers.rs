@@ -62,6 +62,15 @@ pub(super) fn identity(db: &Connection) -> Result<Option<(String, String)>, Daem
     .optional()
     .map_err(sql)
 }
+/// Identity for a producer outside a durable transaction. Without an open
+/// subscription nothing would be kept, so the writer is not taken for it.
+fn publish_identity(db: &Connection) -> Result<Option<(String, String)>, DaemonError> {
+    if !parts(db)?.iter().any(|part| part.ended.is_none()) {
+        return Ok(None);
+    }
+    identity(db)
+}
+
 impl DurableKernelStateStore {
     pub(crate) fn outside_publish(
         &self,
@@ -71,7 +80,9 @@ impl DurableKernelStateStore {
         summary: &str,
         refs: crate::local::EventRefs,
     ) -> Result<(), DaemonError> {
-        let Some((kernel, machine)) = identity(&*self.lock_connection("outside.identity")?)? else {
+        let Some((kernel, machine)) =
+            publish_identity(&*self.lock_connection("outside.identity")?)?
+        else {
             return Ok(());
         };
         let event = OutsideEvent {
@@ -108,7 +119,9 @@ impl DurableKernelStateStore {
         offset: u64,
         exit_code: Option<u32>,
     ) -> Result<(), DaemonError> {
-        let Some((kernel, machine)) = identity(&*self.lock_connection("outside.identity")?)? else {
+        let Some((kernel, machine)) =
+            publish_identity(&*self.lock_connection("outside.identity")?)?
+        else {
             return Ok(());
         };
         let event = OutsideEvent {

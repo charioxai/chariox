@@ -447,3 +447,34 @@ fn outside_restart_repairs_old_local_cleanup_without_losing_remote_work() {
         .cleanup_targets
         .is_empty());
 }
+
+#[test]
+fn a_producer_without_a_subscription_does_not_wait_for_the_durable_writer() {
+    let f = Fixture::new();
+    f.store
+        .outside_mutate(Mutation::Identity {
+            kernel: "kernel-a".into(),
+            machine: "machine-a".into(),
+        })
+        .unwrap();
+    let publish_session_event = || {
+        f.store.outside_publish(
+            "x",
+            Some("x1"),
+            OutsideEventValue::Session {
+                state: EventSessionState::AgentAdded,
+            },
+            "added",
+            Default::default(),
+        )
+    };
+    let mut blocker = rusqlite::Connection::open(f.store.path()).unwrap();
+    let held = blocker
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    publish_session_event().expect("nobody follows this kernel, so nothing is written");
+    held.rollback().unwrap();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    publish_session_event().unwrap();
+    assert_eq!(list(&f, "grant").events.len(), 1);
+}

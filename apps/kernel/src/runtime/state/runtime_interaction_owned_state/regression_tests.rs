@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     config::DaemonConfig,
+    local::{EventTarget, LocalDaemonRequest, SubscribeEventsRequest},
     session::{
         RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession, DEFAULT_LOCAL_USER_ID,
     },
@@ -14,6 +15,23 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         Self::with_session_id(format!("decision-cleanup-{:016x}", rand::random::<u64>()))
+    }
+    /// An outside follower makes every interaction change a durable event write.
+    fn follow(&self) {
+        self.state
+            .outside_part_request(
+                "follower",
+                true,
+                Some(DEFAULT_LOCAL_USER_ID),
+                &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+                    targets: vec![EventTarget {
+                        kernel: self.state.owned.config_projection.snapshot().daemon_id,
+                        session_id: self.session.clone(),
+                        agent_id: None,
+                    }],
+                }),
+            )
+            .unwrap();
     }
     fn with_session_id(session_id: String) -> Self {
         Self::with_session_config(session_id, false)
@@ -1036,6 +1054,7 @@ async fn rejected_outside_event_write_keeps_an_answer_retriable() {
     std::fs::create_dir(&root).unwrap();
     let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&root);
     let f = Fixture::new();
+    f.follow();
     let mut receiver = f.register("write-retry").unwrap();
     let id = f.id("write-retry");
     std::fs::write(root.join("writer-fail"), "").unwrap();
@@ -1085,6 +1104,7 @@ async fn rejected_outside_event_write_keeps_a_timeout_retriable() {
     std::fs::create_dir(&root).unwrap();
     let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&root);
     let f = Fixture::new();
+    f.follow();
     let mut receiver = f.register("timeout-retry").unwrap();
     let id = f.id("timeout-retry");
     std::fs::write(root.join("writer-fail"), "").unwrap();
@@ -1118,6 +1138,7 @@ async fn rejected_outside_event_write_keeps_a_withdrawal_retriable() {
     std::fs::create_dir(&root).unwrap();
     let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&root);
     let f = Fixture::new();
+    f.follow();
     let mut receiver = f.register("withdraw-retry").unwrap();
     let id = f.id("withdraw-retry");
     let pending = f
