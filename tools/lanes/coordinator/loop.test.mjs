@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: each coordinator step against fake adapters.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { coordinate, save } from './loop.mjs';
@@ -84,6 +84,29 @@ test('watch: changed grant, missing target and gaps fail clearly', async t => {
   r.options.cli = argv => argv[1] === 'wait' ? { events: [{ type: 'gap' }], next_cursor: 3 } : cli(argv);
   await assert.rejects(coordinate('watch', [], r.options), { code: 'event_stream_incomplete' });
   assert.equal(r.calls.some(c => c.argv?.[1] === 'ack'), false);
+});
+test('watch: archives a real exit-3 ending batch and its reason without ack', async t => {
+  const r = await launched(t);
+  const batch = { events: [{ cursor: 7, type: 'subscription_ended', value: { reason: 'grant_revoked' } }], next_cursor: 7, timed_out: false };
+  const calls = join(r.home, 'cli-calls');
+  const executable = join(r.home, 'chariox.mjs');
+  await writeFile(executable, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const argv = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(argv) + '\\n');
+if (argv[1] === 'subscription') console.log(JSON.stringify({ subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room' }] } }));
+else if (argv[1] === 'wait') { console.log(JSON.stringify(${JSON.stringify(batch)})); process.exitCode = 3; }
+else process.exitCode = 1;
+`, { mode: 0o700 });
+  const previous = process.env.CHARIOX_BIN;
+  process.env.CHARIOX_BIN = executable;
+  t.after(() => { if (previous === undefined) delete process.env.CHARIOX_BIN; else process.env.CHARIOX_BIN = previous; });
+  const { cli, ...options } = r.options;
+  await assert.rejects(coordinate('watch', ['1'], options), { code: 'event_stream_incomplete' });
+  const files = await readdir(join(r.home, 'events'));
+  assert.equal(files.length, 1);
+  assert.deepEqual(JSON.parse(await readFile(join(r.home, 'events', files[0]), 'utf8')), batch);
+  assert.deepEqual((await readFile(calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line)[1]), ['subscription', 'wait']);
 });
 test('deliver: uses current prompt fence and refuses a finished worker', async t => {
   const r = await launched(t); const review = join(r.home, 'review.md'); await writeFile(review, 'check command receipts');

@@ -20,7 +20,7 @@ export async function coordinate(operation, args, options = {}) {
   const home = resolve(options.home || process.env.CHARIOX_COORDINATOR_HOME || join(homedir(), '.chariox', 'dev', 'coordinator-lanes'));
   await mkdir(home, { recursive: true });
   const adapter = options.adapter || (async (op, input) => execute([new URL(`../lane-${op}.mjs`, import.meta.url).pathname], JSON.stringify(input), process.execPath));
-  const cli = options.cli || (argv => execute(argv, '', process.env.CHARIOX_BIN || 'chariox', false, argv[0] === 'events' && argv[1] === 'wait' ? [0, 5] : [0]));
+  const cli = options.cli || (argv => execute(argv, '', process.env.CHARIOX_BIN || 'chariox', false, argv[0] === 'events' && argv[1] === 'wait' ? [0, 3, 5] : [0]));
   const now = options.now || Date.now;
   if (operation === 'lanehealth' && !args.length) {
     const records = await Promise.all((await readdir(home)).filter(f => f.endsWith('.json')).map(f => read(join(home, f))));
