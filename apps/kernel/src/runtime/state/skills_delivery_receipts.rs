@@ -203,12 +203,31 @@ impl SkillDispatchService {
                         delivered = true;
                     }
                 }
-                // The worker's harness took this turn's reload, so the epoch is recovered.
-                match current.compaction_revision.filter(|_| delivered) {
-                    Some(revision) => self
-                        .history
-                        .deliver_agent_compaction_boundary(session_id, agent_id, revision),
-                    None => Ok(()),
+                // A compaction lost every earlier load, so the epoch stays open until the
+                // harness has taken the reload of each skill this turn re-attached; a
+                // skill still pending would otherwise look held on the next turn.
+                let Some(revision) = current.compaction_revision.filter(|_| delivered) else {
+                    return Ok(());
+                };
+                let reloaded = service.storage.active_loads(
+                    session_id,
+                    Some(&current.project_id),
+                    current.catalog_revision,
+                )?;
+                let every_reload_acknowledged = current.pending_loads.iter().all(|pending| {
+                    reloaded.iter().any(|load| {
+                        load.agent_id == agent_id
+                            && load.run_id == stored_run_id
+                            && load.skill_id == pending.skill_id
+                            && load.digest == pending.digest
+                            && load.context_generation == pending.context_generation
+                    })
+                });
+                if every_reload_acknowledged {
+                    self.history
+                        .deliver_agent_compaction_boundary(session_id, agent_id, revision)
+                } else {
+                    Ok(())
                 }
             })
     }
