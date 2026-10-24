@@ -294,4 +294,5 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "kernel_gateway_v1",
     "room_terminal_v1",
     "agent_deadline_v1",
+    "outside_steer_events_v1",
 ];

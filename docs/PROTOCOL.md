@@ -5308,4 +5308,5 @@ the kernel records `{ "type": "steer", "value": { "steer_id" } }` for the agent,
 where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused,
 stale or rejected steer records nothing. If the event cannot be recorded after
 delivery, the request fails with a message that says the steer was delivered and
-must not be sent again. Local 591 and relay peer 197 add this event shape.
+must not be sent again. Local 591 and relay peer 197 add this event shape, and
+`RelayStatus.status.capabilities` advertises `outside_steer_events_v1` for it.
