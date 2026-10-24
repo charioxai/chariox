@@ -737,18 +737,29 @@ impl KernelRuntimeState {
                         .remote_execution()
                         .is_some();
                     authorize()?;
+                    let mut starting_workflow_run = None;
                     if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
                         let fresh_context = owned.workflow_prompt_requires_fresh_provider_context(
                             &session_id,
                             &target_agent_id,
                             &prepared.prompt,
                         )?;
-                        let (_provider_run_id, _) = owned.workflow_ensure_provider_run(
+                        let (provider_run_id, _) = owned.workflow_ensure_provider_run(
                             &session_id,
                             &target_agent_id,
                             fresh_context,
                             prepared.prompt.workflow_node_run_id(),
                         )?;
+                        // A workflow prompt waits in the queue for the cold process it just
+                        // asked for, and the detached launch below starts it.
+                        starting_workflow_run = owned
+                            .provider_store
+                            .get_run(&provider_run_id)
+                            .ok()
+                            .filter(|run| {
+                                run.state() == crate::provider::ProviderRunState::Starting
+                            })
+                            .map(|run| run.id().to_string());
                     } else if is_remote_agent {
                         if let Some(mut submission) = owned
                             .submit_remote_prepared_prompt_with_queue_policy(
@@ -782,10 +793,18 @@ impl KernelRuntimeState {
                     };
                     authorize()?;
                     if let Some(mut submission) = owned
-                        .submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                        .submit_local_prepared_prompt_with_queue_policy(
+                            &prepared,
+                            allow_queue || starting_workflow_run.is_some(),
+                        )?
                     {
                         self.finish_owned_prompt_submission(&mut submission, prepared.force_queue)
                             .await?;
+                        if let Some(provider_run_id) = starting_workflow_run {
+                            let mut dispatches = WorkflowPromptDispatches::default();
+                            dispatches.starting_provider_runs.push(provider_run_id);
+                            self.spawn_workflow_prompt_dispatches(dispatches);
+                        }
                         return Ok(submission);
                     }
                 }

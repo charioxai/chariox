@@ -2183,6 +2183,19 @@ mod tests {
                     .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
             };
             assert_eq!(workflow_run_id.is_some(), workflow_node, "{phase:?}");
+            if workflow_node {
+                // A restart leaves no provider process: the wake launches a cold one.
+                let cold_run = runtime
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(&session_id, &agent_id)
+                    .expect("the fixture launched a provider run");
+                runtime
+                    .owned
+                    .provider_store
+                    .mark_run_ended_provider_only(&session_id, cold_run.id())
+                    .expect("the fixture's provider run ends");
+            }
             let store = &runtime.owned.durable_state_store;
             let now = crate::session::unix_epoch_ms();
             let Outcome::Task(task) = store
@@ -2198,6 +2211,29 @@ mod tests {
             else {
                 panic!("begin returns the task");
             };
+            if let Some(workflow_run_id) = workflow_run_id.as_deref() {
+                let node_run_id = runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(
+                        &runtime
+                            .owned
+                            .session_store
+                            .get_session(&session_id)
+                            .expect("session should load"),
+                        &agent_id,
+                    )
+                    .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string))
+                    .expect("the workflow prompt names its node run");
+                store
+                    .agent_lifecycle(Operation::BindWorkflow {
+                        task: task.task_id.clone(),
+                        prompt: prompt_id.clone(),
+                        run: workflow_run_id.to_string(),
+                        node: node_run_id,
+                    })
+                    .expect("the task binds to its workflow node");
+            }
             let wake: crate::durable_state::agent_lifecycle::AgentWake =
                 serde_json::from_value(serde_json::json!({
                     "id": "g13-timer", "task_id": task.task_id, "room_id": session_id,
