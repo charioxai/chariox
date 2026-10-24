@@ -79,12 +79,8 @@ fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
         });
         assert_eq!(
             f.task().state,
-            if is_goal {
-                ExecutionState::Blocked
-            } else {
-                ExecutionState::Done
-            },
-            "a timed-out check blocks a Goal but never a plain request"
+            ExecutionState::Done,
+            "a timed-out check is no objection to a Goal or a plain request"
         );
         assert_eq!(
             if is_goal {
@@ -174,7 +170,7 @@ fn a12_continue_keeps_live_sources_and_wait_checks_coverage_and_interval() {
 }
 
 #[test]
-fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
+fn a12_failed_eof_blocks_and_unusable_checks_settle_once() {
     let f = Fixture::new();
     goal(&f, 10);
     f.settle("p", false);
@@ -201,7 +197,7 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
             now,
         });
         let before = f.task();
-        assert_eq!(before.state, ExecutionState::Blocked);
+        assert_eq!(before.state, ExecutionState::Done);
         f.apply(Operation::EvaluateGoal {
             known_block: None,
             task: "p".into(),
@@ -366,7 +362,7 @@ fn a12_progressing_goals_have_no_turn_cap_and_evaluations_cannot_mutate_work() {
 }
 
 #[test]
-fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
+fn a12_timeout_once_fences_its_late_timer_and_result() {
     let f = Fixture::new();
     goal(&f, 10);
     f.settle("p", true);
@@ -378,8 +374,8 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
         prompt: id.clone(),
         now: goals::CHECK_BOUND_MS + 4,
     });
-    let blocked = f.task();
-    assert_eq!(blocked.state, ExecutionState::Blocked);
+    let done = f.task();
+    assert_eq!(done.state, ExecutionState::Done);
     assert!(matches!(
         f.apply(Operation::TimeoutGoal {
             known_block: None,
@@ -389,22 +385,6 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
         }),
         Outcome::Saved
     ));
-    assert_eq!(f.task(), blocked);
-    f.apply(Operation::ControlGoal {
-        task: "p".into(),
-        owner: "owner".into(),
-        revision: blocked.revision,
-        action: "resume".into(),
-        value: None,
-        now: goals::CHECK_BOUND_MS + 5,
-    });
-    let resumed = f.task();
-    f.apply(Operation::TimeoutGoal {
-        known_block: None,
-        task: "p".into(),
-        prompt: id.clone(),
-        now: goals::CHECK_BOUND_MS + 6,
-    });
     f.apply(Operation::EvaluateGoal {
         known_block: None,
         task: "p".into(),
@@ -412,7 +392,7 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
         result: assessment("continue").to_string(),
         now: goals::CHECK_BOUND_MS + 6,
     });
-    assert_eq!(f.task(), resumed);
+    assert_eq!(f.task(), done);
 }
 
 #[test]
@@ -859,9 +839,9 @@ fn a12_plain_timeout_settles_done_idempotently_and_fences_a_late_check() {
     assert_eq!(f.task(), t);
 }
 
-// An empty or malformed verdict is no objection to a plain request; a Goal still blocks.
+// An empty or malformed verdict is no objection to a plain request or a Goal.
 #[test]
-fn a12_unusable_verdict_settles_plain_done_and_goal_blocked() {
+fn a12_unusable_verdict_settles_plain_and_goal_done() {
     for (is_goal, raw) in [
         (false, ""),
         (false, "not json"),
@@ -884,12 +864,11 @@ fn a12_unusable_verdict_settles_plain_done_and_goal_blocked() {
             result: raw.into(),
             now: 4,
         });
-        let want = if is_goal {
-            ExecutionState::Blocked
-        } else {
-            ExecutionState::Done
-        };
-        assert_eq!(f.task().state, want, "goal={is_goal} raw={raw:?}");
+        assert_eq!(
+            f.task().state,
+            ExecutionState::Done,
+            "goal={is_goal} raw={raw:?}"
+        );
     }
 }
 
@@ -919,9 +898,13 @@ fn unusable_plain_check(f: &Fixture, timeout: bool) {
 #[test]
 fn a12_unusable_check_keeps_a_known_protected_denial() {
     const CLASS: &str = "[protected task: approval denied]";
-    for timeout in [false, true] {
+    for (is_goal, timeout) in [(false, false), (false, true), (true, false), (true, true)] {
         let f = Fixture::new();
-        plain(&f);
+        if is_goal {
+            goal(&f, 1);
+        } else {
+            plain(&f);
+        }
         f.settle("p", true);
         let id = f.task().pending_prompt_id.unwrap();
         f.begin(&id);
@@ -942,8 +925,12 @@ fn a12_unusable_check_keeps_a_known_protected_denial() {
             });
         }
         let t = f.task();
-        assert_eq!(t.state, ExecutionState::Blocked, "timeout={timeout}");
-        assert_eq!(t.reason, CLASS, "timeout={timeout}");
+        assert_eq!(
+            t.state,
+            ExecutionState::Blocked,
+            "goal={is_goal} timeout={timeout}"
+        );
+        assert_eq!(t.reason, CLASS, "goal={is_goal} timeout={timeout}");
     }
 }
 fn source_outcome(f: &Fixture, success: bool, now: u64) {
@@ -1005,6 +992,32 @@ fn a12_unusable_check_waits_for_an_unacknowledged_clean_exit_receipt() {
     }
 }
 
+// An unusable check on a Goal keeps open work waiting and a failed obligation blocked too.
+#[test]
+fn a12_unusable_check_keeps_a_goal_waiting_on_open_work() {
+    for timeout in [false, true] {
+        let f = Fixture::new();
+        goal(&f, 1);
+        f.register();
+        f.subscribe();
+        unusable_plain_check(&f, timeout);
+        let t = f.task();
+        assert_eq!(t.state, ExecutionState::Waiting, "timeout={timeout}");
+        assert_eq!(t.wait.as_ref().unwrap().registration_ids, vec!["reg"]);
+        assert_eq!(
+            t.goal.unwrap().next_check_in_ms,
+            Some(t.wait.unwrap().deadline_ms)
+        );
+        let f = Fixture::new();
+        goal(&f, 1);
+        f.register();
+        f.subscribe();
+        source_outcome(&f, false, 2);
+        unusable_plain_check(&f, timeout);
+        assert_eq!(f.task().state, ExecutionState::Blocked, "timeout={timeout}");
+    }
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 A12: rejection must bound the stored receipt too.
 #[test]
 fn a12_oversized_json_receipt_never_crosses_public_result_limit() {
@@ -1015,7 +1028,7 @@ fn a12_oversized_json_receipt_never_crosses_public_result_limit() {
         &f,
         serde_json::json!({"status":"blocked","reason":"x".repeat(9000)}),
     );
-    assert_eq!(t.state, ExecutionState::Blocked);
+    assert_eq!(t.state, ExecutionState::Done);
     let receipt = t.goal.unwrap().evaluation.unwrap().result.unwrap();
     assert!(
         receipt.to_string().len() <= goals::RESULT_LIMIT,

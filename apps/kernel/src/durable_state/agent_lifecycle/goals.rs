@@ -260,9 +260,7 @@ pub(super) fn evaluate(
     };
     let mut again = false;
     match assessment {
-        // An unusable check (empty, late, malformed) is no objection to a plain request.
-        None if t.goal.is_none() => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
-        None => blocked(&mut t, known_block.as_deref().unwrap_or("Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume")),
+                None => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
             if t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed")) {
@@ -309,8 +307,7 @@ pub(super) fn evaluate(
                 if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
             }
         }
-        _ if t.goal.is_none() => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
-        _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
+        _ => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
     }
     let receipt = if result.len() > RESULT_LIMIT {
         serde_json::json!({"invalid":true,"reason":"completion_check result exceeds 8192 bytes"})
@@ -332,8 +329,8 @@ pub(super) fn evaluate(
     })
 }
 
-/// An unusable check (empty, late, malformed) is no objection to a plain request, but it never
-/// drops unresolved work (a Done task with open obligations is not a valid ledger state): the
+/// An unusable check (empty, late, malformed) is no objection to a plain request or a Goal, but it
+/// never drops unresolved work (a Done task with open obligations is not a valid ledger state): the
 /// task keeps waiting on the sources of its open or unacknowledged obligations, so the outcome
 /// still reaches it, and a failed or unwatched obligation needs the owner.
 fn unavailable_check(
@@ -387,21 +384,32 @@ fn unavailable_check(
         long_wait_notified: prior.as_ref().is_some_and(|w| w.long_wait_notified),
         last_checked_at_ms: now,
     });
+    if let Some(g) = &mut t.goal {
+        g.next_check_in_ms = Some(deadline.max(now.saturating_add(1)));
+    }
     t.state = ExecutionState::Waiting;
     t.pending_prompt_id = None;
     t.reason = "Waiting on open work".into();
     Ok(())
 }
 
-/// An unusable check on a plain task with no unresolved work: nothing to object to.
+/// An unusable check with no unresolved work: nothing to object to.
 fn no_objection(t: &mut AgentTaskExecution) {
     t.state = ExecutionState::Done;
     t.pending_prompt_id = None;
     t.wait = None;
     t.reason.clear();
-    let c = t.completion_check.as_mut().unwrap();
-    c.final_answer = Some("Completed; the completion check gave no usable verdict.".into());
-    c.evidence = vec!["completion check unavailable".into()];
+    let answer = "Completed; the completion check gave no usable verdict.".to_string();
+    let evidence = vec!["completion check unavailable".to_string()];
+    if let Some(g) = &mut t.goal {
+        g.final_answer = Some(answer);
+        g.evidence = evidence;
+        g.next_check_in_ms = None;
+    } else {
+        let c = t.completion_check.as_mut().unwrap();
+        c.final_answer = Some(answer);
+        c.evidence = evidence;
+    }
 }
 
 fn continue_work(
@@ -468,11 +476,7 @@ pub(super) fn timeout(
         return Ok(Outcome::Saved);
     }
     clock(&mut t, now);
-    if t.goal.is_none() {
-        unavailable_check(tx, &mut t, known_block.as_deref(), now)?;
-    } else {
-        blocked(&mut t, known_block.as_deref().unwrap_or("Goal completion check exceeded its time bound; inspect the exact delivery receipt and explicitly resume"));
-    }
+    unavailable_check(tx, &mut t, known_block.as_deref(), now)?;
     completion::evaluation_mut(&mut t).unwrap().result = Some(serde_json::json!({
         "status":"blocked","reason":"completion_check service bound exceeded","received_at_ms":now }));
     t.revision += 1;
