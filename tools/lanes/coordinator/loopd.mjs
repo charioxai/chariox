@@ -5,6 +5,7 @@ import { join, basename } from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { LaneError, save, execute } from '../lanes.mjs';
 import { createRound } from './engine.mjs';
+import { openInbox } from './events.mjs';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}$/;
@@ -142,6 +143,8 @@ export async function serve(options) {
   };
 
   await resetStaleInbox();
+  // Settle the inbox before the first lane: targets of workers stopped by an earlier service are dropped now.
+  await openInbox(home, round.cli).catch(error => log('inbox_unavailable', { code: error.code, message: error.message }));
   while (!signal?.aborted) {
     try {
       await scan();

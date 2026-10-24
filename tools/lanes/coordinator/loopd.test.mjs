@@ -179,6 +179,19 @@ test('an entry that cannot launch is retried, then ends as launch_failed with it
   assert.equal((await readdir(join(r.layout.queue, 'done'))).length, 1);
 });
 
+test('a starting service drops the targets of workers an earlier service stopped, before any lane runs', async t => {
+  const r = await rig(t);
+  await mkdir(r.layout.home, { recursive: true });
+  await writeFile(join(r.layout.home, 'old-r1.json'), JSON.stringify({ lane: 'old-r1', launch: { kernel: 'executor', sessionId: 'room-old', operationsSessionId: 'ops-old', agentId: 'agent-old' }, stopped: true, stop: { stopped: true } }));
+  const cli = r.options.cli;
+  r.options.cli = async argv => argv[1] === 'subscription'
+    ? { subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room-old', agent_id: 'agent-old' }], kernels: [{ kernel: 'executor' }] } }
+    : cli(argv);
+  r.controller.abort();
+  await serve(r.options);
+  assert.deepEqual(r.calls.filter(c => c.argv?.[1] === 'unsubscribe').map(c => c.argv.slice(4).join(' ')), ['--session room-old --agent agent-old']);
+});
+
 test('after a grant change the stale inbox is set aside and every running lane is re-read', async t => {
   const r = await rig(t);
   await mkdir(r.layout.home, { recursive: true });
