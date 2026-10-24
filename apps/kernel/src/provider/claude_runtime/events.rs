@@ -297,6 +297,7 @@ fn apply_result_message(
     if let Some(mut usage) = value.get("usage").and_then(usage_from_value) {
         // The result sums API calls. Preserve billing, replace only context.
         usage.context_tokens = state.last_context_tokens;
+        usage.context_window = state.last_context_window;
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
@@ -538,6 +539,7 @@ fn apply_message_usage(
     }
     // Output-only streaming deltas must not erase the input context.
     usage.context_tokens = state.last_context_tokens;
+    usage.context_window = state.last_context_window;
     batch.resolved_usage_tokens_total = usage.total_tokens;
     batch.resolved_usage = Some(usage);
 }

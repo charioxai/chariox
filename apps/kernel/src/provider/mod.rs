@@ -7,7 +7,9 @@ pub(crate) use utility_admission::ProviderUtilityAdmission;
 mod account_credential;
 mod claude;
 mod claude_runtime;
-pub(crate) use claude_runtime::usage::claude_status_line_usage_snapshot;
+pub(crate) use claude_runtime::usage::{
+    claude_status_line_context_usage, claude_status_line_usage_snapshot,
+};
 mod account_handoff;
 mod codex;
 mod codex_client;

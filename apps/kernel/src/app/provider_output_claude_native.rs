@@ -860,6 +860,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Ok(value) = serde_json::from_str(&raw) else {
             return Ok(());
         };
+        if let Some((used, limit)) = crate::provider::claude_status_line_context_usage(&value) {
+            let mut usage = self.app.providers.get_run(provider_run.id())?.usage();
+            usage.context_tokens = Some(used);
+            usage.context_window = Some(limit);
+            let run = self
+                .app
+                .providers
+                .record_observed_usage(provider_run.id(), usage)?;
+            self.app.update_provider_run_projection(run);
+        }
         let Some(snapshot) = crate::provider::claude_status_line_usage_snapshot(&value) else {
             return Ok(());
         };
