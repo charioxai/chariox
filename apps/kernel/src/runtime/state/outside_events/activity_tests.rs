@@ -14,7 +14,7 @@ fn outside_runtime_turns_publish_working_and_idle_without_legacy_state_setters()
                 .block_on(async {
                     let worktree =
                         crate::test_support::TestWorktree::new("outside-runtime-activity");
-                    let mut app =
+                    let app =
                         crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
                             .unwrap();
                     let session = app
