@@ -2,7 +2,7 @@
 
 MP-08 / MP-09 / MP-10 / MP-11. This runbook keeps the coordinator's policy outside
 while replacing worker transport/control with the public CLI. Its adapters are
-based on `dogfood/adapters` at `a8448698c8` (the r8 adapter fixes).
+based on `dogfood/adapters` at `39a01d95f5` (the r8 adapter fixes).
 The r8 runtime pin is `extagent/v2-events` at
 `f2220d938749fcac2a92a9aa3ce32af1a8c0f6b5` (local591/peer197). No protocol allocation or kernel change is made
 by the coordinator scripts.
@@ -20,13 +20,13 @@ saved before acknowledgement; timeouts simply wake the coordinator.
 | --- | --- | --- | --- |
 | brief.sh | `coordinator/brief.mjs`: lane-launch + files put; original launch checkpoint and kernel deadline | Choose lane, source, linked profile and brief. Restart means a new round identity, not extending the deadline. | A01 Room delegation/admission and A02 durable inbox; source `amint/c2` @4bea22d44. |
 | watch.sh | `coordinator/watch.mjs`: one WaitEvents/AckEvents inbox across workers; archive every batch | GitHub review lookup stays on Mac. File-only HOST_REQUEST/OWNER_SESSION changes need an event bridge; working state alone is not progress. | A02 ledger/wakes and A03 process/timer watchers are producers; EA2 §14 exposes outside subscriptions. |
-| deliver.sh | `coordinator/deliver.mjs`: read supplied review, compare-and-steer the active prompt, then confirm through a capability-gated §14 event or acknowledged-response/status fallback | Fetch review text on Mac; new instructions for a finished turn need a new round. The runtime pin lacks the event capability; extagent supplies its producer/projection and advertisement. | A01 send_agent_message correlation / steer and A02 admission records exist; r7 prepares their outside steer-receipt consumer. No duplicate delivery core. |
+| deliver.sh | `coordinator/deliver.mjs`: read supplied review, compare-and-steer the active prompt, then confirm through a capability-gated §14 event or acknowledged-response/status fallback | Fetch review text on Mac; new instructions for a finished turn need a new round. The r8 runtime passes event confirmation; older kernels report the explicit status fallback. | A01 send_agent_message correlation / steer and A02 admission records exist; r7 prepares their outside steer-receipt consumer. No duplicate delivery core. |
 | lanefin.sh | `coordinator/lanefin.mjs`: status + fetch notes/head + SHA-verified bundle/import | Publication, independent review and central acceptance merge stay on Mac. Final message must be written into fetched notes; no transcript scrape. | A02 explicit done/waiting/blocked; A03 process-exit wake for bundle commands. |
 | lanehealth.sh | `coordinator/lanehealth.mjs`: state, last activity and deadline with LONG-ROUND/SILENT flags | Decide whether a silent worker is stuck; no claim that last activity proves useful progress. | A02 /goal completion assessor and no-progress check-ins; A03 watchers can improve evidence. |
 | stop | Kernel SetAgentDeadline/GetAgentDeadline, then `coordinator/stop.mjs` | Exact owned-resource cleanup audit remains necessary; agent destruction alone is not a complete host cleanup receipt. | A04 sudo is permission duration, not a hard stop. EA2 durable deadline supplies the missing unconditional wall-clock bound. |
 | Usage tracking | Product profile refresh/status for admission | Mac fleet usage accounting and quota policy by design | Account/profile source is separate from agent-model. |
 | Host rental | Approved process supervision can report exit through a Room terminal | Mac cost decision/rental by design; no automated paid host creation | A03 process watcher can supervise an already approved rental command. |
-| Acceptance merge | Fetch validates full acceptance row shape | Mac coordinator merges central acceptance by design | A02 ledger can carry readiness, not acceptance authority. |
+| Acceptance merge | Fetch validates a present acceptance update; verified bundle HEAD is independent | Mac coordinator merges central acceptance by design | A02 ledger can carry readiness, not acceptance authority. |
 | Review lookup | Receive already supplied review text | Mac GitHub lookup by design | A03 could supervise lookup; no built-in GitHub policy is claimed. |
 
 ## Two shapes
@@ -161,3 +161,51 @@ its worker. Control uses one WaitEvents subscription, with no SSH, recurring
 state polling or Mac scripts. Worker commits remain local for coordinator
 publication. This row establishes orchestration; the worker's own source/UI
 acceptance remains a separate obligation.
+
+## R8 real layering round
+
+MP-08 / MP-09 / MP-10. `external-agents-v2/EA2-16L` passes its orchestration
+scenario on the same immutable runtime. The real `layering` r1 brief ran with
+the existing product-linked Claude profile, resolved model `claude-sonnet-5-5`,
+effort `high`. One subscription recorded 163 ordered events without a gap or
+subscription-end event. The worker announced its first commit through a Room
+terminal exit; that exact worker event triggered delivery of the supplied
+`NOTE-1.md`, confirmed by its exact accepted-steer event. The worker completed
+normally before its durable deadline. Fetch collected its handoffs and bundle,
+and stop archived the matching removal event before returning.
+
+The preserved Cloud worktree is `/root/work/agent-layering`, branch
+`webterm/layering`, base `4ac4da2341745f0263d4abbc3e2992ddfa9da24a`, head
+`beb0bc73e25dd783823ac9281a68c5247cc7c64a` (eight local commits). Its verified
+bundle SHA-256 is
+`fb9574104efa78bca679933c0c7866a6a4f13a9f584f63c38bdc8f6a3e80ff94`.
+Nothing was published. Evidence is under `dogfood/r8/collected/layering/` and
+`dogfood/r8/LAYERING_LIVE_AUDIT.json`, outside git.
+
+Worker source checks passed: root build/lint, 10 boundary tests, 104 domain
+tests and 7,515 web tests. Independent replay of the two new lint regressions
+fails against the exact base script and passes against the final script.
+The API-availability copy check was omitted. Both 1440×900/DPR1 screenshot
+pairs are identical, but the new shell uses FakeKernel and the classic view
+shows the login page. These are supplementary regression checks; signed-in
+runtime/UI acceptance for the Cloud change is not established by this row.
+
+| Step | What this real round used | Mac work or remaining gap |
+| --- | --- | --- |
+| Bootstrap | Exact-head kernels/native CLI/relay, own hosted WSS stack, product Vault and owner popup; reused the lane's certified hostname | Bootstrap harness remains outside the six loop scripts. Repository and profile selection remain coordinator policy. |
+| First commit | Brief convention: Room terminal exits 73 only after HEAD differs from base; its exact event triggers NOTE-1 | No native Git-commit event is claimed. The brief must emit this marker. |
+| Claude permissions | Required permission mode, 77 event-triggered one-shot state reads and kernel-owned interaction responses | Driver supplies response policy; no interactive owner input or recurring state polling was needed. |
+| Finish and stop | Required Markdown, independently verified bundle HEAD/ancestry, matching removal event archived before acknowledgement | Agent removal remains distinct from a complete host-resource cleanup receipt. Audit owned subprocesses and scratch after the round. |
+| Acceptance merge | Real merger consumed an earlier review's JSON before fetch; typed optional missing receipt and independent bundle HEAD now work live | Central acceptance merge stays with the Mac coordinator by design. Transport metadata does not establish acceptance. |
+| Usage and rental | Existing approved account/model; no rented host | Mac fleet accounting, reserves and paid-host approval stay there by design. |
+| GitHub | Supplied frozen source heads and brief; no writes | Lookups, publication and reviewer scheduling stay on the Mac by design. |
+
+The real lane used no SSH, recurring state polling or Mac control script.
+Its own build/test scripts are worker work, not coordinator transport. Launch
+and note delivery used adapters `a8448698c8`; the final stop used
+`39a01d95f5`, which waits for the exact removal event. The runtime stayed fixed.
+Adapter checks pass: 68 tests, 2,653 compiled TypeScript CLI tests and
+process-signal lint. Four focused groups fail against their recorded pre-fix
+revisions. The initial CLI test run raced a separate typecheck rebuilding
+generated dependencies; its failed log and successful sequential rerun are
+both retained. No kernel defect or protocol change was introduced here.

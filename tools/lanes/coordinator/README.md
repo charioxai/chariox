@@ -92,7 +92,7 @@ real providers, clients, kernels and hosted relay drills; they do not establish
 live acceptance.
 
 MP-08 / MP-09 / MP-10: coordinator stop retains the physical stop receipt before
-waiting up to120seconds for the exact kernel/session/agent removal event. Its
+waiting up to 120 seconds for the exact kernel/session/agent removal event. Its
 `removal.archives` also includes intervening bundle-terminal events. Confirmation
 is saved before acknowledgement and reused on retry. Gap/end/timeout refuses
 confirmation without repeating destruction; a stopped receipt is not proof that
