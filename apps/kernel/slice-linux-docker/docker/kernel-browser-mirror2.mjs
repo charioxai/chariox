@@ -224,9 +224,10 @@ export class Mirror2 {
   // One snapshot per world in flight. A snapshot the page has not answered keeps running in the renderer; the credit
   // that gave up on it leaves it pending and the next credit takes its answer instead of queueing a second one.
   // `known`: digests of sheets the viewer retains; the page sends those whole (by reference) instead of pruning them.
-  async snapshotOnce(world, policy, patience, known = []) {
+  async snapshotOnce(world, policy, patience, known = [], options = null) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
-    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${known.length ? JSON.stringify(known) : ''})`, false, SNAPSHOT_MS, true) };
+    const args = options ? `${JSON.stringify(known)},${JSON.stringify(options)}` : known.length ? JSON.stringify(known) : '';
+    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${args})`, false, SNAPSHOT_MS, true) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
     const late = new Promise((_, reject) => { const ms = patience(); timer = setTimeout(() => reject(Object.assign(new Error(`browser CDP method Runtime.evaluate timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })), ms); });
@@ -468,7 +469,7 @@ export class Mirror2 {
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? []);
+        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? [], stream.viewportFirst ? { viewport_first: true } : null);
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
@@ -591,7 +592,7 @@ export class Mirror2 {
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
-    const header = { snapshot_complete: source?.snapshot_complete === true, font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
+    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
     const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
       sequence, base_sequence: null, reset, css_width: this.host.pageSize(tab.tab_id).width, css_height: this.host.pageSize(tab.tab_id).height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
@@ -670,7 +671,7 @@ export class Mirror2 {
   empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
   }
   // A document that keeps streaming never has an empty credit: its font bytes, which fence the viewer's handover, travel with the DOM chunks.
   fontsDue(stream) { if (stream.fontRequirements !== true) return false; for (const entry of stream.resources.values()) if (entry.kind === 'font' && !entry.sent) return true; return false; }

@@ -35,7 +35,7 @@ async function mirrored(html, run, routes = {}) {
     const evaluate = async expression => {
       const { connection, sessionId } = await host.browser.resolvePageTarget(host.tabs.get(opened.tab_id).target_id);
       const reply = await connection.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
-      assert(!reply.exceptionDetails, "MP-10: credential-free fixture evaluation failed");
+      assert(!reply.exceptionDetails, `MP-10: credential-free fixture evaluation failed: ${reply.exceptionDetails?.exception?.description}`);
       return reply.result.value;
     };
     // about:blank is "complete" too: wait for the fixture document itself.
@@ -2015,3 +2015,73 @@ test('MP-08/MP-10: a large sheet the viewer retains reaches the next document wh
     '/b': { type: 'text/html', body: '<!doctype html><link rel="stylesheet" href="/big.css"><p class="k">b</p>' },
     '/big.css': { type: 'text/css', body: `.k{color:rgb(1, 2, 3)}${Array.from({ length: 2500 }, (_, i) => `.unused${i}{color:rgb(4, 5, 6)}`).join('')}` },
   }));
+
+// Protocol 593/199 viewport-first snapshot. Compact rows: [idDelta, parentBack, tag | kind, attrs | text | 0, extra].
+const viewportRows = rows => { let id = 0; return rows.map(row => { id += row[0]; return { id: `n${id}`, element: typeof row[2] === "string", attrs: typeof row[3] === "object" && row[3] ? row[3] : {}, extra: row[4] ?? {} }; }); };
+const keyed = (count, body) => `<style>body{margin:8px;font:16px/20px sans-serif}p{margin:0 0 12px}</style>${body}`.replace(/<(\w+)(?=[\s>])/g, (tag, name) => `${tag} data-k="${name}${++count.n}"`);
+// The viewer's view of a viewport-first snapshot, emulated on the page itself: deferred children absent, each kept box
+// pinned to its CSS height. `placed` is the viewer's check (every kept box where the page had it); `same` is rule C
+// (every element on screen where it was, and the same scrollbar).
+const placeholderExpression = deferred => `(() => {
+  const keys = ${JSON.stringify(deferred)}, onScreen = () => [...document.querySelectorAll('[data-k]')].map(e => [e.dataset.k, e.getBoundingClientRect()]).filter(([, r]) => r.bottom > 0 && r.top < innerHeight && r.width > 0).map(([k, r]) => [k, Math.round(r.x * 4), Math.round(r.y * 4), Math.round(r.width * 4), Math.round(r.height * 4)].join(':'));
+  const before = onScreen(), width = document.documentElement.clientWidth;
+  for (const [k, box] of keys) { const e = document.querySelector('[data-k="' + k + '"]'); e.replaceChildren(); if (box[4] !== null) { e.style.setProperty('height', box[4] + 'px', 'important'); e.style.setProperty('margin-top', box[5] + 'px', 'important'); e.style.setProperty('margin-bottom', box[6] + 'px', 'important'); } }
+  const placed = keys.every(([k, box]) => { if (box[4] === null) return true; const r = document.querySelector('[data-k="' + k + '"]').getBoundingClientRect(); return Math.abs(r.x + scrollX - box[0]) <= 1 && Math.abs(r.y + scrollY - box[1]) <= 1 && Math.abs(r.width - box[2]) <= 1 && Math.abs(r.height - box[3]) <= 1; });
+  const after = onScreen();
+  return { placed, same: JSON.stringify(before) === JSON.stringify(after) && width === document.documentElement.clientWidth, shown: before.length };
+})()`;
+const article = keyed({ n: 0 }, `<h1>Title</h1>${Array.from({ length: 80 }, (_, i) => `<p>Paragraph ${i} <b>bold</b> text that wraps across the line a few times so the article is long enough to scroll far below the fold of the viewport.</p>`).join("")}<div id="dock"><div id="banner" style="position:fixed;bottom:0;left:0;right:0;height:30px;background:#ccc">cookie banner</div></div><div id="hidden" style="display:none"><p>hidden</p></div><div id="sheet"><style>b{color:#a00}</style><p>styled</p></div>`);
+
+test("MP-08/MP-10 protocol 593: a viewport-first snapshot defers off-screen blocks with their boxes and fills them later", () => mirrored(article, async ({ subscribe, evaluate }) => {
+  const viewer = await subscribe({ viewport_first: true });
+  const first = await viewer.next();
+  assert.equal(first.reset, true);
+  assert.equal(first.snapshot_viewport_complete, true, "the viewport part is in the first packet");
+  assert.equal(first.snapshot_complete, false, "the off-screen part follows");
+  const rows = viewportRows(first.nodes), deferred = rows.filter(row => row.extra.deferred).map(row => [row.attrs["data-k"], row.extra.deferred]);
+  assert(deferred.length >= 40, `off-screen paragraphs are deferred (${deferred.length})`);
+  const named = name => rows.find(row => row.attrs.id === name);
+  assert(named("dock") && !named("dock").extra.deferred, "the fixed banner's wrapper is walked");
+  assert(named("banner"), "the fixed banner travels in the first packet");
+  assert.deepEqual(named("hidden")?.extra.deferred, [0, 0, 0, 0, null, 0, 0], "a display:none block is deferred without a box");
+  assert(named("sheet") && !named("sheet").extra.deferred, "a block holding a sheet is walked");
+  assert(!rows.some(row => !row.attrs["data-k"] && row.extra.deferred), "only page blocks are deferred (never the head)");
+  const native = await evaluate(`JSON.stringify(${JSON.stringify(deferred)}.map(([k]) => { const r = document.querySelector('[data-k="' + k + '"]').getBoundingClientRect(); return [k, r.top < innerHeight * 1.25 && r.bottom > 0] }))`);
+  assert(JSON.parse(native).every(([, near]) => !near), "nothing on screen is deferred");
+  for (const [k, box] of deferred) if (box[4] !== null) { const r = JSON.parse(await evaluate(`JSON.stringify(document.querySelector('[data-k="${k}"]').getBoundingClientRect())`)); assert(Math.abs(r.y + 0 - box[1]) < 0.01 && Math.abs(r.height - box[3]) < 0.01 && box[4] === box[3], `${k} keeps its native box`); }
+  // The deferred subtrees fill in later credits; every element arrives once, and the snapshot then completes.
+  const filled = new Set(); let packet = first, guard = 0, elements = rows.filter(row => row.element).length;
+  while (!packet.snapshot_complete && guard++ < 200) { packet = await viewer.next(300); for (const op of packet.ops) if (op.op === "children") { filled.add(op.id); elements += viewportRows(op.nodes).filter(row => row.element).length; } }
+  assert.equal(packet.snapshot_complete, true);
+  const ids = new Map(rows.map(row => [row.attrs["data-k"], row.id]));
+  assert(deferred.every(([k]) => filled.has(ids.get(k))), "every deferred element gets its children");
+  assert.equal(elements, await evaluate("document.getElementsByTagName('*').length"), "the same elements as a whole snapshot");
+  const placeholders = await evaluate(placeholderExpression(deferred));
+  assert.deepEqual({ placed: placeholders.placed, same: placeholders.same }, { placed: true, same: true }, "kept boxes hold the article's layout");
+}));
+
+test("MP-08/MP-10 protocol 593: a kept box the viewer cannot place is caught before a handover (tables, grids, shrink-to-fit, scrollbar)", async () => {
+  const cases = {
+    table: `<table><tr><td>a</td><td>b</td></tr>${Array.from({ length: 60 }, (_, i) => `<tr><td><div>cell ${i}</div></td><td><div>${i % 7 ? "x" : "a much longer cell text that widens the auto column"}</div></td></tr>`).join("")}</table>`,
+    grid: `<div style="display:grid;grid-template-columns:auto auto">${Array.from({ length: 60 }, (_, i) => `<div><p>${i % 9 ? "g" : "grid auto track content that is wide"}</p></div><div><p>right ${i}</p></div>`).join("")}</div>`,
+    shrink: `<div style="float:left;border:1px solid"><p>short</p>${Array.from({ length: 60 }, (_, i) => `<div><p>${i === 59 ? "the widest line of this floated shrink-to-fit box sits at the end" : "row " + i}</p></div>`).join("")}</div><p>after</p>`,
+    scrollbar: `<div style="height:calc(100vh - 60px)">top</div><div><p>just</p><p>below</p><p>the fold</p></div>`,
+    margins: `${Array.from({ length: 40 }, (_, i) => `<div><p style="margin:${i % 3 ? 0 : 30}px 0">collapsing ${i}</p></div>`).join("")}`,
+  };
+  for (const [name, body] of Object.entries(cases)) await mirrored(keyed({ n: 0 }, body), async ({ subscribe, evaluate }) => {
+    const viewer = await subscribe({ viewport_first: true }), first = await viewer.next();
+    const deferred = viewportRows(first.nodes).filter(row => row.extra.deferred).map(row => [row.attrs["data-k"], row.extra.deferred]);
+    const { placed, same, shown } = await evaluate(placeholderExpression(deferred));
+    assert(shown > 0, name);
+    assert(!placed || same, `${name}: the viewer's check passes only when the screen is unchanged (${deferred.length} deferred)`);
+    // Collapsing child margins travel with the kept box: the common heading wrapper still hands over early.
+    if (name === "margins") assert(placed && deferred.length > 0, "collapsed margins are kept");
+  });
+});
+
+test("MP-08/MP-10 protocol 593: a subscription that did not ask gets a whole snapshot and no viewport flag", () => mirrored(article, async ({ next }) => {
+  const first = await next();
+  assert.equal(first.snapshot_complete, true);
+  assert.equal("snapshot_viewport_complete" in first, false);
+  assert.equal(viewportRows(first.nodes).some(row => row.extra.deferred), false);
+}));

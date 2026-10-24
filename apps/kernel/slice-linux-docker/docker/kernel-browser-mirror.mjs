@@ -61,6 +61,7 @@ export class MirrorService {
     if(command.navigation_preview!==undefined&&command.navigation_preview!==true)throw new Error('MP-11: mirror preview negotiation');
     if(command.font_requirements!==undefined&&(command.font_requirements!==true||command.wire!==2))throw new Error('MP-11: mirror font negotiation');
     if(command.font_absent!==undefined&&(command.font_absent!==true||command.font_requirements!==true))throw new Error('MP-11: mirror font negotiation');
+    if(command.viewport_first!==undefined&&(command.viewport_first!==true||command.wire!==2))throw new Error('MP-08: mirror viewport-first negotiation');
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
     // MP-08/MP-10: a v2 viewer reads only its own Tab's live document; a full all-tab reconcile
     // waits for busy (loading) pages and delayed every new Tab's and Tab switch's first paint.
@@ -81,11 +82,11 @@ export class MirrorService {
       const current=()=>this.host.browser.documentIdsByTarget?.get(tab.target_id)===tab.document_id?null:assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
       await current();
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
-      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
+      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,viewportFirst:command.viewport_first===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
 
       catch(error){await releaseRender().catch(()=>{});throw error;}
       this.v2.begin(this.streams.get(subscription_id),scope,this.host.generation);
-      return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{}),...(command.font_absent===true?{font_absent:true}:{})};}
+      return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{}),...(command.font_absent===true?{font_absent:true}:{}),...(command.viewport_first===true?{viewport_first:true}:{})};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
     } catch(error) {await this.host.releaseLayout?.(tab.tab_id,subscription_id);throw error;}

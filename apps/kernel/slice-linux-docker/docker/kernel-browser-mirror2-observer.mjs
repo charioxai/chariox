@@ -505,7 +505,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       spend(64 + JSON.stringify(record.attrs).length);
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
-      walk.then = { node, id, kind: record.kind, depth, root: false }; return record;
+      if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
+      walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
     };
     // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
     // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
@@ -534,8 +535,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Pre-order records; a record's children are the following records naming it. An explicit stack (not nested
     // generators, whose every record passes through each enclosing level). Each visit first yields null: even
     // dropped nodes consume a bounded amount of the caller's task.
-    const serializeTree = (node, parent, depth = 0) => {
-      const stack = [], walk = { then: null };
+    // A viewport-first walk (`defer`) queues the frames of deferred elements and walks them, in document order,
+    // once everything else is serialized: `defer.walked` then marks the viewport complete.
+    const serializeTree = (node, parent, depth = 0, defer = null) => {
+      const stack = [], later = [], walk = { then: null, defer };
       let pending = { node, parent, depth }, fresh = true;
       const close = frame => { if (frame.opened) open.delete(frame.id); };
       const iterator = {
@@ -550,7 +553,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
               if (nodes.get(then.id) !== then.node || !then.root && kindOf.get(then.id) !== then.kind) continue;
               if (then.root) { watch(then.node, then.id); rootSignatures.set(then.id, adoptedSignature(then.node)); }
               open.add(then.id);
-              stack.push({ node: then.node, id: then.id, kind: then.kind, depth: then.depth, list: [...then.node.childNodes], index: 0, seen: null, done: false, shadow: !then.root, opened: true });
+              (then.later ? later : stack).push({ node: then.node, id: then.id, kind: then.kind, depth: then.depth, list: [...then.node.childNodes], index: 0, seen: null, done: false, shadow: !then.root, opened: true });
               continue;
             }
             if (pending) {
@@ -560,16 +563,84 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
               continue;
             }
             const frame = stack.at(-1);
-            if (!frame) return { value: undefined, done: true };
+            if (!frame) {
+              if (defer) defer.walked = true;
+              if (later.length) { const next = later.shift(); next.list = [...next.node.childNodes]; stack.push(next); continue; }
+              return { value: undefined, done: true };
+            }
             let child = null;
             if (frame.nested) { child = frame.nested; frame.nested = null; } else if (frame.list) child = nextChild(frame);
             if (child) { pending = { node: child, parent: frame.id, depth: frame.depth + 1 }; fresh = true; continue; }
             stack.pop(); close(frame);
           }
         },
-        return() { for (const frame of stack) close(frame); stack.length = 0; pending = null; walk.then = null; fresh = false; return { value: undefined, done: true }; },
+        return() { for (const frame of [...stack, ...later]) close(frame); stack.length = 0; later.length = 0; pending = null; walk.then = null; fresh = false; return { value: undefined, done: true }; },
       };
       return iterator;
+    };
+    // MP-08/MP-10 protocol 593: the elements whose box meets the viewport (a quarter screen above and below), with
+    // their ancestors across shadow roots; every element the scan saw that is not among them may be deferred.
+    // Sheets and SVG definitions style or paint what is on screen from anywhere: they and their ancestors are walked.
+    let viewportFirst = false, deferral = null;
+    const viewportScan = () => {
+      const scanned = new WeakSet(), shown = new WeakSet(), top = -innerHeight / 4, bottom = innerHeight * 1.25, right = innerWidth;
+      const show = element => { for (let n = element; n && !shown.has(n); n = n.parentNode ?? n.host ?? null) shown.add(n); };
+      const scan = list => {
+        for (const element of list) {
+          scanned.add(element);
+          const r = element.getBoundingClientRect();
+          if (r.bottom > top && r.top < bottom && r.right > 0 && r.left < right) show(element);
+          if (element.shadowRoot) scan(element.shadowRoot.querySelectorAll('*'));
+        }
+      };
+      scan(document.getElementsByTagName('*'));
+      if (document.head) show(document.head);
+      for (const element of document.querySelectorAll('style, link[rel~="stylesheet" i], svg defs, svg symbol')) show(element);
+      return { scanned, shown, flow: new Map(), walked: false };
+    };
+    // A deferred element keeps its box while its children wait: [x, y, width, height] in document CSS px, the CSS
+    // height (its own box-sizing) that holds it, and its top and bottom margins with those of the children that
+    // collapse through it; no box (null) for display: none. Only a block-level box in normal block flow whose
+    // off-screen ancestors are too, so its width comes from what stays on screen; the viewer checks every box before
+    // it hands over. Values are layout units (1/64 px): rounding would add up over hundreds of boxes.
+    const deferredBox = (node, defer) => {
+      if (!defer.scanned.has(node) || defer.shown.has(node) || node.shadowRoot || node.getRootNode() !== document) return null;
+      const style = getComputedStyle(node), round = v => Math.round(v * 64) / 64;
+      if (style.display === 'none') return [0, 0, 0, 0, null, 0, 0];
+      const parent = node.parentElement; if (!parent) return null;
+      if (!inFlow(parent, defer) || !['block', 'flow-root', 'list-item', 'flex', 'grid', 'table'].includes(style.display) || style.float !== 'none' || !['static', 'relative'].includes(style.position) || style.transform !== 'none') return null;
+      const r = node.getBoundingClientRect(); if (!r.height) return null;
+      const top = collapsed(node, style, r, 'Top'), bottom = collapsed(node, style, r, 'Bottom'); if (top === null || bottom === null) return null;
+      const edges = style.boxSizing === 'border-box' ? 0 : ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].reduce((sum, name) => sum + parseFloat(style[name]), 0);
+      return [round(r.x + scrollX), round(r.y + scrollY), round(r.width), round(r.height), round(Math.max(0, r.height - edges)), round(top), round(bottom)];
+    };
+    // A container whose children's widths come from it: a block container, on screen or itself sized by such a one.
+    const inFlow = (element, defer) => {
+      let flow = defer.flow.get(element);
+      if (flow === undefined) {
+        const style = getComputedStyle(element), parent = element.parentElement;
+        flow = ['block', 'flow-root', 'list-item'].includes(style.display) && (defer.shown.has(element) || !parent || style.float === 'none' && ['static', 'relative'].includes(style.position) && inFlow(parent, defer));
+        defer.flow.set(element, flow);
+      }
+      return flow;
+    };
+    // The margin a box and its first (last) in-flow children share on one side: a child flush with that edge of a box
+    // without padding or border there collapses through it. A negative margin in the chain is not deferred (null).
+    const collapsed = (node, style, rect, side) => {
+      let margin = parseFloat(style[`margin${side}`]), at = node, atStyle = style, atRect = rect;
+      for (let depth = 0; depth < 32 && margin >= 0; depth++) {
+        if (parseFloat(atStyle[`padding${side}`]) || parseFloat(atStyle[`border${side}Width`])) break;
+        let child = side === 'Top' ? at.firstChild : at.lastChild;
+        while (child && (child.nodeType === 8 || child.nodeType === 3 && !child.data.trim())) child = side === 'Top' ? child.nextSibling : child.previousSibling;
+        if (child?.nodeType !== 1) break;
+        const childStyle = getComputedStyle(child), childRect = child.getBoundingClientRect();
+        if (!['block', 'flow-root', 'list-item', 'flex', 'grid', 'table'].includes(childStyle.display) || childStyle.float !== 'none' || !['static', 'relative'].includes(childStyle.position)) break;
+        if (Math.abs(side === 'Top' ? childRect.top - atRect.top : childRect.bottom - atRect.bottom) > 0.01) break;
+        const own = parseFloat(childStyle[`margin${side}`]); if (own < 0) return null;
+        margin = Math.max(margin, own);
+        at = child; atStyle = childStyle; atRect = childRect;
+      }
+      return margin >= 0 ? margin : null;
     };
     const serialize = (node, parent, out, depth = 0) => {
       for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);
@@ -581,11 +652,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // interleaves every reply in 16 KiB frames; atomic here never means one wire write.
     const chunk = (visits = 4096, minimum = 256) => {
       const atomic = !progressive, limit = atomic ? 8 * 1024 * 1024 : 128 * 1024;
-      const out = [], end = performance.now() + 8; let bytes = budget.bytes;
+      const out = [], end = performance.now() + 8, viewport = deferral && !deferral.walked; let bytes = budget.bytes;
       for (let i = 0; continuation && i < (atomic ? 40000 : visits); i++) {
         const item = continuation.next();
         if (item.done) { continuation = null; break; }
         if (item.value) out.push(item.value);
+        // The viewport is complete: the deferred subtrees follow in bounded credits, after the handover.
+        if (viewport && deferral.walked) { progressive = true; break; }
         // Carry bounded head CSS with the first large-document viewport prefix
         // (browserux 91599e472); ordinary resets count it inside their 8 MiB cap.
         if (!atomic && budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
@@ -661,7 +734,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
       reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { snapshot_complete: reportedComplete, font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState === 'complete' } : {}), font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
@@ -670,8 +743,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
-    const snapshot = (known = []) => {
-      retained = new Set(known);
+    const snapshot = (known = [], options = {}) => {
+      retained = new Set(known); viewportFirst = options.viewport_first === true;
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the
@@ -680,7 +753,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       reportedRequirements.clear(); absentKeys.clear(); absentOf.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; fullSheets.clear(); hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
-      continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null);
+      // A parsing document has no settled viewport: it is walked in document order.
+      deferral = viewportFirst && document.readyState !== 'loading' ? viewportScan() : null;
+      continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null, 0, deferral);
       progressive = document.getElementsByTagName('*').length > 10000;
       // A slow task must not publish only half a detailed viewport header.
       // The first prefix has a fixed 1024-visit ceiling; later credits yield
