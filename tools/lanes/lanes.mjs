@@ -32,7 +32,7 @@ const remediation = code => ({
 }[code] || 'chariox refused the operation; inspect its typed code and retained lane state');
 
 // Never include child diagnostics in errors: provider/terminal text can contain values.
-export function execute(argv, stdin = '', executable = process.env.CHARIOX_BIN || 'chariox', raw = false) {
+export function execute(argv, stdin = '', executable = process.env.CHARIOX_BIN || 'chariox', raw = false, acceptedExitCodes = [0]) {
   return new Promise((ok, bad) => {
     const child = spawn(executable, argv, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=4096' } });
     let out = '', err = '', overflow = false;
@@ -45,7 +45,7 @@ export function execute(argv, stdin = '', executable = process.env.CHARIOX_BIN |
     child.on('error', () => bad(new LaneError('cli_unavailable', 'start the chariox CLI or set CHARIOX_BIN')));
     child.on('close', code => {
       if (overflow) return bad(new LaneError('cli_output_limit'));
-      if (code !== 0) {
+      if (!acceptedExitCodes.includes(code)) {
         let reason; try { reason = JSON.parse(err).error?.code; } catch {}
         return bad(new LaneError(safeCode(reason), remediation(safeCode(reason))));
       }
