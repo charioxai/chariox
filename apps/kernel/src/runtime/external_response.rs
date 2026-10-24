@@ -148,6 +148,7 @@ response_policies! {
         // window and App content; external grant holders use the host terminal.
         KernelBrowser,
         Notes,
+        Dictation,
         VisibleRegionCaptured,
         UserDomainInteractionAnswered,
     ],

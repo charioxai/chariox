@@ -10,6 +10,7 @@ native-display = []
 cc = "1"
 
 [dependencies]
+whisper-rs = "0.16.0"
 portable-pty = "0.8.1"
 rand = "0.8"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
