@@ -42,6 +42,7 @@ pub fn drain_codex_events(
     let mut prompt_completed = false;
     let mut terminal_failure = None;
     let mut resolved_usage = None;
+    let mut account_rate_limits = Vec::new();
 
     // MP-08 / MP-10: a queued abort shares this actor with output polls.
     // Bound both buffered and live work; keep unread notifications in order.
@@ -62,6 +63,12 @@ pub fn drain_codex_events(
             drained_to_quiet = true;
             break;
         };
+        if let crate::provider::CodexNotification::AccountRateLimitsUpdated { rate_limits } =
+            notification
+        {
+            account_rate_limits.push(rate_limits);
+            continue;
+        }
         apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
@@ -164,6 +171,7 @@ pub fn drain_codex_events(
         terminal_failure,
         notices,
         resolved_usage,
+        account_rate_limits,
     })
 }
 
@@ -221,6 +229,56 @@ mod tests {
 
     use super::super::state::CodexRuntimeState;
     use super::drain_codex_events;
+
+    #[test]
+    fn provusage_codex_wire_updates_keep_distinct_limits_in_one_poll() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (done_tx, done_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            for id in ["codex", "spark"] {
+                socket.send(Message::Text(json!({"method":"account/rateLimits/updated", "params":{"rateLimits":{"limitId":id,"primary":{"usedPercent":7,"windowDurationMins":300}}}}).to_string().into())).unwrap();
+            }
+            ready_tx.send(()).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let (socket, _) = connect(&endpoint).unwrap();
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default");
+        let run = RuntimeProviderRun::new(
+            "run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "usage wire".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some(endpoint.clone()),
+            },
+        );
+        let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+        state.ephemeral = true;
+        let poll = drain_codex_events(&run, &mut state, None).unwrap();
+        let ids = poll
+            .account_rate_limits
+            .iter()
+            .filter_map(|value| value["limitId"].as_str())
+            .collect::<Vec<_>>();
+        done_tx.send(()).unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            ids,
+            ["codex", "spark"],
+            "a bounded poll must keep every observed account limit"
+        );
+    }
 
     #[test]
     fn mp08_buffered_output_poll_yields_and_preserves_notification_order() {

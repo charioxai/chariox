@@ -22,12 +22,26 @@ pub(crate) async fn execute_provider_account_request(
     let invalidates_catalog = !matches!(
         request,
         LocalDaemonRequest::ListProviderAccountProfiles(_)
+            | LocalDaemonRequest::GetProviderUsageSnapshot(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
     );
     let registry = runtime_state.provider_account_profile_registry().clone();
     let config = runtime_state.config_snapshot().await;
     let runtime_for_checks = runtime_state.clone();
     let response = tokio::task::spawn_blocking(move || match request {
+        LocalDaemonRequest::GetProviderUsageSnapshot(_) => {
+            let accounts = registry
+                .list(&owner_user_id, None)?
+                .into_iter()
+                .map(|profile| crate::local::ProviderUsageAccount {
+                    provider: profile.provider,
+                    profile_id: profile.profile_id,
+                    label: profile.label,
+                    usage: profile.usage,
+                })
+                .collect();
+            Ok(LocalDaemonResponse::ProviderUsageSnapshot { accounts })
+        }
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfilesListed {
                 profiles: registry.list(&owner_user_id, request.provider.as_deref())?,
