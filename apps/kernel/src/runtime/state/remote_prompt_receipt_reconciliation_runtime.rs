@@ -400,7 +400,7 @@ impl KernelRuntimeState {
                     }
                     return;
                 }
-                if attempt % 12 == 0 {
+                if attempt.is_multiple_of(12) {
                     crate::logging::warn_with_fields(
                         "daemon.remote_prompt_dispatch",
                         "worker has not answered a restarted cancellation yet; retrying",
