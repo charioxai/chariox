@@ -349,3 +349,101 @@ fn outside_ack_expires_cursors_whose_payload_was_released() {
     );
     assert!(list(&f, "grant").events.is_empty());
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: local targets have no remote part to remove.
+#[test]
+fn outside_cancel_and_target_removal_queue_only_remote_cleanup() {
+    let f = Fixture::new();
+    f.store
+        .outside_mutate(Mutation::Identity {
+            kernel: "kernel-a".into(),
+            machine: "machine-a".into(),
+        })
+        .unwrap();
+    let local = target("x", None);
+    let mut remote = target("y", None);
+    remote.kernel = "kernel-b".into();
+    for all in [false, true] {
+        let id = if all { "cancel" } else { "remove" };
+        subscribe(&f, id, true, vec![local.clone(), remote.clone()]);
+        f.store
+            .outside_mutate(Mutation::Unsubscribe {
+                id: id.into(),
+                targets: vec![local.clone(), remote.clone()],
+                all,
+                reason: "cancelled".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            f.store.outside_part(id).unwrap().unwrap().cleanup_targets,
+            vec![remote.clone()],
+            "only a remote kernel needs cleanup"
+        );
+    }
+    subscribe(&f, "ended-session", true, vec![local]);
+    let mut ended = event("x", "x1");
+    ended.agent_id = None;
+    ended.value = OutsideEventValue::Session {
+        state: EventSessionState::Ended,
+    };
+    publish(&f, "end-local-session", ended);
+    assert!(f
+        .store
+        .outside_part("ended-session")
+        .unwrap()
+        .unwrap()
+        .cleanup_targets
+        .is_empty());
+}
+
+#[test]
+fn outside_restart_repairs_old_local_cleanup_without_losing_remote_work() {
+    let f = Fixture::new();
+    f.store
+        .outside_mutate(Mutation::Identity {
+            kernel: "kernel-a".into(),
+            machine: "machine-a".into(),
+        })
+        .unwrap();
+    let local = target("x", None);
+    let mut remote = target("y", None);
+    remote.kernel = "kernel-b".into();
+    subscribe(&f, "cancel", true, vec![local.clone(), remote.clone()]);
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: "cancel".into(),
+            targets: vec![],
+            all: true,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    // Simulate the durable payload written by the previous version, including
+    // an already-cancelled home so recovery cannot rely on ending it again.
+    let mut part = f.store.outside_part("cancel").unwrap().unwrap();
+    part.cleanup_targets = vec![local, remote.clone()];
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    db.execute(
+        "UPDATE agent_outside_subscriptions SET payload=?1 WHERE id='cancel'",
+        [serde_json::to_string(&part).unwrap()],
+    )
+    .unwrap();
+    drop(db);
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    reopened.outside_mutate(Mutation::Restart).unwrap();
+    let part = reopened.outside_part("cancel").unwrap().unwrap();
+    assert_eq!(part.ended.as_deref(), Some("cancelled"));
+    assert_eq!(part.cleanup_targets, vec![remote.clone()]);
+    reopened
+        .outside_mutate(Mutation::CleanupAck {
+            id: "cancel".into(),
+            targets: vec![remote],
+        })
+        .unwrap();
+    reopened.outside_mutate(Mutation::Restart).unwrap();
+    assert!(reopened
+        .outside_part("cancel")
+        .unwrap()
+        .unwrap()
+        .cleanup_targets
+        .is_empty());
+}

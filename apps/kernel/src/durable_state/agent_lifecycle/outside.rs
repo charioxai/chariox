@@ -121,7 +121,7 @@ fn end(tx: &Transaction<'_>, part: &mut Part, reason: &str) -> Result<(), Daemon
     part.ended_at_ms = Some(event.at_ms);
     if part.home {
         for target in &part.targets {
-            if !part.cleanup_targets.contains(target) {
+            if target.kernel != event.kernel && !part.cleanup_targets.contains(target) {
                 part.cleanup_targets.push(target.clone());
             }
         }
@@ -254,8 +254,12 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                     end(tx, &mut part, &reason)?;
                 } else {
                     if part.home {
+                        let local = identity(tx)?.map(|(kernel, _)| kernel);
                         for target in &part.targets {
-                            if targets.contains(target) && !part.cleanup_targets.contains(target) {
+                            if local.as_deref() != Some(target.kernel.as_str())
+                                && targets.contains(target)
+                                && !part.cleanup_targets.contains(target)
+                            {
                                 part.cleanup_targets.push(target.clone());
                             }
                         }
@@ -293,7 +297,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 }
                 append(tx, &mut part, &format!("remote-{}", event.cursor), &event)?;
                 part.remote_cursors.insert(kernel.clone(), event.cursor);
-                remove_ended_target(&mut part, &event)?;
+                remove_ended_target(tx, &mut part, &event)?;
             }
             bound(tx, &mut part, inbox_limit()?)?;
             put(tx, &part)?;
@@ -342,9 +346,14 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
             put(tx, &part)?;
         }
         Mutation::Restart => {
+            let local = identity(tx)?.map(|(kernel, _)| kernel);
             for mut part in parts(tx)? {
                 if part.home {
                     end(tx, &mut part, "kernel_restarted")?;
+                    // Older homes queued local targets even though no remote part
+                    // exists for them. Keep only work a remote pump can finish.
+                    part.cleanup_targets
+                        .retain(|target| local.as_deref() != Some(target.kernel.as_str()));
                     put(tx, &part)?;
                 }
             }
@@ -352,7 +361,11 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
     }
     Ok(Outcome::Saved)
 }
-fn remove_ended_target(part: &mut Part, event: &OutsideEvent) -> Result<(), DaemonError> {
+fn remove_ended_target(
+    tx: &Transaction<'_>,
+    part: &mut Part,
+    event: &OutsideEvent,
+) -> Result<(), DaemonError> {
     if matches!(
         event.value,
         OutsideEventValue::Session {
@@ -360,8 +373,10 @@ fn remove_ended_target(part: &mut Part, event: &OutsideEvent) -> Result<(), Daem
         }
     ) {
         if part.home {
+            let local = identity(tx)?.map(|(kernel, _)| kernel);
             for target in &part.targets {
-                if target.kernel == event.kernel
+                if local.as_deref() != Some(target.kernel.as_str())
+                    && target.kernel == event.kernel
                     && target.session_id == event.session_id
                     && !part.cleanup_targets.contains(target)
                 {
@@ -415,7 +430,7 @@ pub(super) fn publish(
     for mut part in parts(tx)? {
         if part.ended.is_none() && matches(&part, &event) {
             append(tx, &mut part, occurrence, &event)?;
-            remove_ended_target(&mut part, &event)?;
+            remove_ended_target(tx, &mut part, &event)?;
             bound(tx, &mut part, inbox_limit()?)?;
             put(tx, &part)?;
         }
