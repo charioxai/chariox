@@ -1,8 +1,8 @@
 import { build } from "esbuild"
 import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
-const require = createRequire(new URL("../../../packages/transcript-view/package.json", import.meta.url))
-const markdown = name => fileURLToPath(new URL(`../../../packages/transcript-view/src/markdown/${name}`, import.meta.url))
+const require = createRequire(new URL("../../transcript-view/package.json", import.meta.url))
+const markdown = name => fileURLToPath(new URL(`../../transcript-view/src/markdown/${name}`, import.meta.url))
 // The renderers load on demand, so each is its own entry beside the viewer, served from the same assets folder.
 await build({ entryPoints: { viewer: "src/agent-trigger-viewer.ts", math: require.resolve("katex/dist/katex.min.css"),
     "math-renderer": markdown("math-renderer-chunk.ts"), "code-highlighter": markdown("code-highlighter-chunk.ts") },
