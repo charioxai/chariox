@@ -476,6 +476,90 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
     assert_eq!(after.map(|event| event.state), Some("accepted".to_string()));
 }
 
+#[test]
+fn mp10_a10_urgent_message_steers_a_busy_leased_turn() {
+    run_test(urgent_message_steers_a_busy_leased_turn);
+}
+
+/// A10-S02: an urgent message to a busy leased agent steers its running
+/// worker turn, as it steers a local agent's turn, instead of waiting to run
+/// as a new turn. Base: deferred until the running turn ends.
+async fn urgent_message_steers_a_busy_leased_turn() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let room = fixture.rooms[0].clone();
+    let (leased, attachment) = spawn_leased(&mut fixture, &room).await;
+    run_turn(&fixture, &room, &attachment, &leased, "MP-10 A10 busy turn").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while binding(&fixture, &leased)
+        .await
+        .active_worker_provider_run_id
+        .is_none()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the worker accepts the busy turn"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let running = {
+        let app = fixture.home.app.lock().await;
+        let session = app.sessions().get_session(&room).unwrap();
+        app.prompt_state_owner()
+            .active_prompt_for_agent(&session, &leased)
+            .expect("the busy leased turn")
+            .id()
+            .to_string()
+    };
+    let store = store(&fixture).await;
+    let mut message = ledger::occurrence(
+        &room,
+        &leased,
+        "a10-peer",
+        "a10-urgent",
+        "message",
+        json!({"message":"MP-10 A10 urgent status"}),
+    );
+    message.urgent = true;
+    let Outcome::Event(event) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
+        panic!("durable message")
+    };
+    let delivered = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &leased)
+        .await;
+    let after = store
+        .agent_inbox(&room, &leased, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.sequence == event.sequence);
+    let queued = {
+        let app = fixture.home.app.lock().await;
+        let session = app.sessions().get_session(&room).unwrap();
+        session
+            .queued_prompts_for_agent(&leased)
+            .map_or(0, |queue| queue.len())
+    };
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .unwrap();
+    fixture.stop().await;
+    delivered.expect("urgent delivery to a busy leased agent");
+    let after = after.expect("the urgent message event");
+    assert_eq!(after.state, "accepted", "{after:?}");
+    assert_eq!(
+        after.target_prompt_id.as_deref(),
+        Some(running.as_str()),
+        "steered into the running turn: {after:?}"
+    );
+    assert_eq!(queued, 0, "no new turn is queued for the message");
+}
+
 fn binding_leased_agent_id(projected: &str) -> String {
     projected
         .strip_prefix("leased:")

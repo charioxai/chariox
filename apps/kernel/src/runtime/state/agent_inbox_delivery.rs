@@ -170,6 +170,11 @@ impl KernelRuntimeState {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
         };
+        if let Some(active) = active.as_ref().filter(|_| leased) {
+            return self
+                .steer_leased_inbox_event(room, agent, event.sequence, active, prompt, work)
+                .await;
+        }
         let steer = if active.is_some() {
             match self.prepare_local_active_prompt_steer_dispatch(room, &prompt) {
                 Ok(Some(dispatch)) => Some(dispatch),
@@ -431,7 +436,7 @@ impl KernelRuntimeState {
             );
         }
     }
-    fn record_agent_delivery_receipt(
+    pub(super) fn record_agent_delivery_receipt(
         &self,
         room: &str,
         agent: &str,
