@@ -292,3 +292,7 @@ Each has a fail-first test (revert the fix and the test is red).
 | Other lanes' completion wakes lost while a worker is stopping | Any non-decision event marks its lane for a status read (`needsRead`), whichever call consumed the batch (stop confirmation, note delivery), so the read happens in the same or next wake. |
 | Completion wake in a lane's first minute dropped | Same `needsRead` mark; the read waits until the first minute is over instead of being forgotten. |
 | `exec --detach` always exited 1 | The holder acknowledges a detached command once it has really started (`{pid, exit: 0}`); a failed spawn answers with its error and exit 127. Tests start a real holder in a temporary state directory (`kernel/lanes-kernel.test.mjs`). A running holder picks this up at its next restart. |
+
+### What the next kernel changes for loopd
+
+extagent r27 (`89c4e35ef6`, not pushed, protocol unchanged) keeps an `until-exit` grant across a kernel restart as long as its holder process lives, with the same inbox and `subscription.json`; a restored session answers its own decisions; `last_activity_at_ms` moves with each recorded entry. loopd needs no change for that: the new-grant path (set the stale inbox aside, follow the lanes again, answer decisions from status) stays for the case where the holder is gone, and `lanes-kernel.mjs start` should then stop re-requesting a grant that is still granted. The `events_refused` poisoning by a removed agent target and the replay of a decision raised during a restart are still open with the kernel owner.
