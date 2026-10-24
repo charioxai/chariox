@@ -1903,3 +1903,24 @@ test('MP-08/MP-10/MP-11: typing already sent survives a same-document mirror res
     await input(first.sequence, { kind: 'key', key: 'Enter' });
     assert.equal(await evaluate('window.submitted'), 'abc');
   }));
+
+// browserperf r9: resource keys follow URLs, so a site's shared sheet is the same text in each of its documents (the
+// viewer's retained copy can serve it) even when each document registers other resources first.
+test('MP-08/MP-10: a shared stylesheet is the same mirrored text in two documents of a site', () => mirrored(
+  '<img src="/x.svg"><img src="/y.svg"><link rel="stylesheet" href="/s.css"><p>a</p>',
+  async ({ next, evaluate, host }) => {
+    const sheetOf = packet => { const extra = packet.nodes.find(row => row[2] === 'style')?.[4]; return extra ? extra.css ?? packet.sheets?.[extra.css_ref] : undefined; };
+    const first = await next();
+    const before = sheetOf(first);
+    assert.match(before ?? '', /url\("mr:r[0-9]+"\)/, 'the sheet names its images by resource key');
+    await evaluate("location.href = '/b'").catch(() => {});
+    for (let i = 0; i < 400 && await evaluate("location.pathname === '/b' && document.readyState === 'complete'").catch(() => false) !== true; i++) await settle(25);
+    await host.request({ op: 'state' });
+    let after;
+    for (let i = 0; i < 40 && after === undefined; i++) { const packet = await next(300).catch(() => null); if (packet?.reset && packet.nodes.some(row => row[2] === 0 && row[3] === 'b')) after = sheetOf(packet); }
+    assert.equal(after, before, 'the second document mirrors the shared sheet as the same text');
+  }, {
+    '/b': { type: 'text/html', body: '<!doctype html><img src="/z.svg"><img src="/w.svg"><img src="/v.svg"><link rel="stylesheet" href="/s.css"><p>b</p>' },
+    '/s.css': { type: 'text/css', body: `.i{background:url(/i1.svg)}.j{background:url(/i2.svg)}${'.k{color:rgb(1, 2, 3)}'.repeat(150)}` },
+    ...Object.fromEntries(['x', 'y', 'z', 'w', 'v', 'i1', 'i2'].map(name => [`/${name}.svg`, { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>' }])),
+  }));
