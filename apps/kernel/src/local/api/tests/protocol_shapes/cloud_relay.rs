@@ -34,7 +34,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "exact_prompt_cancellation_v499",
             "owner_managed_context_transfer_v1",
             "kernel_gateway_v1",
-            "room_terminal_v1"
+            "room_terminal_v1",
+            "agent_deadline_v1"
         ])
     );
     assert_eq!(
@@ -42,7 +43,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "d68a9a30c1b614a0ae7e2fe487b5d29ae0ca645853e54ab4bd2bceb070cbdd51"
+        "4d802bf2bf7abb27b3de039f1e9817d1a9e4480c85c7fbe1735ba321360131da"
     );
 }
 
