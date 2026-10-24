@@ -468,3 +468,22 @@ test('advertised kernel support must yield an armed deadline before prompt admis
     assert.equal(submitted,false);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('guarded cancellation and unconditional cleanup use separate command receipts', async () => {
+  const receipts=new Map(),calls=[];
+  const execute=async(argv,body)=>{
+    const id=argv[argv.indexOf('--command-id')+1],op=Object.keys(JSON.parse(body))[0];
+    if(argv.includes('--command-id')) {
+      if(receipts.has(id)&&receipts.get(id)!==body)throw new LaneError('duplicate_command_conflict');
+      receipts.set(id,body);
+    }
+    calls.push({id,op});return op==='ListAgents'?{AgentsListed:{agents:[]}}:{};
+  };
+  const input={kernel:'b',taskId:'lane',sessionId:'s',agentId:'a',attachmentId:'t'};
+  assert.equal((await run('stop',{...input,expectedPromptId:'p'},{execute})).agentRetained,true);
+  assert.equal((await run('stop',input,{execute})).stopped,true);
+  assert.equal((await run('stop',input,{execute})).stopped,true);
+  const cancellations=calls.filter(x=>x.op==='CancelActivePrompt');
+  assert.notEqual(cancellations[0].id,cancellations[1].id);
+  assert.equal(cancellations[1].id,cancellations[2].id);
+});

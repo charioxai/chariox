@@ -317,9 +317,11 @@ export async function run(operation, input, dependencies = {}) {
     if (ledger.owner !== taskId || !Array.isArray(ledger.processes)) fail('pid_ownership_refused');
     const owned = [];
     for (const entry of ledger.processes) if (await verifyOwnedPid(entry, taskId)) owned.push(entry);
+    const cancelBody = { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), ...(input.expectedPromptId ? { expected_prompt_id: input.expectedPromptId } : {}) };
+    const cancelId = `cancel-${createHash('sha256').update(JSON.stringify(cancelBody)).digest('hex')}`;
     let cancelRefusal;
     try {
-      await request('CancelActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), ...(input.expectedPromptId ? { expected_prompt_id: input.expectedPromptId } : {}) }, 'cancel');
+      await request('CancelActivePrompt', cancelBody, cancelId);
     } catch (error) {
       if (!['no_active_prompt', 'agent_not_found'].includes(error.code) && !(error.code === 'attachment_not_found' && !input.expectedPromptId)) throw error;
       // DestroyAgent owns cancellation too; ephemeral attachments vanish on restart.
