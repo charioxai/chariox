@@ -224,6 +224,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn settled_prompt_error_keeps_its_typed_code_across_the_relay() {
+        let mapped = map_relay_error(&DaemonError::NoActivePrompt {
+            session_id: "settled-room".to_string(),
+        });
+        assert_eq!(mapped.code, "no_active_prompt");
+        assert!(!mapped.message.contains("no active prompt"));
+        let received = DaemonError::RelayTransport {
+            operation: "settle remote prompt",
+            code: mapped.code,
+            message: mapped.message,
+            retryable: mapped.retryable,
+        };
+        assert!(received.is_no_active_prompt());
+        for message in ["no active prompt", "NoActivePrompt", "no_active_prompt"] {
+            assert!(DaemonError::RelayTransport {
+                operation: "settle remote prompt",
+                code: "transport_error".to_string(),
+                message: message.to_string(),
+                retryable: false,
+            }
+            .is_no_active_prompt());
+        }
+        assert!(!DaemonError::RelayTransport {
+            operation: "settle remote prompt",
+            code: "prompt_steer_rejected".to_string(),
+            message: "active prompt changed".to_string(),
+            retryable: false,
+        }
+        .is_no_active_prompt());
+    }
+
+    #[test]
     fn typed_profile_refusal_keeps_the_existing_leased_admission_code() {
         crate::test_support::isolated_env_test!();
         let root = crate::test_support::TestWorktree::new("lane-leased-account-refusal");
