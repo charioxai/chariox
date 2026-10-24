@@ -4,7 +4,7 @@ mod lifecycle;
 
 // MP-11 review R2: exercise the worker's authenticated route, not a policy helper.
 #[tokio::test]
-async fn registered_native_target_refuses_agent_text_on_authenticated_worker_route() {
+async fn registered_native_target_allows_ordinary_agent_text_on_authenticated_worker_route() {
     use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::{TestRoom, TestTools, install_screen_tool};
     use crate::transport::room_browser_controller::RoomComputerInputAction;
     let room = TestRoom::new("registered-native-agent-text");
@@ -29,14 +29,31 @@ async fn registered_native_target_refuses_agent_text_on_authenticated_worker_rou
     });
     room.runtime.owned.config_projection.update(config.clone());
     let store = &room.runtime.owned.room_secret_observations;
-    {
-        let mut rooms = store.rooms.lock().unwrap();
-        let protection = rooms.entry(room.session_id.clone()).or_default();
-        // Only the native target is registered: no value or password role can fence it.
-        protection.targets.push(
-            serde_json::json!({"kind":"native","target":{"focus_window":42,"active_window":41}}),
-        );
-    }
+    store
+        .register_command(
+            &room.session_id,
+            &Command::ComputerInput {
+                action_id: "vault-fill".into(),
+                actor_id: "vault:owner".into(),
+                runtime_generation: 1,
+                viewport_revision: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+                action: RoomComputerInputAction::SecretText {
+                    input: crate::transport::room_browser_controller::RoomComputerSecretInput::new(
+                        "synthetic-vault-canary".into(),
+                    ),
+                    expected_target:
+                        crate::transport::room_browser_controller::RoomComputerSecretTarget {
+                            focus_window: 42,
+                            active_window: 41,
+                            geometry: [10, 10, 100, 20],
+                            window_geometry: [0, 0, 1280, 800],
+                        },
+                },
+            },
+        )
+        .unwrap();
     let request = |actor: &str, id: &str| Command::ComputerInput {
         action_id: id.into(),
         actor_id: actor.into(),
@@ -71,16 +88,59 @@ async fn registered_native_target_refuses_agent_text_on_authenticated_worker_rou
             request("agent:one", "agent"),
         )
         .await;
-    assert!(matches!(
-        result,
-        Err(DaemonError::UserDomainRefused {
-            reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
-        })
-    ));
-    assert!(
-        !receipt.exists(),
-        "MP-11 refused agent text never reaches the native helper"
+    result.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&receipt).unwrap().trim(),
+        "computer-type-stdin"
     );
+    let mut key = request("agent:one", "agent-key");
+    let Command::ComputerInput { action, .. } = &mut key else {
+        unreachable!()
+    };
+    *action = RoomComputerInputAction::KeyboardKey {
+        input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+            "Tab".into(),
+        ),
+        repeat: 1,
+    };
+    room.runtime
+        .execute_bound_room_browser_controller(
+            "proved-home",
+            &config.relay_public_key,
+            &room.session_id,
+            "proved-slice",
+            key,
+        )
+        .await
+        .unwrap();
+    {
+        let mut rooms = store.rooms.lock().unwrap();
+        rooms.get_mut(&room.session_id).unwrap().unknown = true;
+    }
+    let before = std::fs::read_to_string(&receipt).unwrap();
+    assert!(room
+        .runtime
+        .execute_bound_room_browser_controller(
+            "proved-home",
+            &config.relay_public_key,
+            &room.session_id,
+            "proved-slice",
+            request("agent:one", "unknown-policy"),
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        std::fs::read_to_string(&receipt).unwrap(),
+        before,
+        "MP-11 unknown protection never reaches the native helper"
+    );
+    store
+        .rooms
+        .lock()
+        .unwrap()
+        .get_mut(&room.session_id)
+        .unwrap()
+        .unknown = false;
     room.runtime
         .execute_bound_room_browser_controller(
             "proved-home",
@@ -93,19 +153,17 @@ async fn registered_native_target_refuses_agent_text_on_authenticated_worker_rou
         .unwrap();
     assert_eq!(
         std::fs::read_to_string(receipt).unwrap().trim(),
-        "computer-type-stdin"
+        "computer-type-stdin\ncomputer-key-stdin\ncomputer-type-stdin"
     );
 }
 
-// MP-11 #904 review @61b0a4ac6 P1: a Vault value typed into an ordinary
-// native field has no password role, so clipboard-owner admission cannot see
-// it. Agent clicks (Paste menus/buttons) and AT-SPI actions are fenced by the
-// Room registry before any helper runs; human pointer input is unchanged.
+// MP-08/MP-11: a Vault registration protects observations. Ordinary public
+// input reaches the per-operation destination and clipboard admission helpers.
 #[tokio::test]
-async fn registered_native_value_refuses_agent_pointer_paste_on_authenticated_worker_route() {
+async fn registered_native_value_allows_ordinary_agent_input_on_authenticated_worker_route() {
     use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::{TestRoom, TestTools, install_screen_tool};
     use crate::transport::room_browser_controller::{RoomComputerInputAction, RoomComputerPointerButton};
-    let room = TestRoom::new("registered-native-agent-click");
+    let mut room = TestRoom::new("registered-native-agent-click");
     let tools = TestTools::new("registered-native-agent-click");
     let receipt = tools.screen_tool.with_extension("calls");
     std::fs::write(
@@ -117,6 +175,12 @@ async fn registered_native_value_refuses_agent_pointer_paste_on_authenticated_wo
     )
     .unwrap();
     let _environment = install_screen_tool(&tools.screen_tool);
+    let controller = std::fs::read_to_string(&tools.controller_tool).unwrap().replace(
+        "} else if (method === \"shutdown\") {",
+        "} else if (method === \"computer.target_action\") { result = { applied: true }; } else if (method === \"shutdown\") {",
+    );
+    std::fs::write(&tools.controller_tool, controller).unwrap();
+    room.enable_browser_controller(&tools).await;
     let mut config = room.runtime.owned.config_projection.snapshot();
     config.room_environment_worker_binding = Some(crate::config::RoomEnvironmentWorkerBinding {
         home_kernel_id: "proved-home".into(),
@@ -160,10 +224,10 @@ async fn registered_native_value_refuses_agent_pointer_paste_on_authenticated_wo
         ("left", click(RoomComputerPointerButton::Left)),
         ("right", click(RoomComputerPointerButton::Right)),
         (
-            "paste-item",
+            "public-action",
             RoomComputerInputAction::TargetAction {
                 tree_revision: 1,
-                target_id: "paste".into(),
+                target_id: "public-button".into(),
                 action: "click".into(),
             },
         ),
@@ -178,19 +242,11 @@ async fn registered_native_value_refuses_agent_pointer_paste_on_authenticated_wo
                 request("agent:one", id, action),
             )
             .await;
-        assert!(
-            matches!(
-                result,
-                Err(DaemonError::UserDomainRefused {
-                    reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
-                })
-            ),
-            "{id}: {result:?}"
-        );
+        assert!(result.is_ok(), "{id}: {result:?}");
     }
-    assert!(
-        !receipt.exists(),
-        "MP-11 refused agent pointer input never reaches the native helper"
+    assert_eq!(
+        std::fs::read_to_string(&receipt).unwrap().trim(),
+        "pointer-click\npointer-click"
     );
     room.runtime
         .execute_bound_room_browser_controller(
@@ -204,8 +260,9 @@ async fn registered_native_value_refuses_agent_pointer_paste_on_authenticated_wo
         .unwrap();
     assert_eq!(
         std::fs::read_to_string(receipt).unwrap().trim(),
-        "pointer-click"
+        "pointer-click\npointer-click\npointer-click"
     );
+    room.stop_browser_controller().await;
 }
 
 #[test]

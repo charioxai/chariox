@@ -680,11 +680,9 @@ async fn execute_local(
                     )
                     .into_daemon("room_computer"));
                 }
-                // MP-11 review R2: registered/unknown protection fences both
-                // text and shortcuts. Never pass registry values to a keyboard.
-                // #904 review @61b0a4ac6: clicks and AT-SPI actions can activate
-                // Paste, and a registered value in an ordinary native field has
-                // no password role for clipboard-owner admission to see.
+                // MP-08/MP-11: Vault registrations protect observations. Ordinary
+                // authorized input proceeds to destination/clipboard admission;
+                // unknown or malformed observation policy still refuses here.
                 if matches!(
                     &action,
                     crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey { .. }
@@ -696,8 +694,8 @@ async fn execute_local(
                     let policy: serde_json::Value = serde_json::from_str(&policy)
                         .map_err(|_| controller_route_error("protection unavailable"))?;
                     if policy["unknown"] == true
-                        || policy["values"].as_array().is_none_or(|values| !values.is_empty())
-                        || policy["targets"].as_array().is_none_or(|targets| !targets.is_empty())
+                        || policy["values"].as_array().is_none()
+                        || policy["targets"].as_array().is_none()
                     {
                         return Err(crate::error::HostFailure::Refused(
                             crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
