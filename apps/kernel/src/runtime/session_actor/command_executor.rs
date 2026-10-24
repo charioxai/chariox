@@ -257,6 +257,9 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::SendTerminalInput(request) => {
                 Box::pin(async move { self.store.send_terminal_input(request).await })
             }
+            LocalDaemonRequest::SetRoomPinned(request) => {
+                Box::pin(async move { self.store.set_room_pinned(request, caller_user_id).await })
+            }
             LocalDaemonRequest::PollRuntimeNotices(request) => {
                 Box::pin(async move { self.store.poll_runtime_notices(request).await })
             }

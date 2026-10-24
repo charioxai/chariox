@@ -4932,3 +4932,16 @@ absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
 added; the bump records the changed relay terminal-event semantics under the
 Protocol Change Rule. Web/native minimums are unchanged unless a client requires
 prompt-scoped live rows.
+
+
+### Room stars (588/194)
+
+MP-11: `SetRoomPinned { session_id, pinned }` returns `RoomPinned { session }`.
+It persists the Room's `pinned` flag on its session and publishes the normal
+session and waiting-room projections so all of the person's clients see it.
+Like Project stars, the Room owner controls the pin. Room stars do not change
+last-used ordering. Legacy session records default to unpinned.
+
+Clients use these requests only with protocol 588 or newer. Protocol 567 clients
+continue to work; web clients attached to a 567 kernel keep Room stars in their
+own browser storage. This feature does not raise the general client minimum.

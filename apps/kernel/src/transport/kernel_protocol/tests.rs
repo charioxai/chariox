@@ -801,6 +801,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
 
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
+        pinned: false,
         repository_state: None,
         id: id.to_string(),
         project_id: "project-a".to_string(),

@@ -292,6 +292,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RecordPromptInputHistory(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::SetRoomPinned(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::PollRuntimeNotices(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
