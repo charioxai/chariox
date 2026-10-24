@@ -263,6 +263,47 @@ pub(crate) async fn request_provider_native_interaction(
     request_runtime_interaction_with_timeout(state, session_id, interaction, operation, None).await
 }
 
+/// A launch-time card (before any provider run exists) goes to the person who
+/// owns the agent: the home kernel when the launch runs for a lease, else here.
+/// The launch itself stands in for the run the forwarded card is bound to.
+pub(crate) async fn request_launch_interaction(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    interaction: RuntimeInteraction,
+    operation: &'static str,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
+    let agent_id = interaction
+        .agent_id()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation,
+            message: "Launch interactions require an agent subject".into(),
+        })?
+        .to_string();
+    let origin = crate::session::NativeInteractionOrigin::ProviderStartup {
+        provider_run_id: format!("launch-{}", interaction.id()),
+    };
+    match state
+        .remote_native_interaction_context(session_id, &agent_id, &origin)
+        .await?
+    {
+        Some(target) => {
+            let interaction = interaction.with_native_origin(Some(origin.clone()));
+            forward_native_interaction_to_home(state, session_id, &origin, target, interaction)
+                .await
+        }
+        None => {
+            request_runtime_interaction_with_timeout(
+                state,
+                session_id,
+                interaction,
+                operation,
+                None,
+            )
+            .await
+        }
+    }
+}
+
 struct AbandonedInteractionGuard(Option<(KernelRuntimeState, String, String)>);
 
 impl Drop for AbandonedInteractionGuard {
@@ -479,14 +520,20 @@ async fn join_forwarded_decision(
         })
 }
 
-async fn request_runtime_interaction_with_timeout(
+pub(crate) async fn request_runtime_interaction_with_timeout(
     state: &KernelRuntimeState,
     session_id: &str,
     interaction: RuntimeInteraction,
     operation: &'static str,
     forwarding: Option<&RemoteNativeInteractionContext>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    if let Some(resolution) = state.sudo_native_permission_resolution(session_id, &interaction) {
+    let consent = match forwarding {
+        Some(context) => {
+            state.sudo_forwarded_native_permission_resolution(session_id, &interaction, context)
+        }
+        None => state.sudo_native_permission_resolution(session_id, &interaction),
+    };
+    if let Some(resolution) = consent {
         return Ok(resolution);
     }
     // MP-08 / MP-10 / MP-11: parallel provider tools retain the one-decision

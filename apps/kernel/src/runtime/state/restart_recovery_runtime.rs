@@ -25,6 +25,7 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) transcript_recovery_pending: usize,
     pub(crate) queued_local_prompts_started: usize,
     pub(crate) orphaned_workflow_prompts_finalized: usize,
+    pub(crate) prompts_settled_after_refused_folder_trust: usize,
     pub(crate) failed_reconciliations: usize,
 }
 
@@ -33,6 +34,8 @@ pub(super) enum UncertainLocalRecoveryOutcome {
     ContinuationDispatched,
     Preserved,
     TranscriptPending,
+    /// The agent's Claude launch waits for, or was refused, the folder's hooks decision.
+    LaunchHeldBack(HeldBack),
 }
 
 pub(super) enum CancelledLocalPromptRestartOutcome {
@@ -94,11 +97,13 @@ impl KernelRuntimeState {
             }
             let mut attempt = 0_u32;
             let mut pending_dispatch_targets = dispatch_targets;
+            let admissions = RestartLaunchAdmissions::default();
             let summary = loop {
                 let mut summary = state
                     .recover_durable_runtime_after_restart_targets(
                         &recovery_targets,
                         &queued_recovery_targets,
+                        &admissions,
                     )
                     .await;
                 if should_rearm_unobserved_dispatches(
@@ -134,8 +139,11 @@ impl KernelRuntimeState {
                         }
                     }
                 }
-                if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
-                    || attempt >= 299
+                // An open hooks card outlives the attempt budget: its own timeout ends it.
+                if (summary.transcript_recovery_pending == 0
+                    && summary.failed_reconciliations == 0
+                    && admissions.unsettled() == 0)
+                    || (attempt >= 299 && !admissions.any_waiting())
                 {
                     break summary;
                 }
@@ -155,6 +163,7 @@ impl KernelRuntimeState {
                     "transcript_recovery_pending": summary.transcript_recovery_pending,
                     "queued_local_prompts_started": summary.queued_local_prompts_started,
                     "orphaned_workflow_prompts_finalized": summary.orphaned_workflow_prompts_finalized,
+                    "prompts_settled_after_refused_folder_trust": summary.prompts_settled_after_refused_folder_trust,
                     "failed_reconciliations": summary.failed_reconciliations,
                 }),
             );
@@ -216,11 +225,22 @@ impl KernelRuntimeState {
     pub(crate) async fn recover_durable_runtime_after_restart(
         &self,
     ) -> DurableRestartRecoverySummary {
+        self.recover_durable_runtime_after_restart_with(&RestartLaunchAdmissions::default())
+            .await
+    }
+
+    /// One recovery pass whose hooks questions outlive it, as in the retry loop.
+    #[cfg(test)]
+    async fn recover_durable_runtime_after_restart_with(
+        &self,
+        admissions: &RestartLaunchAdmissions,
+    ) -> DurableRestartRecoverySummary {
         let recovery_targets = self.durable_restart_recovery_targets();
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
         self.recover_durable_runtime_after_restart_targets(
             &recovery_targets,
             &queued_recovery_targets,
+            admissions,
         )
         .await
     }
@@ -312,10 +332,43 @@ impl KernelRuntimeState {
         &self,
         recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
         queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        admissions: &RestartLaunchAdmissions,
     ) -> DurableRestartRecoverySummary {
         let mut summary = DurableRestartRecoverySummary::default();
         if !self.owned.publication_activation.is_active() {
             return summary;
+        }
+        for (session_id, agent_id) in admissions.take_owed_followers() {
+            if let Err(error) = self
+                .start_queued_follower_after_restart(admissions, &session_id, &agent_id)
+                .await
+            {
+                summary.failed_reconciliations += 1;
+                log_restart_recovery_failure(&session_id, &agent_id, "queued follower", &error);
+            }
+        }
+        for (session_id, agent_id, prompt_id) in admissions.take_owed_successors() {
+            match self
+                .recover_queued_local_prompt_after_restart(
+                    admissions,
+                    &session_id,
+                    &agent_id,
+                    &prompt_id,
+                    false,
+                )
+                .await
+            {
+                Ok(Some(dispatches)) => {
+                    summary.queued_local_prompts_started += 1;
+                    self.spawn_workflow_prompt_dispatches(dispatches);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    admissions.owe_successor(&session_id, &agent_id, &prompt_id);
+                    summary.failed_reconciliations += 1;
+                    log_restart_recovery_failure(&session_id, &agent_id, &prompt_id, &error);
+                }
+            }
         }
         let sessions = self.owned.session_store.list_all_sessions();
         // Publication work is autonomous and already durably admitted. Resume it before
@@ -323,7 +376,10 @@ impl KernelRuntimeState {
         // provider scans or retries.
         for (session_id, agent_id, prompt_id) in queued_recovery_targets {
             match self
-                .recover_queued_local_prompt_after_restart(session_id, agent_id, prompt_id, true)
+                .recover_queued_local_prompt_after_restart(
+                    admissions, session_id, agent_id, prompt_id, true,
+                )
+                .await
             {
                 Ok(Some(dispatches)) => {
                     summary.queued_local_prompts_started += 1;
@@ -375,6 +431,7 @@ impl KernelRuntimeState {
                 {
                     match self
                         .finalize_orphaned_workflow_prompt_after_restart(
+                            admissions,
                             session.id(),
                             agent_id,
                             &prompt,
@@ -421,6 +478,7 @@ impl KernelRuntimeState {
                 if prompt.status() == crate::session::PromptStatus::Cancelling {
                     match self
                         .finalize_cancelled_local_prompt_after_restart(
+                            admissions,
                             session.id(),
                             agent_id,
                             &prompt,
@@ -450,6 +508,15 @@ impl KernelRuntimeState {
                         )) => {
                             summary.transcript_recovery_pending += 1;
                         }
+                        Ok(CancelledLocalPromptRestartOutcome::Recovered(
+                            UncertainLocalRecoveryOutcome::LaunchHeldBack(held_back),
+                        )) => self.settle_prompt_refused_launch(
+                            &mut summary,
+                            session.id(),
+                            agent_id,
+                            &prompt,
+                            held_back,
+                        ),
                         Err(error) => {
                             summary.failed_reconciliations += 1;
                             log_restart_recovery_failure(
@@ -464,10 +531,17 @@ impl KernelRuntimeState {
                 }
                 match delivery_phase {
                     Some(crate::session::DurablePromptDeliveryPhase::Accepted) => match self
-                        .redispatch_local_prompt(session.id(), agent_id, &prompt)
+                        .redispatch_local_prompt(admissions, session.id(), agent_id, &prompt)
                         .await
                     {
-                        Ok(()) => summary.accepted_local_redispatched += 1,
+                        Ok(None) => summary.accepted_local_redispatched += 1,
+                        Ok(Some(held_back)) => self.settle_prompt_refused_launch(
+                            &mut summary,
+                            session.id(),
+                            agent_id,
+                            &prompt,
+                            held_back,
+                        ),
                         Err(error) => {
                             summary.failed_reconciliations += 1;
                             log_restart_recovery_failure(
@@ -483,6 +557,7 @@ impl KernelRuntimeState {
                         | crate::session::DurablePromptDeliveryPhase::Delivered,
                     ) => match self
                         .reconcile_uncertain_local_prompt(
+                            admissions,
                             session.id(),
                             &agent,
                             &prompt,
@@ -502,6 +577,14 @@ impl KernelRuntimeState {
                         Ok(UncertainLocalRecoveryOutcome::TranscriptPending) => {
                             summary.transcript_recovery_pending += 1;
                         }
+                        Ok(UncertainLocalRecoveryOutcome::LaunchHeldBack(held_back)) => self
+                            .settle_prompt_refused_launch(
+                                &mut summary,
+                                session.id(),
+                                agent_id,
+                                &prompt,
+                                held_back,
+                            ),
                         Err(error) => {
                             summary.failed_reconciliations += 1;
                             log_restart_recovery_failure(
@@ -531,6 +614,7 @@ impl KernelRuntimeState {
 
     async fn finalize_orphaned_workflow_prompt_after_restart(
         &self,
+        admissions: &RestartLaunchAdmissions,
         session_id: &str,
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
@@ -573,12 +657,16 @@ impl KernelRuntimeState {
                     .map(|prompt| prompt.id().to_string())
             });
         if let Some(queued_prompt_id) = queued_prompt_id {
-            if let Some(dispatches) = self.recover_queued_local_prompt_after_restart(
-                session_id,
-                agent_id,
-                &queued_prompt_id,
-                false,
-            )? {
+            if let Some(dispatches) = self
+                .recover_queued_local_prompt_after_restart(
+                    admissions,
+                    session_id,
+                    agent_id,
+                    &queued_prompt_id,
+                    false,
+                )
+                .await?
+            {
                 self.spawn_workflow_prompt_dispatches(dispatches);
             }
         }
@@ -586,8 +674,9 @@ impl KernelRuntimeState {
     }
 
     #[allow(clippy::result_large_err)]
-    fn recover_queued_local_prompt_after_restart(
+    async fn recover_queued_local_prompt_after_restart(
         &self,
+        admissions: &RestartLaunchAdmissions,
         session_id: &str,
         agent_id: &str,
         expected_prompt_id: &str,
@@ -626,6 +715,19 @@ impl KernelRuntimeState {
         let fresh_context = self
             .owned
             .workflow_prompt_requires_fresh_provider_context(session_id, agent_id, &prompt)?;
+        match self
+            .admit_restart_recovery_launch(admissions, session_id, agent_id)
+            .await?
+        {
+            RecoveryAdmission::Admitted => {}
+            // Startup targets come back every pass; a successor has no target of its own.
+            RecoveryAdmission::HeldBack(HeldBack::Waiting) if !require_publication => {
+                admissions.owe_successor(session_id, agent_id, expected_prompt_id);
+                return Ok(None);
+            }
+            // The prompt stays queued: it starts when the person restarts the agent.
+            RecoveryAdmission::HeldBack(_) => return Ok(None),
+        }
         let (provider_run_id, retired_provider_run_id) = self.owned.workflow_ensure_provider_run(
             session_id,
             agent_id,
@@ -669,6 +771,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn finalize_cancelled_local_prompt_after_restart(
         &self,
+        admissions: &RestartLaunchAdmissions,
         session_id: &str,
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
@@ -714,6 +817,7 @@ impl KernelRuntimeState {
                         })?;
                     let outcome = self
                         .reconcile_uncertain_local_prompt(
+                            admissions,
                             session_id,
                             &agent,
                             &restored,
@@ -767,30 +871,98 @@ impl KernelRuntimeState {
                 )
                 .is_some()
         {
-            let session_id_owned = session_id.to_string();
-            let agent_id_owned = agent_id.to_string();
-            let replacement_provider_run_id = self
-                .with_app_side_effect(move |app| {
-                    app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-                })
+            self.start_queued_follower_after_restart(admissions, session_id, agent_id)
                 .await?;
-            if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
-                session_id,
-                agent_id,
-                &replacement_provider_run_id,
-            )? {
-                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-            }
         }
         Ok(CancelledLocalPromptRestartOutcome::Finalized)
     }
 
-    async fn redispatch_local_prompt(
+    /// Starts the agent's next queued prompt on a fresh provider run. A launch
+    /// still waiting on the folder's hooks decision is owed to a later pass.
+    async fn start_queued_follower_after_restart(
         &self,
+        admissions: &RestartLaunchAdmissions,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        match self
+            .admit_restart_recovery_launch(admissions, session_id, agent_id)
+            .await?
+        {
+            RecoveryAdmission::Admitted => {}
+            RecoveryAdmission::HeldBack(HeldBack::Waiting) => {
+                admissions.owe_follower(session_id, agent_id);
+                return Ok(());
+            }
+            // The follower stays queued until the person restarts the agent.
+            RecoveryAdmission::HeldBack(HeldBack::Refused(_)) => return Ok(()),
+        }
+        let session_id_owned = session_id.to_string();
+        let agent_id_owned = agent_id.to_string();
+        let replacement_provider_run_id = self
+            .with_app_side_effect(move |app| {
+                app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
+            })
+            .await?;
+        if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+            session_id,
+            agent_id,
+            &replacement_provider_run_id,
+        )? {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        Ok(())
+    }
+
+    /// An active prompt whose Claude launch the person refused cannot run: settle
+    /// it with the reason instead of asking again on every recovery pass.
+    fn settle_prompt_refused_launch(
+        &self,
+        summary: &mut DurableRestartRecoverySummary,
         session_id: &str,
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
-    ) -> Result<(), DaemonError> {
+        held_back: HeldBack,
+    ) {
+        let HeldBack::Refused(message) = held_back else {
+            return;
+        };
+        match self.owned.settle_failed_local_prompt_of_run(
+            session_id,
+            agent_id,
+            prompt.id(),
+            prompt.durable_delivery_provider_run_id(),
+            &message,
+        ) {
+            Ok(Some(released_claim)) => {
+                summary.prompts_settled_after_refused_folder_trust += 1;
+                if released_claim {
+                    self.spawn_workflow_prompt_dispatches(
+                        self.owned.workflow_retry_blocked_claims(),
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                summary.failed_reconciliations += 1;
+                log_restart_recovery_failure(session_id, agent_id, prompt.id(), &error);
+            }
+        }
+    }
+
+    async fn redispatch_local_prompt(
+        &self,
+        admissions: &RestartLaunchAdmissions,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<Option<HeldBack>, DaemonError> {
+        if let RecoveryAdmission::HeldBack(held_back) = self
+            .admit_restart_recovery_launch(admissions, session_id, agent_id)
+            .await?
+        {
+            return Ok(Some(held_back));
+        }
         let session_id_owned = session_id.to_string();
         let agent_id_owned = agent_id.to_string();
         let provider_run_id = self
@@ -814,11 +986,13 @@ impl KernelRuntimeState {
             external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
             steering: false,
         };
-        self.enqueue_prompt_dispatch(&dispatch).await
+        self.enqueue_prompt_dispatch(&dispatch).await?;
+        Ok(None)
     }
 
     async fn reconcile_uncertain_local_prompt(
         &self,
+        admissions: &RestartLaunchAdmissions,
         session_id: &str,
         agent: &crate::agent::AgentInstance,
         prompt: &crate::session::PromptQueueItem,
@@ -827,9 +1001,15 @@ impl KernelRuntimeState {
         let mut prompt = prompt.clone();
         let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
         if adapter_key == "dev-stub" {
-            self.redispatch_local_prompt(session_id, agent.id(), &prompt)
-                .await?;
-            return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);
+            return Ok(
+                match self
+                    .redispatch_local_prompt(admissions, session_id, agent.id(), &prompt)
+                    .await?
+                {
+                    None => UncertainLocalRecoveryOutcome::OriginalRedispatched,
+                    Some(held_back) => UncertainLocalRecoveryOutcome::LaunchHeldBack(held_back),
+                },
+            );
         }
         if !crate::provider::ExternalProviderObservationPolicy::for_provider(adapter_key)
             .is_configured()
@@ -930,6 +1110,13 @@ impl KernelRuntimeState {
             {
                 return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
             }
+        }
+        // Ask about the folder before the prompt's delivery record changes.
+        if let RecoveryAdmission::HeldBack(held_back) = self
+            .admit_restart_recovery_launch(admissions, session_id, agent.id())
+            .await?
+        {
+            return Ok(UncertainLocalRecoveryOutcome::LaunchHeldBack(held_back));
         }
         self.persist_recovered_provider_session(agent, adapter_key, &provider_session_id)?;
         let recovery_prompt =
@@ -1215,6 +1402,29 @@ mod tests {
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
         worktree: &str,
     ) -> (KernelRuntimeState, String, String, String) {
+        let (runtime, session_id, mut agents) =
+            runtime_with_active_prompts_in_worktree(delivery_phase, worktree, 1);
+        let (agent_id, prompt_id) = agents.remove(0);
+        (runtime, session_id, agent_id, prompt_id)
+    }
+
+    /// One session whose `agent_count` dev-stub agents each hold an active prompt.
+    fn runtime_with_active_prompts_in_worktree(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        worktree: &str,
+        agent_count: usize,
+    ) -> (KernelRuntimeState, String, Vec<(String, String)>) {
+        runtime_with_active_prompts(delivery_phase, worktree, agent_count, false)
+    }
+
+    /// `orphaned_workflow` ties every active prompt to a workflow run that no
+    /// longer exists, as after a restart that lost the run.
+    fn runtime_with_active_prompts(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        worktree: &str,
+        agent_count: usize,
+        orphaned_workflow: bool,
+    ) -> (KernelRuntimeState, String, Vec<(String, String)>) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
@@ -1222,9 +1432,6 @@ mod tests {
                 worktree,
             ))
             .expect("session should create");
-        let agent = KernelSessionService::new(&mut app)
-            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_worktree(worktree))
-            .expect("agent should create");
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
@@ -1232,48 +1439,68 @@ mod tests {
                 ClientCapabilityLevel::FullTerminal,
             ))
             .expect("attachment should attach");
-        let provider_run = app
-            .launch_provider(
-                LaunchProviderRequest::new(
-                    session.id(),
-                    "dev-stub",
-                    "dev-stub",
-                    "default",
-                    "sonnet",
+        let mut agents = Vec::new();
+        for index in 0..agent_count {
+            let agent = KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    CreateAgentRequest::new(session.id(), "dev-stub").with_worktree(worktree),
                 )
-                .with_agent_id(agent.id()),
+                .expect("agent should create");
+            let provider_run = app
+                .launch_provider(
+                    LaunchProviderRequest::new(
+                        session.id(),
+                        "dev-stub",
+                        "dev-stub",
+                        "default",
+                        "sonnet",
+                    )
+                    .with_agent_id(agent.id()),
+                )
+                .expect("provider should launch");
+            let suffix = if index == 0 {
+                String::new()
+            } else {
+                format!("-{index}")
+            };
+            let prompt = PromptQueueItem::new(
+                format!("pending-restart-recovery{suffix}"),
+                attachment.id(),
+                agent.id(),
+                "continue after restart",
+                PromptStatus::Queued,
             )
-            .expect("provider should launch");
-        let prompt = PromptQueueItem::new(
-            "pending-restart-recovery",
-            attachment.id(),
-            agent.id(),
-            "continue after restart",
-            PromptStatus::Queued,
-        )
-        .with_durable_operation("command-restart-recovery", "fingerprint-restart-recovery");
-        let outcome = app
-            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-            .expect("prompt should be accepted");
-        let prompt = match outcome {
-            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
-            crate::session::PromptSubmissionOutcome::Queued { .. } => {
-                panic!("prompt should start")
-            }
-        };
-        app.mark_active_prompt_delivery(
-            session.id(),
-            agent.id(),
-            prompt.id(),
-            delivery_phase,
-            (delivery_phase != crate::session::DurablePromptDeliveryPhase::Accepted)
-                .then(|| provider_run.id().to_string()),
-            None,
-        )
-        .expect("delivery phase should persist");
+            .with_durable_operation(
+                format!("command-restart-recovery{suffix}"),
+                format!("fingerprint-restart-recovery{suffix}"),
+            );
+            let prompt = if orphaned_workflow {
+                prompt.with_workflow_context("missing-workflow-run", "missing-workflow-node")
+            } else {
+                prompt
+            };
+            let outcome = app
+                .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+                .expect("prompt should be accepted");
+            let prompt = match outcome {
+                crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+                crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                    panic!("prompt should start")
+                }
+            };
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                delivery_phase,
+                (delivery_phase != crate::session::DurablePromptDeliveryPhase::Accepted)
+                    .then(|| provider_run.id().to_string()),
+                None,
+            )
+            .expect("delivery phase should persist");
+            agents.push((agent.id().to_string(), prompt.id().to_string()));
+        }
         let session_id = session.id().to_string();
-        let agent_id = agent.id().to_string();
-        let prompt_id = prompt.id().to_string();
         app.attachments().remove_session_attachments(&session_id);
         let mut restored = app
             .sessions()
@@ -1286,7 +1513,7 @@ mod tests {
             app,
             crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
         );
-        (router.runtime_state(), session_id, agent_id, prompt_id)
+        (router.runtime_state(), session_id, agents)
     }
 
     #[test]
@@ -1598,13 +1825,560 @@ mod tests {
         );
     }
 
+    /// One recovery pass must come back while a hooks card is open.
+    async fn recovery_pass_returns(
+        runtime: &KernelRuntimeState,
+        admissions: &RestartLaunchAdmissions,
+    ) -> DurableRestartRecoverySummary {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.recover_durable_runtime_after_restart_with(admissions),
+        )
+        .await
+        .expect("restart recovery must not wait for the hooks card")
+    }
+
+    fn active_prompt_of(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<PromptQueueItem> {
+        let session = runtime.owned.session_store.get_session(session_id).unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+    }
+
+    // The cold Claude start of each recovery path stops at the folder's hooks
+    // card instead of launching Claude into an untrusted folder, and the pass
+    // moves on while the card is open.
+    #[tokio::test]
+    async fn queued_publication_prompt_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id) = runtime_with_queued_prompt();
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+
+        let admissions = RestartLaunchAdmissions::default();
+        let summary = recovery_pass_returns(&runtime, &admissions).await;
+
+        cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        assert_eq!(summary.queued_local_prompts_started, 0);
+        assert_eq!(summary.failed_reconciliations, 0);
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_prompt_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            folder.path().to_str().unwrap(),
+        );
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+
+        let admissions = RestartLaunchAdmissions::default();
+        let summary = recovery_pass_returns(&runtime, &admissions).await;
+
+        cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        assert_eq!(summary.accepted_local_redispatched, 0);
+        assert_eq!(summary.failed_reconciliations, 0);
+        assert!(active_prompt_of(&runtime, &session_id, &agent_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn uncertain_prompt_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        crate::test_support::isolated_env_test!();
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            folder.path().to_str().unwrap(),
+        );
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            crate::provider::ProviderResumeState::from_claude_session_id(
+                "claude-session-before-restart",
+            ),
+        )
+        .await;
+
+        let admissions = RestartLaunchAdmissions::default();
+        let summary = recovery_pass_returns(&runtime, &admissions).await;
+
+        cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        assert_eq!(summary.uncertain_original_redispatched, 0);
+        assert_eq!(summary.provider_continuations_dispatched, 0);
+        assert_eq!(summary.failed_reconciliations, 0);
+        // The delivery record is untouched until the person answers.
+        assert_eq!(
+            active_prompt_of(&runtime, &session_id, &agent_id)
+                .unwrap()
+                .durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_delivery_follower_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            folder.path().to_str().unwrap(),
+        );
+        let provider_run_id = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .unwrap()
+            .id()
+            .to_string();
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+        let (s, a, p, r) = (
+            session_id.clone(),
+            agent_id.clone(),
+            prompt_id.clone(),
+            provider_run_id.clone(),
+        );
+        runtime
+            .with_app_side_effect(move |app| {
+                app.mark_active_prompt_delivery(
+                    &s,
+                    &a,
+                    &p,
+                    crate::session::DurablePromptDeliveryPhase::Dispatching,
+                    Some(r),
+                    Some("claude-session-failed-before-restart".to_string()),
+                )
+            })
+            .await
+            .unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let active_status = session.active_prompt_for_agent(&agent_id).unwrap().status();
+        runtime
+            .owned
+            .compare_and_mark_active_prompt_delivery_failure(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &provider_run_id,
+                "claude-session-failed-before-restart",
+                (active_status, PromptStatus::Cancelling),
+            )
+            .unwrap()
+            .unwrap();
+        let (queue_session_id, queue_agent_id) = (session_id.clone(), agent_id.clone());
+        runtime
+            .with_app_side_effect(move |app| {
+                let attachment = KernelSessionService::new(app).attach(AttachRequest::new(
+                    &queue_session_id,
+                    "attachment-follower",
+                    ClientCapabilityLevel::FullTerminal,
+                ))?;
+                let follower = PromptQueueItem::new(
+                    "follower-restart-recovery",
+                    attachment.id(),
+                    &queue_agent_id,
+                    "next task",
+                    PromptStatus::Queued,
+                );
+                app.prompt_owner_submit_prepared_prompt(&queue_session_id, follower, true)
+            })
+            .await
+            .unwrap();
+
+        let admissions = RestartLaunchAdmissions::default();
+        let summary = recovery_pass_returns(&runtime, &admissions).await;
+
+        // The failed prompt is settled; the follower is owed until the card is answered.
+        assert_eq!(summary.cancelled_local_prompts_finalized, 1);
+        assert_eq!(summary.failed_reconciliations, 0);
+        cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .is_none());
+    }
+
+    // The retry loop asks about a folder once: Cancel is final for the
+    // automatic recovery of that agent.
+    #[tokio::test]
+    async fn cancelling_the_hooks_card_settles_the_accepted_prompt_and_asks_once() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            folder.path().to_str().unwrap(),
+        );
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+        let _recovery = runtime.spawn_durable_restart_recovery();
+
+        let card = cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        cold::answer_hooks_card(&runtime, &session_id, &card, "cancel").await;
+
+        // Three more retry passes (one second apart) must not reopen the card.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3500);
+        while std::time::Instant::now() < deadline {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            assert!(
+                session.active_interaction_for_agent(&agent_id).is_none(),
+                "Cancel reopened the hooks card"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            active_prompt_of(&runtime, &session_id, &agent_id).is_none(),
+            "the refused prompt must be settled, not left active"
+        );
+    }
+
+    /// A cold Claude agent in a hooks folder whose active prompt belongs to a
+    /// lost workflow run and which has one queued successor.
+    async fn orphaned_prompt_with_queued_successor(
+        folder: &std::path::Path,
+    ) -> (KernelRuntimeState, String, String, String) {
+        use super::super::claude_cold_launch_fixture as cold;
+        let (runtime, session_id, mut agents) = runtime_with_active_prompts(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            folder.to_str().unwrap(),
+            1,
+            true,
+        );
+        let (agent_id, _orphaned_prompt_id) = agents.remove(0);
+        cold::make_cold_claude(&runtime, &session_id, &agent_id, folder, Default::default()).await;
+        let (queue_session_id, queue_agent_id) = (session_id.clone(), agent_id.clone());
+        let successor_id = runtime
+            .with_app_side_effect(move |app| {
+                let attachment = KernelSessionService::new(app).attach(AttachRequest::new(
+                    &queue_session_id,
+                    "attachment-successor",
+                    ClientCapabilityLevel::FullTerminal,
+                ))?;
+                let successor = PromptQueueItem::new(
+                    "successor-restart-recovery",
+                    attachment.id(),
+                    &queue_agent_id,
+                    "next task",
+                    PromptStatus::Queued,
+                );
+                match app.prompt_owner_submit_prepared_prompt(&queue_session_id, successor, true)? {
+                    crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                        Ok::<_, DaemonError>(prompt.id().to_string())
+                    }
+                    crate::session::PromptSubmissionOutcome::Started { .. } => {
+                        panic!("the successor must queue behind the active prompt")
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        (runtime, session_id, agent_id, successor_id)
+    }
+
+    /// Lets the agent's Claude account launch a fixture CLI that never contacts
+    /// a provider; the credential file is synthetic.
+    fn sign_in_fixture_claude(
+        runtime: &KernelRuntimeState,
+        agent_id: &str,
+        executable_folder: &std::path::Path,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let account = runtime
+            .owned
+            .agent_store
+            .get_agent(agent_id)
+            .unwrap()
+            .provider_account_profile()
+            .to_string();
+        let config_dir = std::path::PathBuf::from(
+            runtime
+                .owned
+                .provider_account_profiles
+                .resolve_environment(crate::session::DEFAULT_LOCAL_USER_ID, "claude", &account)
+                .unwrap()["CLAUDE_CONFIG_DIR"]
+                .clone(),
+        );
+        std::fs::write(
+            config_dir.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#,
+        )
+        .unwrap();
+        let executable = executable_folder.join("claude-fixture");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
+    }
+
+    fn queued_prompt_ids(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Vec<String> {
+        let session = runtime.owned.session_store.get_session(session_id).unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id)
+            .1
+            .iter()
+            .map(|prompt| prompt.id().to_string())
+            .collect()
+    }
+
+    // The orphaned prompt is gone after the first pass, so the queued successor
+    // is only reachable through what the pass owes.
+    #[tokio::test]
+    async fn trusting_the_folder_starts_the_orphaned_prompts_queued_successor_once() {
+        crate::test_support::isolated_env_test!();
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, successor_id) =
+            orphaned_prompt_with_queued_successor(folder.path()).await;
+        sign_in_fixture_claude(&runtime, &agent_id, folder.path());
+        let _recovery = runtime.spawn_durable_restart_recovery();
+
+        let card = cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        assert_eq!(
+            queued_prompt_ids(&runtime, &session_id, &agent_id),
+            [successor_id.as_str()],
+            "the successor waits for the card"
+        );
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .is_none());
+        cold::answer_hooks_card(&runtime, &session_id, &card, "trust").await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let run_id = loop {
+            if let Some(run) = runtime
+                .owned
+                .provider_store
+                .get_run_for_agent(&session_id, &agent_id)
+            {
+                break Some(run.id().to_string());
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Trust folder never started the queued successor: queued {:?}",
+                queued_prompt_ids(&runtime, &session_id, &agent_id)
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        // Later retry passes must not start it again or ask again.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run_for_agent(&session_id, &agent_id)
+                .map(|run| run.id().to_string()),
+            run_id
+        );
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_interaction_for_agent(&agent_id)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_card_keeps_the_orphaned_prompts_successor_queued_without_asking_again()
+    {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, successor_id) =
+            orphaned_prompt_with_queued_successor(folder.path()).await;
+        let _recovery = runtime.spawn_durable_restart_recovery();
+
+        let card = cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        cold::answer_hooks_card(&runtime, &session_id, &card, "cancel").await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3500);
+        while std::time::Instant::now() < deadline {
+            assert!(
+                runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .active_interaction_for_agent(&agent_id)
+                    .is_none(),
+                "Cancel reopened the hooks card"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            queued_prompt_ids(&runtime, &session_id, &agent_id),
+            [successor_id.as_str()],
+            "the refused successor stays queued for the person's restart"
+        );
+        assert!(active_prompt_of(&runtime, &session_id, &agent_id).is_none());
+    }
+
+    // A card waiting for one agent holds up no other agent's recovery.
+    #[tokio::test]
+    async fn a_pending_hooks_card_does_not_hold_up_another_agents_recovery() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, mut agents) = runtime_with_active_prompts_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            folder.path().to_str().unwrap(),
+            2,
+        );
+        // Recovery visits agents in id order: the waiting agent comes first.
+        agents.sort();
+        let ((cold_agent, _), (other_agent, other_prompt)) = (agents[0].clone(), agents[1].clone());
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &cold_agent,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+        let _recovery = runtime.spawn_durable_restart_recovery();
+
+        let card = cold::await_hooks_card(&runtime, &session_id, &cold_agent).await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let prompt = active_prompt_of(&runtime, &session_id, &other_agent)
+                .expect("the other prompt stays active");
+            assert_eq!(prompt.id(), other_prompt);
+            if prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the other agent's prompt was not recovered while the card was open"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap()
+                .active_interaction_for_agent(&cold_agent)
+                .is_some_and(|open| open.id() == card),
+            "the card must still be open"
+        );
+        cold::answer_hooks_card(&runtime, &session_id, &card, "cancel").await;
+    }
+
+    // Trusting the folder lets the next pass launch without a second card.
+    #[tokio::test]
+    async fn trusting_the_folder_admits_the_recovery_launch() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            folder.path().to_str().unwrap(),
+        );
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+        let admissions = RestartLaunchAdmissions::default();
+        assert!(matches!(
+            runtime
+                .admit_restart_recovery_launch(&admissions, &session_id, &agent_id)
+                .await
+                .unwrap(),
+            RecoveryAdmission::HeldBack(HeldBack::Waiting)
+        ));
+
+        let card = cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        cold::answer_hooks_card(&runtime, &session_id, &card, "trust").await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while admissions.any_waiting() {
+            assert!(std::time::Instant::now() < deadline, "card never settled");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert!(matches!(
+            runtime
+                .admit_restart_recovery_launch(&admissions, &session_id, &agent_id)
+                .await
+                .unwrap(),
+            RecoveryAdmission::Admitted
+        ));
+        assert_eq!(admissions.unsettled(), 0);
+    }
+
     #[tokio::test]
     async fn restart_recovery_retry_ignores_prompt_outside_startup_snapshot() {
         let (runtime, session_id, agent_id, prompt_id) =
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
 
         let summary = runtime
-            .recover_durable_runtime_after_restart_targets(&BTreeSet::new(), &BTreeSet::new())
+            .recover_durable_runtime_after_restart_targets(
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &RestartLaunchAdmissions::default(),
+            )
             .await;
 
         assert_eq!(summary, DurableRestartRecoverySummary::default());
@@ -1771,7 +2545,11 @@ mod tests {
             dispatch.prompt_id.clone(),
         )]);
         let summary = runtime
-            .recover_durable_runtime_after_restart_targets(&targets, &BTreeSet::new())
+            .recover_durable_runtime_after_restart_targets(
+                &targets,
+                &BTreeSet::new(),
+                &RestartLaunchAdmissions::default(),
+            )
             .await;
 
         assert_eq!(summary.remote_reconciliations_started, 1);

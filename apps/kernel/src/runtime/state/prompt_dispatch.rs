@@ -762,6 +762,8 @@ impl KernelRuntimeState {
                             return Ok(submission);
                         }
                     } else {
+                        self.admit_cold_claude_launch(&session_id, &target_agent_id)
+                            .await?;
                         self.with_app_side_effect(|app| {
                             // The app mutex can outlive the grant. Reauthorize only
                             // after acquiring it, before launching a cold provider.

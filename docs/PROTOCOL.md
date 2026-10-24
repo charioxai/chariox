@@ -4912,9 +4912,13 @@ provider tool approval and watched-command execution seams. These seams return
 the official one-operation response before registering another interaction.
 They do not authorize responding to arbitrary RuntimeInteractions. Leased
 watched commands revalidate the current home window through the existing
-leased kernel-request path, including before execution. Startup workspace trust
-may reuse an approved exact-workspace launch without making a queued sudo task
-live for tools. Scope expansion, missing authentication values, identity choices,
+leased kernel-request path, including before execution. Sudo does not remove
+the Build-mode or Unrestricted-write requirements for watched commands.
+Forwarded provider consent resolves through the current home-projected run while
+keeping the worker origin for interaction lifetime checks. Native/headless Claude
+launches pre-record trust for the exact selected canonical folder in the selected
+profile; screen-based startup trust handling is a fallback and never makes a
+queued sudo task live for tools. Scope expansion, missing authentication values, identity choices,
 revocation, sandboxing, tenant/owner checks and once-only effects keep their
 normal fences. This is kernel policy on existing shapes; no protocol shape or
 version changes.

@@ -50,12 +50,29 @@ Owner focus remains a human terminal decision: `FocusAgent` and
 `CycleAgentFocus` cannot grant resource authority to a provider, even under sudo.
 Watched commands, provider command/file/tool permission gates and workspace
 live-sync mutations reuse this task consent, including Required-mode runs.
-The provider sandbox and live-sync filesystem fences still apply. A worker
+The provider sandbox and live-sync filesystem fences still apply. Watched
+commands still require Build mode and Unrestricted write access; sudo replaces
+only the additional unattended-command consent. A worker
 checks its exact leased prompt against the home window on every watched-command
 admission and again before launch; its cached fence alone grants nothing.
 Provider permissions allow only that operation once, never a provider-wide
-session grant. Startup workspace trust can reuse an already approved launch
-for that exact workspace without treating the pending task as live tool authority.
+session grant. Before starting native or headless Claude, the kernel records
+folder trust for the exact canonical launch workspace in the selected provider
+profile and says so once in the agent pane. The owner already selected that
+workspace for this launch. No other folder or tool permission is added. Outside
+yolo, a folder that ships its own Claude hooks (project `.claude/settings.json`
+or `.claude/settings.local.json`) is trusted only after the owner approves one
+card listing those commands; Cancel stops the start, and a launch that did not
+show the card leaves the folder untrusted. A live `/sudo` window for that
+agent, in its session and placement, already covers the card for the folder the
+agent starts in (its own worktree, else the session's) and it is not shown.
+Every cold Claude start asks first: a /sudo task, a queued or failed prompt that
+relaunches Claude, a substituted turn and restart recovery. For a leased worker the card is forwarded to the home session, where
+the owner sees it before any worker run exists. Screen-based trust handling remains a
+fallback for an already approved exact-workspace launch; it does not make a
+pending task live for tools. Forwarded approvals retain their worker-local
+origin for lifetime checks and translate only the consent lookup to the current
+home-projected run, with the lease placement and home prompt still checked.
 Global extension registration reuses consent only for source inside this
 workspace; outside source roots still ask, and App sandboxing stays in force.
 Other session/workspace targets and unclassified host operations require a fresh owner
