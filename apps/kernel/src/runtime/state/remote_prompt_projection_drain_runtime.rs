@@ -42,10 +42,14 @@ impl KernelRuntimeState {
             daemon_id: Some(dispatch.worker_kernel_id.clone()),
             daemon_alias: None,
         };
+        let acknowledged = self
+            .remote_projection_acknowledgement(&binding)
+            .map_err(|error| error.to_string())?;
         let request = RelayPeerRequest::DrainLeasedRuntimeProjection {
             leased_agent_id: dispatch.leased_agent_id.clone(),
             provider_run_id: worker_provider_run_id.to_string(),
             pump_output: true,
+            acknowledged_projection_sequence: Some(acknowledged),
         };
         // Relay I/O runs after relay configuration was copied and the app lock was released.
         let relay_state = self.connected_relay_state_for_config(&relay_config).await;
@@ -77,9 +81,12 @@ impl KernelRuntimeState {
             expected_binding: Some(binding),
             expected_prompt_id: Some(dispatch.prompt_id.clone()),
         };
-        let event = match response {
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) } => event,
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None } => {
+        let (event, projection_sequence) = match response {
+            RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                event: Some(event),
+                projection_sequence,
+            } => (event, projection_sequence),
+            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None, .. } => {
                 return Err(
                     "worker returned no replayable projection for its completed receipt"
                         .to_string(),
@@ -106,9 +113,17 @@ impl KernelRuntimeState {
                     .to_string(),
             );
         }
+        let binding = authority.expected_binding.clone();
         self.project_remote_runtime_projection_event(authority, event)
             .await
-            .map_err(|error| format!("completed worker projection could not be applied: {error}"))
+            .map_err(|error| {
+                format!("completed worker projection could not be applied: {error}")
+            })?;
+        if let (Some(binding), Some(sequence)) = (binding, projection_sequence) {
+            self.acknowledge_remote_projection(&binding, sequence)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub(super) fn spawn_remote_prompt_projection_drain_if_needed(
@@ -448,10 +463,12 @@ impl KernelRuntimeState {
             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
             daemon_alias: None,
         };
+        let acknowledged = self.remote_projection_acknowledgement(&remote_execution)?;
         let request = RelayPeerRequest::DrainLeasedRuntimeProjection {
             leased_agent_id: remote_execution.leased_agent_id.clone(),
             provider_run_id: provider_run_id.clone(),
             pump_output: true,
+            acknowledged_projection_sequence: Some(acknowledged),
         };
         let response = match self.connected_relay_state_for_config(&relay_config).await {
             Some(relay_state) => {
@@ -500,7 +517,10 @@ impl KernelRuntimeState {
             expected_prompt_id,
         };
         match response {
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event } => {
+            RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                event,
+                projection_sequence,
+            } => {
                 if let Some(event) = event {
                     let mut provider_run_id = provider_run_id;
                     if let Some(successor) = self
@@ -557,6 +577,9 @@ impl KernelRuntimeState {
                     }
                     self.project_remote_runtime_projection_event(authority, event)
                         .await?;
+                    if let Some(sequence) = projection_sequence {
+                        self.acknowledge_remote_projection(&remote_execution, sequence)?;
+                    }
                 }
                 Ok(true)
             }
@@ -567,6 +590,30 @@ impl KernelRuntimeState {
         }
     }
 
+    /// The worker retains a drained projection until a drain names its sequence here,
+    /// so a reply lost on the way is answered again instead of losing its output.
+    fn remote_projection_acknowledgement(
+        &self,
+        binding: &crate::agent::RemoteAgentBinding,
+    ) -> Result<u64, DaemonError> {
+        self.owned
+            .operational_history_store
+            .load_remote_projection_acknowledgement(&remote_projection_delivery_key(binding))
+    }
+
+    fn acknowledge_remote_projection(
+        &self,
+        binding: &crate::agent::RemoteAgentBinding,
+        sequence: u64,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .operational_history_store
+            .save_remote_projection_acknowledgement(
+                &remote_projection_delivery_key(binding),
+                sequence,
+            )
+    }
+
     pub(super) async fn project_remote_runtime_projection_event(
         &self,
         authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
@@ -575,6 +622,10 @@ impl KernelRuntimeState {
         self.project_relay_remote_runtime_projection(authority, event)
             .await
     }
+}
+
+fn remote_projection_delivery_key(binding: &crate::agent::RemoteAgentBinding) -> String {
+    format!("{}:{}", binding.worker_kernel_id, binding.leased_agent_id)
 }
 
 pub(super) fn same_remote_prompt_worker_binding(

@@ -579,6 +579,7 @@ async fn assert_no_duplicate_claim_submission(
                             ..
                         } => {
                             let response = crate::transport::relay_peer::RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                                projection_sequence: None,
                                 event: None,
                             };
                             let encrypted_response =
@@ -1064,6 +1065,7 @@ mod receipt_reconciliation {
                     leased_agent_id: requested_agent,
                     provider_run_id: requested_run,
                     pump_output: true,
+                    ..
                 } if requested_agent == &leased_agent_id && requested_run == &run_id
             ));
             drain_seen_tx
@@ -1081,6 +1083,7 @@ mod receipt_reconciliation {
                 &worker_private_key,
                 &home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    projection_sequence: None,
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
                         home_session_id: session_id,
                         home_agent_id: agent_id,
@@ -1489,6 +1492,7 @@ mod receipt_reconciliation {
                     leased_agent_id,
                     provider_run_id,
                     pump_output: true,
+                    ..
                 } if leased_agent_id == &listener_leased_agent_id
                     && provider_run_id.as_str() == "worker-run-completed-receipt"
             ));
@@ -1498,6 +1502,7 @@ mod receipt_reconciliation {
                 &listener_worker_private_key,
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    projection_sequence: None,
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
                         home_session_id: listener_session_id,
                         home_agent_id: listener_agent_id,
@@ -3155,7 +3160,10 @@ mod projection_drain {
                 &fixture.worker_id,
                 &fixture.worker_private_key,
                 &fixture.home_public_key,
-                RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    event: None,
+                    projection_sequence: None,
+                },
             )
         };
 
@@ -3840,7 +3848,10 @@ mod projection_drain {
             worker_id,
             &worker_private_key,
             &home_public_key,
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) },
+            RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                event: Some(event),
+                projection_sequence: None,
+            },
         )
         .await;
         let observation_request = receive_fake_worker_peer_request(
@@ -5551,7 +5562,7 @@ mod lost_worker_run {
     use super::*;
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 
-    async fn delivered_fixture(
+    pub(super) async fn delivered_fixture(
         relay_url: &str,
         suffix: &str,
         worker_run: &str,
@@ -5876,5 +5887,148 @@ mod lost_worker_run {
             .remote_prompt_projection_drain_target(&fixture.session_id, &fixture.agent_id)
             .expect("the replacement run drains");
         assert_eq!(drain_run, "worker-run-replayed");
+    }
+}
+
+// MP-08 / MP-10 A10-S02: the home names the last projection it applied in every
+// drain, so a worker can answer a lost reply again; it records a projection only
+// after applying it.
+mod projection_acknowledgement {
+    use super::lost_worker_run::delivered_fixture;
+    use super::*;
+
+    fn final_text(fixture: &ReceiptReconciliationFixture, text: &str) -> RelayPeerResponse {
+        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.clone(),
+                home_agent_id: fixture.agent_id.clone(),
+                provider_run_id: "worker-run-ack".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("final-answer".to_string()),
+                    bytes: text.as_bytes().to_vec(),
+                }],
+                notices: Vec::new(),
+                completions: Vec::new(),
+            }),
+            projection_sequence: Some(1),
+        }
+    }
+
+    fn acknowledged(request: &RelayPeerRequest) -> Option<u64> {
+        let RelayPeerRequest::DrainLeasedRuntimeProjection {
+            acknowledged_projection_sequence,
+            ..
+        } = request
+        else {
+            panic!("expected a projection drain, got {request:?}");
+        };
+        *acknowledged_projection_sequence
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_acknowledges_a_projection_only_after_applying_it() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = delivered_fixture(&relay_url, "ack", "worker-run-ack").await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let reply = final_text(&fixture, "PART_DONE");
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for answer in [None, Some(reply.clone()), None] {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                seen.push(acknowledged(&request.request));
+                match answer {
+                    // The reply to the first drain is lost at reconnect.
+                    None if seen.len() == 1 => {
+                        send_fake_relay_envelope(
+                            &mut { request.socket },
+                            RelayEnvelope::DaemonPeerResponse {
+                                request_id: request.request_id,
+                                from_daemon_id: worker_id.clone(),
+                                encrypted_response: None,
+                                error: Some(chariox_relay::protocol::RelayError {
+                                    code: "target_not_connected".to_string(),
+                                    message: "kernel relay connection is reconnecting".into(),
+                                    retryable: true,
+                                }),
+                            },
+                        )
+                        .await
+                    }
+                    Some(response) => {
+                        send_fake_worker_peer_response(
+                            request,
+                            &worker_id,
+                            &worker_private_key,
+                            &home_public_key,
+                            response,
+                        )
+                        .await
+                    }
+                    None => {
+                        send_fake_worker_peer_response(
+                            request,
+                            &worker_id,
+                            &worker_private_key,
+                            &home_public_key,
+                            RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                                event: None,
+                                projection_sequence: None,
+                            },
+                        )
+                        .await
+                    }
+                }
+            }
+            seen
+        });
+
+        let runtime = &fixture.runtime;
+        assert!(runtime
+            .drain_remote_prompt_projection_once(&fixture.session_id, &fixture.agent_id)
+            .await
+            .is_err());
+        for _ in 0..2 {
+            assert!(runtime
+                .drain_remote_prompt_projection_once(&fixture.session_id, &fixture.agent_id)
+                .await
+                .expect("the drain applies the worker reply"));
+        }
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("fake worker should see three drains")
+            .expect("fake worker assertions should hold");
+        assert_eq!(
+            seen,
+            vec![Some(0), Some(0), Some(1)],
+            "a lost reply is not acknowledged; an applied one is"
+        );
+        let finals = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
+            .expect("home history should load")
+            .into_iter()
+            .filter_map(|event| event.to_session_history_entry())
+            .filter(|entry| entry.text.contains("PART_DONE"))
+            .count();
+        assert_eq!(finals, 1, "the final text reaches the home exactly once");
     }
 }

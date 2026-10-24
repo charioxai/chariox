@@ -944,6 +944,10 @@ pub enum RelayPeerRequest {
         provider_run_id: String,
         #[serde(default)]
         pump_output: bool,
+        /// The last projection sequence the home applied for this leased agent.
+        /// The worker keeps a drained projection until this acknowledges it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acknowledged_projection_sequence: Option<u64>,
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,
@@ -1329,6 +1333,9 @@ pub enum RelayPeerResponse {
     LeasedRuntimeProjectionDrained {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event: Option<RelayPeerEvent>,
+        /// Present when the worker retains `event` until the home acknowledges it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        projection_sequence: Option<u64>,
     },
     LeasedPromptCompleted {
         provider_run_id: Option<String>,

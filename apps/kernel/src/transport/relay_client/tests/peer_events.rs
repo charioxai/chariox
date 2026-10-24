@@ -7,6 +7,7 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
         leased_agent_id: "leased-agent-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
         pump_output: true,
+        acknowledged_projection_sequence: Some(3),
     };
     let request_json = serde_json::to_value(&request).expect("request should serialize");
     assert_eq!(
@@ -16,10 +17,14 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
             "leased_agent_id": "leased-agent-1",
             "provider_run_id": "provider-run-1",
             "pump_output": true,
+            "acknowledged_projection_sequence": 3,
         })
     );
 
-    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None };
+    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained {
+        event: None,
+        projection_sequence: None,
+    };
     let response_json = serde_json::to_value(&response).expect("response should serialize");
     assert_eq!(
         response_json,

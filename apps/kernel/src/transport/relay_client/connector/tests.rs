@@ -415,7 +415,6 @@ async fn exercise_post_connect_confirmation(
             },
             "activation-1".to_string(),
         );
-    let (owner_outgoing, _owner_priority_rx, _owner_event_rx) = RelayOutgoingSender::channel(1);
 
     set_connected(
         &worker_state,
@@ -517,7 +516,6 @@ async fn exercise_post_connect_confirmation(
             let outcome = handle_daemon_peer_request(
                 &owner_router,
                 &owner_state,
-                &owner_outgoing,
                 &worker_kernel_id,
                 Some(caller_identity),
                 encrypted_request,

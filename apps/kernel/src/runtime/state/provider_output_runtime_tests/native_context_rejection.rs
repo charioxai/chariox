@@ -294,6 +294,7 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
                 true,
                 false,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -309,7 +310,7 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
     }
     if let Some(leased_id) = &leased_id {
         runtime
-            .drain_relay_leased_runtime_projection(leased_id, run.id(), true, false, false)
+            .drain_relay_leased_runtime_projection(leased_id, run.id(), true, false, false, None)
             .await
             .unwrap();
     } else {

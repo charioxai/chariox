@@ -167,37 +167,6 @@ fn peer_identity_changed(stable_sender_id: &str) -> DaemonError {
     }
 }
 
-pub(super) async fn emit_leased_projection_event(
-    router: &Arc<CommandRouter>,
-    state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: &RelayOutgoingSender,
-    leased_agent_id: &str,
-    provider_run_id: &str,
-    pump_output: bool,
-) -> Result<(), DaemonError> {
-    let config = router.relay_config_snapshot();
-    let Some((target_daemon_id, event)) = router
-        .relay_drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output, false)
-        .await?
-    else {
-        return Ok(());
-    };
-    let target_public_key =
-        resolve_projection_target_public_key(router, state, &target_daemon_id).await?;
-    let encrypted_event =
-        encrypt_peer_payload(&config.relay_private_key, &target_public_key, &event)?;
-    send_outgoing_envelope(
-        outgoing_tx,
-        RelayEnvelope::DaemonPeerEvent {
-            target: ClientTarget {
-                daemon_id: Some(target_daemon_id),
-                daemon_alias: None,
-            },
-            encrypted_event,
-        },
-    )
-}
-
 async fn resolve_projection_target_public_key(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,

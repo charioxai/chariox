@@ -141,8 +141,8 @@ pub(crate) use provider_processes::{
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
-    LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget, PreparedLeasedProviderRun,
-    RemoteLeaseRuntime,
+    DrainedLeasedProjection, LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget,
+    PreparedLeasedProviderRun, RemoteLeaseRuntime,
 };
 #[cfg(test)]
 pub(crate) use remote_lease::{
@@ -210,6 +210,7 @@ pub struct DaemonApp {
     pending_workflow_remote_prompt_dispatches: Vec<KernelRemotePromptDispatch>,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    leased_projection_deliveries: BTreeMap<String, remote_lease::LeasedProjectionDelivery>,
     execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     completed_execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
@@ -434,6 +435,7 @@ impl DaemonApp {
             pending_workflow_remote_prompt_dispatches: Vec::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            leased_projection_deliveries: BTreeMap::new(),
             execution_lease_callers: BTreeMap::new(),
             leased_agent_callers: BTreeMap::new(),
             completed_execution_lease_callers: BTreeMap::new(),

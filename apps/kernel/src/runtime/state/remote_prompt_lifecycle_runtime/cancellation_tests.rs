@@ -979,6 +979,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                 leased_agent_id,
                 provider_run_id,
                 pump_output,
+                ..
             } => {
                 assert_eq!(
                     submit_count, 1,
@@ -992,7 +993,10 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                     request_id,
                     &worker_private_key,
                     &home_public_key,
-                    RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                    RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                        event: None,
+                        projection_sequence: None,
+                    },
                 )
                 .await;
                 break;
@@ -1080,6 +1084,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                         leased_agent_id,
                         provider_run_id,
                         pump_output,
+                        ..
                     } => {
                         assert_eq!(leased_agent_id, LEASED_AGENT_ID);
                         assert_eq!(provider_run_id, SUCCESSOR_WORKER_RUN_ID);
@@ -1092,7 +1097,10 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                             request_id,
                             &worker_private_key,
                             &home_public_key,
-                            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                            RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                                event: None,
+                                projection_sequence: None,
+                            },
                         )
                         .await;
                     }
@@ -1516,6 +1524,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
             leased_agent_id,
             provider_run_id,
             pump_output: true,
+            ..
         } if leased_agent_id == LEASED_AGENT_ID && provider_run_id == WORKER_RUN_ID
     ));
     acknowledge_peer_request(
@@ -1524,6 +1533,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         &worker_private_key,
         &home_public_key,
         RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            projection_sequence: None,
             event: Some(
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
                     home_session_id: session_id.clone(),

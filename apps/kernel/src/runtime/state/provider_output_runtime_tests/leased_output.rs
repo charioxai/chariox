@@ -145,12 +145,12 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
         runtime.pump_transport_runtime().await;
         // Same drain request as the home kernel's active-prompt loop. No local
         // terminal client is attached to wake the provider-output pump.
-        if let Some((_, event)) = runtime
-            .drain_relay_leased_runtime_projection(&leased.id, &run_id, true, true, false)
+        if let Some(drained) = runtime
+            .drain_relay_leased_runtime_projection(&leased.id, &run_id, true, true, false, None)
             .await
             .unwrap()
         {
-            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = drained.event;
             projected_errors.extend(
                 output_chunks
                     .into_iter()

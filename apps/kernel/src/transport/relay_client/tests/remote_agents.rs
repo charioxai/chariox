@@ -223,8 +223,10 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 } => {
                     assert_eq!(leased_agent_id, "termination-leased-agent");
                     assert_eq!(provider_run_id, "worker-provider-run");
-                    let response =
-                        RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None };
+                    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                        event: None,
+                        projection_sequence: None,
+                    };
                     let encrypted_response =
                         crate::transport::relay_crypto::encrypt_payload_for_peer(
                             &worker_private_key,

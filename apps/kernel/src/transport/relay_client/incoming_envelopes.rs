@@ -293,7 +293,6 @@ pub(super) async fn handle_incoming_envelope(
                 let relay_response = Box::pin(handle_daemon_peer_request(
                     &router,
                     &state,
-                    &outgoing_tx,
                     &from_daemon_id,
                     caller_identity,
                     encrypted_request,

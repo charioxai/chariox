@@ -120,7 +120,6 @@ impl SignedSliceHarness {
         let outcome = handle_daemon_peer_request(
             &self.router,
             &self.state,
-            &self.outgoing,
             &from_daemon_id,
             caller_identity,
             encrypted_request,

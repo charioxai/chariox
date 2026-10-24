@@ -11,6 +11,7 @@ use crate::managed_context::owner_authority::TICKET_ENDPOINT;
 use crate::managed_context::owner_managed::*;
 use crate::managed_context::{development::*, kernel::*, package::*};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
+use crate::transport::relay_client::RelayOutgoingSender;
 use chariox_relay::auth::RelaySubjectKind;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -554,7 +555,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     let key_refusal = handle_daemon_peer_request(
         &router,
         &state,
-        &outgoing_tx,
         &source.daemon_id,
         Some(wrong_source_key),
         wrong_key_request,

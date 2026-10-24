@@ -17,6 +17,7 @@ mod native_provider;
 mod profile_update;
 mod project_environment;
 mod projection;
+mod projection_delivery;
 mod prompt_attachments;
 mod prompt_lifecycle;
 mod provider_account;
@@ -25,6 +26,7 @@ mod relay_context;
 mod skill_sync;
 mod turn_capacity;
 
+pub(crate) use projection_delivery::{DrainedLeasedProjection, LeasedProjectionDelivery};
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;
 
@@ -905,6 +907,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         self.app.leased_agent_cleanup_phases.remove(leased_agent_id);
         self.app.leased_agents.remove(leased_agent_id);
+        self.app
+            .leased_projection_deliveries
+            .remove(leased_agent_id);
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);

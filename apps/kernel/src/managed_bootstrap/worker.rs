@@ -2421,8 +2421,6 @@ mod tests {
             ),
         );
         let worker_state = worker_app.lock().await.relay_client_state();
-        let (outgoing_tx, _priority_rx, _event_rx) =
-            crate::transport::relay_client::RelayOutgoingSender::channel(1);
         let from_daemon_id = "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7";
         let caller_identity = chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "default".to_string(),
@@ -2443,7 +2441,6 @@ mod tests {
             Box::pin(send_authenticated_peer_request_for_test(
                 &worker_router,
                 &worker_state,
-                &outgoing_tx,
                 from_daemon_id,
                 caller_identity.clone(),
                 &home_private_key,
