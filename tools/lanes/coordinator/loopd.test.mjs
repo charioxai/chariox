@@ -205,6 +205,28 @@ test('after a grant change the stale inbox is set aside and every running lane i
   assert.ok(r.logs.some(l => l.kind === 'inbox_reset'));
 });
 
+test('after a restart gives the service a new grant, the running lanes follow the new inbox and finish', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'picked_up') r.controller.abort(); };
+  await serve(r.options);
+  await writeFile(join(r.layout.home, 'subscription.json'), JSON.stringify({ subscription_id: 'old-grant' }));
+  const followed = [];
+  const cli = r.options.cli;
+  r.options.cli = async argv => {
+    if (argv[1] === 'subscribe') { followed.push(argv.slice(2).join(' ')); r.calls.push({ argv }); return {}; }
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'new-grant', targets: followed.map(item => ({ kernel: 'executor', session_id: item.split(' ')[3] })), kernels: [{ kernel: 'executor' }] } };
+    return cli(argv);
+  };
+  r.options.signal = (r.controller = new AbortController()).signal;
+  r.idle.add('alpha-r1');
+  r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'finished') r.controller.abort(); };
+  await serve(r.options);
+  assert.deepEqual(followed.sort(), ['--kernel executor --session ops-alpha-r1', '--kernel executor --session room-alpha-r1']);
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
+  assert.equal(r.calls.filter(c => c.op === 'launch').length, 2, 'the same receipts are reused; the adapter sees the idempotent launch only');
+});
+
 test('round.mjs serve starts as a real process, serves the queue and stops cleanly on SIGTERM', async t => {
   const root = await mkdtemp(join(tmpdir(), 'loopd-process-')); t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, 'home'), agents = join(root, 'agents');

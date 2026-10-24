@@ -3,6 +3,7 @@ import { readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { coordinate, defaultCli, save } from './loop.mjs';
+import { followLaunch } from './events.mjs';
 import { execute } from '../lanes.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -24,6 +25,7 @@ export function newSections(text, offset) {
 export function createRound(options) {
   const now = options.now || Date.now;
   const respond = options.respond || ((input) => execute([new URL('../lane-respond.mjs', import.meta.url).pathname], JSON.stringify(input), process.execPath));
+  const cli = options.cli || defaultCli;
   const coordinator = (operation, args) => coordinate(operation, args, options);
   const adapter = options.adapter || (async (op, input) => execute([new URL(`../lane-${op}.mjs`, import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const home = options.home;
@@ -39,6 +41,7 @@ export function createRound(options) {
     const { entry, run } = lane;
     const record = await coordinator('brief', [entry.lane, entry.worktree, entry.provider, entry.brief]);
     run.launch = { kernel: record.launch.kernel, sessionId: record.launch.sessionId, agentId: record.launch.agentId };
+    lane.receipt = record.launch;
     byTarget.set(`${record.launch.kernel}/${record.launch.sessionId}/${record.launch.agentId}`, lane);
     log(lane, 'launched', { agentId: record.launch.agentId });
     await persist(lane);
@@ -194,7 +197,15 @@ export function createRound(options) {
   let rereadAll = false;
   // One wake: wait on the shared inbox, answer, deliver notes, detect finishes and hard stops.
   const step = async wakeMinutes => {
-    const batch = await coordinator('watch', [String(wakeMinutes)]);
+    let batch;
+    try { batch = await coordinator('watch', [String(wakeMinutes)]); }
+    catch (error) {
+      if (error.code !== 'subscription_target_missing') throw error;
+      // The inbox of a restarted kernel's new grant is empty: attach the running lanes to it, then read each one.
+      for (const lane of pending()) await followLaunch(cli, lane.receipt);
+      rereadAll = true;
+      batch = await coordinator('watch', [String(wakeMinutes)]);
+    }
     const touched = await handle(batch.events || []);
     if (rereadAll) { rereadAll = false; for (const lane of pending()) touched.add(lane); }
     for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
@@ -221,6 +232,6 @@ export function createRound(options) {
   };
   // A new access grant has a new inbox: attach every running lane to it and re-read each one's state.
   const rebrief = async () => { for (const lane of pending()) await launch(lane); rereadAll = true; };
-  return { lanes, add, step, pending, failed, rebrief, touchAll: () => { rereadAll = true; }, cli: options.cli || defaultCli };
+  return { lanes, add, step, pending, failed, rebrief, touchAll: () => { rereadAll = true; }, cli };
 }
 

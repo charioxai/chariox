@@ -41,6 +41,11 @@ export async function openInbox(home, cli, settleMs = 1000) {
   return current;
 }
 
+// A new access grant starts with an empty inbox: follow the worker's Room sessions again (agent events arrive through them).
+export async function followLaunch(cli, launch) {
+  for (const session of [launch.sessionId, launch.operationsSessionId].filter(Boolean)) await cli(['events', 'subscribe', '--kernel', launch.kernel, '--session', session]);
+}
+
 // Called before a worker is destroyed: the agent target would be dead the moment it is gone.
 export async function dropAgentTarget(cli, launch) {
   await cli(['events', 'unsubscribe', '--kernel', launch.kernel, '--session', launch.sessionId, '--agent', launch.agentId]);
