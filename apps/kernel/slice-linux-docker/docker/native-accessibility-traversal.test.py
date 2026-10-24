@@ -11,6 +11,9 @@ class Node:
     def __init__(self, name, role, children=(), pid=200, secret=False):
         self.name, self.role, self.children, self.pid = name, role, children, pid
         self.childCount, self.secret = len(children), secret
+        self.parent = None
+        for child in children:
+            if child is not None: child.parent = self
 
     def getChildAtIndex(self, index): return self.children[index]
     def get_process_id(self): return self.pid
