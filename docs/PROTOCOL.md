@@ -4954,7 +4954,11 @@ Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
 catalog contract; local **571** / peer **179** add the leased-worker native
 inventory request below (no client-visible shape changed; the client minimum
 stays 533/141). Local **581** / peer **189** add the `resolve_repository_update`
-request and its `repository_update` result; a kernel that supports them also
+request and its `repository_update` result; local **586** / peer **192** add
+`compaction_ids` to the leased-worker native inventory response (the IDs of native
+compactions the worker's harness observed, which the home records once to reload
+skills). A peer below 192 cannot report them, so the home refuses to dispatch to
+that binding until it is rebound, instead of assuming its loads were retained; a kernel that supports them also
 advertises the `skills_repository_update_v581` capability next to
 `skills_v2_runtime`, and clients send the request only when both are present
 (an older kernel gets the message "update the kernel", never a decode error).

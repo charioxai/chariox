@@ -342,4 +342,6 @@ pub use workspace::*;
 /// (no client-visible shape changed; Skills clients still gate at 533).
 /// MP-08/MP-10/MP-11: allocated 581 adds the Skills v2 `resolve_repository_update` request and
 /// `repository_update` result (clients gate the update command on it).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 581;
+/// MP-08/MP-10/MP-11: allocated 586 adds `compaction_ids` to the leased-worker native
+/// inventory response (no client-visible shape changed).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 586;

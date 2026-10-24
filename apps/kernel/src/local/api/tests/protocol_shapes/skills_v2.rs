@@ -307,6 +307,31 @@ fn skills_v2_leased_native_inventory_peer_162_shape_and_hash() {
     assert!(serde_json::from_value::<RelayPeerResponse>(not_started).is_ok());
 }
 
+// MP-08 / MP-10 / MP-11: peer 192 adds the worker's compaction report to the inventory.
+#[test]
+fn skills_v2_leased_native_inventory_compaction_ids_peer_192_shape_and_hash() {
+    let response = serde_json::json!({"kind":"leased_skill_native_inventory","inventory":{
+        "entries":[],"revision":"native-1","provider_run_id":"run-1",
+        "compaction_ids":["compact-1","compact-2"]}});
+    let parsed: RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), response);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&response).unwrap())
+        ),
+        "931aa8bed7dbd8147fb0a74020b25a71071bca5ccc8d2d65c512d39441978d96"
+    );
+    // The field is omitted when empty, which is what a 189 worker sends.
+    let RelayPeerResponse::LeasedSkillNativeInventory { inventory: Some(old), .. } =
+        serde_json::from_value(serde_json::json!({"kind":"leased_skill_native_inventory",
+            "inventory":{"entries":[],"revision":"native-1"}})).unwrap()
+    else {
+        panic!("inventory response");
+    };
+    assert!(old.compaction_ids.is_empty());
+}
+
 #[test]
 fn skills_v2_ensure_remote_skill_packages_name_view_is_an_additive_peer_179_field() {
     assert_eq!(

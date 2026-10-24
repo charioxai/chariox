@@ -183,7 +183,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| failure("worker binding missing"))?;
         if !remote.relay_peer_protocol_compatible() {
             return Err(failure(
-                "the leased worker predates the Skills native inventory request; rebind the remote agent",
+                "the leased worker predates the Skills compaction report; rebind the remote agent",
             ));
         }
         let mut config = self.owned.config_projection.snapshot();
