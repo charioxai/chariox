@@ -3,7 +3,10 @@
 // the viewer). Only the same observer's next ordinary display_subscribe for the Tab, with the negotiation it used last
 // time, adopts it; anything else retires it. Admission, protection and document fencing are subscribeVisiblePage's own.
 import {subscribeVisiblePage} from './kernel-browser-page-display.mjs';
-const UNCLAIMED_MS=3000,OFFERS=16;
+// The mirror replaces a navigation's preview within about a second (a link ~0.6 s, a typed URL ~0.85 s after the
+// preview attaches), so exact repairs of its loading frames only cost CPU; a preview still shown after the hold is
+// repaired as usual, which settles a page whose mirror is slow.
+const UNCLAIMED_MS=3000,OFFERS=16,REPAIR_HOLD_MS=1000;
 const key=(scope,tabId)=>JSON.stringify([scope,tabId]);
 const negotiation=command=>JSON.stringify([command.codecs,command.bitrate,command.device_scale_factor]);
 export class NavigationDisplays{
@@ -21,7 +24,9 @@ export class NavigationDisplays{
   if(!offer)return;
   this.discard(k);
   const generation=this.host.generation,command={op:'display_subscribe',tab_id:tabId,generation,...offer};
-  const entry={documentId,generation,negotiation:negotiation(command),run:this.subscribe(this.host,command,scope).catch(error=>{
+  const entry={documentId,generation,negotiation:negotiation(command),run:this.subscribe(this.host,command,scope).then(result=>{
+   const stream=result&&this.host.displays.get(result.subscription_id);if(stream)stream.repairHoldUntil=performance.now()+REPAIR_HOLD_MS;return result;
+  }).catch(error=>{
    this.host.timing?.(`navigation_display_unavailable ${error?.code??'error'}`,performance.timeOrigin+performance.now());return null;
   })};
   entry.timer=setTimeout(()=>this.discard(k,entry),this.unclaimedMs);entry.timer.unref?.();

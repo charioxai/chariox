@@ -14,12 +14,14 @@ function fixture({document='d2'}={}){
  return {host,displays,removed,subscribed,tab,finish:()=>resolve()};
 }
 test('MP-08/MP-10 the next display_subscribe of the observer adopts the display started at the navigation report',async()=>{
- const {displays,subscribed,finish}=fixture();
+ const {host,displays,subscribed,finish}=fixture();
  displays.start('scope','t','d2');assert.equal(subscribed.length,0,'no negotiation known yet: nothing is started');
  displays.remember(offer,'scope');displays.start('scope','t','d2');
  assert.equal(subscribed.length,1);assert.deepEqual(subscribed[0],[{...offer},'scope'],'the same negotiation, for the same observer');
  const adopted=displays.adopt(offer,'scope');finish();
  assert.equal((await adopted).subscription_id,'host-display-1');
+ const hold=host.displays.get('host-display-1').repairHoldUntil-performance.now();
+ assert.ok(hold>500&&hold<=1000,'the preview skips exact repair while the mirror takes over');
  assert.equal(await displays.adopt(offer,'scope'),null,'adopted once');
 });
 test('MP-08/MP-11 a started display is retired when the request differs, the document moved on, or nobody claims it',async()=>{
