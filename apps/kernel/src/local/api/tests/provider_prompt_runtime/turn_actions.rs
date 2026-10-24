@@ -223,21 +223,33 @@ fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
         other => panic!("unexpected response: {other:?}"),
     };
     let kernel = harness.with_app(|app| app.config().daemon_id.clone());
-    harness
-        .runtime_state()
-        .outside_part_request(
+    // The kernel asks a subscriber to retry while the prompt it just started is settling.
+    let subscribe = LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+        targets: vec![EventTarget {
+            kernel,
+            session_id: session.id().into(),
+            agent_id: Some(agent.id().into()),
+        }],
+    });
+    let runtime = harness.runtime_state();
+    let mut subscribed = false;
+    for _ in 0..50 {
+        let attempt = runtime.outside_part_request(
             "outside-coordinator",
             true,
             Some(crate::session::DEFAULT_LOCAL_USER_ID),
-            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
-                targets: vec![EventTarget {
-                    kernel,
-                    session_id: session.id().into(),
-                    agent_id: Some(agent.id().into()),
-                }],
-            }),
-        )
-        .unwrap();
+            &subscribe,
+        );
+        if attempt.is_ok() {
+            subscribed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        subscribed,
+        "the subscription is accepted once the prompt settles"
+    );
     std::fs::write(faults.join("writer-fail"), "").unwrap();
     let steer = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
         "SteerActivePrompt": {
