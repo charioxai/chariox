@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { coordinate, save } from './loop.mjs';
+import { execute } from '../lanes.mjs';
 const head = 'a'.repeat(40);
 async function rig(t) {
   const home = await mkdtemp(join(tmpdir(), 'coordinator-')); t.after(() => rm(home, { recursive: true, force: true }));
@@ -35,6 +36,29 @@ test('brief: passes input to launch and resumes the exact receipt/deadline', asy
   assert.equal(calls.filter(c => c.op === 'launch').length, 2);
   assert.equal(await readFile(one.input.brief, 'utf8'), 'review the exact PR');
   await assert.rejects(coordinate('brief', ['lane', '/other', 'codex'], options), { code: 'launch_conflict' });
+});
+test('brief: compares piped stdin across fresh coordinator invocations', async t => {
+  const r = await rig(t);
+  const script = `
+    import { coordinate } from ${JSON.stringify(new URL('./loop.mjs', import.meta.url).href)};
+    try {
+      const result = await coordinate('brief', ['lane', '/work', 'codex'], {
+        home: ${JSON.stringify(r.home)}, config: ${JSON.stringify(r.options.config)},
+        stdin: async () => { let text = ''; for await (const chunk of process.stdin) text += chunk; return text; },
+        adapter: async () => (${JSON.stringify(r.launch)})
+      });
+      console.log(JSON.stringify(result));
+    } catch (error) {
+      console.error(JSON.stringify({ error: { code: error.code } })); process.exitCode = 1;
+    }
+  `;
+  const invoke = brief => execute(['--input-type=module', '-e', script], brief, process.execPath);
+  const first = await invoke('MP-11: original piped brief\n');
+  const resumed = await invoke('MP-11: original piped brief\n');
+  assert.deepEqual(resumed, first);
+  await assert.rejects(invoke('MP-11: changed piped brief\n'), { code: 'launch_conflict' });
+  assert.deepEqual(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')), first);
+  assert.equal(await readFile(first.input.brief, 'utf8'), 'MP-11: original piped brief\n');
 });
 test('watch: one inbox, one WaitEvents, archive before ack, no status polling', async t => {
   const r = await launched(t);

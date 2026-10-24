@@ -39,17 +39,17 @@ export async function coordinate(operation, args, options = {}) {
     if (!worktree || !worktree.startsWith('/')) throw new LaneError('invalid_worktree');
     let record;
     try { record = await load(); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const brief = briefFile ? await readFile(briefFile, 'utf8') : await (options.stdin || (() => readFile('/dev/stdin', 'utf8')))();
     if (!record) {
       const config = options.config || await read(process.env.CHARIOX_COORDINATOR_CONFIG || join(home, 'config.json'));
       const profile = config.providers?.[provider];
       if (!profile) throw new LaneError('provider_not_configured');
-      const brief = briefFile ? await readFile(briefFile, 'utf8') : await (options.stdin || (() => readFile('/dev/stdin', 'utf8')))();
       if (!brief.trim()) throw new LaneError('empty_brief');
       const localBrief = join(home, `${lane}.brief.md`);
       await writeFile(localBrief, brief, { mode: 0o600, flag: 'wx' });
       const input = { ...profile, kernel: config.kernel, taskId: lane, alias: lane, operationsAlias: `${lane}-operations`, worktree, provider, brief: localBrief, remoteBrief: `${worktree}/ROUND_BRIEF.md`, stateFile: join(home, `${lane}.launch.json`), deadlineMs: now() + (config.deadlineSeconds || 7200) * 1000 };
       record = { lane, input, createdAtMs: now() }; await save(path, record);
-    } else if (record.input.worktree !== worktree || record.input.provider !== provider || (briefFile && await readFile(briefFile, 'utf8') !== await readFile(record.input.brief, 'utf8'))) throw new LaneError('launch_conflict');
+    } else if (record.input.worktree !== worktree || record.input.provider !== provider || brief !== await readFile(record.input.brief, 'utf8')) throw new LaneError('launch_conflict');
     record.launch = await adapter('launch', record.input);
     await save(path, record);
     return record;
