@@ -209,3 +209,38 @@ process-signal lint. Four focused groups fail against their recorded pre-fix
 revisions. The initial CLI test run raced a separate typecheck rebuilding
 generated dependencies; its failed log and successful sequential rerun are
 both retained. No kernel defect or protocol change was introduced here.
+
+## R9 two real rounds on the lasting kernel
+
+MP-08 / MP-09 / MP-10 / MP-11. Two real lane rounds ran at the same time through
+`tools/lanes/coordinator/round.mjs` on the [lasting lanes kernel](LANES_KERNEL.md)
+(`f2220d9387`, protocol 591/197), both with Claude through the product-created
+`lanes-claude` profile and one `WaitEvents` subscription (1,230 ordered events,
+no cursor gap):
+
+| Lane | Model | Ran | Workers' heads (each bundle verified, base ancestry checked) |
+| --- | --- | --- | --- |
+| amint r19 | Opus 5.5 high | 17:21Z to 19:45Z | OSS `608f771fb9`, Cloud `ccde43c209` |
+| dictation r2 | Sonnet 5.5 high | 17:21Z to 19:37Z | Cloud `a7f57943ec`, OSS `1d473d81b3` |
+
+Both workers finished on their own, long before the hard stops. The driver
+launched them with their briefs, answered 250 and 358 kernel-owned
+`Approve Claude Code …?` decisions with `allow_once` (no failures), read state
+once per event-triggered check, and stopped each worker. No ssh, polling or Mac
+script was used. Hashes and paths are in each lane's `LOOP_RUN.json`.
+
+| Step | What the loop did | Still needed from the Mac or broke |
+| --- | --- | --- |
+| Start | `lanes-kernel.mjs start`: kernels, Vault unlock from the state-dir file, relay, Claude profile, grant through the real owner popup. A stop/start cycle takes about 13 s. | The grant does not survive a kernel restart and the new grant has a new inbox, so the old `subscription.json` has to be removed once lanes are finished. |
+| Permissions | Claude as root has no non-prompting mode, so the driver answers each decision (`respond` adapter, new). | About 600 decisions in a 2 h round. The response policy (allow everything) is coordinator policy, not kernel behaviour. |
+| Liveness | Event `at_ms` is recorded per lane as `lastEventAtMs`. | `last_activity_at_ms` moves only at turn boundaries, so the old `SILENT` flag was a false positive on working lanes. |
+| Notes | Delivery of new `REVIEW_INBOX.md` sections once each is implemented and tested with fake adapters. | No coordinator note arrived in these rounds, so live delivery was not exercised here (R8 proved it). |
+| Finish and collect | Event-triggered status read detects the idle worker; the driver stops it. | **Broke:** both workers wrote `ACCEPTANCE_UPDATE.json` rows with free-form heads (`OSS 608f771fb9 / Cloud ccde43c209`) because each lane changed two repositories. `lanefin` correctly refuses a head that is not one full commit id, so both rounds ended `finished_collect_failed`. The bundles were then made by hand with the same `bundle` adapter and the full ids read from the worktrees (recorded under `manualCollect` in `LOOP_RUN.json`). A Mac script would have refused the same file. |
+| Two repositories | `extraBundles` (new) bundles the second repository's tip. | The brief must tell a two-repository lane to put one full commit id in every row head, and which repository that id belongs to, or to leave the update out. The old driver snapshot did not run `extraBundles` after the failure, so the extra bundles were also manual. |
+| Error clarity | `invalid_input` from `lanefin` said only "chariox refused the operation", which hid the cause for several minutes. The acceptance check now reports `invalid_acceptance` with its own remediation text (fail-first test). | |
+| Cleanup | Workers stopped by the loop. | Agent removal is not a host-resource receipt; scratch and stacks that workers started were cleaned by the workers themselves. |
+
+Observations about kernel behaviour (grant lost on restart, a restored session
+that cannot answer the Vault-unlock decision, `last_activity_at_ms` semantics,
+the permission volume) are in `agents/extagent/REVIEW_INBOX.md`. None has a failing
+kernel test here and no kernel code was changed.
