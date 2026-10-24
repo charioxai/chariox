@@ -15,6 +15,7 @@ pub enum LocalDaemonRequest {
     RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest),
     KernelBrowser(KernelBrowserRequest),
     Notes(NotesRequest),
+    Dictation(DictationRequest),
     CaptureVisibleRegion(CaptureVisibleRegionRequest),
     BeginAppPublisherEnrollment(BeginAppPublisherEnrollmentRequest),
     GetAppPublisherEnrollment(AppPublisherEnrollmentRequest),

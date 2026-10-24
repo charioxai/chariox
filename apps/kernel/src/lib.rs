@@ -10,6 +10,7 @@ pub mod config;
 pub mod connector;
 pub mod credential;
 pub(crate) mod debug_trace;
+pub(crate) mod dictation;
 pub(crate) mod durable_prompt_state;
 pub(crate) mod durable_snapshot;
 pub mod durable_state;
