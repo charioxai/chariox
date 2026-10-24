@@ -304,3 +304,48 @@ fn outside_import_rejects_unordered_or_misattributed_batches_atomically() {
         .is_err());
     assert!(list(&f, "grant").events.is_empty());
 }
+
+#[test]
+fn outside_ack_expires_cursors_whose_payload_was_released() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    publish(&f, "first", event("x", "x1"));
+    publish(&f, "second", event("x", "x1"));
+    let batch = list(&f, "grant");
+    let first = batch.events[0].cursor;
+    let last = batch.next_cursor;
+    f.store
+        .outside_mutate(Mutation::Ack {
+            id: "grant".into(),
+            cursor: first,
+        })
+        .unwrap();
+    assert_eq!(
+        f.store
+            .outside_list("grant", Some(0), 100)
+            .unwrap()
+            .unwrap_err(),
+        first + 1
+    );
+    let remaining = f
+        .store
+        .outside_list("grant", Some(first), 100)
+        .unwrap()
+        .unwrap();
+    assert_eq!(remaining.events.len(), 1);
+    assert_eq!(remaining.events[0].cursor, last);
+    f.store
+        .outside_mutate(Mutation::Ack {
+            id: "grant".into(),
+            cursor: last,
+        })
+        .unwrap();
+    assert_eq!(
+        f.store
+            .outside_list("grant", Some(0), 100)
+            .unwrap()
+            .unwrap_err(),
+        last + 1
+    );
+    assert!(list(&f, "grant").events.is_empty());
+}

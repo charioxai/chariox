@@ -333,6 +333,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 }
             }
             part.ack = part.ack.max(cursor);
+            part.floor = part.floor.max(part.ack);
             tx.execute(
                 "DELETE FROM agent_inbox WHERE room_id='' AND agent_id=?1 AND sequence<=?2",
                 params![id, sql_integer(part.ack)?],
