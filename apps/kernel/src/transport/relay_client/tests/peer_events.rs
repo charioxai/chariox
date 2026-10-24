@@ -271,6 +271,7 @@ async fn forwarded_native_interaction(reset: bool, decision: &str) {
     config_worker.relay_url = Some(proxy.url.clone());
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;
+    config_worker.accept_remote_leases = true;
     let app_worker = Arc::new(Mutex::new(
         DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
     ));
@@ -331,6 +332,45 @@ async fn forwarded_native_interaction(reset: bool, decision: &str) {
             provider_run_id: "provider-run-test".into(),
         },
     ));
+    // The reset cell uses a real worker lease so the worker asks through the
+    // leased runtime interaction path (utility review, Vault input, login).
+    let (lease_id, leased_agent_id, worker_target) = if reset {
+        let mut app = app_worker.lock().await;
+        let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "daemon-home",
+                &home_session_id,
+                &home_agent_id,
+                false,
+                "home-user",
+            )
+            .unwrap();
+        let leased = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        (
+            lease.id,
+            leased.id,
+            Some((leased.backing_session_id, leased.backing_agent_id)),
+        )
+    } else {
+        (
+            "execution-lease-test".into(),
+            "leased-agent-test".into(),
+            None,
+        )
+    };
     {
         let app = app_home.lock().await;
         app.agents
@@ -339,8 +379,8 @@ async fn forwarded_native_interaction(reset: bool, decision: &str) {
                 crate::agent::RemoteAgentBinding {
                     worker_kernel_id: "daemon-worker".into(),
                     worker_machine_id: "machine-worker".into(),
-                    execution_lease_id: "execution-lease-test".into(),
-                    leased_agent_id: "leased-agent-test".into(),
+                    execution_lease_id: lease_id.clone(),
+                    leased_agent_id: leased_agent_id.clone(),
                     active_worker_provider_run_id: None,
                     relay_url: None,
                     relay_token: None,
@@ -358,7 +398,7 @@ async fn forwarded_native_interaction(reset: bool, decision: &str) {
     let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
         home_session_id: home_session_id.clone(),
         home_agent_id: home_agent_id.clone(),
-        leased_agent_id: "leased-agent-test".to_string(),
+        leased_agent_id: leased_agent_id.clone(),
         worker_provider_run_id: "provider-run-test".to_string(),
         home_prompt_id: None,
     };
@@ -369,10 +409,11 @@ async fn forwarded_native_interaction(reset: bool, decision: &str) {
             CommandRouter::with_interactive_capacity_from_app(app_worker.clone(), 1)
                 .runtime_state();
         tokio::spawn(async move {
-            if reset {
-                return crate::runtime::native_interaction_bridge::forward_native_interaction_to_home(
-                    &worker_runtime, config_worker, "daemon-home".into(), context, interaction,
-                ).await.map(|resolution| RelayPeerResponse::NativeInteractionResolved { resolution });
+            if let Some((session_id, agent_id)) = worker_target {
+                return worker_runtime
+                    .wait_for_runtime_interaction(&session_id, interaction.with_agent_id(agent_id))
+                    .await
+                    .map(|resolution| RelayPeerResponse::NativeInteractionResolved { resolution });
             }
             send_peer_request_via_temporary_connection(
                 &config_worker,

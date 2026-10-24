@@ -99,6 +99,27 @@ pub(crate) async fn forward_native_interaction_to_home(
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     let response_timeout =
         remote_native_interaction_response_timeout(&interaction, config.relay_request_timeout_ms);
+    forward_native_interaction_with_timeout(
+        state,
+        config,
+        target_daemon_id,
+        context,
+        interaction,
+        response_timeout,
+    )
+    .await
+}
+
+/// Forwards one interaction with its original identity, retrying recoverable
+/// transport failures until `response_timeout`.
+pub(crate) async fn forward_native_interaction_with_timeout(
+    state: &KernelRuntimeState,
+    config: crate::config::DaemonConfig,
+    target_daemon_id: String,
+    context: RemoteNativeInteractionContext,
+    interaction: RuntimeInteraction,
+    response_timeout: Duration,
+) -> Result<ProviderNativeInteractionResolution, DaemonError> {
     let request = crate::transport::relay_peer::RelayPeerRequest::ForwardNativeTurnInteraction {
         context,
         interaction,
