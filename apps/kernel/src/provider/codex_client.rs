@@ -47,6 +47,7 @@ pub(super) fn fixture_codex_notification(method: &str, params: Value) -> CodexNo
 #[cfg(test)]
 use permission::{codex_permission_policy, workspace_live_sync_codex_permission_grant};
 
+pub(crate) use auth::normalize_codex_usage;
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
 pub(crate) use notifications::codex_error_text;
@@ -211,6 +212,92 @@ mod tests {
         codex_permission_policy, parse_notification, workspace_live_sync_codex_permission_grant,
         CodexClient, CodexNotification, JsonRpcMessage,
     };
+
+    #[test]
+    fn provusage_codex_scoped_updates_replace_refreshed_meters_and_keep_other_limits() {
+        crate::test_support::isolated_env_test!();
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed("local", "codex", "Scope updates")
+            .unwrap();
+        let refreshed = serde_json::json!({"rateLimitsByLimitId": {"codex": {"primary": {"usedPercent":1,"windowDurationMins":300}}}});
+        registry
+            .update_usage(
+                "local",
+                "codex",
+                &profile.profile_id,
+                super::normalize_codex_usage(&profile.profile_id, Some(&refreshed), None),
+            )
+            .unwrap();
+        let updates = [("codex", 7), ("codex-spark", 30), ("codex", 8)].into_iter().map(|(id, percent)| {
+            let Some(CodexNotification::AccountRateLimitsUpdated { rate_limits }) = parse_notification(JsonRpcMessage {
+                id: None, method: Some("account/rateLimits/updated".into()),
+                params: Some(serde_json::json!({"rateLimits": {"limitId":id, "primary":{"usedPercent":percent,"windowDurationMins":300}}})), result: None, error: None,
+            }) else { panic!("expected account update") };
+            rate_limits
+        }).collect();
+        let merged = registry
+            .update_usage(
+                "local",
+                "codex",
+                &profile.profile_id,
+                super::normalize_codex_usage(
+                    &profile.profile_id,
+                    Some(&serde_json::Value::Array(updates)),
+                    None,
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            merged.usage.meters.len(),
+            2,
+            "native limit IDs must match refreshed identities and preserve each limit"
+        );
+        assert_eq!(
+            merged
+                .usage
+                .meters
+                .iter()
+                .find(|m| m.meter_id == "rolling/300/codex")
+                .unwrap()
+                .used_percent,
+            Some(8.0)
+        );
+        assert_eq!(
+            merged
+                .usage
+                .meters
+                .iter()
+                .find(|m| m.meter_id == "rolling/300/codex-spark")
+                .unwrap()
+                .used_percent,
+            Some(30.0)
+        );
+    }
+
+    #[test]
+    fn provusage_codex_account_rate_limits_notification_is_not_dropped() {
+        let parsed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("account/rateLimits/updated".into()),
+            params: Some(
+                serde_json::json!({ "rateLimits": { "primary": { "usedPercent": 7, "windowDurationMins": 300, "resetsAt": 2000000000 } } }),
+            ),
+            result: None,
+            error: None,
+        });
+        let Some(CodexNotification::AccountRateLimitsUpdated { rate_limits }) = parsed else {
+            panic!("official account rate-limit updates must reach the account usage cache");
+        };
+        let usage = super::normalize_codex_usage("work", Some(&rate_limits), None);
+        assert_eq!(usage.profile_id, "work");
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].used_percent, Some(7.0));
+        assert_eq!(usage.meters[0].window_duration_minutes, Some(300));
+        assert_eq!(usage.meters[0].resets_at_ms, Some(2_000_000_000_000));
+    }
 
     #[test]
     fn workspace_live_sync_permission_policy_uses_platform_fenced_sandbox() {
