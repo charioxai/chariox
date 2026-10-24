@@ -110,6 +110,96 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
         );
     });
 }
+/// Every outside event request needs the access grant itself: another caller class, or a
+/// grant that is gone, is refused with the typed kernel-access error and reaches no ledger.
+fn outside_event_requests() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"any"}]}}),
+        serde_json::json!({"WaitEvents":{"timeout_ms":1}}),
+        serde_json::json!({"AckEvents":{"cursor":0}}),
+        serde_json::json!({"ListEvents":{}}),
+        serde_json::json!({"GetEventSubscription":{}}),
+        serde_json::json!({"UnsubscribeEvents":{"all":true}}),
+    ]
+}
+fn assert_kernel_access_refusal(result: Result<LocalDaemonResponse, DaemonError>, needle: &str) {
+    match result {
+        Err(DaemonError::LocalTransport { operation, message }) => {
+            assert_eq!(operation, "kernel access");
+            assert!(message.contains(needle), "{message}");
+        }
+        other => panic!("expected a kernel access refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn outside_event_requests_are_refused_without_the_external_agent_class() {
+    run("outside-class-guard", async {
+        let worktree = crate::test_support::TestWorktree::new("outside-class-guard");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let grant = router
+            .runtime_state()
+            .insert_access_grant_for_test(session.id());
+        for class in [
+            KernelConnectionClass::Terminal,
+            KernelConnectionClass::Unauthenticated,
+            KernelConnectionClass::KernelAgent,
+            KernelConnectionClass::Host,
+        ] {
+            for value in outside_event_requests() {
+                let request = request(value);
+                let mut caller = command(&grant, &request);
+                caller.caller.connection_class = Some(class);
+                assert_kernel_access_refusal(
+                    router.dispatch(caller, request).await,
+                    "require a local external access grant",
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn outside_event_requests_are_refused_once_the_grant_is_revoked() {
+    run("outside-revoked-guard", async {
+        let worktree = crate::test_support::TestWorktree::new("outside-revoked-guard");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let grant = router
+            .runtime_state()
+            .insert_access_grant_for_test(session.id());
+        let live = request(serde_json::json!({"GetEventSubscription":{}}));
+        // A live grant gets past the guard and is answered by the event ledger itself.
+        assert!(matches!(
+            router.dispatch(command(&grant, &live), live).await,
+            Err(DaemonError::MachineRequest { code, .. }) if code == "events_refused"
+        ));
+        assert_eq!(
+            router
+                .runtime_state()
+                .revoke_kernel_access(None, Some(&grant), "test revoke")
+                .unwrap(),
+            1
+        );
+        for value in outside_event_requests() {
+            let request = request(value);
+            assert_kernel_access_refusal(
+                router.dispatch(command(&grant, &request), request).await,
+                "grant revoked or expired",
+            );
+        }
+    });
+}
+
 #[test]
 fn outside_router_denies_session_agents_and_foreign_sessions() {
     run("outside-confinement", async {
