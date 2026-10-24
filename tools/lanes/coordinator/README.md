@@ -21,9 +21,16 @@ Create `$CHARIOX_COORDINATOR_HOME/config.json` with this non-secret policy:
   },
   "deadlineSeconds": 7200,
   "repository": "/absolute/local/git/repository",
+  "laneDirectories": { "review-a": "/absolute/lane-state/review-a" },
   "bases": { "review-a": "FULL_BASE_COMMIT" }
 }
 ```
+
+`laneDirectories` keeps uploaded briefs and fetched handoffs in the lane's
+state directory outside its checkout. Omit a lane to retain the worktree-based
+layout. The launch receipt retains that location across resume; bundle commands
+always run in the worktree. Create the lane directory before launch and tell
+the worker to write its handoffs there.
 
 | Replacement command | Inputs and behavior |
 | --- | --- |

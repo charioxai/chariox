@@ -40,11 +40,13 @@ export async function coordinate(operation, args, options = {}) {
       const config = options.config || await read(process.env.CHARIOX_COORDINATOR_CONFIG || join(home, 'config.json'));
       const profile = config.providers?.[provider];
       if (!profile) throw new LaneError('provider_not_configured');
+      const laneDirectory = config.laneDirectories?.[lane] || worktree;
+      if (typeof laneDirectory !== 'string' || !laneDirectory.startsWith('/') || laneDirectory.includes('\0')) throw new LaneError('invalid_lane_directory');
       if (!brief.trim()) throw new LaneError('empty_brief');
       const localBrief = join(home, `${lane}.brief.md`);
       await writeFile(localBrief, brief, { mode: 0o600, flag: 'wx' });
-      const input = { ...profile, kernel: config.kernel, taskId: lane, alias: lane, operationsAlias: `${lane}-operations`, worktree, provider, brief: localBrief, remoteBrief: `${worktree}/ROUND_BRIEF.md`, stateFile: join(home, `${lane}.launch.json`), deadlineMs: now() + (config.deadlineSeconds || 7200) * 1000 };
-      record = { lane, input, createdAtMs: now() }; await save(path, record);
+      const input = { ...profile, kernel: config.kernel, taskId: lane, alias: lane, operationsAlias: `${lane}-operations`, worktree, provider, brief: localBrief, remoteBrief: `${laneDirectory}/ROUND_BRIEF.md`, stateFile: join(home, `${lane}.launch.json`), deadlineMs: now() + (config.deadlineSeconds || 7200) * 1000 };
+      record = { lane, laneDirectory, input, createdAtMs: now() }; await save(path, record);
     } else if (record.input.worktree !== worktree || record.input.provider !== provider || brief !== await readFile(record.input.brief, 'utf8')) throw new LaneError('launch_conflict');
     record.launch = await adapter('launch', record.input);
     await save(path, record);
@@ -112,7 +114,7 @@ export async function coordinate(operation, args, options = {}) {
     const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
     if (status.currentPrompt || status.state === 'working') throw new LaneError('lane_still_running');
     const directory = join(home, 'artifacts', lane);
-    const files = await adapter('fetch', { ...common, worktree: record.input.worktree, directory });
+    const files = await adapter('fetch', { ...common, worktree: record.laneDirectory || record.input.worktree, directory });
     const update = await read(join(directory, 'ACCEPTANCE_UPDATE.json'));
     const heads = [...new Set(update.rows.map(r => r.head))];
     if (heads.length !== 1) throw new LaneError('ambiguous_bundle_head');

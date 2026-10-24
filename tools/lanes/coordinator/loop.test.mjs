@@ -160,3 +160,21 @@ test('deliver reuses the confirmed receipt for the same review and current promp
   assert.equal(r.calls.length, 1);
   assert.equal(r.calls[0].input.steerId, JSON.parse(await readFile(join(r.home, 'lane.delivery.json'), 'utf8')).steerId);
 });
+
+// MP-08 / MP-10: lane handoffs belong outside the worker checkout.
+test('brief and lanefin retain a configured lane directory outside the worktree', async t => {
+  const r = await rig(t);
+  r.options.config.laneDirectories = { lane: '/lane-state/lane' };
+  const started = await coordinate('brief', ['lane', '/work', 'codex'], r.options);
+  assert.equal(started.input.remoteBrief, '/lane-state/lane/ROUND_BRIEF.md');
+  assert.equal(started.laneDirectory, '/lane-state/lane');
+  await coordinate('lanefin', ['lane'], r.options);
+  assert.equal(r.calls.find(c => c.op === 'fetch').input.worktree, '/lane-state/lane');
+  assert.equal(r.calls.find(c => c.op === 'bundle').input.worktree, '/work');
+});
+test('brief refuses relative lane directories before launch', async t => {
+  const r = await rig(t);
+  r.options.config.laneDirectories = { lane: 'relative' };
+  await assert.rejects(coordinate('brief', ['lane', '/work', 'codex'], r.options), { code: 'invalid_lane_directory' });
+  assert.equal(r.calls.some(c => c.op === 'launch'), false);
+});
