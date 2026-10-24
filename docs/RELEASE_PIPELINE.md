@@ -10,7 +10,8 @@ increase the minor version). A candidate's exact Git commits and content hashes
 are its identity even while several candidates target the same version.
 
 Cloud main is the coordinator. A Cloud main push builds its own exact commit
-with its reviewed `.github/chariox-revision` OSS pin. An OSS main push dispatches
+with the current exact OSS main commit (`.github/chariox-revision` remains the
+independent existing test-fixture compatibility pin). An OSS main push dispatches
 an `oss-main` event to Cloud; the receiver verifies that the supplied full commit
 belongs to OSS main. Both paths build a complete candidate with one version.
 A single concurrency group serializes staging and production, without cancelling
@@ -18,8 +19,10 @@ an in-flight deployment. Lane branches and `[skip ci]` commits never publish.
 
 ## Manifest and storage
 
-`releases/staging.json` and `releases/prod.json` in Cloud are the small manifest
-directory. They are deliberately absent until the first successful deployment;
+`releases/staging.json` and `releases/prod.json` on Cloud's dedicated
+`release-manifests` branch are the small manifest directory. That branch is
+created once by the owner; main's code protection is never bypassed for manifests.
+The manifest files are deliberately absent until the first successful deployment;
 a placeholder must never look deployable. Candidate manifests are retained as
 workflow artifacts. Git history retains every deployed manifest for rollback.
 Every manifest records the version, full OSS/Cloud/relay commits, registry
