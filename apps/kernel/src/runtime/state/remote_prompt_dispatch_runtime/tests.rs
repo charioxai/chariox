@@ -5716,7 +5716,11 @@ mod lost_worker_run {
                 &worker_id,
                 &worker_private_key,
                 &home_public_key,
-                submitted(&successor_prompt_id, &leased_agent_id, "worker-run-successor"),
+                submitted(
+                    &successor_prompt_id,
+                    &leased_agent_id,
+                    "worker-run-successor",
+                ),
             )
             .await;
         });
@@ -5734,7 +5738,10 @@ mod lost_worker_run {
         let owned = &fixture.runtime.owned;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let session = owned.session_store.get_session(&fixture.session_id).unwrap();
+            let session = owned
+                .session_store
+                .get_session(&fixture.session_id)
+                .unwrap();
             let active = owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &fixture.agent_id);
@@ -5822,7 +5829,11 @@ mod lost_worker_run {
                 &worker_id,
                 &worker_private_key,
                 &home_public_key,
-                submitted(&prompt_id, "leased-agent-replacement", "worker-run-replayed"),
+                submitted(
+                    &prompt_id,
+                    "leased-agent-replacement",
+                    "worker-run-replayed",
+                ),
             )
             .await;
         });
@@ -5843,7 +5854,10 @@ mod lost_worker_run {
             .expect("fake worker should see the replay")
             .expect("fake worker assertions should hold");
 
-        let session = owned.session_store.get_session(&fixture.session_id).unwrap();
+        let session = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
         let active = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, &fixture.agent_id)

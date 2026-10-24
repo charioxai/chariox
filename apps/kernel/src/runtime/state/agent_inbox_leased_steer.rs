@@ -17,7 +17,12 @@ impl KernelRuntimeState {
         prompt: crate::session::PromptQueueItem,
         work: Option<String>,
     ) -> Result<(), DaemonError> {
-        let binding = self.owned.agent_store.get_agent(agent)?.remote_execution().cloned();
+        let binding = self
+            .owned
+            .agent_store
+            .get_agent(agent)?
+            .remote_execution()
+            .cloned();
         let steerable = binding.and_then(|binding| {
             let run = crate::provider::projected_leased_provider_run_id(
                 &binding.leased_agent_id,

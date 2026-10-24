@@ -943,7 +943,10 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let session = self.owned.session_store.get_session(session_id)?;
-        let (Some(prompt), queued) = self.owned.prompt_state_owner.state_parts(&session, agent_id)
+        let (Some(prompt), queued) = self
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id)
         else {
             return Ok(());
         };
