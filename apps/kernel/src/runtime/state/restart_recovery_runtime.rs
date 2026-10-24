@@ -27,6 +27,7 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) orphaned_workflow_prompts_finalized: usize,
     pub(crate) failed_reconciliations: usize,
     pub(crate) unrecoverable_local_prompts_cancelled: usize,
+    pub(crate) handed_off_local_prompts_ended: usize,
     failed_local_prompts: Vec<DurableRestartRecoveryTarget>,
     agents_awaiting_vault: BTreeSet<(String, String)>,
 }
@@ -148,6 +149,7 @@ impl KernelRuntimeState {
                     "orphaned_workflow_prompts_finalized": summary.orphaned_workflow_prompts_finalized,
                     "failed_reconciliations": summary.failed_reconciliations,
                     "unrecoverable_local_prompts_cancelled": summary.unrecoverable_local_prompts_cancelled,
+                    "handed_off_local_prompts_ended": summary.handed_off_local_prompts_ended,
                 }),
             );
         }))
@@ -224,6 +226,54 @@ impl KernelRuntimeState {
             attempt = attempt.saturating_add(1);
             tokio::time::sleep(retry_delay).await;
         }
+    }
+
+    /// MP-08/MP-09/MP-10 G13: the turn yielded (or its task already settled) before the kernel
+    /// stopped, so no provider turn is owed for this prompt. The ledger refuses to redispatch it,
+    /// and retrying that for the whole recovery window held the task's fired wakes for minutes.
+    fn local_prompt_task_handed_off(&self, room: &str, agent: &str, prompt_id: &str) -> bool {
+        self.owned
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))
+            .is_ok_and(|tasks| {
+                tasks.iter().any(|task| {
+                    task.prompt_id == prompt_id
+                        && task.pending_prompt_id.is_none()
+                        && task.state
+                            != crate::durable_state::agent_lifecycle::ExecutionState::Working
+                })
+            })
+    }
+
+    /// Ends the prompt without touching its task, which keeps its wait or outcome, and delivers
+    /// what the task's inbox already holds.
+    async fn end_handed_off_local_prompt_after_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, agent_id, Some(prompt.id()))
+        else {
+            return Ok(());
+        };
+        let (active_prompt, queued_prompts) = self
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id);
+        self.owned.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.finalize_cancelled_local_prompt_after_restart(session_id, agent_id, &prompt)
+            .await?;
+        Box::pin(self.deliver_agent_inbox(session_id, agent_id)).await
     }
 
     /// The synchronous redelivery cannot open the Vault unlock, so a launch that needs a locked
@@ -614,6 +664,24 @@ impl KernelRuntimeState {
                                 prompt.id().to_string(),
                             ));
                             summary.note_vault_locked(session.id(), agent_id, &error);
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
+                if self.local_prompt_task_handed_off(session.id(), agent_id, prompt.id()) {
+                    match self
+                        .end_handed_off_local_prompt_after_restart(session.id(), agent_id, &prompt)
+                        .await
+                    {
+                        Ok(()) => summary.handed_off_local_prompts_ended += 1,
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
                             log_restart_recovery_failure(
                                 session.id(),
                                 agent_id,
@@ -2005,6 +2073,150 @@ mod tests {
             "{}",
             task.reason
         );
+    }
+
+    // MP-08 / MP-09 / MP-10 G13 (accam r12): the kernel stopped right after a turn yielded,
+    // while its prompt was still active. Recovery retried redispatching that prompt for the
+    // whole window ("non-working task cannot dispatch a provider turn"), so the wake that had
+    // already fired stayed pending for about five minutes after the restart.
+    #[tokio::test]
+    async fn a_prompt_whose_turn_yielded_before_the_restart_ends_and_its_wake_is_delivered() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+        for phase in [
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+        ] {
+            let mut config = DaemonConfig::for_tests();
+            config.room_agent_tools = true;
+            let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+                phase,
+                std::env::current_dir()
+                    .expect("test workspace should resolve")
+                    .to_string_lossy()
+                    .as_ref(),
+                config,
+            );
+            let store = &runtime.owned.durable_state_store;
+            let now = crate::session::unix_epoch_ms();
+            let Outcome::Task(task) = store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: session_id.clone(),
+                    agent: agent_id.clone(),
+                    prompt: prompt_id.clone(),
+                    run: None,
+                    now,
+                })
+                .expect("task should begin")
+            else {
+                panic!("begin returns the task");
+            };
+            let wake: crate::durable_state::agent_lifecycle::AgentWake =
+                serde_json::from_value(serde_json::json!({
+                    "id": "g13-timer", "task_id": task.task_id, "room_id": session_id,
+                    "agent_id": agent_id, "registration_id": "completion-g13-timer",
+                    "kind": "timer", "label": "one-minute timer", "state": "",
+                    "created_at_ms": now, "verified_at_ms": null, "next_due_ms": now + 1,
+                    "interval_ms": null, "command": [], "match_text": null,
+                    "matched_at_ms": null, "pid": null, "exit_code": null, "summary": "",
+                    "detail": null, "fire_count": 0, "missed_fires": 0,
+                    "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
+                    "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
+                    "alerted_sequence": null
+                }))
+                .expect("wake should parse");
+            store
+                .agent_lifecycle(Operation::CreateWake {
+                    task: task.task_id.clone(),
+                    prompt: prompt_id.clone(),
+                    wake,
+                })
+                .expect("wake should register");
+            store
+                .agent_lifecycle(Operation::Yield {
+                    task: task.task_id.clone(),
+                    prompt: prompt_id.clone(),
+                    registrations: vec!["completion-g13-timer".into()],
+                    cursor: 0,
+                    deadline: now + 120_000,
+                    reason: "Wait for the one-minute timer".into(),
+                    now,
+                })
+                .expect("the turn yields");
+            // The provider turn ended in the ledger; its session prompt was still active
+            // when the kernel stopped.
+            store
+                .agent_lifecycle(Operation::Settle {
+                    room: session_id.clone(),
+                    agent: agent_id.clone(),
+                    prompt: prompt_id.clone(),
+                    run: "provider-run-yielded".into(),
+                    has_answer: true,
+                    cancelled: false,
+                    now,
+                })
+                .expect("the yielded turn settles to its wait");
+            store
+                .agent_lifecycle(Operation::FireWakes { now: now + 1_000 })
+                .expect("the timer fires");
+            assert_eq!(
+                store
+                    .agent_wake("g13-timer")
+                    .expect("wake should load")
+                    .expect("wake exists")
+                    .last_delivery
+                    .as_deref(),
+                Some("pending"),
+                "{phase:?}: the timer fired before the restart"
+            );
+            let targets = runtime.durable_restart_recovery_targets();
+
+            let window = std::time::Duration::from_secs(2);
+            let started = std::time::Instant::now();
+            let summary = runtime
+                .drive_durable_restart_recovery(
+                    &targets,
+                    &BTreeSet::new(),
+                    BTreeSet::new(),
+                    window,
+                    std::time::Duration::from_millis(1),
+                )
+                .await;
+
+            assert!(
+                started.elapsed() < window,
+                "{phase:?}: recovery must not spend its window on a turn that yielded: {summary:?}"
+            );
+            assert_eq!(summary.failed_reconciliations, 0, "{phase:?}: {summary:?}");
+            assert_eq!(
+                summary.unrecoverable_local_prompts_cancelled, 0,
+                "{phase:?}"
+            );
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should load");
+            assert!(
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .is_none_or(|prompt| prompt.id() != prompt_id),
+                "{phase:?}: the yielded prompt ends: {summary:?} {:?}",
+                store.agent_tasks(Some(&session_id), Some(&agent_id))
+            );
+            let task = store
+                .agent_tasks(Some(&session_id), Some(&agent_id))
+                .expect("tasks should load")
+                .into_iter()
+                .find(|candidate| candidate.task_id == task.task_id)
+                .expect("task should exist");
+            assert!(
+                task.state == ExecutionState::Working && task.prompt_id != prompt_id,
+                "{phase:?}: the fired timer is delivered as the task's next turn: {task:?}"
+            );
+        }
     }
 
     #[tokio::test]
