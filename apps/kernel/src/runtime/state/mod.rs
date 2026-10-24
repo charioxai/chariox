@@ -506,7 +506,9 @@ mod remote_prompt_worker_submission_runtime;
 mod remote_provider_failure_runtime;
 #[cfg(test)]
 mod remote_queue_advance_tests;
+mod restart_launch_admission;
 mod restart_recovery_runtime;
+use restart_launch_admission::{HeldBack, RecoveryAdmission, RestartLaunchAdmissions};
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
 mod claude_token_checks;

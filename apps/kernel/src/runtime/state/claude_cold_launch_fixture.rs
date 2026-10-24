@@ -98,6 +98,52 @@ pub(super) async fn make_cold_claude(
         .unwrap();
 }
 
+/// Waits until the agent's hooks card is open and returns its id.
+pub(super) async fn await_hooks_card(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(card) = state
+            .owned
+            .session_store
+            .get_session(session_id)
+            .unwrap()
+            .active_interaction_for_agent(agent_id)
+            .cloned()
+        {
+            assert!(card.id().starts_with("claude-workspace-hooks-"), "{card:?}");
+            return card.id().to_string();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no hooks card within 5 s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// Answers the hooks card with `choice` ("trust" or "cancel") as the owner.
+pub(super) async fn answer_hooks_card(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    card_id: &str,
+    choice: &str,
+) {
+    state
+        .resolve_terminal_runtime_interaction(
+            session_id,
+            card_id,
+            choice,
+            None,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
+        )
+        .await
+        .unwrap();
+}
+
 /// Runs `start` until the agent's hooks card appears, cancels the card, and
 /// returns what `start` ends with. A start that never asks about the folder's
 /// hooks fails here.
@@ -108,37 +154,14 @@ pub(super) async fn start_waits_for_hooks_card<T: std::fmt::Debug>(
     start: impl Future<Output = T>,
 ) -> T {
     let mut start = Box::pin(start);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let card = loop {
+    let card = {
+        let card = await_hooks_card(state, session_id, agent_id);
+        tokio::pin!(card);
         tokio::select! {
             result = &mut start => panic!("the start went ahead without the hooks card: {result:?}"),
-            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+            card = &mut card => card,
         }
-        if let Some(card) = state
-            .owned
-            .session_store
-            .get_session(session_id)
-            .unwrap()
-            .active_interaction_for_agent(agent_id)
-            .cloned()
-        {
-            break card;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no hooks card within 5 s"
-        );
     };
-    assert!(card.id().starts_with("claude-workspace-hooks-"), "{card:?}");
-    state
-        .resolve_terminal_runtime_interaction(
-            session_id,
-            card.id(),
-            "cancel",
-            None,
-            Some(crate::session::DEFAULT_LOCAL_USER_ID),
-        )
-        .await
-        .unwrap();
+    answer_hooks_card(state, session_id, &card, "cancel").await;
     start.await
 }

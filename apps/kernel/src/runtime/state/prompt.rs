@@ -137,6 +137,24 @@ impl KernelRuntimeOwnedState {
         provider_run_id: &str,
         message: &str,
     ) -> Result<Option<bool>, DaemonError> {
+        self.settle_failed_local_prompt_of_run(
+            session_id,
+            agent_id,
+            prompt_id,
+            Some(provider_run_id),
+            message,
+        )
+    }
+
+    /// A prompt that failed before it had a provider run has none to name.
+    pub(super) fn settle_failed_local_prompt_of_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: Option<&str>,
+        message: &str,
+    ) -> Result<Option<bool>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
             .prompt_state_owner
@@ -151,7 +169,7 @@ impl KernelRuntimeOwnedState {
             match self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
                 &active_prompt,
-                Some(provider_run_id),
+                provider_run_id,
                 message,
             ) {
                 Ok(released_claim) => released_claim,
@@ -176,14 +194,10 @@ impl KernelRuntimeOwnedState {
         // MP-08 / MP-10 / MP-11: cancellation owns completion fan-out even
         // before dispatch creates prompt activity. Preserve this dispatch's
         // run identity if the failed provider was already retired.
-        self.cancel_active_prompt_only_for_provider_run(
-            session_id,
-            agent_id,
-            Some(provider_run_id),
-        )?;
+        self.cancel_active_prompt_only_for_provider_run(session_id, agent_id, provider_run_id)?;
         self.agent_store
             .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
-        let released_claim = self.clear_prompt_activity(provider_run_id);
+        let released_claim = provider_run_id.is_some_and(|id| self.clear_prompt_activity(id));
         let _ = self.session_snapshot(session_id)?;
         // Workflow failure settlement releases the claim by run/node identity before
         // prompt activity is cleared by provider-run identity. Preserve that signal so

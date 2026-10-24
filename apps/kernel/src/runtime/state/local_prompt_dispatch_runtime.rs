@@ -5003,7 +5003,12 @@ pub(in crate::runtime::state) mod tests {
         );
 
         runtime
-            .finalize_cancelled_local_prompt_after_restart(&session_id, &agent_id, &prompt)
+            .finalize_cancelled_local_prompt_after_restart(
+                &RestartLaunchAdmissions::default(),
+                &session_id,
+                &agent_id,
+                &prompt,
+            )
             .await
             .expect("restart recovery should finish the durable failure intent");
         assert_eq!(

@@ -18,10 +18,7 @@ impl KernelRuntimeState {
         &self,
         request: &crate::provider::LaunchProviderRequest,
     ) -> Result<(), DaemonError> {
-        let Some(folder) = crate::provider::untrusted_claude_workspace(request)? else {
-            return Ok(());
-        };
-        if folder.awaits_hook_approval(request) && !self.sudo_covers_claude_launch(request) {
+        if let Some(folder) = self.untrusted_folder_awaiting_hook_approval(request)? {
             self.confirm_claude_project_hooks(request, &folder).await?;
         }
         if let Some(trusted) = crate::provider::trust_claude_workspace(request)? {
@@ -41,6 +38,17 @@ impl KernelRuntimeState {
             );
         }
         Ok(())
+    }
+
+    /// The folder this launch must ask the person about, if any: it ships
+    /// hooks, the agent is not in yolo, and no live /sudo window covers it.
+    pub(super) fn untrusted_folder_awaiting_hook_approval(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> Result<Option<crate::provider::UntrustedClaudeWorkspace>, DaemonError> {
+        Ok(crate::provider::untrusted_claude_workspace(request)?
+            .filter(|folder| folder.awaits_hook_approval(request))
+            .filter(|_| !self.sudo_covers_claude_launch(request)))
     }
 
     /// A cold Claude launch for this agent needs the folder's trust settled
