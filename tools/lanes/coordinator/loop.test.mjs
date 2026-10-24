@@ -171,6 +171,7 @@ test('brief and lanefin retain a configured lane directory outside the worktree'
   await coordinate('lanefin', ['lane'], r.options);
   assert.equal(r.calls.find(c => c.op === 'fetch').input.worktree, '/lane-state/lane');
   assert.equal(r.calls.find(c => c.op === 'bundle').input.worktree, '/work');
+  assert.equal(r.calls.find(c => c.op === 'bundle').input.remoteBundle, '/lane-state/lane/round.bundle');
 });
 test('brief refuses relative lane directories before launch', async t => {
   const r = await rig(t);

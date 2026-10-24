@@ -123,7 +123,7 @@ export async function coordinate(operation, args, options = {}) {
       head = heads[0];
     }
     const config = options.config || await read(process.env.CHARIOX_COORDINATOR_CONFIG || join(home, 'config.json'));
-    const bundle = await adapter('bundle', { ...common, sessionId: record.launch.operationsSessionId, worktree: record.input.worktree, base: config.bases?.[lane], head, remoteBundle: `${record.input.worktree}/round.bundle`, localBundle: join(directory, 'round.bundle'), repository: config.repository, timeout: 300 });
+    const bundle = await adapter('bundle', { ...common, sessionId: record.launch.operationsSessionId, worktree: record.input.worktree, base: config.bases?.[lane], head, remoteBundle: `${record.laneDirectory || record.input.worktree}/round.bundle`, localBundle: join(directory, 'round.bundle'), repository: config.repository, timeout: 300 });
     const result = { lane, status, files, bundle };
     await save(join(home, `${lane}.finish.json`), result); return result;
   }
