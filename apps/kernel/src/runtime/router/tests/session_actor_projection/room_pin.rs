@@ -49,5 +49,7 @@ async fn mp11_room_pin_updates_listing_and_survives_restore() {
     let response = pin(&router, &id, false, DEFAULT_LOCAL_USER_ID)
         .await
         .unwrap();
-    assert_eq!(response["RoomPinned"]["session"]["pinned"], false);
+    let unpinned: crate::session::RuntimeSession =
+        serde_json::from_value(response["RoomPinned"]["session"].clone()).unwrap();
+    assert!(!unpinned.pinned());
 }

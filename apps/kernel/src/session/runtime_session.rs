@@ -90,7 +90,7 @@ pub struct RuntimeSession {
     #[serde(default)]
     project_id: String,
     alias: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
     pinned: bool,
     workspace_id: String,
     worktree_id: String,
