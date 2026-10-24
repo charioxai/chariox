@@ -298,12 +298,8 @@ impl KernelRuntimeState {
                     let Some(dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
                         return Ok(true);
                     };
-                    let provider_run_id = prompt.durable_delivery_provider_run_id();
                     if let Err(error) = self
-                        .resume_delivered_remote_prompt_cancellation_after_restart(
-                            &dispatch,
-                            provider_run_id,
-                        )
+                        .resume_delivered_remote_prompt_cancellation_after_restart(&dispatch)
                         .await
                     {
                         crate::logging::warn_with_fields(
@@ -318,10 +314,7 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
-                        self.spawn_delivered_remote_cancellation_resume(
-                            dispatch,
-                            provider_run_id.map(str::to_string),
-                        );
+                        self.spawn_delivered_remote_cancellation_resume(dispatch);
                     }
                     return Ok(true);
                 }

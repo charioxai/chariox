@@ -6556,6 +6556,196 @@ mod projection_acknowledgement {
         );
     }
 
+    // MP-08 / MP-10 A10-S02 (#1065 review P1 @28edc7354): while a restarted home
+    // retries its Ctrl+C, a drain follows the worker onto a successor run (provider
+    // sign-in relaunch). The retry kept asking about the original run, failed the
+    // binding check every time and ended the turn at home after 120 s while the
+    // worker kept running the cancelled work. The cancel must reach the successor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restarted_cancellation_follows_a_successor_run_found_by_its_drain() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let run = "worker-run-restart-first";
+        let successor = "worker-run-restart-successor";
+        let fixture = delivered_fixture(&relay_url, "restart-successor", run).await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let (_, _, output_event, _) = actual_worker_output_then_completion(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &prompt_id,
+        );
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run: Some(worker_run),
+            ..
+        } = &output_event
+        else {
+            panic!("the worker projects its run");
+        };
+        let successor_projection = RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.clone(),
+                home_agent_id: fixture.agent_id.clone(),
+                provider_run_id: successor.to_string(),
+                provider_run: Some(worker_run.clone().projected_for_home_agent_with_id(
+                    successor.to_string(),
+                    fixture.session_id.clone(),
+                    fixture.agent_id.clone(),
+                )),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: Vec::new(),
+            }),
+            projection_sequence: Some(1),
+        };
+        let completion = projection(&fixture, successor, 2, true);
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let mut cancelled = false;
+            loop {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                let response = match &request.request {
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. }
+                        if !seen.contains(&"receipt lost") =>
+                    {
+                        seen.push("receipt lost");
+                        drop(request);
+                        continue;
+                    }
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. } => {
+                        seen.push("receipt");
+                        RelayPeerResponse::LeasedPromptReceiptQueried {
+                            receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                                home_prompt_id: prompt_id.clone(),
+                                worker_provider_run_id: successor.to_string(),
+                                phase:
+                                    crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                                target_home_prompt_id: None,
+                                execution_lease_id: Some(
+                                    "lease-receipt-restart-successor".to_string(),
+                                ),
+                            }),
+                        }
+                    }
+                    RelayPeerRequest::CancelLeasedPrompt {
+                        home_prompt_id,
+                        worker_provider_run_id,
+                        ..
+                    } => {
+                        assert_eq!(home_prompt_id, &prompt_id);
+                        assert_eq!(worker_provider_run_id, successor);
+                        seen.push("cancel");
+                        cancelled = true;
+                        RelayPeerResponse::LeasedPromptCancelled {
+                            cancellation: crate::session::PromptCancellation {
+                                prompt: crate::session::PromptQueueItem::new(
+                                    "worker-local-restart-successor",
+                                    "worker-attachment-restart-successor",
+                                    &leased_agent_id,
+                                    "long leased turn",
+                                    crate::session::PromptStatus::Cancelling,
+                                ),
+                                started_next: None,
+                            },
+                        }
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. }
+                        if !seen.contains(&"successor") =>
+                    {
+                        seen.push("successor");
+                        successor_projection.clone()
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } if !cancelled => {
+                        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                            event: None,
+                            projection_sequence: None,
+                        }
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => {
+                        seen.push("drain");
+                        completion.clone()
+                    }
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. } => {
+                        seen.push("observe");
+                        RelayPeerResponse::LeasedGitObserved {
+                            provider_run_id: successor.to_string(),
+                            git_observations: Vec::new(),
+                            workspace_live_sync_change: None,
+                        }
+                    }
+                    other => panic!("unexpected worker request {other:?}"),
+                };
+                let done = matches!(
+                    &request.request,
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. }
+                );
+                send_fake_worker_peer_response(
+                    request,
+                    &worker_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    response,
+                )
+                .await;
+                if done {
+                    return seen;
+                }
+            }
+        });
+
+        let runtime = &fixture.runtime;
+        let owned = &runtime.owned;
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+        runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                Some(run),
+            )
+            .await
+            .expect("restart recovery runs");
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(20), server)
+            .await
+            .expect("the cancellation should reach the successor run")
+            .expect("fake worker assertions should hold");
+        assert_eq!(
+            seen,
+            vec![
+                "receipt lost",
+                "successor",
+                "receipt",
+                "cancel",
+                "drain",
+                "observe"
+            ]
+        );
+    }
+
     // MP-08 / MP-10 A10-S02 (amint r18): a delivery persisted by an older kernel has
     // no worker run id, so its receipt cannot be reconciled after a restart. The
     // retry must still drain the worker's output instead of leaving the turn held.

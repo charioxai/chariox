@@ -219,22 +219,32 @@ impl KernelRuntimeState {
         Ok(worker_provider_run_id)
     }
 
+    /// Reconciles the run the prompt's durable delivery names now, so a successor run a drain
+    /// followed after a provider sign-in is the one asked about and cancelled.
     pub(super) async fn resume_delivered_remote_prompt_cancellation_after_restart(
         &self,
         dispatch: &crate::app::KernelRemotePromptDispatch,
-        expected_provider_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
-        if !self.remote_prompt_receipt_prompt_is_current(dispatch)? {
+        let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .filter(|prompt| prompt.id() == dispatch.prompt_id)
+        else {
             return Err(DaemonError::NoActivePrompt {
                 session_id: dispatch.session_id.clone(),
             });
-        }
-        let expected_provider_run_id =
-            expected_provider_run_id.ok_or_else(|| DaemonError::LocalTransport {
+        };
+        let expected_provider_run_id = prompt
+            .durable_delivery_provider_run_id()
+            .map(str::to_string)
+            .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "resume remote prompt cancellation",
                 message: "delivered cancellation has no durable worker provider-run identity"
                     .to_string(),
             })?;
+        let expected_provider_run_id = expected_provider_run_id.as_str();
         let binding_before = self
             .remote_prompt_receipt_binding(dispatch)
             .map_err(|detail| DaemonError::LocalTransport {
@@ -350,7 +360,6 @@ impl KernelRuntimeState {
     pub(super) fn spawn_delivered_remote_cancellation_resume(
         &self,
         dispatch: crate::app::KernelRemotePromptDispatch,
-        provider_run_id: Option<String>,
     ) {
         let state = self.clone();
         tokio::spawn(async move {
@@ -374,10 +383,7 @@ impl KernelRuntimeState {
                     );
                 }
                 let error = match state
-                    .resume_delivered_remote_prompt_cancellation_after_restart(
-                        &dispatch,
-                        provider_run_id.as_deref(),
-                    )
+                    .resume_delivered_remote_prompt_cancellation_after_restart(&dispatch)
                     .await
                 {
                     Ok(()) | Err(DaemonError::NoActivePrompt { .. }) => return,
