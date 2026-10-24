@@ -57,6 +57,7 @@ mod request_errors;
 mod request_timing;
 mod sender_identity;
 mod subscriptions;
+pub(crate) use browser_input_order::release_input_turn;
 use cloud_presence::CloudPresencePublisher;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{publish_offline_and_set_disconnected, set_connected};

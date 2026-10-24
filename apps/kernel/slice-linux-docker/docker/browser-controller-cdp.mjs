@@ -1284,6 +1284,10 @@ export class BrowserCdpClient {
       }
     }
     this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));
+    if (this.visitedLinks && typeof message?.method === "string" && message.method.startsWith("Page.")) {
+      const targetId = this.targetsBySession.get(message.sessionId), shown = (this.pageFramesByTarget.get(targetId) ?? this.suspendedPageFrames.get(targetId))?.frame;
+      if (targetId) this.visitedLinks.observe(targetId, message, shown?.url);
+    }
     // Navigation start, not loading start: fragment and pushState navigations also start loading but keep the document.
     if (message?.method === "Page.frameStartedNavigating") {
       const targetId = this.targetsBySession.get(message.sessionId), entry = this.pageFramesByTarget.get(targetId);

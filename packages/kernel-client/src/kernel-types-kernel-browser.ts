@@ -40,6 +40,7 @@ export type KernelBrowserCommand =
   | { op: "start" | "state" | "stop" }
   | { op: "open"; url: string }
   | { op: "close" | "snapshot" | "screenshot" | "subscribe"; tab_id: string; generation: number }
+  | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
   | { op: "poll" | "unsubscribe"; subscription_id: string; generation: number }

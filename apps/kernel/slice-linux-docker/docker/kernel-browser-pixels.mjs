@@ -1,4 +1,4 @@
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,pageLimit} from './kernel-browser-geometry.mjs';
 // MP-08/MP-11: exact Vault fill masks through the shared trusted collector.
 // Unavailable/racing geometry refuses capture for retry. No generic masks.
 import { deflateSync, inflateSync, crc32 } from "node:zlib";
@@ -57,7 +57,7 @@ export function decodePng(data, scale = 1, viewport = null) {
       // MP-08/MP-10: the native exact raster writes indexed PNGs (exact
       // per-RGB palettes, at most 256 colours) as well as RGB/RGBA.
       channels = body[9] === 6 ? 4 : body[9] === 2 ? 3 : body[9] === 3 ? 1 : 0;
-      const fits = viewport ? width === viewport.width && height === viewport.height : width <= geometry.width * scale && height <= geometry.height * scale;
+      const fits = viewport ? width === viewport.width && height === viewport.height : width <= pageLimit.width * scale && height <= pageLimit.height * scale;
       if (!width || !height || !fits || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
     } else if (type === "PLTE") {
       if (!width || channels !== 1 || palette || compressed.length || !body.length || body.length % 3 || body.length > 768) throw new Error("MD-5: invalid frame palette");

@@ -5,7 +5,7 @@
 import {nativePageRect} from './kernel-browser-page-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
-import {keysyms, notches} from './kernel-browser-input.mjs';
+import {keysyms, ChromeWheel} from './kernel-browser-input.mjs';
 import {markDispatched} from './kernel-browser-input-queue.mjs';
 import {slowMark} from './kernel-browser-timing.mjs';
 import {retireNativeStates} from './kernel-browser-native-worker.mjs';
@@ -443,7 +443,7 @@ export class ChromeWindows {
   /** Constructor arguments of vidlat's NativeWindowRegionCapture for the band. */
   band(binding = this.current().tabbed) {
     return {surface: 'browser_chrome', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
-      rect: {left: 0, top: 0, width: binding.bounds.width, height: binding.content_top},
+      rect: {left: 0, top: 0, width: binding.bounds.width-binding.bounds.width%2, height: binding.content_top-binding.content_top%2},
       contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isBandCurrent ?? binding.isCurrent};
   }
   auxiliaryRegion(binding) {
@@ -633,8 +633,11 @@ export class InputArbiter {
       return dispatched(() => source.drag(input.x, input.y, input.to_x, input.to_y));
     }
     if (input.kind === 'scroll') {
-      const nx = notches(input.delta_x), ny = notches(input.delta_y);
+      this.wheel ??= new ChromeWheel();
+      const nx = this.wheel.notches('x', input.delta_x), ny = this.wheel.notches('y', input.delta_y);
       if (nx === null || ny === null || Math.abs(nx) > 10 || Math.abs(ny) > 10) throw new Error('MD-2: unsupported input');
+      // A fine delta below one notch is kept for the next one, as a native trackpad does.
+      if (!nx && !ny) return {dispatched: true};
       await switching(); return dispatched(() => source.wheel(input.x, input.y, nx, ny));
     }
     if (input.kind === 'key') {

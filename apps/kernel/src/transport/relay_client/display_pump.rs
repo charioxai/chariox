@@ -41,7 +41,8 @@ struct PumpState {
     last_frame_at: Option<Instant>,
     frame_interval: Option<Duration>,
     gated_at: Option<Instant>,
-    closes: VecDeque<Instant>,
+    /// Gate closures in the congestion window, with the oldest unacked frame that closed each.
+    closes: VecDeque<(Instant, u64)>,
     synced_at: Option<Instant>,
 }
 
@@ -97,7 +98,7 @@ impl PumpState {
             "push_rtt_floor",
             now.checked_sub(self.rtt_floor()).unwrap_or(now),
         );
-        if let Some(&(_, oldest)) = self.sent.front() {
+        if let Some(&(oldest_sequence, oldest)) = self.sent.front() {
             let age = now.saturating_duration_since(oldest);
             if age > STALL {
                 // A stalled gate is sent nothing; reopen on an independent
@@ -116,7 +117,7 @@ impl PumpState {
                 if self.gated_at.is_none() {
                     self.mark("push_gate_closed", oldest);
                     self.gated_at = Some(now);
-                    self.closes.push_back(now);
+                    self.closes.push_back((now, oldest_sequence));
                 }
                 return Gate::Closed;
             }
@@ -128,7 +129,7 @@ impl PumpState {
         while self
             .closes
             .front()
-            .is_some_and(|at| now.saturating_duration_since(*at) > CONGESTION_WINDOW)
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > CONGESTION_WINDOW)
         {
             self.closes.pop_front();
         }
@@ -175,6 +176,16 @@ impl PumpState {
                             "push_ack_rtt",
                             Instant::now().checked_sub(sample).unwrap_or(now),
                         );
+                    }
+                    // MP-08/MP-10: a closure whose frame then crossed the wire within the
+                    // allowance was the receiver's own decode/present hold (a navigation's
+                    // tiles and mirror on the viewer's main thread), not congestion: it must
+                    // not lower the motion bitrate. Untimed ACKs keep every closure.
+                    if held_ms.is_some()
+                        && !self.rtt.is_empty()
+                        && sample <= self.rtt_floor() + self.gate_allowance()
+                    {
+                        self.closes.retain(|&(_, closed)| closed != sequence);
                     }
                     self.rtt.push_back((now, sample));
                 }
@@ -729,6 +740,39 @@ mod tests {
             panic!()
         };
         assert!(!credit.congested, "congestion decays after the window");
+    }
+
+    // browserperf r4: a viewer busy presenting a navigation (late ACK, short wire time) is not congested.
+    #[test]
+    fn mp10_receiver_hold_closures_do_not_report_congestion() {
+        // Two closures 0.9 s apart over an 80 ms wire floor; `wire` decides where each ACK's delay was.
+        let run = |wire: bool| {
+            let start = Instant::now();
+            let mut state = PumpState::default();
+            state.sent_frame(0, start);
+            state.acknowledge(0, false, start + Duration::from_millis(80), Some(0));
+            let mut congested = false;
+            for (round, delay) in [(1u64, 260u64), (2, 700)] {
+                let at = start + Duration::from_millis(100 + 900 * (round - 1));
+                state.sent_frame(round, at);
+                assert_eq!(
+                    state.admit(at + Duration::from_millis(delay - 10)),
+                    Gate::Closed
+                );
+                let held = if wire { 0 } else { delay as u32 - 80 };
+                state.acknowledge(round, false, at + Duration::from_millis(delay), Some(held));
+                let Gate::Open(credit) = state.admit(at + Duration::from_millis(delay + 1)) else {
+                    panic!("the ACK reopens the gate")
+                };
+                congested |= credit.congested;
+            }
+            congested
+        };
+        assert!(
+            !run(false),
+            "a viewer holding frames over an 80 ms wire is not congested"
+        );
+        assert!(run(true), "the same delays on the wire are congestion");
     }
 
     #[test]

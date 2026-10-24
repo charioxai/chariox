@@ -123,6 +123,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-page-display.mjs"),
     ),
     (
+        "kernel-browser-navigation-display.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-navigation-display.mjs"),
+    ),
+    (
         "kernel-browser-layout-observer.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-layout-observer.mjs"),
     ),
@@ -267,16 +271,16 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-closed.mjs"),
     ),
     (
-        "kernel-browser-mirror2-preview.mjs",
-        include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-preview.mjs"),
-    ),
-    (
         "kernel-browser-mirror2.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2.mjs"),
     ),
     (
         "kernel-browser-mirror2-observer.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs"),
+    ),
+    (
+        "kernel-browser-visited-links.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-visited-links.mjs"),
     ),
     (
         "kernel-browser-mirror2-fonts.mjs",
@@ -485,6 +489,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-popup-evidence.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-popup-evidence.mjs"),
+    ),
+    (
+        "kernel-browser-resize.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-resize.mjs"),
     ),
     (
         "kernel-browser-input.mjs",

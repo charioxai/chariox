@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: empty-only shortcut retains every delivery/refusal fence.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {nativeCreditEmpty,nativeRegionBaseCurrent,nativeRegionPending} from './kernel-browser-native-credit.mjs';
+import {nativeCreditEmpty,nativeRegionBaseCurrent,nativeRegionPending,nativeRevisionCurrent} from './kernel-browser-native-credit.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 function fixture(){
  const policy={},sample={raw:{},serial:1,document_id:'d',tab_id:'t'};
@@ -130,4 +130,14 @@ test('MP-08/MP-10/MP-11 a native event retires cached delivery after asynchronou
  Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionCurrent:async()=>assert.fail('delivery must not repeat the source query'),regionFrameCurrent:()=>{checks++;return cached}});
  const host=regionCreditHost(f);host.compositorFor=async()=>{cached=false;return f.source};
  assert.equal((await displayCredit(host,f.stream,{generation:1,after_sequence:1})).frame_sent,false);assert.equal(checks,1);
+});
+test('MP-08/MP-10/MP-11 a native exact plan after an encode no frame took stays current until a later hand-off',()=>{
+ // The worker auto-encoded readback 2 (revision 7) while the stream patched it; the encoder last handed off revision 5.
+ const encoder={nativeRevision:5};
+ assert.equal(nativeRevisionCurrent({native_exact:true,native_revision:7},encoder),true,'a static page has no later encode to resynchronise');
+ assert.equal(nativeRevisionCurrent({native_exact:true,native_revision:5},encoder),true);
+ assert.equal(nativeRevisionCurrent({native_exact:true,native_revision:4},encoder),false,'a packet handed off after the plan');
+ assert.equal(nativeRevisionCurrent({native_revision:7},encoder),false,'an encoded packet must be the latest hand-off');
+ assert.equal(nativeRevisionCurrent({native_exact:true,native_revision:7},{nativeRevision:undefined}),false,'a retired encoder');
+ assert.equal(nativeRevisionCurrent({},encoder),true);
 });

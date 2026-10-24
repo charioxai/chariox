@@ -17,7 +17,7 @@ import { discardPacket } from './kernel-browser-native-worker.mjs';
 // MP-08/MP-10: protocol 466 binary frame: JSON header without payload strings
 // plus raw payload bytes, then the relay's base64 ciphertext and envelope.
 const egressLimit = 1024 * 1024;
-const egressBytes = (packet, binary = false) => {
+export const egressBytes = (packet, binary = false) => {
   let raw = packet.native_packet?.length ?? 0;
   const header = JSON.stringify(packet, (key, value) => {
     if (key === 'data_base64') { raw += Math.ceil(value.length * 3 / 4); return undefined; }

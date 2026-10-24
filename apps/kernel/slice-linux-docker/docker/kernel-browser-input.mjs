@@ -2,7 +2,7 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
-const viewport = { css_width: geometry.width, css_height: geometry.height };
+const canonicalViewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
   ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, Home: 36, End: 35 };
@@ -11,12 +11,25 @@ export const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b
   ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54, Home: 0xff50, End: 0xff57 };
 // MP-08/MP-10: mouse-wheel notches animate like a native wheel through the
 // owned display (Selkies forwards every wheel event as X button notches).
-// Viewers report a notch as 120 (wheelDelta), 100 (Chrome on Windows,
-// automation) or fine trackpad deltas. An admitted native display starts
-// a notch for each nonzero fine delta; other callers retain precise CDP deltas.
+// A native X11 notch moves 120 pixels. Other viewer steps, including a
+// 100-pixel Windows wheel step, must retain their distance through CDP.
+// Fine trackpad motion must retain its pixel distance through CDP: turning
+// each small delta into a whole notch amplifies a gesture and its momentum tail.
 
 const FOCUS_GRACE_MS = 100;
-export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.round(delta / 100) || Math.sign(delta);
+export const notches = delta => delta % 120 === 0 ? delta / 120 : null;
+// Chrome's own UI (strip, menus, popups) has no CDP path: X11 notches only. A wheel
+// step of 100 or more turns per step; fine trackpad deltas accumulate to whole notches.
+export class ChromeWheel {
+  constructor() { this.rest = { x: 0, y: 0 }; }
+  notches(axis, delta) {
+    if (!Number.isFinite(delta)) return null;
+    const whole = notches(delta);
+    if (whole !== null || Math.abs(delta) >= 100) { this.rest[axis] = 0; return whole ?? Math.round(delta / 100); }
+    const sum = Math.sign(this.rest[axis]) === -Math.sign(delta) ? delta : this.rest[axis] + delta, turned = Math.trunc(sum / 120);
+    this.rest[axis] = sum - turned * 120; return turned;
+  }
+}
 // MP-11: native pointer input is at most once. An action sent to the native
 // worker without a reply may have reached the page, so it counts as dispatched
 // (the retired source re-observes the outcome) and is never replayed via CDP.
@@ -25,7 +38,7 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
+export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');

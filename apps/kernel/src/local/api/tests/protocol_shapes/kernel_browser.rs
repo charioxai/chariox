@@ -557,7 +557,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "30553a86ec7f8e0d98844a5dce6ef4b05250cc0ad35eeb64b771dffc8cec3bb1"
+        "ddbf45b52a7100f7f9f5b3aafb661765c210f49eddb7cc3e64d628e2a812075e"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -646,4 +646,26 @@ fn mp08_mp10_mp11_browser_window_display_560_snapshot() {
     let extra = serde_json::json!({"KernelBrowser":{"command":{"op":"display_subscribe","tab_id":"t","generation":7,
         "target":{"kind":"browser_window","window_generation":3,"xid":42},"codecs":["png"],"bitrate":2000000,"device_scale_factor":1}}});
     assert!(serde_json::from_value::<LocalDaemonRequest>(extra).is_err());
+}
+
+// MP-08/MP-10/MP-11: coordinator allocated578/186 for the shared resize mutation.
+#[test]
+fn browser_resize_protocol578_snapshot() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 578);
+    }
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 186);
+    }
+    let bytes = include_bytes!("browser-resize-578.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "c4afaa2ca93ce0ceff96203d8cbb937dbf2156b988f7000735524f76b2954191"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let mut foreign = snapshot["request"].clone();
+    foreign["KernelBrowser"]["command"]["window_id"] = serde_json::json!(42);
+    assert!(serde_json::from_value::<LocalDaemonRequest>(foreign).is_err());
 }
