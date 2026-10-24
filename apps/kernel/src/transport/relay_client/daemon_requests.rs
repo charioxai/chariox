@@ -1,5 +1,6 @@
 //! Inbound browser/client relay request dispatch to the kernel command router.
 
+use super::request_errors::map_relay_error;
 #[cfg(test)]
 mod app_tests;
 mod prepare;
@@ -48,6 +49,7 @@ pub(super) struct RelayRequestOutcome {
     pub(super) error: Option<RelayError>,
 }
 
+#[cfg(test)]
 pub(super) async fn handle_daemon_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
@@ -875,6 +877,32 @@ async fn dispatch_on_behalf_of(
             refusal.message(),
             false,
         ));
+    }
+    if crate::runtime::state::is_outside_event_request(&request) {
+        let id = format!(
+            "outside:{}:{}",
+            on_behalf_of.origin_kernel, on_behalf_of.grant_id
+        );
+        let result = match &request {
+            LocalDaemonRequest::WaitEvents(wait) => {
+                router
+                    .runtime_state()
+                    .outside_wait(&id, wait, None, None)
+                    .await
+            }
+            _ => router.runtime_state().outside_part_request(
+                &id,
+                false,
+                caller.user_id.as_deref(),
+                &request,
+            ),
+        };
+        return match result {
+            Ok(response) => RelayDispatchOutcome::Response(
+                serde_json::to_value(response).expect("typed event response serializes"),
+            ),
+            Err(error) => RelayDispatchOutcome::RelayError(map_relay_error(&error)),
+        };
     }
     // The origin telling this kernel its grant ended or still lives is idempotent and
     // only removes or keeps authority this kernel already gave, so it needs neither a

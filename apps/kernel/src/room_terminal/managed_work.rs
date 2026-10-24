@@ -3,7 +3,7 @@
 //! module is the terminals' side of that contract; it knows no terminal.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::error::DaemonError;
 use crate::runtime::state::{ManagedKernelAdmissionGuard, ManagedKernelQuiescenceGate};
@@ -11,7 +11,7 @@ use crate::runtime::state::{ManagedKernelAdmissionGuard, ManagedKernelQuiescence
 struct Link {
     gate: Arc<ManagedKernelQuiescenceGate>,
     /// Records the kernel's activity transition once running work changed.
-    work_changed: Arc<dyn Fn() + Send + Sync>,
+    work_changed: Weak<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -24,7 +24,7 @@ impl ManagedWork {
     pub(super) fn link(
         &self,
         gate: Arc<ManagedKernelQuiescenceGate>,
-        work_changed: Arc<dyn Fn() + Send + Sync>,
+        work_changed: Weak<dyn Fn() + Send + Sync>,
     ) {
         let _ = self.link.set(Link { gate, work_changed });
     }
@@ -47,7 +47,9 @@ impl ManagedWork {
         };
         let is_working = is_working();
         if self.working.swap(is_working, Ordering::AcqRel) != is_working {
-            (link.work_changed)();
+            if let Some(work_changed) = link.work_changed.upgrade() {
+                work_changed();
+            }
         }
     }
 }

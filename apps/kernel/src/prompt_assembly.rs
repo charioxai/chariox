@@ -1413,6 +1413,12 @@ mod tests {
         assert!(!envelope
             .hidden_system_context
             .contains("but only a Meta agent may create agents"));
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("Do not substitute a provider CLI started from Bash"),
+            "MP-08/MP-10/MP-11: a requested Room helper must remain a kernel-owned agent"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

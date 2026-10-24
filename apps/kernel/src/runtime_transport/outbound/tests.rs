@@ -2,6 +2,37 @@
 use super::*;
 const CANARY: &str = "MP-11-outbound-test-only-secret";
 
+#[test]
+fn lane_refusals_rebuild_remediation_at_the_final_socket_boundary() {
+    for (code, action) in [
+        (
+            "provider_profile_unverified",
+            "RefreshProviderAccountProfile",
+        ),
+        (
+            "provider_profile_unauthenticated",
+            "RefreshProviderAccountProfile",
+        ),
+        (
+            "provider_profile_unavailable",
+            "ListProviderAccountProfiles",
+        ),
+        (
+            "provider_profile_usage_exhausted",
+            "RefreshProviderAccountProfile",
+        ),
+        ("agent_not_in_session", "ListAgents"),
+        ("attachment_not_found", "AttachToSession"),
+    ] {
+        let error =
+            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":false}));
+        assert_eq!(error.code, code);
+        assert!(!error.retryable);
+        assert!(error.message.contains(action), "{}", error.message);
+        assert!(!error.message.contains(CANARY));
+    }
+}
+
 fn enum_names(source: &str, declaration: &str) -> Vec<String> {
     source
         .split_once(declaration)
@@ -290,6 +321,32 @@ fn outbound_lets_a_grant_holder_read_which_session_holds_an_alias() {
         .contains("`s-7`"));
     let hidden = project_payload(frame(CANARY)).unwrap();
     assert!(!hidden.to_string().contains(CANARY));
+}
+
+// A grant holder learns the id of a steer that was delivered without its event; other text on that code stays private.
+#[test]
+fn outbound_lets_a_grant_holder_read_which_steer_was_delivered_unrecorded() {
+    let error = crate::error::DaemonError::SteerDeliveredEventUnrecorded {
+        steer_id: "prompt-1792860971700".into(),
+    };
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(mapped.code, "prompt_steer_event_unrecorded");
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":mapped.code,"message":message,"retryable":false}})
+    };
+    let projected = project_payload(frame(&mapped.message)).unwrap();
+    assert_eq!(projected["error"]["code"], "prompt_steer_event_unrecorded");
+    let told = projected["error"]["message"].as_str().unwrap();
+    assert!(told.contains("`prompt-1792860971700`"), "{told}");
+    assert!(told.contains("do not send it again"), "{told}");
+    for hidden in [
+        CANARY.to_string(),
+        format!("steer `{CANARY} {CANARY}` was delivered but its event was not recorded; do not send it again"),
+    ] {
+        let hidden = project_payload(frame(&hidden)).unwrap();
+        assert!(!hidden.to_string().contains(CANARY));
+    }
 }
 
 // MP-08 / MP-11: cached and socket errors retain the same safe lookup reason.

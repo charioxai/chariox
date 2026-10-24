@@ -417,6 +417,7 @@ struct ConnectionState {
     browser_terminal_contexts: std::collections::BTreeSet<(String, String)>,
     subscription: Option<KernelSubscription>,
     watch_task: Option<JoinHandle<()>>,
+    outside_wait_requests: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -757,7 +758,7 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
-                let _ = router.runtime_state().revoke_kernel_access(None, None, "kernel_shutdown");
+                let _ = router.runtime_state().end_kernel_access_for_shutdown();
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
             },
@@ -964,10 +965,15 @@ where
         browser_terminal_contexts: Default::default(),
         subscription: None,
         watch_task: None,
+        outside_wait_requests: Default::default(),
     }));
 
-    let outbound =
-        outbound::OutboundBoundary::new(router.runtime_state(), peer.clone(), bound_grant.clone());
+    let outbound = outbound::OutboundBoundary::new(
+        router.runtime_state(),
+        peer.clone(),
+        bound_grant.clone(),
+        connection_state.clone(),
+    );
     let writer_task = tokio::spawn(async move {
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
@@ -1062,7 +1068,8 @@ where
             message = reader.next() => match message { Some(message) => message, None => break },
             _ = access_tick.tick(), if peer.is_some() => {
                 router.runtime_state().pump_kernel_access();
-                if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant) { break; }
+                if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant)
+                    && connection_state.lock().await.outside_wait_requests.is_empty() { break; }
                 continue;
             }
         };
@@ -1420,6 +1427,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             );
             command.terminal_lifetime =
                 Some(connection_state.lock().await.terminal_lifetime.clone());
+            if peer.is_some() && matches!(&request, crate::local::LocalDaemonRequest::WaitEvents(_))
+            {
+                connection_state
+                    .lock()
+                    .await
+                    .outside_wait_requests
+                    .insert(request_id.clone());
+            }
             if let Ok(context) = router
                 .runtime_state()
                 .kernel_browser_terminal_context(&command)

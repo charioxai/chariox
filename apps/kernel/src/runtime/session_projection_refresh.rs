@@ -62,11 +62,11 @@ pub(crate) async fn apply_focus_projection_refresh(
     match refresh {
         FocusProjectionRefresh::None => {}
         FocusProjectionRefresh::AgentSpawn => {
-            if let Ok(LocalDaemonResponse::AgentSpawned { agent }) = result {
+            if let Ok(LocalDaemonResponse::AgentSpawned { agent, .. }) = result {
                 focus_projection
                     .update(agent.session_id(), Some(agent.id()))
                     .await;
-            } else if let Ok(LocalDaemonResponse::AgentsSpawned { agents }) = result {
+            } else if let Ok(LocalDaemonResponse::AgentsSpawned { agents, .. }) = result {
                 if let Some(agent) = agents.last() {
                     focus_projection
                         .update(agent.session_id(), Some(agent.id()))
@@ -103,7 +103,10 @@ impl SessionProjectionRefresh {
         match self {
             SessionProjectionRefresh::None => Vec::new(),
             SessionProjectionRefresh::SnapshotAgentResponse => match response {
-                LocalDaemonResponse::AgentSpawned { agent }
+                LocalDaemonResponse::AgentSpawned {
+                    agent,
+                    event_subscription_error: None,
+                }
                 | LocalDaemonResponse::AgentAliased { agent, .. }
                 | LocalDaemonResponse::AgentConfigUpdated { agent, .. }
                 | LocalDaemonResponse::AgentProfileUpdated { agent, .. }
@@ -117,7 +120,7 @@ impl SessionProjectionRefresh {
                 LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) } => {
                     vec![agent.session_id().to_string()]
                 }
-                LocalDaemonResponse::AgentsSpawned { agents } => agents
+                LocalDaemonResponse::AgentsSpawned { agents, .. } => agents
                     .iter()
                     .map(|agent| agent.session_id().to_string())
                     .collect(),
@@ -407,6 +410,7 @@ mod tests {
         );
         assert_eq!(
             focus_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                no_subscribe: false,
                 session_id: "session-1".to_string(),
                 agents: Vec::new(),
             })),
@@ -441,6 +445,7 @@ mod tests {
         );
         assert_eq!(
             session_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                no_subscribe: false,
                 session_id: "session-1".to_string(),
                 agents: Vec::new(),
             })),
@@ -543,6 +548,7 @@ mod tests {
 
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: "session-1".to_string(),
             alias: None,

@@ -413,6 +413,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::SetAgentDeadline(request) => {
+            LocalRequestMetadata::new("agent.deadline.set", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::GetAgentDeadline(request) => {
+            LocalRequestMetadata::new("agent.deadline.get", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::AliasAgent(request) => {
             LocalRequestMetadata::new("agent.alias", Interactive)
                 .session(&request.session_id)
@@ -607,6 +617,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RenewKernelSudoRequester(_) => "kernel_access.sudo_requester_renew",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
+        LocalDaemonRequest::SubscribeEvents(_) => "events.subscribe",
+        LocalDaemonRequest::UnsubscribeEvents(_) => "events.unsubscribe",
+        LocalDaemonRequest::GetEventSubscription(_) => "events.subscription",
+        LocalDaemonRequest::ListEvents(_) => "events.list",
+        LocalDaemonRequest::WaitEvents(_) => "events.wait",
+        LocalDaemonRequest::AckEvents(_) => "events.ack",
         LocalDaemonRequest::ListGatewayKernels(_) => "kernel_gateway.list",
         LocalDaemonRequest::HeartbeatAttachments(_) => "kernel_gateway.heartbeat",
         LocalDaemonRequest::JoinKernelLink(_) => "kernel_gateway.join",
@@ -970,6 +986,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CaptureScreenshot(_) => "capability.screenshot.capture",
         LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
         LocalDaemonRequest::AliasSession(_) => "session.alias",
+        LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
+        LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
         LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",

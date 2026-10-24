@@ -2031,7 +2031,7 @@ fn room_admission_concurrent_workflow_nodes_record_invoking_creator() {
         .agent_store
         .get_session_agents(&session_id)
         .into_iter()
-        .find(|agent| agent.alias().is_none())
+        .find(|agent| agent.alias() != Some("owned-workflow-agent"))
         .unwrap();
     runtime
         .owned

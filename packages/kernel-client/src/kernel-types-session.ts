@@ -384,7 +384,7 @@ export type AgentGoal = {
   active_elapsed_ms: number; waiting_elapsed_ms: number; state_since_ms: number
   check_in_minutes: number; next_check_in_ms: number | null; paused: boolean
   continuation_sequence: number; check_count: number
-  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; result: Record<string, unknown> | null } | null
+  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; paused_at_ms?: number; lease?: { worker_kernel_id: string; worker_machine_id: string; execution_lease_id: string; leased_agent_id: string }; retried?: boolean; result: Record<string, unknown> | null } | null
   final_answer: string | null; evidence: string[]
 }
 export type AgentTaskExecution = {
@@ -398,14 +398,27 @@ export type AgentTaskExecution = {
   last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
   correction_used: boolean; pending_prompt_id: string | null
 }
-// MP-08 / MP-09 / MP-10 / MP-11 A03: kernel-owned timer or watched process with its receipts.
+// MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned wake source with its receipts.
+// `kind` names the driver ("timer", "process", ...); `summary` is the driver's
+// redacted one-line description and `detail` its redacted driver-owned data.
 export type AgentWake = {
   id: string; task_id: string; room_id: string; agent_id: string; registration_id: string
-  kind: "timer" | "process"; label: string
+  kind: string; label: string
   state: "scheduled" | "starting" | "running" | "cancelling" | "fired" | "exited" | "lost" | "cancelled"
   created_at_ms: number; verified_at_ms: number | null; next_due_ms: number | null; interval_ms: number | null
   command: string[]; match_text: string | null; matched_at_ms: number | null; pid: number | null; exit_code: number | null
+  summary: string; detail: unknown
   fire_count: number; missed_fires: number; last_fired_at_ms: number | null; last_sequence: number | null
   last_delivery: string | null; last_delivered_at_ms: number | null; last_acknowledged_at_ms: number | null
   alerted_sequence: number | null
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: executor-local durable lane stop receipt.
+export type AgentDeadline = {
+  session_id: string
+  agent_id: string
+  deadline_ms: number
+  state: "armed" | "reached"
+  reached_at_ms: number | null
+  stopped_at_ms: number | null
 }

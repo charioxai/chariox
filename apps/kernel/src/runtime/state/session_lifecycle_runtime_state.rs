@@ -116,7 +116,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let mut publication_progress = UnpublishedSessionPublicationProgress::default();
         let publication = async {
-            if let LocalDaemonResponse::SessionCreated { session, agent } = response {
+            if let LocalDaemonResponse::SessionCreated { session, agent, .. } = response {
                 let project = if session.is_hidden() {
                     None
                 } else {
@@ -239,7 +239,11 @@ impl KernelRuntimeState {
             }),
         );
         Ok((
-            LocalDaemonResponse::SessionCreated { session, agent },
+            LocalDaemonResponse::SessionCreated {
+                session,
+                agent,
+                event_subscription_error: None,
+            },
             unpublished_session,
         ))
     }
@@ -347,7 +351,11 @@ impl KernelRuntimeState {
             }),
         );
         Ok((
-            LocalDaemonResponse::SessionCreated { session, agent },
+            LocalDaemonResponse::SessionCreated {
+                session,
+                agent,
+                event_subscription_error: None,
+            },
             unpublished_session,
         ))
     }
@@ -711,6 +719,14 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
+        if self
+            .owned
+            .durable_state_store
+            .agent_deadline(session_id, local_agent.id())?
+            .is_some()
+        {
+            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a lane deadline must stay on its executing kernel; start a new lane on the worker".into() });
+        }
         let slice_admission = self
             .guard_slice_execution(
                 Some(session_id),
@@ -1013,6 +1029,15 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(session_id)?;
+        self.owned.durable_state_store.outside_publish(
+            session_id,
+            None,
+            crate::local::OutsideEventValue::Session {
+                state: crate::local::EventSessionState::Ended,
+            },
+            "session ended",
+            crate::local::EventRefs::default(),
+        )?;
         self.append_session_durable_event("session.ended", &durable_session, "runtime_end_session")
             .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
@@ -2160,7 +2185,11 @@ mod tests {
             .owned
             .session_snapshot(&session_id)
             .expect("session snapshot should refresh");
-        let response = LocalDaemonResponse::SessionCreated { session, agent };
+        let response = LocalDaemonResponse::SessionCreated {
+            session,
+            agent,
+            event_subscription_error: None,
+        };
         let mut guard = UnpublishedSessionGuard::new(&runtime.owned.session_store, &session_id);
         let LocalDaemonResponse::SessionCreated { agent, .. } = &response else {
             unreachable!("test response is session.created");

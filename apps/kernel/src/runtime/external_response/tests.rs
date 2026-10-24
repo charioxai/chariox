@@ -6,6 +6,58 @@ use crate::local::{KernelConnectionClass, LocalDaemonRequest};
 
 const CANARY: &str = "MP-11-generated-test-only-secret";
 
+#[test]
+fn lane_refusals_have_safe_actionable_codes_through_external_projection() {
+    use crate::transport::kernel_protocol::map_kernel_error;
+    let cases = [
+        (
+            DaemonError::AgentNotInSession {
+                session_id: CANARY.into(),
+                agent_id: CANARY.into(),
+            },
+            "agent_not_in_session",
+            "ListAgents",
+        ),
+        (
+            DaemonError::AgentNotFound {
+                agent_id: CANARY.into(),
+            },
+            "agent_not_found",
+            "ListAgents",
+        ),
+        (
+            DaemonError::AttachmentNotFound {
+                attachment_id: CANARY.into(),
+            },
+            "attachment_not_found",
+            "AttachToSession",
+        ),
+        (
+            DaemonError::AttachmentNotInSession {
+                session_id: CANARY.into(),
+                attachment_id: CANARY.into(),
+            },
+            "attachment_not_in_session",
+            "AttachToSession",
+        ),
+        (
+            DaemonError::NoActivePrompt {
+                session_id: CANARY.into(),
+            },
+            "no_active_prompt",
+            "GetSessionState",
+        ),
+    ];
+    for (error, code, action) in cases {
+        let projected = protect_error(error);
+        let mapped = map_kernel_error(&projected);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+        assert!(mapped.message.contains(action), "{}", mapped.message);
+        assert!(!mapped.message.contains(CANARY));
+    }
+}
+
 // MP-08 / MP-10 / MP-11: notification metadata remains usable through both
 // the typed executor and cached wire boundary for grants and sudo callers.
 #[test]
@@ -223,7 +275,7 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
         http_headers.insert("Authorization".into(), CANARY.into());
     }
     vec![
-        LocalDaemonResponse::AgentSpawned { agent },
+        LocalDaemonResponse::AgentSpawned { agent, event_subscription_error: None},
         LocalDaemonResponse::McpServer { mcp: http },
         LocalDaemonResponse::CredentialRegistered {
             credential: credential.clone(),

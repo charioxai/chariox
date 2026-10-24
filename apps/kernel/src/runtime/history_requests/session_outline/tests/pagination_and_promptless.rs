@@ -815,3 +815,222 @@ fn agent_outline_groups_large_blob_metadata_sets() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+// MP-08/MP-10/MP-11: legacy diagnostic blobs never become agent speech on expansion.
+#[test]
+fn amfix_r19_internal_dispatch_history_diagnostics_are_not_agent_output() {
+    let text = "Provider prompt dispatch failed: provider protocol `session_permissions` failed for run `private-run`: read failed";
+    let error = SessionHistoryEntry::provider_output(
+        "s",
+        "r",
+        Some("a"),
+        crate::terminal::TerminalOutputKind::ProviderError,
+        None,
+        text,
+    );
+    let context = HistoryEventTurnContext {
+        session_id: Some("s".into()),
+        agent_id: Some("a".into()),
+        provider_run_id: Some("r".into()),
+        ..Default::default()
+    };
+    let event = HistoryEvent::transcript(1, &error, context.clone());
+    assert!(page_entry_from_event(event.clone()).is_none());
+    let mut notice = event.clone();
+    notice.kind = HistoryEventKind::Notice;
+    assert!(page_entry_from_event(notice).is_none());
+    let mut agent = event.clone();
+    agent.kind = HistoryEventKind::ProviderOutput;
+    assert!(
+        page_entry_from_event(agent).is_some(),
+        "actual agent text remains visible"
+    );
+    let user = HistoryEvent::transcript(
+        2,
+        &SessionHistoryEntry::user_prompt("s", "t", "a", text),
+        context,
+    );
+    assert!(
+        page_entry_from_event(user).is_some(),
+        "quoting a diagnostic does not hide a user prompt"
+    );
+}
+// MP-08 / MP-10 / MP-11: hidden continuations cannot exhaust a visible history page.
+#[tokio::test]
+async fn outline_pages_past_internal_prompt_windows() {
+    for newer_visible in [0, 2] {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-hidden-window-outline-{}-{}.db",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let store = OperationalHistoryStore::open(path.clone()).expect("open history");
+        let context = |prompt: &str| HistoryEventTurnContext {
+            session_id: Some("session-1".into()),
+            agent_id: Some("agent-1".into()),
+            turn_id: Some(prompt.into()),
+            prompt_id: Some(prompt.into()),
+            provider_run_id: Some("run-1".into()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut sequence = 0;
+        let mut events = Vec::new();
+        {
+            let mut push_turn = |id: &str, prompt: String, output: String| {
+                sequence += 1;
+                events.push(HistoryEvent::transcript(
+                    sequence,
+                    &SessionHistoryEntry::user_prompt(
+                        "session-1",
+                        "attachment-1",
+                        "agent-1",
+                        prompt,
+                    ),
+                    context(id),
+                ));
+                sequence += 1;
+                events.push(HistoryEvent::transcript(
+                    sequence,
+                    &SessionHistoryEntry::provider_output(
+                        "session-1",
+                        "run-1",
+                        Some("agent-1"),
+                        TerminalOutputKind::ProviderOutput,
+                        None,
+                        output,
+                    ),
+                    context(id),
+                ));
+            };
+            for i in 1..=6 {
+                push_turn(
+                    &format!("prompt-{i}"),
+                    format!("owner request {i}"),
+                    format!("public answer {i}"),
+                );
+            }
+            // More than two default candidate windows, followed optionally by a
+            // partially filled visible page. Neither case may lose older anchors.
+            for i in 0..85 {
+                let (id, output) = match i % 4 {
+                    0 => (
+                        format!("goal-check-prompt-6-{i}"),
+                        "private assessment".to_string(),
+                    ),
+                    1 => (
+                        format!("task-correction-prompt-6-{i}"),
+                        format!("continued public answer {i}"),
+                    ),
+                    2 => (
+                        format!("goal-continue-prompt-6-{i}"),
+                        format!("continued public answer {i}"),
+                    ),
+                    _ => (
+                        format!("task-resume-prompt-6-{i}"),
+                        format!("continued public answer {i}"),
+                    ),
+                };
+                push_turn(&id, "hidden instruction".into(), output);
+            }
+            for i in 7..7 + newer_visible {
+                push_turn(
+                    &format!("prompt-{i}"),
+                    format!("owner request {i}"),
+                    format!("public answer {i}"),
+                );
+            }
+        }
+        store.append_many(&events).expect("persist history");
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        let mut pages = 0;
+        loop {
+            let response = execute_session_history_outline_request(
+                store.clone(),
+                GetSessionHistoryOutlineRequest {
+                    session_id: "session-1".into(),
+                    agent_ids: Some(vec!["agent-1".into()]),
+                    latest_prompt_count: None,
+                    include_prefetched_content: false,
+                    cursor,
+                },
+            )
+            .await
+            .expect("outline entry point");
+            let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+                panic!("expected outline");
+            };
+            let agent = &agents[0];
+            assert!(
+                !agent.turns.is_empty(),
+                "hidden prompts cannot hide visible anchors"
+            );
+            assert!(agent.turns.len() <= 4);
+            if pages == 0 {
+                assert_eq!(
+                    agent.turns.len(),
+                    4,
+                    "fill the requested page across hidden windows"
+                );
+                assert!(
+                    agent.next_cursor.is_some(),
+                    "older visible anchors still exist"
+                );
+            }
+            for turn in &agent.turns {
+                let text = serde_json::to_string(turn).unwrap();
+                assert!(
+                    !text.contains("hidden instruction") && !text.contains("private assessment")
+                );
+                let id = turn.prompt_id.as_deref().unwrap();
+                assert!(
+                    !seen.contains(&id.to_string()),
+                    "cursor repeated a visible turn"
+                );
+                seen.push(id.to_string());
+                if id == "prompt-6" {
+                    let mut public_text = text;
+                    for blob in &turn.blobs {
+                        let response = execute_session_history_blob_content_request(
+                            store.clone(),
+                            GetSessionHistoryBlobContentRequest {
+                                session_id: "session-1".into(),
+                                agent_id: "agent-1".into(),
+                                blob_id: blob.blob_id.clone(),
+                            },
+                        )
+                        .await
+                        .expect("public blob entry point");
+                        public_text.push_str(&serde_json::to_string(&response).unwrap());
+                    }
+                    assert!(public_text.contains("public answer 6"));
+                    assert!(
+                        public_text.contains("continued public answer"),
+                        "retain work performed by hidden continuations"
+                    );
+                    assert!(
+                        !public_text.contains("hidden instruction")
+                            && !public_text.contains("private assessment")
+                    );
+                }
+            }
+            pages += 1;
+            assert!(pages <= 3, "history cursor must advance");
+            cursor = agent.next_cursor.clone();
+            if cursor.is_none() {
+                break;
+            }
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            (1..7 + newer_visible)
+                .map(|i| format!("prompt-{i}"))
+                .collect::<Vec<_>>()
+        );
+        drop(store);
+        for suffix in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(suffix));
+        }
+    }
+}

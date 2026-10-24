@@ -1,6 +1,6 @@
 # MP-08 / MP-10 / MP-11 — public room history search (A09)
 
-Enable the transitional `CHARIOX_ROOM_AGENT_TOOLS=1` on the kernel. Ordinary
+The kernel always provides the room agent tools. Ordinary
 room agents use `chariox.history.search` with literal task terms:
 
 ```json

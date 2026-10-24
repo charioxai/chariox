@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  AgentTaskExecution,
   RuntimeSession,
 } from "./kernel-types.js"
 import {
@@ -95,7 +96,8 @@ export function sessionFocusedStatusBadge(options: {
   }
 
   const agents = options.agents
-  if (options.taskStatus) {
+  // A running turn on the focused agent is the current fact over a retained wait.
+  if (options.taskStatus && !options.focusedBusy) {
     const task = options.taskStatus
     // MP-08/MP-09/MP-10/MP-11 G13: reserve footer space for the actual deadline.
     const label = task.deadline_ms !== undefined
@@ -186,10 +188,8 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
   if (!agent) {
     return sessionAgentPaneStatusBadge({ agent: null, activeLabel: options.activeLabel })
   }
-  const taskStatus = sessionAgentTaskStatus(options.session, agent.id)
-  if (taskStatus) return taskStatus
   const runtimeState = sessionAgentRuntimeState(options.session, agent)
-  return sessionAgentPaneStatusBadge({
+  const badge = sessionAgentPaneStatusBadge({
     agent: { state: runtimeState, is_processing: false },
     activeLabel: options.activeLabel,
     hasPromptWork: runtimeState === "Working",
@@ -197,6 +197,15 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
     busyLatch: options.busyLatch ?? false,
     useLegacyAgentProcessingState: false,
   })
+  // A retained wait or block belongs to an earlier task; a running turn on the
+  // same agent is the current fact and must not be masked by it.
+  if (badge.tone === "working") return badge
+  const task = sessionAgentLedgerStatus(options.session, agent.id)
+  if (!task) return badge
+  // A static deadline clock keeps the pane correct without a client timer.
+  return task.deadline_ms !== undefined
+    ? { label: `WAITING UNTIL ${new Date(task.deadline_ms).toISOString().slice(11, 19)}Z`, tone: task.tone }
+    : task
 }
 
 export function sessionAgentRuntimeActivityProjection(
@@ -343,7 +352,7 @@ function promptStateHasActivePrompt(state: SessionAgentPromptStateLike | null | 
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 A02: older unfinished tasks survive newer answers.
-export function sessionAgentTaskStatus(session: RuntimeSession | null | undefined, agentId: string, nowMs = Date.now()): SessionAgentPaneStatusBadge | null {
+function sessionAgentStatusTask(session: RuntimeSession | null | undefined, agentId: string): { task: AgentTaskExecution; open: number } | null {
   const tasks = (session?.agent_tasks ?? []).filter((task) => task.agent_id === agentId)
   if (!tasks.length) return null
   const unfinished = tasks.filter((task) => task.state !== "done" && task.state !== "cancelled")
@@ -353,7 +362,13 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
     ?? unfinished.find((task) => task.state === "working")
     ?? unfinished[0] ?? goals[goals.length - 1] ?? tasks[tasks.length - 1]!
   const open = (task.goal ? task.obligations : tasks.flatMap((task) => task.obligations)).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
-  const suffix = open ? ` (${open} obligations)` : ""
+  return { task, open }
+}
+
+export function sessionAgentTaskStatus(session: RuntimeSession | null | undefined, agentId: string, nowMs = Date.now()): SessionAgentPaneStatusBadge | null {
+  const selected = sessionAgentStatusTask(session, agentId)
+  if (!selected) return null
+  const { task, open } = selected
   if (task.goal) {
     const goal = task.goal
     const phase = goal.paused ? "PAUSED" : task.state === "working" && goal.evaluation?.result === null && goal.evaluation.prompt_id === (task.pending_prompt_id ?? task.prompt_id) ? "EVALUATING" : task.state.toUpperCase()
@@ -369,6 +384,17 @@ export function sessionAgentTaskStatus(session: RuntimeSession | null | undefine
   }
   const status = agentTaskStatus(session, agentId)
   return status ? { label: status.label, tone: status.tone, ...(status.deadline_ms !== undefined ? { deadline_ms: status.deadline_ms } : {}) } : null
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02: what the ledger adds to an agent's ordinary
+// status. A plain turn that is working without open obligations, or finished,
+// adds nothing, so it looks as it always did.
+export function sessionAgentLedgerStatus(session: RuntimeSession | null | undefined, agentId: string, nowMs = Date.now()): SessionAgentPaneStatusBadge | null {
+  const selected = sessionAgentStatusTask(session, agentId)
+  if (!selected) return null
+  const { task, open } = selected
+  const plain = !task.goal && (task.state === "done" || task.state === "cancelled" || (task.state === "working" && open === 0))
+  return plain ? null : sessionAgentTaskStatus(session, agentId, nowMs)
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 A12: client display clock, never scheduling authority.

@@ -6,6 +6,8 @@
 //! its own state. The agent never sees a relay token, key or Cloud credential.
 mod directory;
 mod error;
+mod events;
+mod events_created;
 mod hosted;
 mod identity;
 mod inventory;
@@ -82,6 +84,7 @@ pub(crate) struct KernelGateway {
     ledger: OnceLock<ledger::GatewayLedger>,
     keeper: keeper::Keeper,
     sudo_watch: sudo_watch::SudoWatch,
+    event_parts: events::EventParts,
     hosted: hosted::HostedClient,
     paired: Arc<paired::PairedKernels>,
     /// When each paired kernel last answered, for the self-hosted list.
@@ -113,6 +116,7 @@ impl KernelGateway {
             ledger: OnceLock::new(),
             keeper: keeper::Keeper::default(),
             sudo_watch: sudo_watch::SudoWatch::default(),
+            event_parts: events::EventParts::default(),
             hosted: hosted::HostedClient::new(),
             paired,
             last_answer: std::sync::Mutex::new(HashMap::new()),

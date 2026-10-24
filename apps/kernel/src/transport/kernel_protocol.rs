@@ -673,6 +673,10 @@ pub(crate) fn can_skip_session_snapshot(
             if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
                 return false;
             }
+            // Wake changes have no event of their own.
+            if previous.session.agent_wakes() != snapshot.session.agent_wakes() {
+                return false;
+            }
             if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
                 return true;
             }
@@ -955,6 +959,9 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 }
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
+    if crate::runtime::kernel_access::Refusal::grant_ended(error) {
+        return crate::runtime::kernel_access::Refusal::Ended.transport_error();
+    }
     match error {
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
@@ -965,6 +972,20 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();
             mapped
+        }
+        DaemonError::ProviderProfileRefused { reason } => kernel_error(reason.code(), error, false),
+        DaemonError::AgentNotInSession { .. } => kernel_error("agent_not_in_session", error, false),
+        DaemonError::AgentNotFound { .. } => kernel_error("agent_not_found", error, false),
+        DaemonError::NoActivePrompt { .. } => kernel_error("no_active_prompt", error, false),
+        DaemonError::ProviderPromptSteerRejected { .. } => {
+            kernel_error("prompt_steer_rejected", error, false)
+        }
+        DaemonError::LocalTransport {
+            operation: "steer active prompt",
+            ..
+        } => kernel_error("prompt_steer_rejected", error, false),
+        DaemonError::SteerDeliveredEventUnrecorded { .. } => {
+            kernel_error("prompt_steer_event_unrecorded", error, false)
         }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
         DaemonError::SessionAliasConflict { .. } => {
@@ -1011,6 +1032,13 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             message: message.clone(),
             retryable: *retryable,
         },
+        DaemonError::RelayTransport {
+            code, retryable, ..
+        } if crate::error::actionable_refusal_message(code).is_some() => KernelTransportError {
+            code: code.clone(),
+            message: crate::error::external_request_failure_message(code).into(),
+            retryable: *retryable,
+        },
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {
@@ -1024,7 +1052,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::LocalTransport { operation, .. }
             if *operation == "resolve account profile" =>
         {
-            kernel_error("local_transport_error", error, false)
+            kernel_error("provider_profile_unavailable", error, false)
         }
         // MP-08 / MP-10 / MP-11: absent Projects need setup, not transport retries.
         DaemonError::LocalTransport {

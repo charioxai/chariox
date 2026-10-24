@@ -18,6 +18,26 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::MachineRequest { code, .. } => {
             relay_error(code.as_str(), &error.to_string(), false)
         }
+        DaemonError::SteerDeliveredEventUnrecorded { .. } => {
+            relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
+        }
+        DaemonError::ProviderProfileRefused { .. }
+        | DaemonError::ExternalRequestFailed { .. }
+        | DaemonError::AgentNotInSession { .. }
+        | DaemonError::AgentNotFound { .. }
+        | DaemonError::NoActivePrompt { .. }
+        | DaemonError::ProviderPromptSteerRejected { .. }
+        | DaemonError::LocalTransport {
+            operation: "steer active prompt" | "resolve account profile",
+            ..
+        } => {
+            let mapped = crate::transport::kernel_protocol::map_kernel_error(error);
+            relay_error(
+                &mapped.code,
+                crate::error::external_request_failure_message(&mapped.code),
+                mapped.retryable,
+            )
+        }
         DaemonError::SessionNotFound { .. } => {
             relay_error("session_not_found", &error.to_string(), false)
         }
@@ -75,13 +95,6 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE
             };
             relay_error(code, &error.to_string(), false)
-        }
-        // MP-08 / MP-10 / MP-11: profile absence/isolation needs an explicit
-        // account action; repeating the same launch cannot repair it.
-        DaemonError::LocalTransport { operation, .. }
-            if *operation == "resolve account profile" =>
-        {
-            relay_error("transport_error", &error.to_string(), false)
         }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
@@ -212,6 +225,68 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settled_prompt_error_keeps_its_typed_code_across_the_relay() {
+        let mapped = map_relay_error(&DaemonError::NoActivePrompt {
+            session_id: "settled-room".to_string(),
+        });
+        assert_eq!(mapped.code, "no_active_prompt");
+        assert!(!mapped.message.contains("no active prompt"));
+        let received = DaemonError::RelayTransport {
+            operation: "settle remote prompt",
+            code: mapped.code,
+            message: mapped.message,
+            retryable: mapped.retryable,
+        };
+        assert!(received.is_no_active_prompt());
+        for message in ["no active prompt", "NoActivePrompt", "no_active_prompt"] {
+            assert!(DaemonError::RelayTransport {
+                operation: "settle remote prompt",
+                code: "transport_error".to_string(),
+                message: message.to_string(),
+                retryable: false,
+            }
+            .is_no_active_prompt());
+        }
+        assert!(!DaemonError::RelayTransport {
+            operation: "settle remote prompt",
+            code: "prompt_steer_rejected".to_string(),
+            message: "active prompt changed".to_string(),
+            retryable: false,
+        }
+        .is_no_active_prompt());
+    }
+
+    #[test]
+    fn typed_profile_refusal_keeps_the_existing_leased_admission_code() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("lane-leased-account-refusal");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles.json"),
+        )
+        .unwrap();
+        let profile = registry
+            .create_managed("local", "codex", "private-label-canary")
+            .unwrap();
+        let error = registry
+            .require_authenticated(
+                "local",
+                "codex",
+                &profile.profile_id,
+                None,
+                crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION,
+            )
+            .unwrap_err();
+        let mapped = map_relay_error(&error);
+        assert_eq!(
+            mapped.code,
+            crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
+        );
+        assert!(!mapped.retryable);
+        assert!(mapped.message.contains("RefreshProviderAccountProfile"));
+        assert!(!mapped.message.contains("private-label-canary"));
+    }
     use crate::local::{
         CancelRoomEnvironmentActionRequest, GetRoomEnvironmentEventsRequest,
         GetRoomEnvironmentStateRequest, ListRoomEnvironmentActionHistoryRequest,
@@ -228,9 +303,9 @@ mod tests {
             message: "account is absent on this kernel; copy login or sign in".into(),
         };
         let mapped = map_relay_error(&error);
-        assert_eq!(mapped.code, "transport_error");
+        assert_eq!(mapped.code, "provider_profile_unavailable");
         assert!(!mapped.retryable);
-        assert_eq!(mapped.message, error.to_string());
+        assert!(mapped.message.contains("ListProviderAccountProfiles"));
         let transient = DaemonError::LocalTransport {
             operation: "read account profile registry",
             message: "temporary read failure".into(),

@@ -131,7 +131,7 @@ focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
 
 ### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
 
-With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
+A running prompt submitted by the owner
 through a human attachment supplies acquisition causation. Agent messages,
 workflows, schedules and continuations do not. A new App binding or kernel
 browser grant also requires the owner's resource-specific `RuntimeInteraction`
@@ -663,7 +663,7 @@ the event status and retry path rather than being silently dropped.
 
 ## 3.3.4 Regular Agent Room Tools (MP-08 / MP-10 / MP-11, A01)
 
-PR1 is enabled with `CHARIOX_ROOM_AGENT_TOOLS=1`. Ordinary provider runs receive
+PR1 is always enabled. Ordinary provider runs receive
 `chariox.room.*`, command/guide discovery, public room history/trace, and the
 existing workflow-code/registry tools. Legacy `/meta` remains available during
 migration. Aliases share the kernel admission path; they do not create another
@@ -701,10 +701,30 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
+### Executor-local lane deadlines (MP-08 / MP-09 / MP-10 / MP-11)
+
+Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
+deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
+`AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
+A deadline can shorten, never extend. The kernel rejects new work after it is
+reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
+admission fencing from completed cleanup. A kernel restart enforces overdue
+work on startup. This does not add a relay shape; peer **181** is inherited.
+Leased executors require their own deadline enforcement and are refused here.
+
+`RelayStatus.status.capabilities` advertises `agent_deadline_v1` only when these
+requests are implemented. Coordinator adapters check that capability before
+sending either request. Without it they report no kernel deadline and may keep
+a coordinator-side timer, whose process, network and access grant are required;
+that timer is not durable kernel enforcement.
+
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **513** and relay peer protocol **121**. It combines the agent-model
+protocol **591** and relay peer protocol **197** (the agent-model line's 537/145
+allocation and the landing's 567/175 are merged into this number). It combines main 520/128 direct browser/terminal carriers and
+owner-managed machine/context admission with the agent-model 513/121 union:
+it retains the agent-model
 493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
 relay response framing and socket-local receipts; and the native display,
 App-view, Notes, grant, capture, DOM-mirror and agent-tab contracts integrated
@@ -712,10 +732,45 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 121 or newer. 513/121 also includes main's
+hosted slice receipts require peer 181 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
-workflow contracts. Client feature floors depend on
-the contracts they use; this entry allocates no new protocol version.
+workflow contracts. Client feature floors are listed separately below; the
+merged 585/181 allocation identifies the integrated runtime contract; the landing's
+567/175 `fonts` op `absent` list is part of it.
+
+MP-08 / MP-10 / MP-11: 573/181 fences the leased assessment control identity.
+The worker maps `completion-assessment:<backing-prompt-id>` to
+`completion-assessment:home:<home-prompt-id>` only through its private durable
+admission binding. Other assessments cannot supply this check's verdict, even
+when their bytes arrive after its prompt boundary. Both kernels must speak 181;
+178 workers do not provide this identity. Ordinary failed completions retain the
+worker termination and settle as failed work. Upgrade/rollback keep 567 and 570
+reciprocal within the existing 32-entry policy; 370 is the oldest unpinned
+intermediate removed to make room.
+
+MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
+actor normalization for display metadata/credits and the historical workflow
+read policy. A run with neither immutable agent creator nor invoking-user proof
+is visible only to the authenticated kernel owner, even when another member
+has Full collaboration. List, Get, snapshots and updates mark it with
+`created_before_ownership_tracking=true`; current endpoint/Room ownership never
+reassigns it. Web/TUI label it **Created before ownership tracking · read-only**.
+Coordinator decision of 2026-10-13 17:12: the authenticated kernel owner may
+stop/cancel a non-terminal historical run, including a captured Room Stop.
+Pause and Resume remain denied for everyone; other callers and all controls of
+terminal historical records remain denied before idempotent shortcuts. Stop
+never creates invoker proof or removes the historical label. New admissions retain
+the transactional immutable proof. Managed upgrade policy retains 506 as an
+explicit predecessor; the aggregate retains 493, 506, 513 and 520 in both
+upgrade and rollback policy. The shared agent-tab inventory minimum is 486
+(`kernelBrowserAgentTabsMinimumProtocolVersion`), enforced by the OSS CLI's
+`/access tabs` command. Owner-managed context transfer retains the C5 minimums
+of local 520 and peer 128. The OSS CLI has no separate Goal or window-sudo
+feature-version gate. The paired Cloud client defines its own web feature
+floors; they are not shared OSS minimums or implied by the aggregate allocation.
+The version-bound aggregate snapshot
+and encrypted lease-admission drill cover both parent contracts and rejection
+of older worker contracts.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
@@ -761,7 +816,7 @@ Older workers fail admission before creating a launch. Kernel-managed cwd,
 permission approval, output protection and pinned process signals apply on worker.
 
 
-With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
+Local protocol 452 projects independent
 `agent_tasks` in the shared session snapshot. The kernel owns their SQLite
 ledger, attributed inbox, obligations and exact provider acceptance receipts.
 Task prompt IDs stay stable through admission, queueing, promotion and replay;
@@ -786,6 +841,9 @@ with the original task; its cancellation outcome invalidates the original
 wait, and a watched process settles only after physical exit. An owner Resume
 or corrective continuation takes precedence over that task's pending inbox
 delivery, so the event cannot create a replacement task during admission.
+Cancelling a wake that already ended (fired, exited, lost or cancelled) is
+idempotent: the answer is `settled:true` plus `final_state`; an unknown wake ID
+stays an error.
 
 A workflow node that yields remains supervised by its durable task after the
 native provider turn ends. The returned workflow run ID stays live and
@@ -3569,8 +3627,11 @@ Workflow trigger and deployment direction:
   switches authority. Fresh connections prefer the holder’s own eligible
   process grant over an ancestor’s. There is no session-based selection or
   response filtering. Session end does not revoke a local-kernel grant.
-  Grants stay in memory and do not survive a restart. Durable grant events
-  record metadata and outcomes; terminal-answer and passkey verification
+  Grants stay in memory. Only a grant that lasts until its holder exits
+  survives a restart, under the same id and event inbox, while the same
+  process (pid, start time, uid, executable) still lives; a timed grant ends.
+  Durable grant events record metadata and outcomes (a granted event also
+  records the holder's process identity, which a restart checks again); terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.
 
   TCP and relay access requests return a pointer to the Unix socket; neither
@@ -4054,7 +4115,7 @@ or multiple active workflow runs. Subscribers always belong to workflows.
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
-from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
 current task and prompt IDs; hidden turn context supplies both. Independent
 user prompts retain separate task records. Work can be working, waiting on
@@ -4808,7 +4869,10 @@ The approve answer's `custom_reply` chooses the term: a number of minutes, or `u
 grants only; an extension adds minutes and refuses it). An unrecognised reply is refused. A grant of
 `until_holder_exits` has no `expires_at_ms`, no "extend?" notice and no deadline; it ends when the
 holder process exits or its identity no longer matches (a reused PID never inherits it), on revoke,
-on passkey rotation, or when the kernel restarts (grants are memory-only). Descendants of the holder
+or on passkey rotation. It survives a kernel restart under the same grant id and event inbox while
+the same holder process lives: the stopping kernel answers a waiting holder with an empty,
+`timed_out` list (not `subscription_ended`), and the next start restores the grant after checking
+the holder again (a holder gone by then ends the grant as `process_exit`). Descendants of the holder
 are admitted as for every grant. `kernel_access.grant` audit events carry the term. Clients that list
 grants or draw the popup need 568.
 Relay peer 176 carries the same shapes. The Rust hash test
@@ -5043,7 +5107,44 @@ added; the bump records the changed relay terminal-event semantics under the
 Protocol Change Rule. Web/native minimums are unchanged unless a client requires
 prompt-scoped live rows.
 
-### Room terminals — provisional local 569 / relay peer 177
+### Agent task and wake ledger projection — allocated 561 / 169 on the event-core line, carried by the merged local 567 / relay peer 175 (MP-08 / MP-09 / MP-10 / MP-11)
+
+The kernel keeps one durable task per provider turn and one durable wake per
+kernel-owned wake source (`kind` names the driver, for example `timer`). Both are
+additive; no client minimum is raised, and an old client simply ignores them.
+
+- `RuntimeSession.agent_tasks` is the session's `AgentTaskExecution` list: every
+  unfinished task plus the 32 most recent finished ones. A task has a `state`
+  (`working`, `waiting`, `blocked`, `done`, `cancelled`), its open `obligations`,
+  its `wait` (registration ids and finite `deadline_ms`), a monotonic `revision`
+  and a redacted `reason`.
+- `RuntimeSession.agent_wakes` is the `AgentWake` list: every armed wake plus the 64
+  most recent finished ones from the last day, with the driver's one-line
+  `summary`, proof of life (`verified_at_ms`), `next_due_ms`, and the receipts of the
+  last occurrence (`last_fired_at_ms`, `last_delivery`, `last_delivered_at_ms`,
+  `last_acknowledged_at_ms`). A client shows them and never decides them.
+- Both lists follow agent trace visibility: a caller who cannot see an agent's
+  trace does not receive its tasks or wakes. Empty lists are omitted.
+- Kernel event `agent_task_updated` (`session_id`, `task`) carries one changed
+  task. A subscriber that receives it applies it by `task_id` and `revision` and
+  need not wait for the next full snapshot. A wake change, or a task leaving the
+  bounded list, still sends the full session snapshot, because no event carries it.
+- Relay peer 169 binds the peer-visible session projection to local 561. There is
+  no new peer message.
+
+`ListEventConnectionEvents { connection_id, limit }` returns
+`EventConnectionEvents` with the webhooks the integration's generator received for
+the calling owner (delivery id, event/action, `repo#PR` subject, received and
+published times, status; never prompt or reply context).
+`ReplayEventConnectionEvent { connection_id, delivery_id }` re-publishes one stored
+event and returns `EventConnectionEventReplayed`; AEDS dedupes on the occurrence id,
+so a replay of an already published event is acknowledged without a second run.
+Both are served by the generator's `POST /v1/events/query` and `/v1/events/replay`
+management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for either
+request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
+Relay peer 159 only pairs the embedded local response union with local 551.
+
+### Room terminals — carried by local 570 / relay peer 178 (formerly provisional 569 / 177)
 
 Numbering: the terminal shapes below were written at 562/170 and are carried by
 the provisional pair local 569 / peer 177 (568/176 is provisional for external
@@ -5062,6 +5163,17 @@ Operations: `open` (cols, rows, title?, command?), `list`, `snapshot`
 (`finished`, `output_contains`, `waiting_for_input` conditions, capped at 240 s
 below the provider tool limit; on timeout `fired` is null and the program is
 still running) and `close`.
+
+A runtime tool `chariox.events.terminal` (`terminal_id`, `until` as for `wait`,
+`after_offset`, `host_agent` / `home_kernel` as for the other terminal tools,
+the agent's own machine by default) registers a notification in the wake
+registry as a `terminal` wake: yield on its registration and the kernel wakes
+the agent once with the exit code (`finished`) or the matched text and the
+screen, ending the wake. A terminal closed or ended first ends it as lost. For a
+terminal on a leased worker the worker runs the watch (the capped `wait` of the
+Room terminal peer request, repeated from the last output offset) and the home
+reports the one occurrence; a worker unreachable for 120 s, a replaced lease or
+a home restart ends the wake as lost, and the terminal itself is not affected.
 
 - Only the Room's owner may send it. A Room made before Cloud enrollment (owner
   `local`) stays usable by the enrolled terminal. `host_agent` and `acting_agent`
@@ -5150,3 +5262,60 @@ A third refusal, `kernel_sudo_room_owner_local`, tells the caller that the Room
 was created before the kernel was enrolled (its owner is `local`), so sudo cannot
 be authorized for it; the fix is to re-create the Room after enrollment. It carries
 no other detail.
+
+### Outside event inbox (MP-08 / MP-09 / MP-10 / MP-11)
+
+Allocated local protocol 585 covers the external-agent / agent-model union,
+outside event subscriptions and agent deadlines; relay peer 181 retains the
+merged peer contracts. The event requests are available to external Unix
+access grants and their kernel gateway only. They are absent from session-agent
+tools and sudo's allowed request vocabulary.
+
+`SubscribeEvents { targets }` follows `{ kernel, session_id, agent_id? }` targets;
+omitting the agent follows every agent in the session, including later additions.
+`UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `ListEvents
+{ since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
+{ cursor }` share one grant-owned inbox. A wait returns pending records immediately
+or an empty timed-out batch, with a maximum wait of fifteen minutes. Batches are
+oldest first, limited to 1,000 records and the existing relay envelope budget.
+Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
+`EventsCursorExpired { oldest_cursor }` rather than skipping missing records.
+
+Records contain a home cursor, source kernel and machine, session and optional
+agent, a typed state change, one-line summary, timestamp and resource references.
+Only agent/task states, interaction state, terminal job exits, delivered steers and
+session changes are collected. Passkey interactions carry the section 8 approval pointer, without
+the prompt body. Session agents retain their existing session-scoped event tools.
+
+Every source kernel filters its own durable part. The gateway commits imported
+records and each source cursor together before acknowledging that source. Target
+restart and relay loss preserve parts and cursors. Pending inboxes retain at most
+100,000 records, replacing removed ranges with explicit per-kernel gaps. Source
+acknowledgements update bounded forwarding counters in the subscription metadata;
+those counters contain subject identifiers and counts only.
+
+Grant expiry, revoke, holder exit, a home-kernel restart (except of a grant that
+lasts until its holder exits, which keeps its subscription) and explicit cancellation
+end the subscription. The final control record is the only reply an admitted wait
+may send after its grant ends. Remote cleanup remains durable through reconnect.
+Sessions and agents created under an external grant are followed automatically;
+`no_subscribe: true` on CreateSession, SpawnAgent or SpawnAgents opts out.
+
+Creation and event interest have separate outcomes. `SessionCreated`, `AgentSpawned`
+and `AgentsSpawned` retain their successful IDs if automatic following fails,
+including an already cancelled subscription or the 1,024-target limit. The reply
+then includes optional `event_subscription_error: {code, message}` (code
+`events_subscription_failed`); normal success omits it. Keep the returned IDs
+and recover the subscription rather than retrying creation. Local 585 covers
+this metadata too; relay peer 181 is unchanged.
+
+A steer is observable by the outside agent that sent it. When `SteerActivePrompt`
+has been taken by the agent's provider (the home provider or the leased worker),
+the kernel records `{ "type": "steer", "value": { "steer_id" } }` for the agent,
+where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused,
+stale or rejected steer records nothing. If the event cannot be recorded after
+delivery, the request fails with the code `prompt_steer_event_unrecorded` and a
+message that names the steer id, says it was delivered and must not be sent again;
+it is distinct from `prompt_steer_rejected`, which means nothing was delivered.
+Local 591 and relay peer 197 add this event shape, and
+`RelayStatus.status.capabilities` advertises `outside_steer_events_v1` for it.

@@ -96,6 +96,12 @@ impl CommandRouter {
         // Select the handler before polling. A single async match reserves
         // stack space for unrelated arms throughout every nested handler poll.
         match request {
+            LocalDaemonRequest::SetAgentDeadline(request) => {
+                boxed_handler(|| async move { self.runtime_state.set_agent_deadline(request) })
+            }
+            LocalDaemonRequest::GetAgentDeadline(request) => {
+                boxed_handler(|| async move { self.runtime_state.get_agent_deadline(request) })
+            }
             LocalDaemonRequest::Notes(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state

@@ -378,7 +378,6 @@ impl DaemonApp {
             pty: PtyManager::new(),
             room_terminals: crate::room_terminal::RoomTerminalService::new(
                 config.private_runtime_state_root().join("room-terminals"),
-                std::sync::Arc::new(crate::room_terminal::EventCoreNotWired),
             ),
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),

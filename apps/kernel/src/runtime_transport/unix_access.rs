@@ -620,6 +620,7 @@ pub(super) fn serve_gateway(
             _ => None,
         };
         let outcome = match route {
+            GatewayRoute::Forward { kernel, request } if crate::runtime::state::is_outside_event_request(&request)=>Err(crate::runtime::kernel_gateway::GatewayError::Remote { name:kernel,code:"events_local_only".into(),message:"event requests run on your local kernel; use chariox events subscribe --kernel NAME to follow another kernel".into(),retryable:false }),
             GatewayRoute::Forward { kernel, request } => {
                 let gateway = router.kernel_gateway();
                 if matches!(
@@ -636,7 +637,7 @@ pub(super) fn serve_gateway(
                     crate::runtime::kernel_gateway::ledger::deadline_for(&request),
                 );
                 // A wait that outlasts the owner revoking the gateway ends with the revoke.
-                let answered = if crate::runtime::kernel_gateway::ledger::is_long_wait(&request) {
+                let mut answered = if crate::runtime::kernel_gateway::ledger::is_long_wait(&request) {
                     tokio::select! {
                         answered = forwarded => answered,
                         error = gateway.until_unaccepted(&kernel, &origin) => Err(error),
@@ -644,8 +645,9 @@ pub(super) fn serve_gateway(
                 } else {
                     forwarded.await
                 };
-                if let Ok(response) = &answered {
+                if let Ok(response) = &mut answered {
                     gateway.note_forwarded(&kernel, &origin, &request, response);
+                    gateway.follow_forwarded(&origin, &kernel, &request, response).await;
                 }
                 answered
             }

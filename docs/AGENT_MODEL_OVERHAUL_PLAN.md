@@ -101,7 +101,7 @@ remain visible and cannot be promoted by changing the advertised tool list.
 
 ## MP-08 / MP-11 — regular-agent surface and enforcement
 
-Add `chariox.events.yield`, `chariox.process.start/watch/cancel`,
+Add `chariox.events.yield`, `chariox.events.process`,
 `chariox.history.search` and `chariox.handoff.request` alongside the mapped
 tools. Preserve existing `chariox.send_agent_message`; regular messaging
 already has active-turn and remote-origin regressions in
@@ -626,13 +626,20 @@ Persist intent and result against the objective/ledger/work-turn revision;
 lost ACK reconciles exactly, never spends a second evaluation blindly. A stale
 result re-enters the revision check before accepting completion. Mark this
 turn's origin `completion_check`; its own end cannot recursively trigger another
-check, dispatch work or mint authority. On timeout/malformed result, make one
+check, dispatch work or mint authority.
+The assessment prompt and its JSON answer are kernel-internal: the kernel
+neither delivers them to client output streams nor projects them into the
+history outline, so no Chariox client shows protocol text in an agent pane. On timeout/malformed result, make one
 visible user-required recovery interaction, not an unbounded evaluation retry.
 Cost is at most one check turn per work-turn revision, plus ordinary continued
 work; the guard bounds no-progress attempts but does not cap a progressing
 multi-hour goal. Surface check count/elapsed/cost metadata if the harness
 provides it. Provider confirmation is evidence of its assessment, not proof of
 arbitrary semantic correctness; drills independently verify deployment/artifacts.
+
+The single correction lists only unresolved obligations. When none remain it
+asks only for the final answer; it never points an agent at yield/blocked tools
+that cannot apply.
 
 A done claim with open obligations retains the one-correction-then-blocked
 rule. The check lists them once; if the agent instead selects valid wait/cancel/
@@ -641,6 +648,17 @@ blocks, even for `/goal`. A legitimate not-achieved check with no sources
 continues only for goal mode. Plain prompts that still need work receive the
 single corrective turn when their ending was invalid; they cannot gain goal
 mode through repeated final answers or agent-created messages.
+Once that correction has produced a public answer and every obligation is
+resolved, a plain request ends Done. Any further assessment notes are retained
+as information and cannot create an owner blocker or another continuation
+(coordinator decision, 2026-10-15). Explicit unresolved obligations and real
+provider/assessment delivery failures retain their recovery paths.
+
+Kernel inbox instructions are agent-only too: live echoes, prompt-state rows
+and history user rows omit their text while preserving the agent's public
+answer, including a child whose first turn came only from an inbox event.
+Kernel task notices use the agent name and a short state, without task IDs,
+obligation counts or internal assessment reasons.
 
 **Check-in cadence and UI.** Propose default 10 minutes, owner-configurable
 1–60 minutes per goal (plain waits use the same maximum deadline interval).

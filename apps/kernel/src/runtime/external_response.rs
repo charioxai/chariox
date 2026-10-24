@@ -52,6 +52,10 @@ fn protect_error(error: DaemonError) -> DaemonError {
     {
         return error;
     }
+    // The kernel's own sentence about a steer it already delivered: only its id rides along.
+    if matches!(&error, DaemonError::SteerDeliveredEventUnrecorded { .. }) {
+        return error;
+    }
     // A session alias the agent chose, and the session that holds it: the kernel's own
     // sentence about names the agent sent, so the agent can pick another alias.
     if matches!(
@@ -185,6 +189,10 @@ response_policies! {
         UserDomainInteractionAnswered,
     ],
     Public => [
+        EventSubscription,
+        EventsListed,
+        EventsAcknowledged,
+        EventsCursorExpired,
         // MP-07/MP-08/MP-11: receipt metadata only; SSH admission stays owner-scoped.
         SshMachine,
         WorkflowNotificationSourceRegistered,
@@ -453,6 +461,7 @@ response_policies! {
         SessionAliased,
         AgentAliased,
         AgentProfileUpdated,
+        AgentDeadline,
         AgentSpawned,
         AgentsSpawned,
         TurnUndone,

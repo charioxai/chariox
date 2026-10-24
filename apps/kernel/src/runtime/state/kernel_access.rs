@@ -5,7 +5,7 @@ use crate::local::*;
 use crate::runtime::kernel_access::{
     error,
     process::{self, ProcessIdentity},
-    Grant, GrantClock, Refusal,
+    AccessState, Grant, GrantClock, Refusal,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
@@ -17,10 +17,42 @@ impl KernelRuntimeState {
         outcome: &str,
         reason: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.audit_access_of_holder(grant, None, outcome, reason)
+    }
+
+    /// `holder` is recorded with a grant so that a restart can find the same
+    /// process again (see `restore_kernel_access_grants`).
+    fn audit_access_of_holder(
+        &self,
+        grant: &KernelAccessGrant,
+        holder: Option<&ProcessIdentity>,
+        outcome: &str,
+        reason: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if outcome == "granted" {
+            self.owned.durable_state_store.outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Subscribe {
+                    baseline: vec![],
+                    id: grant.grant_id.clone(),
+                    home: true,
+                    targets: Vec::new(),
+                },
+            )?;
+        }
+        if matches!(outcome, "revoked" | "expired") {
+            self.owned.durable_state_store.outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Unsubscribe {
+                    id: grant.grant_id.clone(),
+                    targets: Vec::new(),
+                    all: true,
+                    reason: reason.unwrap_or(outcome).to_string(),
+                },
+            )?;
+        }
         self.owned.durable_state_store.append_event(
             "kernel_access.grant",
             Some(grant.grant_id.clone()),
-            serde_json::json!({ "outcome": outcome, "grant": grant, "reason": reason }),
+            serde_json::json!({ "outcome": outcome, "grant": grant, "holder": holder, "reason": reason }),
         )?;
         Ok(())
     }
@@ -30,6 +62,75 @@ impl KernelRuntimeState {
         owner: Option<&str>,
         id: Option<&str>,
         reason: &str,
+    ) -> Result<usize, DaemonError> {
+        self.revoke_access(owner, id, reason, false)
+    }
+
+    /// The kernel stops. Holders waiting on events are released with an empty
+    /// answer; sudo windows and timed grants end as always, but a grant that
+    /// lasts until its holder exits is kept for the next start. Returns how
+    /// many grants and windows it ended or released.
+    pub(crate) fn end_kernel_access_for_shutdown(&self) -> Result<usize, DaemonError> {
+        let kept = {
+            let mut state = self
+                .owned
+                .kernel_access
+                .lock()
+                .expect("access state poisoned");
+            state.stopping = true;
+            state
+                .grants
+                .values()
+                .filter(|grant| grant.survives_restart())
+                .count()
+        };
+        Ok(self.revoke_access(None, None, "kernel_shutdown", true)? + kept)
+    }
+
+    /// Whether the kernel has begun to stop (event waits end their poll).
+    pub(crate) fn kernel_access_stopping(&self) -> bool {
+        self.owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .stopping
+    }
+
+    /// The start after a stop: grants that last until their holder exits come
+    /// back with their id, so the holder's event inbox goes on. A holder that
+    /// is gone, or whose pid was reused, ends its grant now.
+    pub(crate) fn restore_kernel_access_grants(&self) -> Result<usize, DaemonError> {
+        let mut restored = 0;
+        for (id, summary, holder) in recorded_until_exit_grants(&self.owned.durable_state_store)? {
+            match holder.filter(ProcessIdentity::alive) {
+                Some(holder) => {
+                    self.owned
+                        .kernel_access
+                        .lock()
+                        .expect("access state poisoned")
+                        .grants
+                        .insert(
+                            id,
+                            Grant {
+                                summary,
+                                holder,
+                                clock: None,
+                            },
+                        );
+                    restored += 1;
+                }
+                None => self.audit_access(&summary, "revoked", Some("process_exit"))?,
+            }
+        }
+        Ok(restored)
+    }
+
+    fn revoke_access(
+        &self,
+        owner: Option<&str>,
+        id: Option<&str>,
+        reason: &str,
+        keep_for_restart: bool,
     ) -> Result<usize, DaemonError> {
         let sudo_result = self.revoke_sudo(owner, id, reason);
         let sudo_count = sudo_result.as_ref().copied().unwrap_or(0);
@@ -44,6 +145,7 @@ impl KernelRuntimeState {
             .filter(|(key, grant)| {
                 id.is_none_or(|id| id == key.as_str())
                     && owner.is_none_or(|owner| owner == grant.summary.owner_user_id)
+                    && !(keep_for_restart && grant.survives_restart())
             })
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
@@ -168,6 +270,9 @@ impl KernelRuntimeState {
         if kernel.contains(peer) {
             return Vec::new();
         }
+        let Ok(chain) = process::ancestry(peer) else {
+            return Vec::new();
+        };
         let mut grants: Vec<_> = self
             .owned
             .kernel_access
@@ -175,13 +280,16 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .grants
             .values()
-            .filter(|grant| grant.holder.contains(peer))
-            .cloned()
+            .filter_map(|grant| {
+                let distance = chain.iter().position(|p| *p == grant.holder)?;
+                grant.holder.alive().then(|| (distance, grant.clone()))
+            })
             .collect();
-        // A process's own grant takes precedence over an inherited grant for
-        // all requests. Authority is local-kernel-wide.
-        grants.sort_by_key(|grant| grant.holder != *peer);
-        grants
+        // The nearest holder's grant comes first, the requester's own before
+        // any inherited one, so separate invocations of one command series
+        // keep the same grant and event inbox. Authority is local-kernel-wide.
+        grants.sort_by_key(|(distance, _)| *distance);
+        grants.into_iter().map(|(_, grant)| grant).collect()
     }
 
     /// True when this peer sits under a holder whose grant has ended.
@@ -322,16 +430,29 @@ impl KernelRuntimeState {
             }
             KernelAccessTerm::UntilHolderExits => None,
         };
-        self.audit_access(&summary, "granted", None)?;
+        self.admit_grant(&mut state, id, summary.clone(), holder, clock)?;
+        Ok(summary)
+    }
+
+    /// Records a granted request and makes it live.
+    fn admit_grant(
+        &self,
+        state: &mut AccessState,
+        id: String,
+        summary: KernelAccessGrant,
+        holder: ProcessIdentity,
+        clock: Option<GrantClock>,
+    ) -> Result<(), DaemonError> {
+        self.audit_access_of_holder(&summary, Some(&holder), "granted", None)?;
         state.grants.insert(
             id,
             Grant {
-                summary: summary.clone(),
+                summary,
                 holder,
                 clock,
             },
         );
-        Ok(summary)
+        Ok(())
     }
 
     async fn access_decision(
@@ -474,3 +595,45 @@ impl KernelRuntimeState {
 mod policy;
 #[cfg(test)]
 pub(super) mod test_support;
+
+/// Grants that last until their holder exits and were never revoked, each
+/// with the holder process recorded when it was granted.
+fn recorded_until_exit_grants(
+    store: &crate::durable_state::DurableKernelStateStore,
+) -> Result<Vec<(String, KernelAccessGrant, Option<ProcessIdentity>)>, DaemonError> {
+    let mut recorded = std::collections::BTreeMap::new();
+    for event in store.load_events_by_kind("kernel_access.grant")? {
+        let Some(id) = event.subject_id else { continue };
+        match event.payload["outcome"].as_str() {
+            Some("granted") => {
+                if let Ok(grant) =
+                    serde_json::from_value::<KernelAccessGrant>(event.payload["grant"].clone())
+                {
+                    let holder = serde_json::from_value(event.payload["holder"].clone()).ok();
+                    recorded.insert(id, (grant, holder));
+                }
+            }
+            Some("revoked" | "expired") => {
+                recorded.remove(&id);
+            }
+            _ => {}
+        }
+    }
+    Ok(recorded
+        .into_iter()
+        .filter(|(_, (grant, _))| grant.term == KernelAccessTerm::UntilHolderExits)
+        .map(|(id, (grant, holder))| (id, grant, holder))
+        .collect())
+}
+
+/// Ids of the grants whose holder is still running: their event inboxes must
+/// outlive this start.
+pub(crate) fn grant_inboxes_to_keep(
+    store: &crate::durable_state::DurableKernelStateStore,
+) -> Result<Vec<String>, DaemonError> {
+    Ok(recorded_until_exit_grants(store)?
+        .into_iter()
+        .filter(|(_, _, holder)| holder.as_ref().is_some_and(ProcessIdentity::alive))
+        .map(|(id, ..)| id)
+        .collect())
+}

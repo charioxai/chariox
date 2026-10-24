@@ -1241,7 +1241,7 @@ fn running_computer_input_cancels_the_physical_helper_and_resets_before_takeover
         )
         .expect("Room should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     harness
@@ -1552,7 +1552,7 @@ fn queued_human_pointer_click_promotes_after_agent_action_finishes_outside_room_
         )
         .expect("Room should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     harness
@@ -1734,7 +1734,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
         ))
         .expect("Room should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let started = harness
@@ -1822,6 +1822,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("Navigator".to_string()),
@@ -1838,7 +1839,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
         }))
         .expect("agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         other => panic!("unexpected local response: {other:?}"),
     };
     let spawned_actor_id = crate::session::agent_environment_actor_id(spawned.id());

@@ -4,6 +4,9 @@
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
+#[cfg(test)]
+mod deadline_tests;
+mod deadlines;
 mod delegation;
 mod delivery;
 mod leased_processes;
@@ -11,13 +14,20 @@ pub(crate) use leased_processes::LeasedProcessMutation;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 mod delivery_waits;
 #[cfg(test)]
+mod fault_tests;
+pub(crate) mod faults;
+#[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;
 mod migration;
+pub(crate) mod outside;
+#[cfg(test)]
+mod outside_tests;
 #[cfg(test)]
 mod plain_tests;
 mod quarantine;
 mod replies;
+mod subscriptions;
 mod supervision;
 #[cfg(test)]
 mod tests;
@@ -36,7 +46,9 @@ use transitions::apply;
 pub(super) use types::Request;
 pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
 mod wake_receipts;
-pub(crate) use types::{unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration};
+pub(crate) use types::{
+    unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration, WakeEnd,
+};
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;
@@ -85,6 +97,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
         db.execute_batch("ALTER TABLE agent_source_occurrences ADD COLUMN public_answer TEXT")
             .map_err(sql)?;
     }
+    outside::initialize(db)?;
+    deadlines::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
     workflow_tasks::initialize(db)?;
@@ -223,7 +237,7 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
-pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
+pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::AgentFaults) -> bool {
     // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: no objective or operation payload in diagnostics.
     let trace = match &request.operation {
         Operation::ControlGoal { task, action, .. } => match action.as_str() {
@@ -243,8 +257,19 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql)?;
         let begun = std::time::Instant::now();
+        let duplicate = faults
+            .duplicates_deliveries()
+            .then(|| {
+                faults::delivery_kind(&request.operation)
+                    .map(|kind| (kind, request.operation.clone()))
+            })
+            .flatten();
         let value = apply(&tx, request.operation)?;
         let applied = std::time::Instant::now();
+        if faults.writer_fails() {
+            drop(tx);
+            return Err(error("agent lifecycle write failed (CHARIOX_AGENT_FAULT_DIR/writer-fail); nothing was committed"));
+        }
         let committed = tx.commit();
         if let Some((key, action)) = trace {
             crate::runtime::command_latency::log_goal_writer_phases(
@@ -264,10 +289,27 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                 e.to_string()
             }));
         }
+        // A scheduler tick that fired nothing delivered nothing.
+        let delivered = !matches!(&value, Outcome::Wakes(fired) if fired.is_empty());
+        if let Some((kind, operation)) = duplicate.filter(|_| delivered) {
+            redeliver(db, faults, kind, operation);
+        }
         Ok(value)
     })();
     let _ = request.response.send(result);
     uncertain
+}
+/// G05 drill: the same delivery arrives again after the first committed.
+fn redeliver(db: &mut Connection, faults: &faults::AgentFaults, kind: &str, operation: Operation) {
+    let outcome = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)
+        .and_then(|tx| {
+            let applied = apply(&tx, operation).map(|_| ());
+            tx.commit().map_err(sql)?;
+            applied
+        });
+    faults.record_duplicate(kind, outcome.as_ref().err());
 }
 fn load(tx: &Transaction<'_>, id: &str) -> Result<AgentTaskExecution, DaemonError> {
     let row: Option<(String, String, String, String)> = tx
@@ -350,7 +392,18 @@ fn decode_task(
     Ok(t)
 }
 fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonError> {
+    let previous = tx
+        .query_row(
+            "SELECT payload FROM agent_tasks WHERE task_id=?1",
+            [&task.task_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .map(|s| decode::<AgentTaskExecution>(&s))
+        .transpose()?;
     tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
+    outside::publish_task(tx, task, previous.as_ref())?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
         tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload)", [&task.task_id]).map_err(sql)?;
     }
@@ -421,11 +474,11 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     {
         return Err(error("completion_check cannot mutate work or authority"));
     }
-    if task.prompt_id != prompt
-        || task.state != ExecutionState::Working
-        || task.pending_prompt_id.is_some()
-    {
-        return Err(error("turn mutation admission closed or stale"));
+    if task.prompt_id != prompt {
+        return Err(error("origin_prompt_id is not this running turn's. Retry with the task_id and origin_prompt_id from this turn's <chariox-task-context>; never reuse ids from an earlier turn"));
+    }
+    if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
+        return Err(error("this turn can no longer change its task: it is waiting, finished or already ending. End the turn without more tools"));
     }
     Ok(())
 }
@@ -479,7 +532,12 @@ fn new_task(
 }
 fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonError> {
     crate::secret_redaction::redact_json_secrets(&mut e.payload);
-    let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
+    let recipient = outside::Recipient::SessionAgent {
+        session_id: e.room_id.clone(),
+        agent_id: e.agent_id.clone(),
+    };
+    let (room, agent) = recipient.address();
+    let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![room,agent,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
     if let Some(previous) = previous {
         let mut p: InboxEvent = decode(&previous)?;
         if matches!(e.kind.as_str(), "source_completed" | "source_lost") && p.kind == e.kind {
@@ -673,7 +731,7 @@ pub(crate) fn lacks_live_executor(
         check.result.is_none()
             && check.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
             && check.started_at_ms <= now
-            && now < check.deadline_ms
+            && (check.paused_at_ms.is_some() || now < check.deadline_ms)
     });
     task.state == ExecutionState::Working
         && now.saturating_sub(task.last_progress_at_ms) >= DELIVERY_TIMEOUT_MS

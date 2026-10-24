@@ -71,26 +71,52 @@ pub(super) fn settle_unstarted_delegates(
     let Some(run) = load_run(tx, owner_id, &task.room_id, source)? else {
         return Ok(false);
     };
-    if run.created_by_agent_id() != Some(task.agent_id.as_str()) || !run_failed(&run) {
+    if run.created_by_agent_id() != Some(task.agent_id.as_str())
+        || !matches!(
+            run.status(),
+            crate::session::WorkflowRunStatus::Failed | crate::session::WorkflowRunStatus::Stopped
+        )
+    {
         return Ok(false);
     }
-    // A delegate that another accepted, still-running invocation of this task
-    // uses must stay bound to the parent for that invocation.
-    let mut kept = std::collections::HashSet::new();
+    // Another accepted invocation by this parent may still need the same
+    // unbound delegate; only the last live user of it can cancel it.
+    let mut shared_agents = Vec::new();
     for other in task.obligations.iter().filter(|o| {
         o.tracks_workflow_run()
             && o.status == "open"
             && o.dispatch_state == "accepted"
             && o.resource_id.as_deref() != Some(source)
     }) {
-        let Some(id) = other.resource_id.as_deref() else {
+        let Some(other_id) = other.resource_id.as_deref() else {
             continue;
         };
-        let Some(run) = load_run(tx, owner_id, &task.room_id, id)? else {
-            continue;
-        };
-        if !run_terminated(&run) {
-            kept.extend(unfinished_agents(&run));
+        if let Some(other_run) = load_run(tx, owner_id, &task.room_id, other_id)? {
+            if !other_run.status().is_terminal() {
+                // Downstream nodes have no node run yet; their agents come from the run's mapping.
+                let completed = |n: &crate::session::WorkflowNodeRun| {
+                    n.status() == crate::session::WorkflowNodeRunStatus::Completed
+                };
+                shared_agents.extend(
+                    other_run
+                        .node_runs()
+                        .iter()
+                        .filter(|n| !completed(n))
+                        .map(|n| n.agent_id().to_string()),
+                );
+                shared_agents.extend(
+                    other_run
+                        .runtime_agent_ids_by_node()
+                        .iter()
+                        .filter(|(node, _)| {
+                            !other_run
+                                .node_runs()
+                                .iter()
+                                .any(|n| n.node_id() == node.as_str() && completed(n))
+                        })
+                        .map(|(_, agent)| agent.clone()),
+                );
+            }
         }
     }
     let mut changed = false;
@@ -102,7 +128,7 @@ pub(super) fn settle_unstarted_delegates(
             || obligation
                 .resource_id
                 .as_deref()
-                .is_some_and(|a| kept.contains(a))
+                .is_some_and(|agent| shared_agents.iter().any(|a| a == agent))
         {
             continue;
         }
@@ -168,33 +194,4 @@ fn load_run(
         .optional()
         .map_err(sql)?;
     raw.map(|raw| decode(&raw)).transpose()
-}
-
-fn run_failed(run: &crate::session::WorkflowRun) -> bool {
-    matches!(
-        run.status(),
-        crate::session::WorkflowRunStatus::Failed | crate::session::WorkflowRunStatus::Stopped
-    )
-}
-
-fn run_terminated(run: &crate::session::WorkflowRun) -> bool {
-    run_failed(run) || run.status() == crate::session::WorkflowRunStatus::Completed
-}
-
-/// Agents a surviving run still has to run: started and unfinished nodes plus
-/// the nodes the invocation has not reached yet (its runtime agent mapping).
-fn unfinished_agents(run: &crate::session::WorkflowRun) -> Vec<String> {
-    let done: std::collections::HashSet<&str> = run
-        .node_runs()
-        .iter()
-        .filter(|n| n.status() == crate::session::WorkflowNodeRunStatus::Completed)
-        .map(|n| n.agent_id())
-        .collect();
-    run.node_runs()
-        .iter()
-        .map(|n| n.agent_id())
-        .chain(run.runtime_agent_ids_by_node().values().map(String::as_str))
-        .filter(|agent| !done.contains(agent))
-        .map(str::to_owned)
-        .collect()
 }

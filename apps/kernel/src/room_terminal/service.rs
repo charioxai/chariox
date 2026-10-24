@@ -7,7 +7,7 @@ use super::REFUSED_CODE;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -15,7 +15,7 @@ use rand::RngCore;
 use tokio::sync::{oneshot, Notify};
 
 use super::driver::Admission;
-use super::events::{CompletionEvents, WatchOwner};
+use super::events::{BoundEvents, CompletionEvents, WatchOwner};
 use super::managed_work::ManagedWork;
 use super::session_sweep::SessionSweep;
 use super::shell::login_shell;
@@ -31,6 +31,8 @@ use crate::error::DaemonError;
 use crate::pty::{PtyManager, PtySpawnRequest};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
 use crate::session::unix_epoch_ms;
+
+mod outside_events;
 
 const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -76,7 +78,8 @@ pub struct RoomTerminalService {
 struct Inner {
     state: Mutex<State>,
     store: TerminalStore,
-    events: Arc<dyn CompletionEvents>,
+    events: BoundEvents,
+    outside_events: std::sync::RwLock<Option<crate::durable_state::DurableKernelStateStore>>,
     shell_integration: ShellIntegration,
     managed: ManagedWork,
     output_changed: Notify,
@@ -99,7 +102,7 @@ pub(super) struct State {
 impl RoomTerminalService {
     /// Terminals that ran when the kernel last stopped come back as ended by
     /// the restart, scrollback kept.
-    pub fn new(store_root: PathBuf, events: Arc<dyn CompletionEvents>) -> Self {
+    pub fn new(store_root: PathBuf) -> Self {
         let shell_integration = ShellIntegration::install(&store_root.with_extension("shell"));
         let store = TerminalStore::new(store_root);
         let terminals = match store.recover() {
@@ -125,7 +128,8 @@ impl RoomTerminalService {
                     next_wait: 0,
                 }),
                 store,
-                events,
+                events: BoundEvents::default(),
+                outside_events: std::sync::RwLock::new(None),
                 shell_integration,
                 managed: ManagedWork::default(),
                 output_changed: Notify::new(),
@@ -134,6 +138,12 @@ impl RoomTerminalService {
                 pump_active_until: Mutex::new(Instant::now()),
             }),
         }
+    }
+
+    /// Where fired watches go. Bound by the event core, which owns them: the service holds the
+    /// sink weakly so the sink may hold the runtime that owns this service.
+    pub fn bind_events(&self, events: Weak<dyn CompletionEvents>) {
+        self.inner.events.bind(events);
     }
 
     pub fn open(&self, spec: OpenRoomTerminal) -> Result<RoomTerminalSummary, DaemonError> {
@@ -461,9 +471,14 @@ impl RoomTerminalService {
         session_id: &str,
         terminal_id: &str,
         owner: WatchOwner,
-        watch: RoomTerminalWatch,
+        watches: Vec<RoomTerminalWatch>,
         after_offset: Option<u64>,
     ) -> Result<(), DaemonError> {
+        if watches.is_empty() {
+            return Err(refused(
+                "a notification needs at least one condition".to_string(),
+            ));
+        }
         let immediate = {
             let mut state = self.lock();
             let State { pty, terminals, .. } = &mut *state;
@@ -473,9 +488,22 @@ impl RoomTerminalService {
             }
             let now = Instant::now();
             let program_running = !terminal.at_prompt(pty, now);
-            terminal
-                .arm_watch(owner.clone(), watch, after_offset, now, program_running)
-                .map(|kind| event(terminal, owner, kind, terminal.screen.visible_text()))
+            let mut immediate = None;
+            for watch in watches {
+                if let Some(kind) =
+                    terminal.arm_watch(owner.clone(), watch, after_offset, now, program_running)
+                {
+                    terminal.watches.disarm(&owner.wake_id);
+                    immediate = Some(event(
+                        terminal,
+                        owner.clone(),
+                        kind,
+                        terminal.screen.visible_text(),
+                    ));
+                    break;
+                }
+            }
+            immediate
         };
         if let Some(event) = immediate {
             self.inner.events.deliver(event);
@@ -567,7 +595,7 @@ impl RoomTerminalService {
     pub(crate) fn link_managed_kernel(
         &self,
         gate: Arc<ManagedKernelQuiescenceGate>,
-        work_changed: Arc<dyn Fn() + Send + Sync>,
+        work_changed: std::sync::Weak<dyn Fn() + Send + Sync>,
     ) {
         self.inner.managed.link(gate, work_changed);
     }
@@ -711,6 +739,7 @@ impl RoomTerminalService {
                         }
                     }
                 }
+                self.publish_outside_jobs(terminal);
                 self.persist_if_due(terminal, now);
             }
         }

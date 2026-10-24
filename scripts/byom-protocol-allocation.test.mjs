@@ -1,7 +1,7 @@
-import { localProtocolVersion, relayPeerProtocolVersion } from "./lib/protocol-versions.mjs"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import test from "node:test"
+import { localProtocolVersion, relayPeerProtocolVersion } from "./lib/protocol-versions.mjs"
 
 const read = path => readFileSync(new URL("../" + path, import.meta.url), "utf8")
 

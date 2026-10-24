@@ -257,10 +257,11 @@ test("exhausted OpenCode service stays visible but does not block the start", ()
   }
 })
 
-// MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
-test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
+// MP-08 / MP-10 / MP-11: the kernel checks explicit namespaces; missing defaults still need login.
+test("explicit Claude references defer to the kernel while missing defaults need sign-in", () => {
   for (const mode of ["claude", "claude-p", "claude-headless"]) {
     assert.equal(selectedProviderAccountStartBlockReason([], mode, "claude-miguel"), null)
+    assert.match(selectedProviderAccountStartBlockReason([], mode, "default") ?? "", /needs sign-in/)
   }
 })
 

@@ -4,6 +4,8 @@ import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
+import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
+
 const LOCAL_CONNECTION_LOSS = ["connection_closed", "outcome_unknown", "write_failed"]
 const CONNECT_OPERATION = "connect kernel websocket"
 const DEFAULT_TIMEOUT_SECONDS = 30
@@ -25,7 +27,7 @@ export function failureOf(error: unknown): CommandFailure {
 
 export function reportFailure(error: unknown, kernel: string | null = null): void {
   const failure = failureOf(error)
-  process.stderr.write(`${JSON.stringify({ error: { code: failure.code, message: failure.message, kernel } })}\n`)
+  process.stderr.write(`${JSON.stringify({ error: { code: failure.code, message: failure.message, kernel, ...failure.details } })}\n`)
   process.exitCode = exitCodeFor(failure.code)
 }
 
@@ -99,6 +101,9 @@ export function sendRequest(
   body: Record<string, unknown>,
   options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
 ): Promise<unknown> {
+  if ("AttachToSession" in body && !options.commandId?.trim()) {
+    return Promise.reject(new CommandFailure("command_id_required", "AttachToSession changes Room state; supply --command-id ID and reuse it only to retry this attachment. Use the returned SessionAttached.attachment.id."))
+  }
   return withKernel(options, send => send(body))
 }
 
@@ -152,9 +157,18 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
-  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && !terminalVerb) return false
+  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && !terminalVerb) return false
   let kernel: string | null = null
   try {
+    if (command === "events") {
+      const verb = EVENT_VERBS.find(name => name === rest[0])
+      if (!verb) throw new CommandFailure("usage", `Usage: chariox events ${EVENT_VERBS.join("|")} (chariox guide lists the arguments)`)
+      const { flags, positionals } = parseArguments(`events ${verb}`, rest.slice(1))
+      const socket = flags.get("--socket") as string | undefined
+      if (verb === "watch") for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => process.exit(0))
+      process.exitCode = await withKernel({ socket, timeoutSeconds: eventTimeoutSeconds(verb, flags) + DEFAULT_TIMEOUT_SECONDS }, send => runEventsVerb(verb, flags, positionals, send, value => console.log(JSON.stringify(value))))
+      return true
+    }
     // `files` is a command family: the verb is part of the table name.
     const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
     if (command === "files" && !verb) throw new CommandFailure("usage", `Usage: chariox files ${FILES_VERBS.join("|")} (chariox guide lists the arguments)`)
@@ -204,6 +218,11 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       const body = parseRequestBody(await readStdin())
       const timeoutSeconds = parseTimeout(flags.get("--timeout"))
       const commandId = flags.get("--command-id") as string | undefined
+      if (flags.has("--no-subscribe")) {
+        const variant = ["CreateSession", "SpawnAgent", "SpawnAgents"].find(name => name in body)
+        if (!variant || !body[variant] || typeof body[variant] !== "object") throw new CommandFailure("usage", "--no-subscribe applies to CreateSession, SpawnAgent or SpawnAgents")
+        ;(body[variant] as Record<string, unknown>).no_subscribe = true
+      }
       const response = await sendRequest(body, { socket, timeoutSeconds, kernel: kernel ?? undefined, commandId })
       console.log(JSON.stringify(response))
     }

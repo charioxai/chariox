@@ -1,7 +1,7 @@
 //! Validate launcher syntax before a build, logger or runtime can be started.
 
 pub const USAGE: &str = "usage: chariox-cli [options]
-       chariox-cli access|sudo|guide|machines|request|watch|files|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
+       chariox-cli access|sudo|guide|kernels|request|events|watch|files|terminal|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
        chariox-cli serve <package> <port> [options]
 
 Options:
@@ -40,6 +40,7 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
                 | "guide"
                 | "kernels"
                 | "request"
+                | "events"
                 | "watch"
                 | "files"
                 | "terminal"
@@ -127,6 +128,22 @@ mod tests {
         }
     }
 
+    // EA2-26: the event commands of `chariox guide` use the TypeScript parser.
+    #[test]
+    fn event_commands_reach_their_own_parser() {
+        for args in [
+            vec!["events", "subscription"],
+            vec!["events", "subscribe", "--kernel", "k", "--session", "s"],
+            vec!["events", "unsubscribe", "--all"],
+            vec!["events", "list", "--since", "3", "--limit", "10"],
+            vec!["events", "wait", "--since", "3", "--timeout", "5"],
+            vec!["events", "ack", "7"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(help_requested(&args), Ok(false), "{args:?}");
+        }
+    }
+
     // EA2-04/05/19: the agent commands of `chariox guide` use the TypeScript parser.
     #[test]
     fn agent_commands_reach_their_own_parser() {
@@ -170,6 +187,30 @@ mod tests {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(help_requested(&args), Ok(false), "{args:?}");
         }
+    }
+
+    // The public usage names exactly the subcommands the launcher forwards.
+    #[test]
+    fn usage_names_every_forwarded_subcommand_and_no_removed_one() {
+        let line = super::USAGE.lines().nth(1).expect("subcommand usage line");
+        let listed: Vec<_> = line
+            .trim()
+            .strip_prefix("chariox-cli ")
+            .and_then(|rest| rest.strip_suffix(" [args]"))
+            .expect("subcommand list")
+            .split('|')
+            .collect();
+        for name in &listed {
+            assert_eq!(
+                help_requested(&[(*name).to_owned()]),
+                Ok(false),
+                "{name} is listed but not forwarded"
+            );
+        }
+        for name in ["kernels", "terminal", "events"] {
+            assert!(listed.contains(&name), "usage omits {name}");
+        }
+        assert!(!listed.contains(&"machines"));
     }
 
     #[test]
