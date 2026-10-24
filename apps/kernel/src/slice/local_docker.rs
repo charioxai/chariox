@@ -1549,13 +1549,22 @@ pub(super) fn run_local_docker_slice_screen(
             SliceDisplayMode::Headless => "headless",
         }
     );
-    let status = docker_command()
+    let mut command = docker_command();
+    command
         .args(["exec", "-e"])
         .arg(viewer_backend)
         .args(["-e"])
         .arg(viewer_port)
         .args(["-e"])
-        .arg(display_mode)
+        .arg(display_mode);
+    // A Room Environment desktop starts without the taskbar, also when a
+    // snapshot resume starts it again.
+    if let Some(session_id) = record.environment_session_id.as_deref() {
+        command
+            .args(["-e"])
+            .arg(format!("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID={session_id}"));
+    }
+    let status = command
         .args([
             "-u",
             "slice",

@@ -31,6 +31,14 @@ slice_selkies() {
 
 mkdir -p "$LOGS" "$CHROME_PROFILE"
 
+# A Room Environment streams the browser page alone, so its desktop starts
+# without the taskbar and its 34 px band. Other headed slices keep the bar.
+# The marker lets `status` agree with how this desktop was started.
+TASKBAR_DISABLED="$LOGS/taskbar.disabled"
+taskbar_expected() {
+  [[ ! -e "$TASKBAR_DISABLED" ]]
+}
+
 log() {
   printf '[slice-screen] %s\n' "$*" >&2
 }
@@ -169,7 +177,7 @@ screen_missing_components() {
   if ! process_running "$DISPLAY_SERVER $DISPLAY_ID"; then
     missing+=("display")
   fi
-  if ! process_running '(^|/)tint2([[:space:]]|$)'; then
+  if taskbar_expected && ! process_running '(^|/)tint2([[:space:]]|$)'; then
     missing+=("taskbar")
   fi
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
@@ -438,7 +446,12 @@ PYTHON
   install -d -m 0700 "$computer_runtime"
   rm -f "$computer_runtime/desktop-session-address"
   nohup dbus-run-session -- sh -c 'umask 077; printf "%s" "$DBUS_SESSION_BUS_ADDRESS" > "$1"; exec openbox' sh "$computer_runtime/desktop-session-address" >"$LOGS/openbox.log" 2>&1 &
-  nohup tint2 -c "$ROOT/tint2rc" >"$LOGS/taskbar.log" 2>&1 &
+  if [[ -n "${CHARIOX_ROOM_ENVIRONMENT_SESSION_ID:-}" ]]; then
+    : >"$TASKBAR_DISABLED"
+  else
+    rm -f "$TASKBAR_DISABLED"
+    nohup tint2 -c "$ROOT/tint2rc" >"$LOGS/taskbar.log" 2>&1 &
+  fi
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
     if ! slice_selkies start >/dev/null; then
       stop_desktop
@@ -454,7 +467,7 @@ PYTHON
   sleep 2
   require_process "$DISPLAY_SERVER $DISPLAY_ID" "$DISPLAY_SERVER" "$LOGS/display.log"
   require_process '(^|/)openbox([[:space:]]|$)' "Openbox" "$LOGS/openbox.log"
-  require_process '(^|/)tint2([[:space:]]|$)' "Applications taskbar" "$LOGS/taskbar.log"
+  taskbar_expected && require_process '(^|/)tint2([[:space:]]|$)' "Applications taskbar" "$LOGS/taskbar.log"
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
     slice_selkies status >/dev/null
   else
