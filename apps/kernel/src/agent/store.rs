@@ -182,9 +182,11 @@ impl AgentStore {
         let Some(agent_ids) = self.session_agent_ids(session_id) else {
             return summary;
         };
-        summary.count = agent_ids.len();
         for agent_id in agent_ids {
             if let Some(agent) = self.agents.get(agent_id) {
+                if !agent.archived() {
+                    summary.count += 1;
+                }
                 if let Some(alias) = agent.alias() {
                     summary.aliases.insert(alias.trim().to_lowercase());
                 }

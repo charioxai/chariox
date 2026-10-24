@@ -280,3 +280,59 @@ fn archive_agent_protocol_592_shape_and_hash() {
         "195f2bbf47c8f0a17aec7f8a3f65f54fc3c56bad25bfcf21cba3cbad508d1955"
     );
 }
+
+fn assert_archive_agent_capacity_reused(batch: bool) {
+    let worktree = crate::test_support::TestWorktree::new("archive-capacity");
+    let mut config = crate::DaemonConfig::for_tests();
+    config.user_config.workflow.session_default_max_agents = Some(2);
+    let h = LocalRouterTestHarness::with_config(config);
+    let LocalDaemonResponse::SessionCreated { session, agent } = h
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    for index in 1..session.max_agents() {
+        h.spawn_workflow_test_agent(session.id(), &format!("capacity-{index}"));
+    }
+    h.dispatch(archive_request(session.id(), agent.id(), true))
+        .unwrap();
+    if batch {
+        let request = serde_json::from_value(serde_json::json!({"SpawnAgents": {
+            "session_id": session.id(), "agents": [{"alias": "replacement", "provider": "codex"}]
+        }}))
+        .unwrap();
+        h.dispatch(request)
+            .expect("archived agent must release batch capacity");
+    } else {
+        h.spawn_workflow_test_agent(session.id(), "replacement");
+    }
+    let LocalDaemonResponse::AgentsListed { agents } = h
+        .dispatch(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session.id().into(),
+        }))
+        .unwrap()
+    else {
+        panic!("agents")
+    };
+    assert_eq!(
+        agents.iter().filter(|a| !a.archived()).count(),
+        session.max_agents() as usize
+    );
+    assert!(
+        h.dispatch(archive_request(session.id(), agent.id(), false))
+            .is_err(),
+        "unarchive still obeys active capacity"
+    );
+}
+
+#[test]
+fn archive_agent_releases_single_spawn_capacity() {
+    assert_archive_agent_capacity_reused(false);
+}
+#[test]
+fn archive_agent_releases_batch_spawn_capacity() {
+    assert_archive_agent_capacity_reused(true);
+}
