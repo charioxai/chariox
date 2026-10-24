@@ -223,9 +223,10 @@ export class Mirror2 {
   }
   // One snapshot per world in flight. A snapshot the page has not answered keeps running in the renderer; the credit
   // that gave up on it leaves it pending and the next credit takes its answer instead of queueing a second one.
-  async snapshotOnce(world, policy, patience) {
+  // `known`: digests of sheets the viewer retains; the page sends those whole (by reference) instead of pruning them.
+  async snapshotOnce(world, policy, patience, known = []) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
-    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot()`, false, SNAPSHOT_MS) };
+    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${known.length ? JSON.stringify(known) : ''})`, false, SNAPSHOT_MS) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
     const late = new Promise((_, reject) => { const ms = patience(); timer = setTimeout(() => reject(Object.assign(new Error(`browser CDP method Runtime.evaluate timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })), ms); });
@@ -465,7 +466,7 @@ export class Mirror2 {
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.snapshotOnce(world, policy, patience);
+        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? []);
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);

@@ -245,12 +245,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // A layer block keeps its place in the layer order.
       return inner || rule instanceof CSSLayerBlockRule ? rule.cssText.slice(0, rule.cssText.indexOf('{') + 1) + inner + '}\n' : '';
     };
-    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map();
+    // Sheets the viewer retains (digests it advertised for this snapshot): they arrive by reference, never pruned.
+    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(); let retained = new Set();
+    const viewerRetains = text => retained.size > 0 && retained.has(sha256(text).slice(0, 24));
     const firstPaintCss = (node, sheet, base, text) => {
       const root = node.getRootNode?.();
       // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
       // root's :host rules cannot be checked by a query.
-      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return text;
+      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9 || viewerRetains(text)) return text;
       const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
       return used.length < text.length ? used : text;
     };
@@ -633,7 +635,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
-    const snapshot = () => {
+    const snapshot = (known = []) => {
+      retained = new Set(known);
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the
@@ -1155,7 +1158,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
     const usedCss = (id, text) => {
       const root = nodes.get(id)?.getRootNode?.();
-      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return null;
+      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9 || viewerRetains(String(text))) return null;
       const sheet = new CSSStyleSheet(); sheet.replaceSync(String(text));
       const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
       return out;

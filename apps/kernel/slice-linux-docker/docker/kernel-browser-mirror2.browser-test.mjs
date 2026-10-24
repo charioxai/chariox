@@ -45,8 +45,8 @@ async function mirrored(html, run, routes = {}) {
       const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2, ...extra });
       // Protocol 489: bodies may be deflated in the subscription's context (in order, fresh per reset).
       let applied = 0, context = Buffer.alloc(0);
-      const next = async (wait_ms = 0, reset = false) => {
-        let packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms }); applied = packet.sequence;
+      const next = async (wait_ms = 0, reset = false, extra = {}) => {
+        let packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms, ...extra }); applied = packet.sequence;
         if (packet.reset) context = Buffer.alloc(0);
         if (packet.encoding === "deflate") { context = Buffer.concat([context, Buffer.from(packet.packet_base64, "base64")]); const out = inflateRawSync(context, { finishFlush: zlib.Z_SYNC_FLUSH }); packet = { ...JSON.parse(out.subarray(out.length - packet.packet_bytes)), resources: packet.resources ?? [], tiles: packet.tiles ?? [] }; }
         return { ops: [], resources: [], tiles: [], ...packet };
@@ -1923,4 +1923,29 @@ test('MP-08/MP-10: a shared stylesheet is the same mirrored text in two document
     '/b': { type: 'text/html', body: '<!doctype html><img src="/z.svg"><img src="/w.svg"><img src="/v.svg"><link rel="stylesheet" href="/s.css"><p>b</p>' },
     '/s.css': { type: 'text/css', body: `.i{background:url(/i1.svg)}.j{background:url(/i2.svg)}${'.k{color:rgb(1, 2, 3)}'.repeat(150)}` },
     ...Object.fromEntries(['x', 'y', 'z', 'w', 'v', 'i1', 'i2'].map(name => [`/${name}.svg`, { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>' }])),
+  }));
+
+// browserperf r9: pruning a large sheet for first paint costs the page a rule-by-rule match; a sheet the viewer already
+// retains (it advertised the digest) arrives whole by reference instead, and nothing is left to send later.
+test('MP-08/MP-10: a large sheet the viewer retains reaches the next document whole by reference, not pruned', () => mirrored(
+  '<link rel="stylesheet" href="/big.css"><p class="k">a</p>',
+  async ({ next, evaluate, host }) => {
+    const digest = text => createHash('sha256').update(text).digest('hex').slice(0, 24);
+    const style = packet => packet.nodes.find(row => row[2] === 'style');
+    const textOf = (packet, extra) => extra?.css ?? packet.sheets?.[extra?.css_ref];
+    const first = await next(), pruned = textOf(first, style(first)[4]);
+    let full;
+    for (let i = 0; i < 40 && full === undefined; i++) { const packet = await next(300); const op = packet.ops.find(op => op.op === 'css'); if (op) full = textOf(packet, op); }
+    assert(full && pruned.length < full.length, 'the first document gets the pruned sheet first, its full text later');
+    await evaluate("location.href = '/b'").catch(() => {});
+    for (let i = 0; i < 400 && await evaluate("location.pathname === '/b' && document.readyState === 'complete'").catch(() => false) !== true; i++) await settle(25);
+    await host.request({ op: 'state' });
+    let reset;
+    for (let i = 0; i < 40 && reset === undefined; i++) { const packet = await next(300, false, { known_sheets: [digest(full)] }).catch(() => null); if (packet?.reset && packet.nodes.some(row => row[2] === 0 && row[3] === 'b')) reset = packet; }
+    assert.equal(style(reset)?.[4]?.css_ref, digest(full), 'the retained sheet is referenced whole');
+    assert.equal(reset.sheets?.[digest(full)], undefined, 'its text does not travel again');
+    for (let i = 0; i < 6; i++) assert(!(await next(300)).ops.some(op => op.op === 'css'), 'no full text follows later');
+  }, {
+    '/b': { type: 'text/html', body: '<!doctype html><link rel="stylesheet" href="/big.css"><p class="k">b</p>' },
+    '/big.css': { type: 'text/css', body: `.k{color:rgb(1, 2, 3)}${Array.from({ length: 2500 }, (_, i) => `.unused${i}{color:rgb(4, 5, 6)}`).join('')}` },
   }));
