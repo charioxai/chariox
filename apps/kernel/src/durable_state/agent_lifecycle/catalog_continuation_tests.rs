@@ -124,6 +124,7 @@ fn catalog_continuation_retired_during_reload_cannot_create_a_fresh_task() {
         pending
     );
     f.apply(Operation::TimeoutGoal {
+        known_block: None,
         task: "p".into(),
         prompt: pending.clone(),
         now: evaluation.deadline_ms + 1,

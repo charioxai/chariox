@@ -205,17 +205,23 @@ impl KernelRuntimeState {
         let state = self.clone();
         let task_id = task.task_id.clone();
         let prompt = check.prompt_id.clone();
+        let (room, agent) = (task.room_id.clone(), task.agent_id.clone());
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(wait)).await;
+            let known_block = state.owned.known_protected_block(&room, &agent);
             let result = state
                 .owned
                 .durable_state_store
                 .agent_lifecycle(Operation::TimeoutGoal {
                     task: task_id,
                     prompt,
+                    known_block,
                     now: crate::session::unix_epoch_ms(),
                 });
             if let Ok(Outcome::Task(task)) = result {
+                state
+                    .owned
+                    .settle_known_block(&task.room_id, &task.agent_id, &task.state);
                 let _ = state.stop_goal_turn(&task).await;
                 let _ = state.ensure_task_owner_interaction(task.clone()).await;
                 let _ = state.owned.session_snapshot(&task.room_id);

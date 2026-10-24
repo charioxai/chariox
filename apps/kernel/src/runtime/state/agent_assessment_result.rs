@@ -139,6 +139,22 @@ impl KernelRuntimeOwnedState {
         );
         true
     }
+    /// A kernel-observed approval denial or timeout of an agent's protected step, if unresolved.
+    pub(super) fn known_protected_block(&self, room: &str, agent: &str) -> Option<String> {
+        let fact = self
+            .private_assessment_dispatch
+            .protected_facts
+            .peek(room, agent);
+        protected_class::known_block(fact).map(String::from)
+    }
+    /// The kernel fact was applied as the task's block: it is consumed like a terminal verdict.
+    pub(super) fn settle_known_block(&self, room: &str, agent: &str, state: &ExecutionState) {
+        if *state == ExecutionState::Blocked {
+            self.private_assessment_dispatch
+                .protected_facts
+                .clear(room, agent);
+        }
+    }
     pub(super) fn take_private_assessment(
         &self,
         room: &str,

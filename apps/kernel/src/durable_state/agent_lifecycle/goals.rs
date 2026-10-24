@@ -221,6 +221,7 @@ pub(super) fn evaluate(
     task: String,
     prompt: String,
     mut result: String,
+    known_block: Option<String>,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
@@ -260,15 +261,15 @@ pub(super) fn evaluate(
     let mut again = false;
     match assessment {
         // An unusable check (empty, late, malformed) is no objection to a plain request.
-        None if t.goal.is_none() => unavailable_check(tx, &mut t, now)?,
-        None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
+        None if t.goal.is_none() => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
+        None => blocked(&mut t, known_block.as_deref().unwrap_or("Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume")),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
             if t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed")) {
                 if t.correction_used {
                     blocked(&mut t, "Repeated achieved claim with unresolved obligations; owner must resume or cancel");
                 } else {
-                    again = continue_work(&mut t, "Completion was rejected: resolve every open obligation, then wait, continue or block");
+                    again = continue_work(tx, &mut t, "Completion was rejected: resolve every open obligation, then wait, continue or block", now)?;
                     t.correction_used = true;
                 }
             } else {
@@ -280,7 +281,7 @@ pub(super) fn evaluate(
             }
         }
         Some(Assessment::Continue { reason }) if !reason.trim().is_empty() => {
-            again = continue_work(&mut t, &reason);
+            again = continue_work(tx, &mut t, &reason, now)?;
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
             let interval = t.goal.as_ref().map_or(10, |g| g.check_in_minutes) as u64 * 60_000;
@@ -308,7 +309,7 @@ pub(super) fn evaluate(
                 if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
             }
         }
-        _ if t.goal.is_none() => unavailable_check(tx, &mut t, now)?,
+        _ if t.goal.is_none() => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
     }
     let receipt = if result.len() > RESULT_LIMIT {
@@ -338,8 +339,14 @@ pub(super) fn evaluate(
 fn unavailable_check(
     tx: &Transaction<'_>,
     t: &mut AgentTaskExecution,
+    known_block: Option<&str>,
     now: u64,
 ) -> Result<(), DaemonError> {
+    // A denial or timeout the kernel itself observed is not the checker's to override.
+    if let Some(reason) = known_block {
+        blocked(t, reason);
+        return Ok(());
+    }
     let regs = registrations(tx, &t.task_id)?;
     let mut ids = Vec::new();
     for o in &t.obligations {
@@ -356,7 +363,10 @@ fn unavailable_check(
             _ => continue,
         };
         if found.is_empty() {
-            blocked(t, "A task obligation failed or has no watched source; owner must resume or cancel");
+            blocked(
+                t,
+                "A task obligation failed or has no watched source; owner must resume or cancel",
+            );
             return Ok(());
         }
         ids.extend(found);
@@ -394,30 +404,36 @@ fn no_objection(t: &mut AgentTaskExecution) {
     c.evidence = vec!["completion check unavailable".into()];
 }
 
-fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
+fn continue_work(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    reason: &str,
+    now: u64,
+) -> Result<bool, DaemonError> {
     if t.goal.is_none() {
         if t.correction_used {
-            // A running or failed resource still needs the owner. A repeated verdict or an
-            // unacknowledged receipt of a clean exit ("settling") does not.
+            // A running or failed resource still needs the owner. A repeated verdict does not,
+            // and an unacknowledged receipt of a clean exit ("settling") keeps the task waiting
+            // for it: Done with a settling obligation is not a valid saved state.
             if t.obligations
                 .iter()
                 .any(|o| matches!(o.status.as_str(), "open" | "failed"))
             {
                 blocked(t, "Plain request remains incomplete after one correction; owner must resume or cancel");
             } else {
-                no_objection(t);
+                unavailable_check(tx, t, None, now)?;
             }
-            return false;
+            return Ok(false);
         }
         t.correction_used = true;
         t.wait = None;
         t.reason = reason.into();
         t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
-        return true;
+        return Ok(true);
     }
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
         blocked(t, "Goal repeated continuation without handled progress; owner must inspect and explicitly resume");
-        return false;
+        return Ok(false);
     }
     t.no_progress_wakes += 1;
     t.wait = None;
@@ -429,13 +445,14 @@ fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
         "goal-continue-{}-{}",
         t.task_id, g.continuation_sequence
     ));
-    true
+    Ok(true)
 }
 
 pub(super) fn timeout(
     tx: &Transaction<'_>,
     task: String,
     prompt: String,
+    known_block: Option<String>,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
@@ -452,9 +469,9 @@ pub(super) fn timeout(
     }
     clock(&mut t, now);
     if t.goal.is_none() {
-        unavailable_check(tx, &mut t, now)?;
+        unavailable_check(tx, &mut t, known_block.as_deref(), now)?;
     } else {
-        blocked(&mut t, "Goal completion check exceeded its time bound; inspect the exact delivery receipt and explicitly resume");
+        blocked(&mut t, known_block.as_deref().unwrap_or("Goal completion check exceeded its time bound; inspect the exact delivery receipt and explicitly resume"));
     }
     completion::evaluation_mut(&mut t).unwrap().result = Some(serde_json::json!({
         "status":"blocked","reason":"completion_check service bound exceeded","received_at_ms":now }));

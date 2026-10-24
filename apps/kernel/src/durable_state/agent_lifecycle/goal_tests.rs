@@ -17,6 +17,7 @@ fn check(f: &Fixture, result: serde_json::Value) -> AgentTaskExecution {
     let id = t.pending_prompt_id.unwrap();
     f.begin(&id);
     let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id,
         result: result.to_string(),
@@ -71,6 +72,7 @@ fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
             "an unrelated check receipt is not a live admission"
         );
         f.apply(Operation::TimeoutGoal {
+            known_block: None,
             task: task.task_id.clone(),
             prompt: check.prompt_id.clone(),
             now: check.deadline_ms,
@@ -192,6 +194,7 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
         let id = f.task().pending_prompt_id.unwrap();
         f.begin(&id);
         f.apply(Operation::EvaluateGoal {
+            known_block: None,
             task: "p".into(),
             prompt: id.clone(),
             result: result.clone(),
@@ -200,6 +203,7 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
         let before = f.task();
         assert_eq!(before.state, ExecutionState::Blocked);
         f.apply(Operation::EvaluateGoal {
+            known_block: None,
             task: "p".into(),
             prompt: id,
             result,
@@ -261,6 +265,7 @@ fn a12_owner_revision_pause_edit_and_cancel_fence_late_checks() {
     let edited = f.task();
     assert_eq!(edited.goal.as_ref().unwrap().objective_revision, 2);
     f.apply(Operation::EvaluateGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id,
         result:
@@ -345,6 +350,7 @@ fn a12_progressing_goals_have_no_turn_cap_and_evaluations_cannot_mutate_work() {
             })
             .is_err());
         let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+            known_block: None,
             task: "p".into(),
             prompt: check_id,
             result: assessment("continue").to_string(),
@@ -367,6 +373,7 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
     let id = f.task().pending_prompt_id.clone().unwrap();
     f.begin(&id);
     f.apply(Operation::TimeoutGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id.clone(),
         now: goals::CHECK_BOUND_MS + 4,
@@ -375,6 +382,7 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
     assert_eq!(blocked.state, ExecutionState::Blocked);
     assert!(matches!(
         f.apply(Operation::TimeoutGoal {
+            known_block: None,
             task: "p".into(),
             prompt: id.clone(),
             now: goals::CHECK_BOUND_MS + 5
@@ -392,11 +400,13 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
     });
     let resumed = f.task();
     f.apply(Operation::TimeoutGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id.clone(),
         now: goals::CHECK_BOUND_MS + 6,
     });
     f.apply(Operation::EvaluateGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id,
         result: assessment("continue").to_string(),
@@ -643,6 +653,7 @@ fn a12_current_ledger_is_rechecked_after_a_source_changes_during_assessment() {
         now: 4,
     });
     let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id,
         result:
@@ -735,10 +746,12 @@ fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
         ExecutionState::Blocked,
         "an open obligation still needs the owner"
     );
-    // A cleanly exited source whose receipt nobody acknowledged is bookkeeping.
+    // A cleanly exited source whose receipt nobody acknowledged keeps the task waiting for it:
+    // Done with a settling obligation is not a valid saved state.
     let f = Fixture::new();
     plain(&f);
     f.register();
+    f.subscribe();
     f.apply(Operation::SourceOutcome {
         room: "room".into(),
         source: "child".into(),
@@ -753,10 +766,12 @@ fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
     let id = t.pending_prompt_id.unwrap();
     f.begin(&id);
     f.settle(&id, true);
-    assert_eq!(
-        check(&f, assessment("continue")).state,
-        ExecutionState::Done
-    );
+    check(&f, assessment("continue"));
+    // Reload the persisted task: a quarantined row would project Blocked here.
+    let t = f.task();
+    assert_eq!(t.state, ExecutionState::Waiting);
+    assert_eq!(t.wait.unwrap().registration_ids, vec!["reg"]);
+    assert!(t.obligations.iter().any(|o| o.status == "settling"));
 }
 #[test]
 fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
@@ -774,7 +789,7 @@ fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
             now: 4
         })
         .is_err());
-    let Outcome::Settled{task:t,..}=f.apply(Operation::EvaluateGoal { task:"p".into(),prompt:id.clone(),result:serde_json::json!({"status":"achieved","final_answer":"Verified original request","evidence":["public:artifact"]}).to_string(),now:4 }) else {panic!()};
+    let Outcome::Settled{task:t,..}=f.apply(Operation::EvaluateGoal { known_block: None, task:"p".into(),prompt:id.clone(),result:serde_json::json!({"status":"achieved","final_answer":"Verified original request","evidence":["public:artifact"]}).to_string(),now:4 }) else {panic!()};
     assert_eq!(t.state, ExecutionState::Done);
     assert!(t.goal.is_none());
     f.settle(&id, true);
@@ -813,6 +828,7 @@ fn a12_plain_timeout_settles_done_idempotently_and_fences_a_late_check() {
     let id = f.task().pending_prompt_id.unwrap();
     f.begin(&id);
     f.apply(Operation::TimeoutGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id.clone(),
         now: goals::CHECK_BOUND_MS + 3,
@@ -825,6 +841,7 @@ fn a12_plain_timeout_settles_done_idempotently_and_fences_a_late_check() {
     );
     assert!(matches!(
         f.apply(Operation::TimeoutGoal {
+            known_block: None,
             task: "p".into(),
             prompt: id.clone(),
             now: goals::CHECK_BOUND_MS + 1000
@@ -832,6 +849,7 @@ fn a12_plain_timeout_settles_done_idempotently_and_fences_a_late_check() {
         Outcome::Saved
     ));
     f.apply(Operation::EvaluateGoal {
+        known_block: None,
         task: "p".into(),
         prompt: id,
         result: serde_json::json!({"status":"achieved","final_answer":"late","evidence":["late"]})
@@ -860,6 +878,7 @@ fn a12_unusable_verdict_settles_plain_done_and_goal_blocked() {
         let id = f.task().pending_prompt_id.unwrap();
         f.begin(&id);
         f.apply(Operation::EvaluateGoal {
+            known_block: None,
             task: "p".into(),
             prompt: id,
             result: raw.into(),
@@ -881,17 +900,50 @@ fn unusable_plain_check(f: &Fixture, timeout: bool) {
     f.begin(&id);
     if timeout {
         f.apply(Operation::TimeoutGoal {
+            known_block: None,
             task: "p".into(),
             prompt: id,
             now: goals::CHECK_BOUND_MS + 3,
         });
     } else {
         f.apply(Operation::EvaluateGoal {
+            known_block: None,
             task: "p".into(),
             prompt: id,
             result: "not json".into(),
             now: 4,
         });
+    }
+}
+// A kernel-observed denial or timeout survives an unusable check, with no obligation involved.
+#[test]
+fn a12_unusable_check_keeps_a_known_protected_denial() {
+    const CLASS: &str = "[protected task: approval denied]";
+    for timeout in [false, true] {
+        let f = Fixture::new();
+        plain(&f);
+        f.settle("p", true);
+        let id = f.task().pending_prompt_id.unwrap();
+        f.begin(&id);
+        if timeout {
+            f.apply(Operation::TimeoutGoal {
+                task: "p".into(),
+                prompt: id,
+                known_block: Some(CLASS.into()),
+                now: goals::CHECK_BOUND_MS + 3,
+            });
+        } else {
+            f.apply(Operation::EvaluateGoal {
+                task: "p".into(),
+                prompt: id,
+                result: "not json".into(),
+                known_block: Some(CLASS.into()),
+                now: 4,
+            });
+        }
+        let t = f.task();
+        assert_eq!(t.state, ExecutionState::Blocked, "timeout={timeout}");
+        assert_eq!(t.reason, CLASS, "timeout={timeout}");
     }
 }
 fn source_outcome(f: &Fixture, success: bool, now: u64) {
@@ -1256,7 +1308,7 @@ fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
     f.begin(&id);
     bind(&id, "node").expect("the check continuation keeps its workflow lineage");
     assert!(bind(&id, "other-node").is_err());
-    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal { known_block: None,
         task: "p".into(),
         prompt: id,
         result: serde_json::json!({"status":"achieved","final_answer":"Built and tested","evidence":["public:artifact"]}).to_string(),

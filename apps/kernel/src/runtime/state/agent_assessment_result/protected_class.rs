@@ -8,6 +8,8 @@ use std::{
 };
 
 const WITHHELD: &str = "[protected completion details withheld]";
+const DENIED: &str = "[protected task: approval denied]";
+const TIMED_OUT: &str = "[protected task: timed out]";
 
 /// Last protected-input outcome the kernel itself observed for an agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +54,19 @@ impl ProtectedFacts {
 }
 
 pub(super) fn is_terminal(value: &Assessment) -> bool {
-    matches!(value, Assessment::Achieved { .. } | Assessment::Blocked { .. })
+    matches!(
+        value,
+        Assessment::Achieved { .. } | Assessment::Blocked { .. }
+    )
+}
+
+/// The class of a denial or timeout the kernel observed; it outlives an unusable completion check.
+pub(super) fn known_block(fact: Option<ProtectedFact>) -> Option<&'static str> {
+    match fact {
+        Some(ProtectedFact::ApprovalDenied) => Some(DENIED),
+        Some(ProtectedFact::ApprovalTimedOut) => Some(TIMED_OUT),
+        _ => None,
+    }
 }
 
 /// Fixed kernel-authored text; `None` fact means no protected input was observed.
@@ -61,8 +75,8 @@ pub(super) fn public_text(value: &Assessment, fact: Option<ProtectedFact>) -> &'
     match (value, fact) {
         (Assessment::Achieved { .. }, None | Some(Submitted)) => "[protected task: completed]",
         // The kernel's own denial or timeout outranks the agent's "achieved" claim.
-        (_, Some(ApprovalDenied)) => "[protected task: approval denied]",
-        (_, Some(ApprovalTimedOut)) => "[protected task: timed out]",
+        (_, Some(ApprovalDenied)) => DENIED,
+        (_, Some(ApprovalTimedOut)) => TIMED_OUT,
         (Assessment::Achieved { .. }, _) => WITHHELD,
         (_, Some(FieldNotFound)) => "[protected task: protected field not found]",
         (Assessment::Waiting { .. }, _) => "[protected task: waiting]",
