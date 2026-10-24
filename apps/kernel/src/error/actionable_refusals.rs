@@ -11,6 +11,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "attachment_not_in_session" => "attachment belongs to another Room; run AttachToSession {session_id, client_id, capability_level} with --command-id ID in the intended Room and use its returned attachment id",
         "no_active_prompt" => "agent has no matching active prompt; run GetSessionState {session_id} and use its current prompt id. Do not turn a rejected steer into a new prompt",
         "prompt_steer_rejected" => "active prompt changed or did not accept steering; run GetSessionState {session_id} and steer only with the expected current prompt id. Do not submit a replacement prompt automatically",
+        "prompt_steer_event_unrecorded" => "the steer was delivered but its event was not recorded; do not send it again",
         "agent_deadline_reached" => "lane deadline reached; this agent cannot start another turn. Start a new lane agent for new work",
         "agent_deadline_requires_executor" => "arm a lane deadline on its executing kernel; an agent with a deadline cannot move to a leased worker without worker enforcement",
         "agent_deadline_extension_refused" => "a lane deadline cannot be extended; start a new lane agent for new work",
