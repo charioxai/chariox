@@ -5796,6 +5796,102 @@ mod lost_worker_run {
         }
     }
 
+    // MP-08 / MP-10 / MP-11 A10-S02: Ctrl+C on a leased turn whose worker never
+    // comes back stayed Cancelling forever: nothing could reach the worker and
+    // home has no lease expiry. After the deadline home ends it, and says why.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_the_worker_never_answers_ends_the_turn_cancelled_with_a_reason() {
+        // A relay nobody answers on: the worker is gone for good.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let gone_run = "worker-run-gone";
+        let fixture = delivered_fixture(&relay_url, "cancel-gone", gone_run).await;
+        let owned = &fixture.runtime.owned;
+        let projected =
+            crate::provider::projected_leased_provider_run_id(&fixture.leased_agent_id, gone_run);
+        let running =
+            serde_json::json!({"id": "call-1", "type": "commandExecution", "status": "inProgress"});
+        owned.append_history_entries(
+            &fixture.session_id,
+            vec![crate::history::SessionHistoryEntry::provider_output(
+                &fixture.session_id,
+                &projected,
+                Some(&fixture.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderTool,
+                Some("call-1".to_string()),
+                running.to_string(),
+            )],
+        );
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+
+        assert!(fixture
+            .runtime
+            .end_remote_cancellation_the_worker_never_answered(
+                &fixture.session_id,
+                &fixture.agent_id
+            )
+            .expect("home ends the cancellation"));
+
+        let session = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let active = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &fixture.agent_id);
+        assert_ne!(
+            active.map(|prompt| prompt.id().to_string()).as_deref(),
+            Some(fixture.dispatch.prompt_id.as_str()),
+            "the cancelled turn is no longer active"
+        );
+        let task = owned
+            .durable_state_store
+            .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.prompt_id == fixture.dispatch.prompt_id)
+            .expect("the turn's task");
+        assert_eq!(task.state, ExecutionState::Cancelled, "{task:?}");
+        let history = owned
+            .operational_history_store
+            .load_session_history_entries(&fixture.session_id, Some(&fixture.agent_id))
+            .unwrap();
+        assert!(
+            history.iter().any(|entry| entry.kind
+                == crate::history::SessionHistoryEntryKind::Notice
+                && entry.text.contains("did not answer for 120 s")
+                && entry.text.contains("Chariox cancelled this turn here")),
+            "the owner is told why the turn ended without the worker"
+        );
+        let last_tool = history
+            .iter()
+            .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::ProviderTool)
+            .next_back()
+            .map(|entry| serde_json::from_str::<serde_json::Value>(&entry.text).unwrap());
+        assert_eq!(
+            last_tool.as_ref().map(|row| row["status"].clone()),
+            Some("cancelled".into())
+        );
+        assert!(
+            owned
+                .provider_run_projection
+                .get(&projected)
+                .is_none_or(|run| run.state() == crate::provider::ProviderRunState::Ended),
+            "the projected run ends with the turn"
+        );
+        drop(listener);
+    }
+
     // MP-08 / MP-10 / MP-11 A10-S02: a worker that restarts during an accepted
     // turn loses it. Home never runs that instruction again on its own: the
     // turn ends, its task waits for the owner, and the queue moves on.

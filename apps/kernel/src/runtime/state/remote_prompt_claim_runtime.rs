@@ -908,7 +908,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn end_lost_leased_provider_run(
+    pub(super) fn end_lost_leased_provider_run(
         &self,
         session_id: &str,
         projected_run_id: &str,

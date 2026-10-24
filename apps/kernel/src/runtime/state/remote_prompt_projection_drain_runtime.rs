@@ -154,12 +154,16 @@ impl KernelRuntimeState {
         let state = self.clone();
         tokio::spawn(async move {
             let mut transport_retry_attempt = 0_u32;
+            let mut unanswered_since = None;
             loop {
                 match state
                     .drain_remote_prompt_projection_once(&session_id, &agent_id)
                     .await
                 {
-                    Ok(true) => transport_retry_attempt = 0,
+                    Ok(true) => {
+                        transport_retry_attempt = 0;
+                        unanswered_since = None;
+                    }
                     Ok(false) => {
                         if claim.release_or_restart() {
                             continue;
@@ -179,6 +183,29 @@ impl KernelRuntimeState {
                                     "error": error.to_string(),
                                 }),
                             );
+                        }
+                        let unanswered_for = unanswered_since
+                            .get_or_insert_with(std::time::Instant::now)
+                            .elapsed();
+                        if unanswered_for
+                            >= super::remote_prompt_lifecycle_runtime::REMOTE_CANCEL_WORKER_ANSWER_DEADLINE
+                        {
+                            match state.end_remote_cancellation_the_worker_never_answered(
+                                &session_id,
+                                &agent_id,
+                            ) {
+                                Ok(true) => unanswered_since = None,
+                                Ok(false) => {}
+                                Err(error) => crate::logging::warn_with_fields(
+                                    "daemon.remote_prompt_dispatch",
+                                    "could not end a cancellation its worker never answered",
+                                    serde_json::json!({
+                                        "session_id": session_id,
+                                        "agent_id": agent_id,
+                                        "error": error.to_string(),
+                                    }),
+                                ),
+                            }
                         }
                         if state
                             .remote_prompt_projection_drain_target(&session_id, &agent_id)
