@@ -129,7 +129,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Agent-model (145) and event-core (169) contracts were integrated in 570/178.
 /// The Room terminal service (`RoomTerminal`, formerly provisional 177) and its peer forwards ride this number too.
 /// MP-08/MP-10/MP-11: allocated 181 adds exact-home-check assessment wire identities.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 181;
+/// MP-08/MP-10/MP-11: allocated 196 acknowledges every leased projection drain, so a
+/// worker keeps drained output until the home applied it.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 196;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -944,10 +946,9 @@ pub enum RelayPeerRequest {
         provider_run_id: String,
         #[serde(default)]
         pump_output: bool,
-        /// The last projection sequence the home applied for this leased agent.
-        /// The worker keeps a drained projection until this acknowledges it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        acknowledged_projection_sequence: Option<u64>,
+        /// Peer 196: the last projection sequence the home applied for this leased
+        /// agent. The worker keeps a drained projection until this acknowledges it.
+        acknowledged_projection_sequence: u64,
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,

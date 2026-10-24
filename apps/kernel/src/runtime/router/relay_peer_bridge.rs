@@ -913,7 +913,7 @@ impl CommandRouter {
         provider_run_id: &str,
         pump_output: bool,
         replay_settled_completion: bool,
-        acknowledged_projection_sequence: Option<u64>,
+        acknowledged_projection_sequence: u64,
     ) -> Result<Option<crate::app::DrainedLeasedProjection>, DaemonError> {
         relay_peer_runtime::drain_relay_leased_runtime_projection(
             &self.runtime_state,

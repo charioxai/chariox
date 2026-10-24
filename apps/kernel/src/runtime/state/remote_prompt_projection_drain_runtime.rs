@@ -54,7 +54,7 @@ impl KernelRuntimeState {
                 leased_agent_id: dispatch.leased_agent_id.clone(),
                 provider_run_id: worker_provider_run_id.to_string(),
                 pump_output: true,
-                acknowledged_projection_sequence: Some(acknowledged),
+                acknowledged_projection_sequence: acknowledged,
             };
             // Relay I/O runs after relay configuration was copied and the app lock was released.
             let relay_state = self.connected_relay_state_for_config(&relay_config).await;
@@ -513,7 +513,7 @@ impl KernelRuntimeState {
             leased_agent_id: remote_execution.leased_agent_id.clone(),
             provider_run_id: provider_run_id.clone(),
             pump_output: true,
-            acknowledged_projection_sequence: Some(acknowledged),
+            acknowledged_projection_sequence: acknowledged,
         };
         let response = match self.connected_relay_state_for_config(&relay_config).await {
             Some(relay_state) => {

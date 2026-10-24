@@ -25,34 +25,20 @@ struct RetainedProjection {
 #[derive(Debug)]
 pub(crate) struct DrainedLeasedProjection {
     pub(crate) event: RelayPeerEvent,
-    /// Set when the home must acknowledge this projection before the next one is drained.
-    pub(crate) sequence: Option<u64>,
+    /// The home acknowledges this number before the next projection is drained.
+    pub(crate) sequence: u64,
 }
 
 impl RemoteLeaseRuntime<'_> {
-    /// `acknowledged` is the last sequence the home applied, or `None` from a caller
-    /// that does not acknowledge, which keeps the plain consuming drain.
+    /// `acknowledged` is the last sequence the home applied for this leased agent.
     pub(crate) fn drain_acknowledged_leased_runtime_projection(
         &mut self,
         leased_agent_id: &str,
         provider_run_id: &str,
         pump_output: bool,
         replay_settled_completion: bool,
-        acknowledged: Option<u64>,
+        acknowledged: u64,
     ) -> Result<Option<DrainedLeasedProjection>, DaemonError> {
-        let Some(acknowledged) = acknowledged else {
-            return Ok(self
-                .drain_leased_runtime_projection_with_recovery(
-                    leased_agent_id,
-                    provider_run_id,
-                    pump_output,
-                    replay_settled_completion,
-                )?
-                .map(|(_target_daemon_id, event)| DrainedLeasedProjection {
-                    event,
-                    sequence: None,
-                }));
-        };
         let delivery = self
             .app
             .leased_projection_deliveries
@@ -77,7 +63,7 @@ impl RemoteLeaseRuntime<'_> {
         {
             return Ok(Some(DrainedLeasedProjection {
                 event: retained.event.clone(),
-                sequence: Some(retained.sequence),
+                sequence: retained.sequence,
             }));
         }
         let Some((_target_daemon_id, event)) = self.drain_leased_runtime_projection_with_recovery(
@@ -101,10 +87,7 @@ impl RemoteLeaseRuntime<'_> {
             provider_run_id: provider_run_id.to_string(),
             event: event.clone(),
         });
-        Ok(Some(DrainedLeasedProjection {
-            event,
-            sequence: Some(sequence),
-        }))
+        Ok(Some(DrainedLeasedProjection { event, sequence }))
     }
 }
 
@@ -170,14 +153,14 @@ mod tests {
         leased: &crate::execution_lease::LeasedAgent,
         run: &str,
         acknowledged: u64,
-    ) -> Option<(Vec<String>, Option<u64>)> {
+    ) -> Option<(Vec<String>, u64)> {
         RemoteLeaseRuntime::new(app)
             .drain_acknowledged_leased_runtime_projection(
                 &leased.id,
                 run,
                 false,
                 true,
-                Some(acknowledged),
+                acknowledged,
             )
             .expect("drain should succeed")
             .map(|drained| {
@@ -197,7 +180,7 @@ mod tests {
     fn a_drain_reply_lost_on_the_way_home_is_answered_again() {
         let (mut app, leased, run) = leased_app_with_output(b"PART_DONE");
         let first = drain(&mut app, &leased, &run, 0).expect("the output is drained");
-        assert_eq!(first, (vec!["PART_DONE".to_string()], Some(1)));
+        assert_eq!(first, (vec!["PART_DONE".to_string()], 1));
 
         // The reply was lost, so the home still acknowledges nothing.
         let again = drain(&mut app, &leased, &run, 0)
@@ -210,17 +193,17 @@ mod tests {
         let (mut app, leased, run) = leased_app_with_output(b"FIRST");
         assert_eq!(
             drain(&mut app, &leased, &run, 0),
-            Some((vec!["FIRST".to_string()], Some(1)))
+            Some((vec!["FIRST".to_string()], 1))
         );
         // Output that arrives while a projection is unacknowledged waits for the next one.
         emit_output(&mut app, &leased, &run, b"SECOND");
         assert_eq!(
             drain(&mut app, &leased, &run, 0),
-            Some((vec!["FIRST".to_string()], Some(1)))
+            Some((vec!["FIRST".to_string()], 1))
         );
         assert_eq!(
             drain(&mut app, &leased, &run, 1),
-            Some((vec!["SECOND".to_string()], Some(2)))
+            Some((vec!["SECOND".to_string()], 2))
         );
         let after = drain(&mut app, &leased, &run, 2).map(|(texts, _)| texts);
         assert!(
@@ -235,11 +218,11 @@ mod tests {
         let (mut app, leased, run) = leased_app_with_output(b"AFTER_RESTART");
         assert_eq!(
             drain(&mut app, &leased, &run, 5),
-            Some((vec!["AFTER_RESTART".to_string()], Some(6)))
+            Some((vec!["AFTER_RESTART".to_string()], 6))
         );
         assert_eq!(
             drain(&mut app, &leased, &run, 5),
-            Some((vec!["AFTER_RESTART".to_string()], Some(6))),
+            Some((vec!["AFTER_RESTART".to_string()], 6)),
             "a lost reply after the restart is answered again"
         );
     }

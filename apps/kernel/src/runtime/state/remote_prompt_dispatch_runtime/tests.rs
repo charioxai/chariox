@@ -6076,7 +6076,7 @@ mod projection_acknowledgement {
         }
     }
 
-    fn acknowledged(request: &RelayPeerRequest) -> Option<u64> {
+    fn acknowledged(request: &RelayPeerRequest) -> u64 {
         let RelayPeerRequest::DrainLeasedRuntimeProjection {
             acknowledged_projection_sequence,
             ..
@@ -6176,7 +6176,7 @@ mod projection_acknowledgement {
             .expect("fake worker assertions should hold");
         assert_eq!(
             seen,
-            vec![Some(0), Some(0), Some(1)],
+            vec![0, 0, 1],
             "a lost reply is not acknowledged; an applied one is"
         );
         let finals = runtime
@@ -6298,7 +6298,7 @@ mod projection_acknowledgement {
                         drains.push(acknowledged);
                         // The worker answers with its retained output until the home
                         // acknowledges it; the settled completion comes after.
-                        if acknowledged < Some(1) {
+                        if acknowledged < 1 {
                             output.clone()
                         } else {
                             completion.clone()
@@ -6361,7 +6361,7 @@ mod projection_acknowledgement {
             .expect("fake worker assertions should hold");
         assert_eq!(
             drains,
-            vec![Some(0), Some(0), Some(1)],
+            vec![0, 0, 1],
             "recovery applies and acknowledges the retained output, then drains the completion"
         );
 

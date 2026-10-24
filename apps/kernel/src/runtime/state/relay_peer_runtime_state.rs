@@ -1386,7 +1386,7 @@ impl KernelRuntimeState {
         pump_output: bool,
         replay_settled_completion: bool,
         require_authorization: bool,
-        acknowledged_projection_sequence: Option<u64>,
+        acknowledged_projection_sequence: u64,
     ) -> Result<Option<crate::app::DrainedLeasedProjection>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();

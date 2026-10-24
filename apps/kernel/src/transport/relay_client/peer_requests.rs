@@ -1284,7 +1284,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .await;
             match drained {
                 Ok(drained) => RelayPeerResponse::LeasedRuntimeProjectionDrained {
-                    projection_sequence: drained.as_ref().and_then(|drained| drained.sequence),
+                    projection_sequence: drained.as_ref().map(|drained| drained.sequence),
                     event: drained.map(|drained| drained.event),
                 },
                 Err(error) => {
