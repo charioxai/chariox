@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::{EventTarget, OutsideEventValue, SubscribeEventsRequest};
 
 // MP-08 / MP-10: Native display IDs must be translated to a home prompt
 // before this single admission. A stale control must never become a new turn.
@@ -85,6 +86,37 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         }))
         .expect("a steering request may carry a note attachment")
     };
+    // MP-08 / MP-09 / MP-10 / MP-11: an outside subscriber sees only the steer that landed.
+    let kernel = harness.with_app(|app| app.config().daemon_id.clone());
+    let runtime = harness.runtime_state();
+    runtime
+        .outside_part_request(
+            "outside-coordinator",
+            true,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+                targets: vec![EventTarget {
+                    kernel,
+                    session_id: session.id().into(),
+                    agent_id: Some(agent.id().into()),
+                }],
+            }),
+        )
+        .unwrap();
+    let steer_events = || {
+        runtime
+            .outside_store()
+            .outside_list("outside-coordinator", None, 100)
+            .unwrap()
+            .unwrap()
+            .events
+            .into_iter()
+            .filter_map(|event| match event.value {
+                OutsideEventValue::Steer { steer_id } => Some((event.agent_id, steer_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
     let error = harness.dispatch(steer_note("not json")).unwrap_err();
     assert!(
         error.to_string().contains("validate prompt note"),
@@ -96,6 +128,11 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
     {
         LocalDaemonResponse::ActivePromptSteered { prompt } => {
             assert_eq!(prompt.prompt(), "Please read the attached notes.");
+            assert_eq!(
+                steer_events(),
+                vec![(Some(agent.id().to_string()), prompt.id().to_string())],
+                "the rejected steer published nothing and the accepted one names its id"
+            );
         }
         other => panic!("unexpected response: {other:?}"),
     }
@@ -121,6 +158,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         harness.dispatch(request(active.id())).is_err(),
         "settled steering must fail instead of starting work"
     );
+    assert_eq!(steer_events().len(), 1, "a refused steer publishes nothing");
     harness.with_app_mut(|app| {
         assert!(app
             .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())

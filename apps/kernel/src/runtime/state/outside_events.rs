@@ -221,6 +221,23 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn publish_outside_steer(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        steer_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store.outside_publish(
+            session_id,
+            Some(agent_id),
+            OutsideEventValue::Steer {
+                steer_id: steer_id.into(),
+            },
+            "steer delivered",
+            EventRefs::default(),
+        )
+    }
+
     pub(super) fn publish_outside_interaction(
         &self,
         session_id: &str,

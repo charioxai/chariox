@@ -106,6 +106,16 @@ impl KernelRuntimeState {
                 Some(sequence),
             );
         }
+        // The provider already holds the steer, so a retry would deliver it twice.
+        owned
+            .publish_outside_steer(&request.session_id, &request.target_agent_id, prompt.id())
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "steer active prompt",
+                message: format!(
+                    "steer {} was delivered but its event could not be recorded; do not send it again: {error}",
+                    prompt.id()
+                ),
+            })?;
         Ok(prompt)
     }
 

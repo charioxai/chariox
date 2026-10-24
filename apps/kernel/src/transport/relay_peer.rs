@@ -129,7 +129,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Agent-model (145) and event-core (169) contracts were integrated in 570/178.
 /// The Room terminal service (`RoomTerminal`, formerly provisional 177) and its peer forwards ride this number too.
 /// MP-08/MP-10/MP-11: allocated 181 adds exact-home-check assessment wire identities.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 181;
+/// Allocated 197 carries the outside `steer` event between peers.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 197;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

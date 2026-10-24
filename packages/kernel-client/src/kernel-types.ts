@@ -1,4 +1,4 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 585
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 591
 
 export type * from "./kernel-types-apps.js"
 
@@ -35,6 +35,7 @@ export type OutsideEvent = {
   | { type: "agent"; value: { run_state?: "idle" | "working" | "error"; task_state?: "working" | "waiting" | "blocked" | "done" | "cancelled"; reason?: string } }
   | { type: "interaction"; value: { state: "pending" | "resolved"; pointer?: { approval_id: string; kind: string; kernel: string; one_line: string; link?: string; expires_at: number } } }
   | { type: "terminal"; value: { exit_code: number | null } }
+  | { type: "steer"; value: { steer_id: string } }
   | { type: "session"; value: { state: "agent_added" | "agent_removed" | "ended" } }
   | { type: "gap"; value: { kernel: string; dropped: number; from: number; to: number } }
   | { type: "subscription_ended"; value: { reason: string } }

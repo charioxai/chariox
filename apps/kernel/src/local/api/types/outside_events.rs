@@ -88,6 +88,10 @@ pub enum OutsideEventValue {
     Terminal {
         exit_code: Option<u32>,
     },
+    /// The agent's provider took the steer; `steer_id` is the id `SteerActivePrompt` returned.
+    Steer {
+        steer_id: String,
+    },
     Session {
         state: EventSessionState,
     },

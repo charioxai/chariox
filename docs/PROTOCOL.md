@@ -721,7 +721,7 @@ that timer is not durable kernel enforcement.
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **585** and relay peer protocol **181** (the agent-model line's 537/145
+protocol **591** and relay peer protocol **197** (the agent-model line's 537/145
 allocation and the landing's 567/175 are merged into this number). It combines main 520/128 direct browser/terminal carriers and
 owner-managed machine/context admission with the agent-model 513/121 union:
 it retains the agent-model
@@ -5277,8 +5277,8 @@ Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
 
 Records contain a home cursor, source kernel and machine, session and optional
 agent, a typed state change, one-line summary, timestamp and resource references.
-Only agent/task states, interaction state, terminal job exits and session changes
-are collected. Passkey interactions carry the section 8 approval pointer, without
+Only agent/task states, interaction state, terminal job exits, delivered steers and
+session changes are collected. Passkey interactions carry the section 8 approval pointer, without
 the prompt body. Session agents retain their existing session-scoped event tools.
 
 Every source kernel filters its own durable part. The gateway commits imported
@@ -5301,3 +5301,11 @@ then includes optional `event_subscription_error: {code, message}` (code
 `events_subscription_failed`); normal success omits it. Keep the returned IDs
 and recover the subscription rather than retrying creation. Local 585 covers
 this metadata too; relay peer 181 is unchanged.
+
+A steer is observable by the outside agent that sent it. When `SteerActivePrompt`
+has been taken by the agent's provider (the home provider or the leased worker),
+the kernel records `{ "type": "steer", "value": { "steer_id" } }` for the agent,
+where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused,
+stale or rejected steer records nothing. If the event cannot be recorded after
+delivery, the request fails with a message that says the steer was delivered and
+must not be sent again. Local 591 and relay peer 197 add this event shape.

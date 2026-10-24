@@ -1,6 +1,6 @@
 {
-  "local_protocol": 585,
-  "peer_protocol": 181,
+  "local_protocol": 591,
+  "peer_protocol": 197,
   "requests": [
     {
       "SubscribeEvents": {
@@ -118,10 +118,24 @@
             "kernel": "kernel-a",
             "machine": "machine-a",
             "session_id": "room-a",
+            "agent_id": "agent-a",
+            "at_ms": 1,
+            "summary": "steer delivered",
+            "refs": {},
+            "cursor": 4,
+            "type": "steer",
+            "value": {
+              "steer_id": "prompt-7"
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
             "at_ms": 1,
             "summary": "state changed",
             "refs": {},
-            "cursor": 4,
+            "cursor": 5,
             "type": "session",
             "value": {
               "state": "agent_added"
@@ -134,7 +148,7 @@
             "at_ms": 1,
             "summary": "state changed",
             "refs": {},
-            "cursor": 5,
+            "cursor": 6,
             "type": "gap",
             "value": {
               "kernel": "kernel-a",
@@ -150,14 +164,14 @@
             "at_ms": 1,
             "summary": "state changed",
             "refs": {},
-            "cursor": 6,
+            "cursor": 7,
             "type": "subscription_ended",
             "value": {
               "reason": "cancelled"
             }
           }
         ],
-        "next_cursor": 6,
+        "next_cursor": 7,
         "oldest_cursor": 1,
         "timed_out": false
       }

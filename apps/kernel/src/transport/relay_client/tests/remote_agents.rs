@@ -1856,9 +1856,41 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 attachments: vec![],
             })
         };
+        let kernel = app_home.lock().await.config().daemon_id.clone();
+        router
+            .runtime_state()
+            .outside_part_request(
+                "outside-coordinator",
+                true,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                &LocalDaemonRequest::SubscribeEvents(crate::local::SubscribeEventsRequest {
+                    targets: vec![crate::local::EventTarget {
+                        kernel,
+                        session_id: session_id.clone(),
+                        agent_id: Some(remote_agent_id.clone()),
+                    }],
+                }),
+            )
+            .unwrap();
+        let steer_ids = || {
+            router
+                .runtime_state()
+                .outside_store()
+                .outside_list("outside-coordinator", None, 100)
+                .unwrap()
+                .unwrap()
+                .events
+                .into_iter()
+                .filter_map(|event| match event.value {
+                    crate::local::OutsideEventValue::Steer { steer_id } => Some(steer_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
         let bad = request("old-home-prompt");
         let command = KernelCommand::from_local_request("stale-native-steer", None, None, &bad);
         assert!(router.dispatch(command, bad).await.is_err());
+        assert!(steer_ids().is_empty(), "a refused steer publishes nothing");
         let request = request("prompt-1");
         let command =
             KernelCommand::from_local_request("native-active-steer", None, None, &request);
@@ -1892,11 +1924,15 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 response.is_err(),
                 "a late receipt must not commit to the settled home turn"
             );
+            assert!(
+                steer_ids().is_empty(),
+                "a rejected receipt publishes nothing"
+            );
         } else {
-            assert!(matches!(
-                response.unwrap(),
-                LocalDaemonResponse::ActivePromptSteered { .. }
-            ));
+            let LocalDaemonResponse::ActivePromptSteered { prompt } = response.unwrap() else {
+                panic!("native steer must be accepted");
+            };
+            assert_eq!(steer_ids(), vec![prompt.id().to_string()]);
             timeout(Duration::from_secs(3), async {
                 loop {
                     let count = app_worker
