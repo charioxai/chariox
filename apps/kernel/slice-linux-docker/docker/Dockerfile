@@ -381,7 +381,6 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs \
-     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-preview.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-motion.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-credit.mjs \
