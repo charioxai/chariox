@@ -378,7 +378,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!html && href.startsWith('#') && /^#[\w-]*$/.test(href)) attrs.href = href;
         // An external sprite (protocol 501): the fragment travels; the file is a sanitized resource (`res`).
         else if (!html && node.localName === 'use' && spriteKey(node) && /^#[\w-]+$/.test(href.slice(href.indexOf('#')))) attrs.href = href.slice(href.indexOf('#'));
-        else if (html && ['a', 'area'].includes(node.localName)) attrs.href = '#'; // keeps :link (an empty href would match :visited), never navigates
+        // `#` keeps :link and never navigates. Protocol 593: a link the kernel saw visited from this origin is sent as
+        // `""` instead, which the viewer draws :visited (its own document's URL).
+        else if (html && ['a', 'area'].includes(node.localName)) attrs.href = visitedLinks?.has(node.href) ? '' : '#';
       }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
       if (node.hasAttribute('contenteditable')) attrs.contenteditable = ['true', 'false', 'plaintext-only'].includes(node.contentEditable) ? node.contentEditable : (node.isContentEditable ? 'true' : 'false');
@@ -581,7 +583,21 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // MP-08/MP-10 protocol 593: the elements whose box meets the viewport (a quarter screen above and below), with
     // their ancestors across shadow roots; every element the scan saw that is not among them may be deferred.
     // Sheets and SVG definitions style or paint what is on screen from anywhere: they and their ancestors are walked.
-    let viewportFirst = false, deferral = null;
+    let viewportFirst = false, deferral = null, visitedLinks = null;
+    // Protocol 593: the kernel saw `url` visited from `origin` after the snapshot; this page's links to it re-mark as
+    // ordinary href changes.
+    const visited = (origin, url) => {
+      if (!visitedLinks || origin !== location.origin || visitedLinks.has(url)) return false;
+      visitedLinks.add(url);
+      let marked = false;
+      for (const root of roots.values()) for (const link of root.querySelectorAll?.('a[href], area[href]') ?? []) {
+        if (link.href !== url || !mirrored(link)) continue;
+        if (!dirty.attrs.has(link)) dirty.attrs.set(link, new Set());
+        dirty.attrs.get(link).add('href'); marked = true;
+      }
+      if (marked) wake();
+      return marked;
+    };
     const viewportScan = () => {
       const scanned = new WeakSet(), shown = new WeakSet(), top = -innerHeight / 4, bottom = innerHeight * 1.25, right = innerWidth;
       const show = element => { for (let n = element; n && !shown.has(n); n = n.parentNode ?? n.host ?? null) shown.add(n); };
@@ -744,7 +760,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
     const snapshot = (known = [], options = {}) => {
-      retained = new Set(known); viewportFirst = options.viewport_first === true;
+      retained = new Set(known); viewportFirst = options.viewport_first === true; visitedLinks = Array.isArray(options.visited_links) ? new Set(options.visited_links) : null;
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the
@@ -1334,6 +1350,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

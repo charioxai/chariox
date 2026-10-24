@@ -37,6 +37,7 @@ import { assertNotCancelled, BrowserActionError } from "./browser-controller-act
 import { captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
+import { VisitedLinks } from "./kernel-browser-visited-links.mjs";
 import { WindowForeground } from './kernel-browser-foreground.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { DisplaySessions } from './kernel-display-resumption.mjs';
@@ -94,6 +95,7 @@ export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
+    this.visitedLinks = new VisitedLinks();
     // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
     let tick = timestamp();
     setInterval(() => { const now = timestamp(), late = now - tick - 100; tick = now; if (late > 400) this.timing('node_loop_stall', now - late); }, 100).unref();
@@ -253,6 +255,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.pageTiming = this.timing;
+    this.browser.visitedLinks = this.visitedLinks;
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);
     this.pendingActive = { tab_id: typeof saved.active_tab_id === 'string' ? saved.active_tab_id : null,

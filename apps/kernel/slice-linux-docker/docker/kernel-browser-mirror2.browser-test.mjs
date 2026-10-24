@@ -2085,3 +2085,37 @@ test("MP-08/MP-10 protocol 593: a subscription that did not ask gets a whole sna
   assert.equal("snapshot_viewport_complete" in first, false);
   assert.equal(viewportRows(first.nodes).some(row => row.extra.deferred), false);
 }));
+const visitedPage = `<style>a{color:rgb(0,0,255)} a:visited{color:rgb(255,0,0)}</style><p><a id="b" href="/b">B</a> <a id="other" href="/other">other</a> <a id="part" href="#section">part</a></p><h2 id="section">Part</h2>`;
+const visitedRoutes = { "/b": { type: "text/html", body: "<!doctype html><p>B</p>" } };
+const linkHrefs = packet => Object.fromEntries(viewportRows(packet.nodes).filter(row => ["b", "other", "part"].includes(row.attrs.id)).map(row => [row.attrs.id, [row.id, row.attrs.href]]));
+// Follow A's link to B and come back, through the page itself (a renderer-started navigation, as a user's click).
+const visitB = async evaluate => {
+  const at = async (path, tries = 400) => { for (let i = 0; i < tries; i++) { if (await evaluate(`location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`).catch(() => false) === true) return; await new Promise(resolve => setTimeout(resolve, 25)); } assert.fail(`MP-10: the page did not reach ${path}`); };
+  await evaluate("document.getElementById('b').click(), true"); await at("/b");
+  await evaluate("history.back(), true"); await at("/");
+};
+test("MP-08/MP-10 protocol 593: a link the kernel saw visited from this origin is sent as an empty href to a subscription that asked", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
+  await visitB(evaluate);
+  const first = await (await subscribe({ visited_links: true })).next();
+  const hrefs = linkHrefs(first);
+  assert.equal(hrefs.b?.[1], "", "A's link to the visited B draws :visited in the viewer");
+  assert.equal(hrefs.other?.[1], "#", "an unvisited link keeps :link");
+  assert.equal(hrefs.part?.[1], "#", "an unvisited fragment link keeps :link");
+  const old = await (await subscribe()).next();
+  assert.equal(linkHrefs(old).b?.[1], "#", "a subscription that did not ask never receives an empty href");
+}, visitedRoutes));
+
+test("MP-08/MP-10 protocol 593: a link visited after the snapshot re-marks without a reset", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
+  const viewer = await subscribe({ visited_links: true });
+  const first = await viewer.next(), part = linkHrefs(first).part;
+  assert.equal(part?.[1], "#");
+  await evaluate("document.getElementById('part').click(), true");
+  let marked = null;
+  for (let i = 0; i < 20 && !marked; i++) {
+    const packet = await viewer.next(500);
+    assert.notEqual(packet.reset, true, "re-marking needs no reset");
+    marked = packet.ops.find(op => op.op === "attr" && op.id === part[0] && op.name === "href");
+  }
+  assert.deepEqual(marked, { op: "attr", id: part[0], name: "href", value: "" });
+}, visitedRoutes));
+
