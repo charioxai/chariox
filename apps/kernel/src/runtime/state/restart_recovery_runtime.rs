@@ -271,8 +271,20 @@ impl KernelRuntimeState {
             active_prompt,
             queued_prompts,
         )?;
-        self.finalize_cancelled_local_prompt_after_restart(session_id, agent_id, &prompt)
-            .await?;
+        let provider_run_id = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .map(|run| run.id().to_string());
+        // Not a cancellation of the node: its task keeps the wait, and the workflow keeps the
+        // node live for the wake.
+        self.release_cancelled_local_prompt_after_restart(
+            session_id,
+            agent_id,
+            &prompt,
+            provider_run_id.as_deref(),
+        )
+        .await?;
         Box::pin(self.deliver_agent_inbox(session_id, agent_id)).await
     }
 
@@ -980,25 +992,13 @@ impl KernelRuntimeState {
                 .map(|run| run.id().to_string())
         };
         self.owned.workflow_cancel_prompt(session_id, prompt)?;
-        let cancellation = self
-            .owned
-            .finalize_local_prompt_cancellation_with_queued_advance(
-                session_id,
-                agent_id,
-                prompt.id(),
-                provider_run_id.as_deref(),
-            )?;
-        if cancellation.released_claim {
-            self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
-        }
-        if let Some(dispatch) = cancellation.dispatch {
-            if let Err(error) = self
-                .enqueue_prompt_dispatch_after_liveness(&dispatch, &self.owned)
-                .await
-            {
-                let _ = self.fail_prompt_dispatch(dispatch, error).await;
-            }
-        }
+        self.release_cancelled_local_prompt_after_restart(
+            session_id,
+            agent_id,
+            prompt,
+            provider_run_id.as_deref(),
+        )
+        .await?;
         if failed_delivery.is_some()
             && self
                 .owned
@@ -1025,6 +1025,37 @@ impl KernelRuntimeState {
             }
         }
         Ok(CancelledLocalPromptRestartOutcome::Finalized)
+    }
+
+    /// Removes the cancelling prompt from its agent and starts what was queued behind it. The
+    /// workflow node, if any, is the caller's to settle.
+    async fn release_cancelled_local_prompt_after_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let cancellation = self
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                session_id,
+                agent_id,
+                prompt.id(),
+                provider_run_id,
+            )?;
+        if cancellation.released_claim {
+            self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
+        }
+        if let Some(dispatch) = cancellation.dispatch {
+            if let Err(error) = self
+                .enqueue_prompt_dispatch_after_liveness(&dispatch, &self.owned)
+                .await
+            {
+                let _ = self.fail_prompt_dispatch(dispatch, error).await;
+            }
+        }
+        Ok(())
     }
 
     async fn redispatch_local_prompt(
@@ -1493,6 +1524,15 @@ mod tests {
         worktree: &str,
         config: DaemonConfig,
     ) -> (KernelRuntimeState, String, String, String) {
+        runtime_with_active_prompt_setup(delivery_phase, worktree, config, false)
+    }
+
+    fn runtime_with_active_prompt_setup(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        worktree: &str,
+        config: DaemonConfig,
+        workflow_node: bool,
+    ) -> (KernelRuntimeState, String, String, String) {
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
@@ -1530,6 +1570,13 @@ mod tests {
             PromptStatus::Queued,
         )
         .with_durable_operation("command-restart-recovery", "fingerprint-restart-recovery");
+        let prompt = if workflow_node {
+            let (workflow_run_id, node_run_id) =
+                start_restart_workflow_node(&mut app, session.id(), &agent);
+            prompt.with_workflow_context(&workflow_run_id, &node_run_id)
+        } else {
+            prompt
+        };
         let outcome = app
             .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
             .expect("prompt should be accepted");
@@ -1686,37 +1733,38 @@ mod tests {
         (worktree, router.runtime_state(), session_id, agent_id)
     }
 
-    fn runtime_with_queued_prompt() -> (KernelRuntimeState, String, String) {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let workspace = std::env::current_dir().expect("test workspace should resolve");
-        let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                workspace.to_string_lossy(),
-                workspace.to_string_lossy(),
-            ))
-            .expect("session should create");
-        let mut session_with_agents = session.clone();
-        session_with_agents.set_agents(vec![agent.clone()]);
-        app.sessions_mut().restore_session(session_with_agents);
-        let _attachment = KernelSessionService::new(&mut app)
-            .attach(AttachRequest::new(
-                session.id(),
-                "attachment-restart-prompt-queue",
-                ClientCapabilityLevel::FullTerminal,
-            ))
-            .expect("attachment should attach");
+    fn start_restart_workflow_node(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+    ) -> (String, String) {
+        let agent_id = agent.id();
+        let mut session = app
+            .sessions()
+            .get_session(session_id)
+            .expect("session should load");
+        if !session
+            .agents()
+            .iter()
+            .any(|listed| listed.id() == agent_id)
+        {
+            let mut agents = session.agents().to_vec();
+            agents.push(agent.clone());
+            session.set_agents(agents);
+            app.sessions_mut().restore_session(session);
+        }
         let workflow = app
             .sessions_mut()
-            .create_workflow(session.id(), Some("restart-publication".to_string()))
+            .create_workflow(session_id, Some("restart-publication".to_string()))
             .expect("workflow should create");
         let node = app
             .sessions_mut()
-            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .add_workflow_node(session_id, workflow.id(), agent_id)
             .expect("workflow node should create");
         let endpoint = app
             .sessions_mut()
             .create_workflow_endpoint(
-                session.id(),
+                session_id,
                 workflow.id(),
                 node.id(),
                 Some("entry".to_string()),
@@ -1725,7 +1773,7 @@ mod tests {
         let publication = app
             .sessions_mut()
             .create_workflow_publication(
-                session.id(),
+                session_id,
                 workflow.id(),
                 endpoint.id(),
                 Some("default".to_string()),
@@ -1758,7 +1806,7 @@ mod tests {
         let workflow_run = app
             .sessions_mut()
             .invoke_workflow_endpoint_with_publication_invocation(
-                session.id(),
+                session_id,
                 workflow.id(),
                 endpoint.id(),
                 Some("resume queued work".to_string()),
@@ -1768,7 +1816,7 @@ mod tests {
         let node_run_id = workflow_run.node_runs()[0].id().to_string();
         app.sessions_mut()
             .prepare_workflow_turn(
-                session.id(),
+                session_id,
                 workflow_run.id(),
                 &node_run_id,
                 format!("workflow-ack:{node_run_id}"),
@@ -1777,14 +1825,38 @@ mod tests {
                 None,
             )
             .expect("workflow turn should prepare");
+        (workflow_run.id().to_string(), node_run_id)
+    }
+
+    fn runtime_with_queued_prompt() -> (KernelRuntimeState, String, String) {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let workspace = std::env::current_dir().expect("test workspace should resolve");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let mut session_with_agents = session.clone();
+        session_with_agents.set_agents(vec![agent.clone()]);
+        app.sessions_mut().restore_session(session_with_agents);
+        let _attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-restart-prompt-queue",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let (workflow_run_id, node_run_id) =
+            start_restart_workflow_node(&mut app, session.id(), &agent);
         let prompt = PromptQueueItem::new(
             "pending-restart-prompt-queue",
-            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(&workflow_run_id),
             agent.id(),
             "resume queued work",
             PromptStatus::Queued,
         )
-        .with_workflow_context(workflow_run.id(), &node_run_id);
+        .with_workflow_context(&workflow_run_id, &node_run_id);
         let outcome = app
             .prompt_owner_submit_prepared_prompt(session.id(), prompt, true)
             .expect("prompt should queue");
@@ -2082,20 +2154,35 @@ mod tests {
     #[tokio::test]
     async fn a_prompt_whose_turn_yielded_before_the_restart_ends_and_its_wake_is_delivered() {
         use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
-        for phase in [
-            crate::session::DurablePromptDeliveryPhase::Accepted,
-            crate::session::DurablePromptDeliveryPhase::Delivered,
+        for (phase, workflow_node) in [
+            (crate::session::DurablePromptDeliveryPhase::Accepted, false),
+            (crate::session::DurablePromptDeliveryPhase::Delivered, false),
+            (crate::session::DurablePromptDeliveryPhase::Delivered, true),
         ] {
             let mut config = DaemonConfig::for_tests();
             config.room_agent_tools = true;
-            let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+            let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_setup(
                 phase,
                 std::env::current_dir()
                     .expect("test workspace should resolve")
                     .to_string_lossy()
                     .as_ref(),
                 config,
+                workflow_node,
             );
+            let workflow_run_id = {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("session should load");
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
+            };
+            assert_eq!(workflow_run_id.is_some(), workflow_node, "{phase:?}");
             let store = &runtime.owned.durable_state_store;
             let now = crate::session::unix_epoch_ms();
             let Outcome::Task(task) = store
@@ -2206,6 +2293,20 @@ mod tests {
                 "{phase:?}: the yielded prompt ends: {summary:?} {:?}",
                 store.agent_tasks(Some(&session_id), Some(&agent_id))
             );
+            if let Some(workflow_run_id) = workflow_run_id.as_deref() {
+                let run = session
+                    .workflow_run(workflow_run_id)
+                    .expect("the workflow run stays");
+                assert!(
+                    !run.status().is_terminal()
+                        && run
+                            .node_runs()
+                            .iter()
+                            .all(|node| node.status()
+                                != crate::session::WorkflowNodeRunStatus::Stopped),
+                    "{phase:?}: ending the yielded prompt keeps its workflow node live: {run:?}"
+                );
+            }
             let task = store
                 .agent_tasks(Some(&session_id), Some(&agent_id))
                 .expect("tasks should load")
