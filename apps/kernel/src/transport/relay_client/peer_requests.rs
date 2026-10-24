@@ -2747,7 +2747,6 @@ mod tests {
     mod signed_slice;
 
     use super::*;
-    use crate::transport::relay_client::RelayOutgoingSender;
 
     use base64::Engine;
     use chariox_relay::auth::RelaySubjectKind;
@@ -3720,11 +3719,9 @@ mod tests {
         ));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let worker_private_key = relay_crypto::generate_private_key_base64();
         let worker_public_key =
@@ -3920,11 +3917,9 @@ mod tests {
             )
             .expect("slice should enter starting state");
 
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let worker_kernel_id = slice.worker_kernel_ref.as_str();
         let worker_private_key = relay_crypto::generate_private_key_base64();
@@ -4100,11 +4095,9 @@ mod tests {
             ),
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let request = RelayPeerRequest::ArmManagedContextImport {
             destination: None,
@@ -4333,11 +4326,9 @@ mod tests {
         ));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let identity = scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX);
         let context_plan = ManagedKernelContextPlan::source_project_for_tests(
@@ -4767,11 +4758,9 @@ mod tests {
                 }),
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let source_vault_path = root.join("source-vault.json");
         let target_vault_path = root.join("target-vault.json");
@@ -5175,7 +5164,6 @@ mod tests {
         let terminal_peer_harness = ManagedPeerRequestHarness {
             router: &terminal_router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let terminal_armed = send_managed_peer_request(
             &terminal_peer_harness,
@@ -5468,7 +5456,6 @@ mod tests {
         let recovery_peer_harness = ManagedPeerRequestHarness {
             router: &recovery_router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let recovery_armed = send_managed_peer_request(
             &recovery_peer_harness,
@@ -5613,7 +5600,6 @@ mod tests {
         let restarted_peer_harness = ManagedPeerRequestHarness {
             router: &restarted_router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let rebound = send_managed_peer_request(
             &restarted_peer_harness,
@@ -5692,7 +5678,6 @@ mod tests {
     pub(super) struct ManagedPeerRequestHarness<'a> {
         pub(super) router: &'a Arc<CommandRouter>,
         pub(super) state: &'a Arc<RwLock<RelayClientState>>,
-        pub(super) outgoing_tx: &'a RelayOutgoingSender,
     }
 
     pub(super) async fn send_managed_peer_request(

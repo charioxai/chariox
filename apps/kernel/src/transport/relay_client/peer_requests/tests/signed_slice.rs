@@ -79,7 +79,6 @@ fn registration(
 struct SignedSliceHarness {
     router: Arc<CommandRouter>,
     state: Arc<RwLock<RelayClientState>>,
-    outgoing: RelayOutgoingSender,
     owner: Socket,
     worker: Socket,
     owner_id: String,
@@ -288,11 +287,9 @@ async fn signed_slice_relay_preserves_kernel_authority_for_owner_confirmation_an
     })
     .await
     .expect("signed owner and worker register");
-    let (outgoing, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
     let mut harness = SignedSliceHarness {
         router,
         state,
-        outgoing,
         owner,
         worker,
         owner_id: owner_id.clone(),

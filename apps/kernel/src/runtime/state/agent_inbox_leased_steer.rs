@@ -137,7 +137,7 @@ impl KernelRuntimeState {
                     Ok(LeasedInboxSteerReconciliation::Settled) => break,
                     Ok(LeasedInboxSteerReconciliation::Pending) => {}
                     Err(error) => {
-                        if attempt % 30 == 0 {
+                        if attempt.is_multiple_of(30) {
                             crate::logging::warn_with_fields(
                                 "daemon.agent_lifecycle",
                                 "uncertain leased inbox steer is waiting for its exact worker receipt",

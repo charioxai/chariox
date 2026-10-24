@@ -5875,8 +5875,7 @@ mod lost_worker_run {
         );
         let last_tool = history
             .iter()
-            .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::ProviderTool)
-            .next_back()
+            .rfind(|entry| entry.kind == crate::history::SessionHistoryEntryKind::ProviderTool)
             .map(|entry| serde_json::from_str::<serde_json::Value>(&entry.text).unwrap());
         assert_eq!(
             last_tool.as_ref().map(|row| row["status"].clone()),
