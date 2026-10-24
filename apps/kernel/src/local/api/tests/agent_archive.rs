@@ -336,3 +336,71 @@ fn archive_agent_releases_single_spawn_capacity() {
 fn archive_agent_releases_batch_spawn_capacity() {
     assert_archive_agent_capacity_reused(true);
 }
+
+fn assert_archive_agent_layout_after(operation: &str) {
+    let worktree = crate::test_support::TestWorktree::new("archive-layout");
+    let h = LocalRouterTestHarness::new();
+    let LocalDaemonResponse::SessionCreated { session, agent } = h
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    let visible = h.spawn_workflow_test_agent(session.id(), "visible");
+    h.dispatch(archive_request(session.id(), agent.id(), true))
+        .unwrap();
+    match operation {
+        "focus" => {
+            h.dispatch(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: session.id().into(),
+                agent_id: visible.id().into(),
+            }))
+            .unwrap();
+        }
+        "spawn" => {
+            h.spawn_workflow_test_agent(session.id(), "new");
+        }
+        "delete" => {
+            let temporary = h.spawn_workflow_test_agent(session.id(), "temporary");
+            h.dispatch(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                session_id: session.id().into(),
+                agent_id: temporary.id().into(),
+            }))
+            .unwrap();
+        }
+        _ => panic!("unknown operation"),
+    }
+    let LocalDaemonResponse::AgentsListed { agents } = h
+        .dispatch(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session.id().into(),
+        }))
+        .unwrap()
+    else {
+        panic!("agents")
+    };
+    let positions = agents
+        .iter()
+        .filter(|a| !a.archived())
+        .map(|a| a.position().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positions,
+        crate::agent::calculate_agent_layout(positions.len()),
+        "{operation} must not allocate hidden archived slots"
+    );
+}
+
+#[test]
+fn archive_agent_layout_stays_compact_after_focus() {
+    assert_archive_agent_layout_after("focus");
+}
+#[test]
+fn archive_agent_layout_stays_compact_after_spawn() {
+    assert_archive_agent_layout_after("spawn");
+}
+#[test]
+fn archive_agent_layout_stays_compact_after_delete() {
+    assert_archive_agent_layout_after("delete");
+}

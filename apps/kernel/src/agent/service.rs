@@ -384,8 +384,12 @@ impl AgentService {
         self.store.remove(agent_id);
 
         // Recalculate positions for remaining agents
-        let mut remaining_agents: Vec<_> =
-            self.store.get_by_session(&session_id).into_iter().collect();
+        let mut remaining_agents: Vec<_> = self
+            .store
+            .get_by_session(&session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived())
+            .collect();
 
         if !remaining_agents.is_empty() {
             recalculate_positions(&mut remaining_agents);
