@@ -394,6 +394,14 @@ fn remove_ended_target(
         }
     ) {
         part.run_states.remove(&run_state_key(event)?);
+        // The event just recorded tells the holder; keeping a target that can
+        // never match again would only make a later subscribe refuse it.
+        part.targets.retain(|t| {
+            t.agent_id.is_none()
+                || t.kernel != event.kernel
+                || t.session_id != event.session_id
+                || t.agent_id != event.agent_id
+        });
     }
     prune_run_states(part)
 }

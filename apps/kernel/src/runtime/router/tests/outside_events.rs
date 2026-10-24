@@ -566,3 +566,85 @@ fn outside_router_preserves_create_ids_when_event_target_capacity_is_full() {
         );
     });
 }
+
+#[test]
+fn outside_router_a_removed_agent_leaves_the_other_targets_flowing() {
+    run("outside-removed-agent", async {
+        let worktree = crate::test_support::TestWorktree::new("outside-removed-agent");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let removed = spawn_test_agent(&mut app, session.id(), "gone", "dev-stub");
+        let kept = spawn_test_agent(&mut app, session.id(), "kept", "dev-stub");
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let grant = router
+            .runtime_state()
+            .insert_access_grant_for_test(session.id());
+        let target = |agent: &str| serde_json::json!({"kernel":"local","session_id":session.id(),"agent_id":agent});
+        let subscribe = request(serde_json::json!({"SubscribeEvents":{
+            "targets":[target(removed.id()), target(kept.id())]
+        }}));
+        dispatch(&router, &grant, subscribe).await;
+        let destroy = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+            session_id: session.id().into(),
+            agent_id: removed.id().into(),
+        });
+        router
+            .dispatch(
+                KernelCommand::from_local_request("destroy-removed", None, None, &destroy),
+                destroy,
+            )
+            .await
+            .unwrap();
+
+        // The holder is told, and the removed agent no longer counts as a target.
+        let LocalDaemonResponse::EventSubscription { subscription } = dispatch(
+            &router,
+            &grant,
+            request(serde_json::json!({"GetEventSubscription":{}})),
+        )
+        .await
+        else {
+            panic!("expected subscription")
+        };
+        assert_eq!(
+            subscription
+                .targets
+                .iter()
+                .map(|target| target.agent_id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some(kept.id())]
+        );
+        router.runtime_state().start_active_turn_with_trace_id(
+            session.id(),
+            kept.id(),
+            "kept-prompt",
+            "kept-run",
+            "kept-trace",
+        );
+        let LocalDaemonResponse::EventsListed { events, .. } = dispatch(
+            &router,
+            &grant,
+            request(serde_json::json!({"ListEvents":{}})),
+        )
+        .await
+        else {
+            panic!("expected events")
+        };
+        assert!(events.iter().any(|event| matches!(
+            &event.value,
+            OutsideEventValue::Session {
+                state: EventSessionState::AgentRemoved
+            }
+        ) && event.agent_id.as_deref() == Some(removed.id())));
+        assert!(events.iter().any(|event| matches!(
+            &event.value,
+            OutsideEventValue::Agent {
+                run_state: Some(EventRunState::Working),
+                ..
+            }
+        ) && event.agent_id.as_deref() == Some(kept.id())));
+    });
+}
