@@ -19,7 +19,7 @@ Keep inputs, state and transferred artifacts in your own directory outside git.
 | `steer` | `sessionId`, `attachmentId`, `agentId`, `expectedPromptId`, `prompt`, unique `steerId` | Kernel compare-and-steer response. A race remains a refusal. |
 | `status` | `sessionId`, `agentId` | State, current prompt, last activity, durable deadline receipt and executing kernel capabilities. |
 | `fetch` | `worktree`, local `directory` | Downloads `LANE_STATUS.md`, `PUSH_READY.md`, `ACCEPTANCE_UPDATE.json` with file hashes. |
-| `bundle` | `sessionId` (operations Room), `worktree`, full `base` and `head`, absolute `remoteBundle`, local `localBundle`, existing local Git `repository` | Verified SHA-256, source HEAD/base ancestry, bundle tips, imported base ancestry and `refs/remotes/lanes/<taskId>`. |
+| `bundle` | `sessionId` (operations Room), `worktree`, full `base`, optional expected `head`, absolute `remoteBundle`, local `localBundle`, existing local Git `repository` | Verified SHA-256, source HEAD/base ancestry, bundle tips, imported base ancestry and `refs/remotes/lanes/<taskId>`. |
 | `slot` | `sessionId` (operations Room), `worktree`, absolute `slotScript`, string array `argv`, optional `timeout` seconds | Opens a Room terminal, runs the slot script, waits for its actual exit and closes the terminal. |
 | `stop` | `sessionId`, `attachmentId`, `agentId`, optional local `pidLedger` | Cancels, destroys, verifies absence and cleans only exact ledger-owned processes. |
 
@@ -60,6 +60,10 @@ session stream, not the durable outside event subscription from EA2 §14.
 `new`, short commit hashes and missing date/evidence/note fields. It checks the
 update format; matching existing ids and approving newly designed scenarios
 remain the central acceptance tracker's responsibility.
+
+MP-08 / MP-10: `fetch` reports an already consumed acceptance JSON explicitly;
+other file errors and invalid rows still fail. `bundle` resolves the sole `HEAD`
+tip from the verified bundle; a supplied expected head remains a strict guard.
 
 `bundle` includes source history so it also works with an empty local Git
 repository. A failed local ancestry check leaves only an incoming lane ref

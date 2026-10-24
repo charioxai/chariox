@@ -276,7 +276,12 @@ export async function run(operation, input, dependencies = {}) {
     const remote = text(input.worktree, 'worktree'); const result = {};
     for (const name of ['LANE_STATUS.md', 'PUSH_READY.md', 'ACCEPTANCE_UPDATE.json']) {
       const local = join(directory, name);
-      await call(['files', 'get', ...common, '--overwrite', `${remote}/${name}`, local]);
+      try { await call(['files', 'get', ...common, '--overwrite', `${remote}/${name}`, local]); }
+      catch (error) {
+        if (name !== 'ACCEPTANCE_UPDATE.json' || error.code !== 'file_not_found') throw error;
+        result[name] = { missing: true, reason: error.code };
+        continue;
+      }
       const bytes = await readFile(local);
       if (name.endsWith('.json')) validateAcceptance(JSON.parse(bytes.toString('utf8')));
       result[name] = { path: local, sha256: createHash('sha256').update(bytes).digest('hex') };
@@ -284,10 +289,11 @@ export async function run(operation, input, dependencies = {}) {
     return result;
   }
   if (operation === 'bundle') {
-    const base = hash(input.base, 'base'), head = hash(input.head, 'head');
+    const base = hash(input.base, 'base'), expectedHead = input.head == null ? undefined : hash(input.head, 'head');
     const worktree = text(input.worktree, 'worktree'), remote = text(input.remoteBundle, 'remoteBundle');
     const local = resolve(text(input.localBundle, 'localBundle')), repo = resolve(text(input.repository, 'repository'));
-    const command = `set -eu; cd ${quote(worktree)}; test "$(git rev-parse HEAD)" = ${quote(head)}; git merge-base --is-ancestor ${quote(base)} ${quote(head)}; git bundle create ${quote(remote)} HEAD`;
+    const guard = expectedHead ? `test "$(git rev-parse HEAD)" = ${quote(expectedHead)}; ` : '';
+    const command = `set -eu; cd ${quote(worktree)}; ${guard}git merge-base --is-ancestor ${quote(base)} HEAD; git bundle create ${quote(remote)} HEAD`;
     await terminalCommand(['/bin/bash', '-lc', command]);
     const before = variant(await request('StatKernelFile', { path: remote, with_sha256: true }, 'bundle-stat', false), 'KernelFileStat').stat;
     await mkdir(dirname(local), { recursive: true }); await call(['files', 'get', ...common, '--overwrite', remote, local]);
@@ -295,13 +301,16 @@ export async function run(operation, input, dependencies = {}) {
     if (digest !== before.sha256) fail('bundle_hash_mismatch');
     const git = dependencies.git || ((argv) => execute(argv, '', 'git', true));
     await git(['-C', repo, 'bundle', 'verify', local]);
-    const heads = await git(['bundle', 'list-heads', local]);
-    if (!String(heads).split('\n').some(line => line.split(' ')[0] === head)) fail('bundle_head_mismatch');
+    const heads = String(await git(['bundle', 'list-heads', local])).trim().split('\n');
+    const tip = heads.length === 1 && /^([a-f0-9]{40}) HEAD$/.exec(heads[0]);
+    if (!tip || (expectedHead && tip[1] !== expectedHead)) fail('bundle_head_mismatch');
+    const head = tip[1];
     const incoming = `refs/lanes/incoming/${taskId}`;
     await git(['-C', repo, 'fetch', '--no-tags', local, `${head}:${incoming}`]);
-    await git(['-C', repo, 'merge-base', '--is-ancestor', base, head]);
-    await git(['-C', repo, 'fetch', '--no-tags', local, `${head}:refs/remotes/lanes/${taskId}`]);
-    await git(['-C', repo, 'update-ref', '-d', incoming, head]);
+    try {
+      await git(['-C', repo, 'merge-base', '--is-ancestor', base, head]);
+      await git(['-C', repo, 'fetch', '--no-tags', local, `${head}:refs/remotes/lanes/${taskId}`]);
+    } finally { await git(['-C', repo, 'update-ref', '-d', incoming, head]); }
     return { base, head, sha256: digest, path: local };
   }
   if (operation === 'slot') {

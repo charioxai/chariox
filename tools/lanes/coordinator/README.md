@@ -32,12 +32,18 @@ layout. The launch receipt retains that location across resume; bundle commands
 always run in the worktree. Create the lane directory before launch and tell
 the worker to write its handoffs there.
 
+MP-08 / MP-10: acceptance merge may consume `ACCEPTANCE_UPDATE.json` before
+collection. Fetch explicitly reports that file as missing on `file_not_found`;
+both Markdown handoffs remain required. Other transfer errors and invalid
+acceptance rows still refuse collection. Bundle tips and base ancestry are
+verified independently, so a consumed update cannot hide or manufacture a head.
+
 | Replacement command | Inputs and behavior |
 | --- | --- |
 | `node tools/lanes/coordinator/brief.mjs LANE WORKTREE codex [BRIEF_FILE]` | Reads the brief file, or stdin like `brief.sh`; uploads it and launches through `lane-launch`. Reusing identical inputs resumes the original launch and deadline. Changed brief text, including stdin, raises `launch_conflict`. |
 | `node tools/lanes/coordinator/watch.mjs [MINUTES]` | One blocking `WaitEvents` on the grant's merged inbox (default 15, max 240 minutes; longer waits re-arm WaitEvents only). Archives the whole batch before AckEvents. Timeout is a normal wake. |
 | `node tools/lanes/coordinator/deliver.mjs LANE REVIEW_FILE` | Reads the review text already obtained on the Mac and steers the current prompt with a compare fence. Confirms via a matching §14 event when advertised, otherwise via the acknowledged response and one status read. Identical review/current-prompt pairs reuse their receipt. New instructions for a settled worker are refused. |
-| `node tools/lanes/coordinator/lanefin.mjs LANE...` | Checks status once, fetches the worker's notes/update, then verifies/imports its bundle. The update must identify one full head; `bases[LANE]` supplies its base. Review notes and the final message belong in `LANE_STATUS.md`/`PUSH_READY.md`. |
+| `node tools/lanes/coordinator/lanefin.mjs LANE...` | Checks status once, fetches the worker's handoffs, then verifies/imports its bundle. The bundle supplies the actual head; `bases[LANE]` supplies its base. A present acceptance update must identify one matching head. Review notes and the final message belong in `LANE_STATUS.md`/`PUSH_READY.md`. |
 | `node tools/lanes/coordinator/lanehealth.mjs [LANE]` | One status/deadline snapshot per selected lane (all recorded lanes when omitted), with LONG-ROUND and SILENT flags; no recurring poller or automatic destruction. |
 | `node tools/lanes/coordinator/stop.mjs LANE` | Explicit unconditional adapter stop of the recorded worker. The kernel's durable deadline operates even while the coordinator is disconnected. |
 

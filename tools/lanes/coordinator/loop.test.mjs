@@ -178,3 +178,15 @@ test('brief refuses relative lane directories before launch', async t => {
   await assert.rejects(coordinate('brief', ['lane', '/work', 'codex'], r.options), { code: 'invalid_lane_directory' });
   assert.equal(r.calls.some(c => c.op === 'launch'), false);
 });
+
+test('lanefin collects the bundle when acceptance merge already consumed the update', async t => {
+  const r = await launched(t), adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => {
+    if (op === 'fetch') { r.calls.push({ op, input }); return { 'ACCEPTANCE_UPDATE.json': { missing: true, reason: 'file_not_found' } }; }
+    if (op === 'bundle') { r.calls.push({ op, input }); assert.equal(input.head, undefined); return { head }; }
+    return adapter(op, input);
+  };
+  const result = await coordinate('lanefin', ['lane'], r.options);
+  assert.equal(result.bundle.head, head);
+  assert.deepEqual(r.calls.map(c => c.op), ['status', 'fetch', 'bundle']);
+});

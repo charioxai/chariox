@@ -115,11 +115,15 @@ export async function coordinate(operation, args, options = {}) {
     if (status.currentPrompt || status.state === 'working') throw new LaneError('lane_still_running');
     const directory = join(home, 'artifacts', lane);
     const files = await adapter('fetch', { ...common, worktree: record.laneDirectory || record.input.worktree, directory });
-    const update = await read(join(directory, 'ACCEPTANCE_UPDATE.json'));
-    const heads = [...new Set(update.rows.map(r => r.head))];
-    if (heads.length !== 1) throw new LaneError('ambiguous_bundle_head');
+    let head;
+    if (!files['ACCEPTANCE_UPDATE.json']?.missing) {
+      const update = await read(join(directory, 'ACCEPTANCE_UPDATE.json'));
+      const heads = [...new Set(update.rows.map(r => r.head))];
+      if (heads.length !== 1) throw new LaneError('ambiguous_bundle_head');
+      head = heads[0];
+    }
     const config = options.config || await read(process.env.CHARIOX_COORDINATOR_CONFIG || join(home, 'config.json'));
-    const bundle = await adapter('bundle', { ...common, sessionId: record.launch.operationsSessionId, worktree: record.input.worktree, base: config.bases?.[lane], head: heads[0], remoteBundle: `${record.input.worktree}/round.bundle`, localBundle: join(directory, 'round.bundle'), repository: config.repository, timeout: 300 });
+    const bundle = await adapter('bundle', { ...common, sessionId: record.launch.operationsSessionId, worktree: record.input.worktree, base: config.bases?.[lane], head, remoteBundle: `${record.input.worktree}/round.bundle`, localBundle: join(directory, 'round.bundle'), repository: config.repository, timeout: 300 });
     const result = { lane, status, files, bundle };
     await save(join(home, `${lane}.finish.json`), result); return result;
   }
