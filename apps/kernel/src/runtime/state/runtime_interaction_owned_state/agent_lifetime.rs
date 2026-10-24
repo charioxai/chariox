@@ -296,7 +296,6 @@ impl KernelRuntimeOwnedState {
         id: &str,
         pending: &super::super::PendingInteraction,
     ) -> Result<(), DaemonError> {
-        self.pending_interactions.write().remove(id);
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         if let Ok(mut session) = sessions.get_session(&pending.session_id) {
@@ -310,6 +309,7 @@ impl KernelRuntimeOwnedState {
             }
             sessions.restore_session(session);
         }
+        self.pending_interactions.write().remove(id);
         activity_mutation.record();
         drop(sessions);
         if let Some(sender) = pending
