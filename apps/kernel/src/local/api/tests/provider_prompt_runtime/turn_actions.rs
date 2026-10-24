@@ -171,6 +171,109 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
     });
 }
 
+// MP-08 / MP-10 / MP-11 R1080-5: a grant holder whose steer reached the provider but whose
+// event could not be recorded learns the steer id and that it must not send it again.
+#[test]
+fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
+    let faults =
+        std::env::temp_dir().join(format!("steer-event-fault-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&faults).unwrap();
+    let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&faults);
+    let worktree = crate::test_support::TestWorktree::new("steer-event-unrecorded");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness.launch_workflow_test_provider(session.id(), agent.id());
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().into(),
+                client_id: "steering".into(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let active = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            target_agent_id: Some(agent.id().into()),
+            prompt: "original work".into(),
+            attachments: vec![],
+        }))
+        .unwrap()
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let kernel = harness.with_app(|app| app.config().daemon_id.clone());
+    harness
+        .runtime_state()
+        .outside_part_request(
+            "outside-coordinator",
+            true,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+                targets: vec![EventTarget {
+                    kernel,
+                    session_id: session.id().into(),
+                    agent_id: Some(agent.id().into()),
+                }],
+            }),
+        )
+        .unwrap();
+    std::fs::write(faults.join("writer-fail"), "").unwrap();
+    let steer = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+        "SteerActivePrompt": {
+            "session_id": session.id(), "attachment_id": attachment.id(),
+            "target_agent_id": agent.id(), "expected_active_prompt_id": active.id(),
+            "prompt": "change direction", "attachments": []
+        }
+    }))
+    .unwrap();
+    let failure = harness.dispatch(steer.clone()).unwrap_err();
+    let mut caller = crate::runtime::command::KernelCommand::from_local_request(
+        "steer-event-unrecorded",
+        None,
+        None,
+        &steer,
+    );
+    caller.caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    caller.caller.caller_id = "grant:test".into();
+    let told =
+        crate::runtime::external_response::finish_response(&caller, Err(failure)).unwrap_err();
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&told);
+    assert_eq!(mapped.code, "prompt_steer_event_unrecorded", "{mapped:?}");
+    assert!(!mapped.retryable);
+    assert!(
+        mapped.message.contains("do not send it again"),
+        "{}",
+        mapped.message
+    );
+    assert!(mapped.message.contains("steer `"), "{}", mapped.message);
+    assert!(
+        !mapped.message.contains("writer-fail"),
+        "{}",
+        mapped.message
+    );
+}
+
 #[test]
 fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
     let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");

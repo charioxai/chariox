@@ -350,6 +350,12 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
     },
+    /// The provider holds the steer, but the outside event for it was not recorded.
+    /// The caller must not send it again; the message carries only the kernel's own id.
+    #[error(
+        "steer `{steer_id}` was delivered but its event was not recorded; do not send it again"
+    )]
+    SteerDeliveredEventUnrecorded { steer_id: String },
     #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
     ProviderProtocol {
         provider_run_id: String,

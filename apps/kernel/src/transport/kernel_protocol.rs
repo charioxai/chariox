@@ -984,6 +984,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             operation: "steer active prompt",
             ..
         } => kernel_error("prompt_steer_rejected", error, false),
+        DaemonError::SteerDeliveredEventUnrecorded { .. } => {
+            kernel_error("prompt_steer_event_unrecorded", error, false)
+        }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
         DaemonError::SessionAliasConflict { .. } => {
             kernel_error("session_alias_conflict", error, false)
