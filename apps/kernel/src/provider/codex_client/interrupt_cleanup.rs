@@ -1,12 +1,16 @@
 //! MP-08 / MP-10: stop the output producer before awaiting interrupt replies.
 use super::json_rpc::JsonRpcMessage;
-use super::json_rpc_transport::codex_request_timeout;
 use super::notifications::{parse_notification, rpc_error_message};
 use super::{CodexClient, CodexNotification, CodexSocket};
 use crate::error::DaemonError;
 use serde_json::json;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
+
+/// A Codex app-server answers a honoured `turn/interrupt` within milliseconds. One that stays
+/// silent this long will not honour the Stop, so the abort fails here and the turn ends with
+/// the cancellation-failure notice instead of waiting out the generic 30 s request timeout.
+pub(crate) const CODEX_INTERRUPT_ANSWER_DEADLINE: Duration = Duration::from_secs(10);
 
 impl CodexClient {
     pub fn turn_interrupt_and_clean(
@@ -50,7 +54,7 @@ impl CodexClient {
                 );
             }
         }
-        let deadline = Instant::now() + codex_request_timeout("turn/interrupt");
+        let deadline = Instant::now() + CODEX_INTERRUPT_ANSWER_DEADLINE;
         let mut interrupt_result = None;
         let mut cleanup_result = None;
         while interrupt_result.is_none() || cleanup_result.is_none() {
