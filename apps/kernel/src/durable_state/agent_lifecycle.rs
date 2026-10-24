@@ -181,6 +181,18 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }
+    /// Steers into a leased turn whose outcome is still unconfirmed, as
+    /// `(room, agent, steer id)`: a restart must ask their workers again.
+    pub(crate) fn agent_unconfirmed_leased_steers(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.unconfirmed_leased_steers")?;
+        let mut q = db.prepare("SELECT room_id,agent_id,json_extract(payload,'$.prompt_id') FROM agent_inbox WHERE json_valid(payload) AND json_extract(payload,'$.state') IN ('uncertain','blocked') AND json_extract(payload,'$.target_prompt_id') IS NOT NULL AND json_extract(payload,'$.prompt_id') IS NOT NULL AND json_extract(payload,'$.provider_run_id') LIKE 'leased:%' ORDER BY sequence").map_err(sql)?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
     pub(crate) fn agent_event_for_prompt(
         &self,
         room: &str,

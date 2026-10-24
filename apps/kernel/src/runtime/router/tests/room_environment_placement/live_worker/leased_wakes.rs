@@ -487,43 +487,9 @@ fn mp10_a10_urgent_message_steers_a_busy_leased_turn() {
 async fn urgent_message_steers_a_busy_leased_turn() {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
-    let room = fixture.rooms[0].clone();
-    let (leased, attachment) = spawn_leased(&mut fixture, &room).await;
-    run_turn(&fixture, &room, &attachment, &leased, "MP-10 A10 busy turn").await;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while binding(&fixture, &leased)
-        .await
-        .active_worker_provider_run_id
-        .is_none()
-    {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the worker accepts the busy turn"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let running = {
-        let app = fixture.home.app.lock().await;
-        let session = app.sessions().get_session(&room).unwrap();
-        app.prompt_state_owner()
-            .active_prompt_for_agent(&session, &leased)
-            .expect("the busy leased turn")
-            .id()
-            .to_string()
-    };
+    let (room, leased, running) = start_busy_leased_turn(&mut fixture).await;
     let store = store(&fixture).await;
-    let mut message = ledger::occurrence(
-        &room,
-        &leased,
-        "a10-peer",
-        "a10-urgent",
-        "message",
-        json!({"message":"MP-10 A10 urgent status"}),
-    );
-    message.urgent = true;
-    let Outcome::Event(event) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
-        panic!("durable message")
-    };
+    let event = urgent_message(&store, &room, &leased, "a10-urgent");
     let delivered = fixture
         .home
         .runtime_state
@@ -558,6 +524,161 @@ async fn urgent_message_steers_a_busy_leased_turn() {
         "steered into the running turn: {after:?}"
     );
     assert_eq!(queued, 0, "no new turn is queued for the message");
+}
+
+/// Starts a leased turn that stays running; returns its room, agent and home prompt.
+async fn start_busy_leased_turn(fixture: &mut LiveWorker) -> (String, String, String) {
+    let room = fixture.rooms[0].clone();
+    let (leased, attachment) = spawn_leased(fixture, &room).await;
+    run_turn(fixture, &room, &attachment, &leased, "MP-10 A10 busy turn").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while binding(fixture, &leased)
+        .await
+        .active_worker_provider_run_id
+        .is_none()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the worker accepts the busy turn"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let running = {
+        let app = fixture.home.app.lock().await;
+        let session = app.sessions().get_session(&room).unwrap();
+        app.prompt_state_owner()
+            .active_prompt_for_agent(&session, &leased)
+            .expect("the busy leased turn")
+            .id()
+            .to_string()
+    };
+    (room, leased, running)
+}
+
+fn urgent_message(
+    store: &crate::durable_state::DurableKernelStateStore,
+    room: &str,
+    leased: &str,
+    occurrence: &str,
+) -> ledger::InboxEvent {
+    let mut message = ledger::occurrence(
+        room,
+        leased,
+        "a10-peer",
+        occurrence,
+        "message",
+        json!({"message": format!("MP-10 A10 urgent status {occurrence}")}),
+    );
+    message.urgent = true;
+    let Outcome::Event(event) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
+        panic!("durable message")
+    };
+    event
+}
+
+#[test]
+fn mp10_a10_lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
+    run_test(lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt);
+}
+
+/// #1065 review P2: the worker accepted an urgent steer but its reply was lost.
+/// Base: the event stayed uncertain, fenced every later delivery and was
+/// blocked for the owner after 120 s, although the worker kept its receipt.
+async fn lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let (room, leased, running) = start_busy_leased_turn(&mut fixture).await;
+    let store = store(&fixture).await;
+    let first = urgent_message(&store, &room, &leased, "a10-urgent-lost");
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .relay_client_state()
+        .write()
+        .await
+        .test_lose_next_leased_steer_response();
+    let lost = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &leased)
+        .await;
+    let steer = format!("agent-event-{leased}-{}", first.sequence);
+    let uncertain = store
+        .agent_event_for_prompt(&room, &leased, &steer)
+        .unwrap();
+    let reconciled = eventually("the worker's receipt settles the lost steer", || {
+        store
+            .agent_event_for_prompt(&room, &leased, &steer)
+            .unwrap()
+            .filter(|event| event.state == "accepted")
+    })
+    .await;
+    let second = urgent_message(&store, &room, &leased, "a10-urgent-next");
+    let next = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &leased)
+        .await;
+    let next_event = store
+        .agent_inbox(&room, &leased, 0)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.sequence == second.sequence);
+    let remote = binding(&fixture, &leased).await;
+    let receipt = match send_peer_request_via_temporary_connection(
+        &fixture.home_state.config,
+        ClientTarget {
+            daemon_id: Some(remote.worker_kernel_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: remote.leased_agent_id.clone(),
+            steer_id: steer.clone(),
+            target_home_prompt_id: running.clone(),
+            worker_provider_run_id: remote.active_worker_provider_run_id.clone().unwrap(),
+            execution_lease_id: remote.execution_lease_id.clone(),
+        },
+    )
+    .await
+    .expect("worker steer receipt query")
+    {
+        RelayPeerResponse::LeasedPromptReceiptQueried { receipt } => {
+            receipt.map(|receipt| receipt.phase)
+        }
+        other => panic!("unexpected worker response: {other:?}"),
+    };
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .unwrap();
+    fixture.stop().await;
+    lost.expect("a lost steer reply is not a delivery failure");
+    assert_eq!(
+        uncertain.map(|event| event.state),
+        Some("uncertain".to_string()),
+        "the lost reply leaves the steer uncertain"
+    );
+    assert_eq!(
+        reconciled.target_prompt_id.as_deref(),
+        Some(running.as_str())
+    );
+    assert_eq!(
+        receipt,
+        Some(crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted),
+        "the worker took the first steer once and was only asked for its receipt"
+    );
+    next.expect("the next urgent event is delivered");
+    let next_event = next_event.expect("the next urgent event");
+    assert_eq!(next_event.state, "accepted", "{next_event:?}");
+    assert_eq!(
+        next_event.target_prompt_id.as_deref(),
+        Some(running.as_str())
+    );
 }
 
 fn binding_leased_agent_id(projected: &str) -> String {

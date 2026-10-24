@@ -89,6 +89,18 @@ impl KernelRuntimeState {
         let dispatch_targets = self.durable_restart_dispatch_targets(&recovery_targets);
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
         let uncertain_steer_targets = self.durable_restart_uncertain_remote_steer_targets();
+        let unconfirmed_inbox_steers = self
+            .owned
+            .durable_state_store
+            .agent_unconfirmed_leased_steers()
+            .unwrap_or_else(|error| {
+                crate::logging::warn_with_fields(
+                    "durable_state.recovery",
+                    "could not list unconfirmed leased inbox steers; the delivery sweep blocks them for the owner",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                Vec::new()
+            });
         crate::logging::info_with_fields(
             "durable_state.recovery",
             "captured durable restart recovery targets",
@@ -97,6 +109,7 @@ impl KernelRuntimeState {
                 "unobserved_dispatch_targets": dispatch_targets.len(),
                 "queued_publication_targets": queued_recovery_targets.len(),
                 "uncertain_remote_steer_targets": uncertain_steer_targets.len(),
+                "unconfirmed_inbox_steers": unconfirmed_inbox_steers.len(),
             }),
         );
         let state = self.clone();
@@ -107,6 +120,9 @@ impl KernelRuntimeState {
                 state.spawn_remote_queued_steer_receipt_reconciliation(
                     session_id, agent_id, prompt_id,
                 );
+            }
+            for (room, agent, steer_id) in unconfirmed_inbox_steers {
+                state.spawn_leased_inbox_steer_reconciliation(room, agent, steer_id);
             }
             let summary = state
                 .drive_durable_restart_recovery(
