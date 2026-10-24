@@ -980,6 +980,10 @@ impl KernelRuntimeState {
                     &dispatch_failure,
                 );
             }
+            // A refused folder stops the queue: its prompts would each open the
+            // same hooks card again. They start once the person restarts the agent.
+            let should_advance =
+                should_advance && !matches!(error, DaemonError::ClaudeFolderNotTrusted { .. });
             if should_advance && retire_failed_provider {
                 restart_provider_for_queued_prompt = owned
                     .prompt_state_owner
@@ -4905,6 +4909,68 @@ pub(in crate::runtime::state) mod tests {
         .await;
 
         assert!(result.unwrap_err().to_string().contains("was not trusted"));
+    }
+
+    // A refused folder settles the dispatched prompt and leaves the rest of the
+    // queue alone: advancing would open the same hooks card for each of them.
+    #[tokio::test]
+    async fn refused_claude_folder_trust_does_not_advance_the_queue() {
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP refused_claude_folder_trust_does_not_advance_the_queue: claude binary is absent");
+            return;
+        }
+        let (worktree, runtime, session_id, agent_id, source_id, _provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        for id in ["queued-after-refusal-1", "queued-after-refusal-2"] {
+            runtime
+                .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: PromptQueueItem::new(
+                        id,
+                        &source_id,
+                        &agent_id,
+                        "continue",
+                        PromptStatus::Queued,
+                    ),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .await
+                .expect("prompt should queue");
+        }
+
+        let error = runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::ClaudeFolderNotTrusted {
+                    folder: worktree.path().to_path_buf(),
+                },
+            )
+            .await
+            .expect_err("a failed dispatch reports its error");
+        assert!(matches!(error, DaemonError::ClaudeFolderNotTrusted { .. }));
+
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should resolve");
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .is_none());
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, &agent_id)
+                .1
+                .len(),
+            2
+        );
+        assert!(session.active_interaction_for_agent(&agent_id).is_none());
     }
 
     #[tokio::test]

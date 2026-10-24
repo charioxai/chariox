@@ -31,6 +31,11 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    /// The person refused (or let time out) the hooks card of a Claude folder.
+    /// Retry loops and queue advance stop on it: only the person starting the
+    /// agent again asks the question again.
+    #[error("{} was not trusted, so the agent did not start; start it again and choose Trust folder to run its Claude hooks", .folder.display())]
+    ClaudeFolderNotTrusted { folder: std::path::PathBuf },
     /// MP-08 / MP-11: preserve mapped executor semantics for external grants
     /// and sudo without retaining any diagnostic values or source error.
     #[error("{}", external_request_failure_message(.code))]

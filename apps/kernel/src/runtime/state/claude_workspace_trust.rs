@@ -124,10 +124,9 @@ impl KernelRuntimeState {
         if resolution.status == "answered" && resolution.choice_id.as_deref() == Some("trust") {
             return Ok(());
         }
-        Err(refuse(format!(
-            "{} was not trusted, so the agent did not start; start it again and choose Trust folder to run its Claude hooks",
-            folder.path.display()
-        )))
+        Err(DaemonError::ClaudeFolderNotTrusted {
+            folder: folder.path.clone(),
+        })
     }
 }
 

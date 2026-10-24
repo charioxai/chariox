@@ -56,9 +56,7 @@ impl RestartLaunchAdmissions {
     }
 
     pub(super) fn owe_follower(&self, session_id: &str, agent_id: &str) {
-        self.owed_followers
-            .lock()
-            .expect("admission state poisoned")
+        self.owed_followers()
             .insert((session_id.to_string(), agent_id.to_string()));
     }
 
