@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execute, LaneError, save } from '../lanes.mjs';
-import { openInbox, waitBatch, confirmSteer, confirmRemoval } from './events.mjs';
+import { openInbox, waitBatch, confirmSteer, confirmRemoval, dropAgentTarget } from './events.mjs';
 export { save };
 
 const validLane = lane => {
@@ -139,6 +139,10 @@ export async function coordinate(operation, args, options = {}) {
     await save(join(home, `${lane}.finish.json`), result); return result;
   }
   if (operation === 'stop') {
+    if (!record.stopped) {
+      // The room session target still reports the removal; only the agent-level one dies with the agent.
+      try { await dropAgentTarget(cli, record.launch); } catch (error) { record.targetCleanupError = error.code || 'unsubscribe_failed'; }
+    }
     const result = record.stopped ? record.stop : await adapter('stop', common);
     record.stopped = result.stopped === true; record.stop = result; await save(path, record);
     if (!record.stopped || result.removal) return result;

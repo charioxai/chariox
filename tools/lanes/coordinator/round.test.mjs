@@ -161,6 +161,22 @@ test('round: a worker that goes idle without an event is found by the five-minut
   assert.ok(alpha.finishedAtMs >= alpha.launchedAtMs + 5 * 60_000 && alpha.finishedAtMs <= alpha.launchedAtMs + 8 * 60_000, `${alpha.finishedAtMs - alpha.launchedAtMs}`);
 });
 
+test('round: a hard stop whose removal event never arrives still collects the head and bundle', async t => {
+  const r = await rig(t, ['alpha']);
+  const { coordinate } = await import('./loop.mjs');
+  const cli = r.options.cli;
+  r.options.cli = async argv => argv[1] === 'wait' && r.calls.some(c => c.op === 'stop') ? { events: [], timed_out: true, next_cursor: 0 } : cli(argv);
+  r.spec.lanes[0].hardStopMinutes = 1;
+  for (let i = 0; i < 3; i++) r.waits.push({});
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(alpha.finishReason, 'hard_stop');
+  assert.equal(alpha.head, head);
+  assert.equal(alpha.bundleSha256, 'c'.repeat(64));
+  assert.equal(alpha.stopped, true);
+  assert.equal(alpha.stopConfirmationError.code, 'stop_confirmation_timeout');
+  assert.equal(JSON.parse(await readFile(join(r.home, 'alpha.json'), 'utf8')).stopped, true);
+});
+
 test('round: extra repositories get their own verified bundle', async t => {
   const r = await rig(t, ['alpha']);
   r.spec.lanes[0].extraBundles = [{ name: 'cloud', worktree: '/work/alpha-cloud', base: 'd'.repeat(40), repository: '/repo/cloud.git' }, { name: 'bad', worktree: '/x', base: 'nope', repository: '/r' }];

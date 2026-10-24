@@ -135,7 +135,7 @@ test('lanehealth: reports deadline and silence without stopping anyone', async t
 test('stop: only recorded lane adapter identity; durable stop receipt', async t => {
   const r = await launched(t); await coordinate('stop', ['lane'], r.options);
   assert.deepEqual(r.calls.filter(c => c.op).map(c => c.op), ['stop']);
-  assert.equal(r.calls[0].input.agentId, r.launch.agentId);
+  assert.equal(r.calls.find(c => c.op).input.agentId, r.launch.agentId);
   assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'))).stopped, true);
   await assert.rejects(coordinate('stop', ['../other'], r.options), { code: 'invalid_lane' });
 });
@@ -235,6 +235,49 @@ test('lanefin bundles after the real dogfood r9 acceptance files through the rea
     assert.equal(r.calls.find(c => c.op === 'bundle').input.head, undefined);
     assert.equal(result.acceptanceIssues[0].field, 'rows[0].head');
   }
+});
+
+test('stop drops the agent-level event target before the agent is destroyed', async t => {
+  const r = await launched(t);
+  await coordinate('stop', ['lane'], r.options);
+  const unsubscribe = r.calls.findIndex(c => c.argv?.[1] === 'unsubscribe'), destroy = r.calls.findIndex(c => c.op === 'stop');
+  assert.ok(unsubscribe >= 0 && unsubscribe < destroy);
+  assert.deepEqual(r.calls[unsubscribe].argv, ['events', 'unsubscribe', '--kernel', 'executor', '--session', 'room', '--agent', 'agent']);
+});
+
+test('opening the inbox drops the targets of a stopped worker (sessions once removal is confirmed) and refuses a stream the kernel still refuses', async t => {
+  const r = await launched(t);
+  const record = JSON.parse(await readFile(join(r.home, 'lane.json')));
+  await save(join(r.home, 'lane.json'), { ...record, stopped: true, stop: { stopped: true, removal: { event: {} } } });
+  let refused = true;
+  const targets = [{ kernel: 'executor', session_id: 'room' }, { kernel: 'executor', session_id: 'room', agent_id: 'agent' }, { kernel: 'executor', session_id: 'ops' }, { kernel: 'executor', session_id: 'other' }];
+  const cli = argv => {
+    r.calls.push({ argv });
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: targets.filter(t => !r.calls.some(c => c.argv?.[1] === 'unsubscribe' && c.argv[5] === t.session_id && (c.argv[7] ?? undefined) === (t.agent_id ?? undefined))), kernels: refused ? [{ kernel: 'executor', online: false, error: { code: 'events_refused', message: 'event target agent was not found' } }] : [{ kernel: 'executor', online: true }] } };
+    return {};
+  };
+  r.options.cli = cli;
+  await assert.rejects(coordinate('watch', ['1'], r.options), { code: 'subscription_unhealthy' });
+  const dropped = r.calls.filter(c => c.argv?.[1] === 'unsubscribe').map(c => c.argv.slice(4).join(' '));
+  assert.deepEqual(dropped, ['--session room --agent agent', '--session room', '--session ops']);
+  assert.equal(dropped.some(d => d.includes('other')), false);
+  refused = false;
+  r.options.cli = argv => argv[1] === 'wait' ? { events: [], timed_out: true, next_cursor: 0 } : cli(argv);
+  assert.equal((await coordinate('watch', ['1'], r.options)).timed_out, true);
+});
+
+test('opening the inbox keeps the session targets of a stopped worker whose removal was not seen yet', async t => {
+  const r = await launched(t);
+  const record = JSON.parse(await readFile(join(r.home, 'lane.json')));
+  await save(join(r.home, 'lane.json'), { ...record, stopped: true, stop: { stopped: true } });
+  const cli = argv => {
+    r.calls.push({ argv });
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room' }, { kernel: 'executor', session_id: 'room', agent_id: 'agent' }], kernels: [{ kernel: 'executor', online: true }] } };
+    return argv[1] === 'wait' ? { events: [], timed_out: true, next_cursor: 0 } : {};
+  };
+  r.options.cli = cli;
+  await coordinate('watch', ['1'], r.options);
+  assert.deepEqual(r.calls.filter(c => c.argv?.[1] === 'unsubscribe').map(c => c.argv.slice(4).join(' ')), ['--session room --agent agent']);
 });
 
 test('stop archives exact removal before ack and reuses the confirmed receipt', async t => {

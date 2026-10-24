@@ -15,8 +15,29 @@ export async function openInbox(home, cli) {
   for (const r of records.filter(r => r.launch && !r.stopped)) {
     if (!subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === r.launch.sessionId && (!t.agent_id || t.agent_id === r.launch.agentId))) throw new LaneError('subscription_target_missing', `Launch target ${r.lane} is missing from the inbox; subscribe before waiting.`);
   }
+  // A destroyed agent that stays a target makes the kernel refuse the whole stream (every lane goes silent).
+  // Stopped workers lose their agent target; their sessions go once the removal event has been seen.
+  const targets = new Set();
+  for (const r of records.filter(r => r.launch && r.stopped)) {
+    const wanted = [[r.launch.sessionId, r.launch.agentId], ...(r.stop?.removal ? [[r.launch.sessionId], [r.launch.operationsSessionId]] : [])];
+    for (const [session, agent] of wanted) {
+      if (session && subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === session && (t.agent_id ?? undefined) === agent)) targets.add(JSON.stringify([r.launch.kernel, session, agent]));
+    }
+  }
+  for (const target of targets) {
+    const [kernel, session, agent] = JSON.parse(target);
+    await cli(['events', 'unsubscribe', '--kernel', kernel, '--session', session, ...(agent ? ['--agent', agent] : [])]);
+  }
+  const current = targets.size ? (await cli(['events', 'subscription'])).subscription : subscription;
+  const refused = current.kernels?.find(k => k.error?.code === 'events_refused');
+  if (refused) throw new LaneError('subscription_unhealthy', `Kernel ${refused.kernel} refuses the event stream (${refused.error.message}); unsubscribe the removed target it names, then resume.`);
   await save(statePath, { subscription_id: subscription.subscription_id });
-  return subscription;
+  return current;
+}
+
+// Called before a worker is destroyed: the agent target would be dead the moment it is gone.
+export async function dropAgentTarget(cli, launch) {
+  await cli(['events', 'unsubscribe', '--kernel', launch.kernel, '--session', launch.sessionId, '--agent', launch.agentId]);
 }
 
 export async function waitBatch(home, cli, now, seconds) {

@@ -151,10 +151,23 @@ export function createRound(options) {
     } catch (error) { lane.run.lastMessage = { error: error.code || 'message_failed' }; }
   };
 
+  // The worker is gone once its stop succeeds; a removal event that never arrives does not undo that or the collection.
+  const stopLane = async lane => {
+    try {
+      lane.run.stop = await coordinator('stop', [lane.entry.lane]);
+      // Stopping waits on the shared inbox; other lanes' events in those batches are handled here.
+      await archived(lane.run.stop?.removal?.archives);
+    } catch (error) {
+      if (error.code !== 'stop_confirmation_timeout') throw error;
+      lane.run.stopConfirmationError = { code: error.code, message: String(error.message).slice(0, 300) };
+    }
+    lane.run.stopped = true;
+  };
+
   const collect = async (lane, reason) => {
     await saveLastMessage(lane);
     try {
-      if (reason === 'hard_stop') { lane.run.stop = await coordinator('stop', [lane.entry.lane]); lane.run.stopped = true; await archived(lane.run.stop?.removal?.archives); }
+      if (reason === 'hard_stop') await stopLane(lane);
       const finished = await coordinator('lanefin', [lane.entry.lane]);
       lane.run.head = finished.bundle?.head;
       lane.run.bundle = finished.bundle?.path;
@@ -162,16 +175,13 @@ export function createRound(options) {
       lane.run.files = Object.keys(finished.files || {});
       if (finished.acceptanceIssues) lane.run.acceptanceIssues = finished.acceptanceIssues;
       lane.run.extraBundles = await bundleExtras(lane);
-      if (reason !== 'hard_stop') lane.run.stop = await coordinator('stop', [lane.entry.lane]);
-      lane.run.stopped = true;
+      if (reason !== 'hard_stop') await stopLane(lane);
       lane.run.finishReason = reason;
-      // Stopping waits on the shared inbox; other lanes' events in those batches are handled here.
-      await archived(lane.run.stop?.removal?.archives);
     } catch (error) {
       lane.run.finishReason = `${reason}_collect_failed`;
       lane.run.collectError = { code: error.code || 'collect_failed', message: String(error.message).slice(0, 300) };
       if (!lane.run.stopped) {
-        try { lane.run.stop = await coordinator('stop', [lane.entry.lane]); lane.run.stopped = true; } catch (stopError) { lane.run.stopError = stopError.code || 'stop_failed'; }
+        try { await stopLane(lane); } catch (stopError) { lane.run.stopError = stopError.code || 'stop_failed'; }
       }
     }
     lane.run.finishedAtMs = now();
