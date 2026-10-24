@@ -402,3 +402,25 @@ test('replayed successful submission renews its expired attachment without a sec
     assert.equal(state.pendingPrompt,undefined);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('foreground deadline command rejects another launch and propagates cleanup refusal', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'dogfood-deadline-command-'));
+  try {
+    const stateFile=join(dir,'state.json');
+    const state={kernel:'b',taskId:'lane',sessionId:'s',agentId:'a',attachmentId:'t',deadlineMs:1,deadline:{mode:'coordinator'}};
+    await writeFile(stateFile,JSON.stringify(state));
+    let calls=0;
+    const dependencies={execute:async()=>{calls++;throw new LaneError('kernel_access_ended','PRIVATE-CANARY');}};
+    const input={kernel:'b',taskId:'lane',sessionId:'s',agentId:'a',stateFile};
+    for(const change of [{kernel:'other'},{taskId:'other'},{sessionId:'other'},{agentId:'other'}]) {
+      await assert.rejects(run('deadline',{...input,...change},dependencies),{code:'launch_conflict'});
+      assert.equal(calls,0);
+    }
+    await assert.rejects(run('deadline',input,dependencies), error=>error.code==='kernel_access_ended'&&!error.message.includes('PRIVATE-CANARY'));
+    assert.equal(calls,1);
+    assert.equal(JSON.parse(await readFile(`${stateFile}.deadline.json`)).status,'failed');
+    await writeFile(stateFile,JSON.stringify({...state,deadline:{mode:'kernel'}}));
+    await assert.rejects(run('deadline',input,dependencies),{code:'invalid_operation'});
+    assert.equal(calls,1);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
