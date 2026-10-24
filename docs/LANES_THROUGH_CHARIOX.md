@@ -244,3 +244,39 @@ Observations about kernel behaviour (grant lost on restart, a restored session
 that cannot answer the Vault-unlock decision, `last_activity_at_ms` semantics,
 the permission volume) are in `agents/extagent/REVIEW_INBOX.md`. None has a failing
 kernel test here and no kernel code was changed.
+
+## R10 the standing round service (loopd) on OSS #1080
+
+MP-08 / MP-09 / MP-10 / MP-11. The [lasting lanes kernel](LANES_KERNEL.md) now runs `e46dcc0ce6`
+(OSS #1080) and keeps a standing round service, `loopd` (`round.mjs serve`), beneath the holder. The Mac drops
+one queue entry per round with `mac/loopbrief.sh`; loopd does the rest and writes the same
+`LOOP_RUN.json` / `last-message.md` files the Mac's `lanes.sh` and `watch.sh` read. `prompt_steer_event_unrecorded`
+from a steer is treated as delivered (the kernel took the steer; resending would repeat it).
+
+**The collect failure from R9 is fixed.** `lanefin` no longer refuses a round because of a free-form
+`ACCEPTANCE_UPDATE.json`: `fetch` returns `acceptance: { valid, issues: [{ field, problem }] }`, the bundle is
+guarded by the acceptance head only when the file is valid and names one commit, and otherwise the worktree HEAD is
+bundled and `LOOP_RUN.json` carries `acceptanceIssues` (for example `rows[0].head: must be one full 40-character git
+commit id`). Fail-first tests use the two real worker files from R9 (`tools/lanes/fixtures/r9-*`). A handoff file
+a stopped worker never wrote is reported as `missing` and no longer costs the round its commits.
+
+### Drill (workers on claude-haiku-5-5 and gpt-6-luna, scratch repositories; no product work)
+
+| Check | Result |
+| --- | --- |
+| Two entries at different times | `loopdrilla-r4` and `loopdrillb-r4` were picked up 17 s apart through `loopbrief.sh` (pickup in about 2 s each). |
+| One finishes, one stops at a short hard stop | A finished by itself (40 poems, commit `0eff181276`, head and bundle verified, `last-message.md` written). B hit its 7 min hard stop after 100 poems: stopped first, then collected, head `c8da7c1be6` equal to the worktree HEAD. |
+| Lanes-kernel restart mid-way | `lanes-kernel.mjs stop` then `start` (16 s) while both ran; loopd restarted with the kernel, set the old inbox aside, followed both Room sessions again and re-read both lanes. Same session and agent ids before and after (`restart4-before.txt`), no second launch, both lanes continued and ended as above. |
+| Codex entry | `loopdrillc-r2` ran `gpt-6-luna` low through the product-created `lanes-codex` profile (linked in place from the lanes' Codex credential home; never logged in or out): committed `a0c9744ad6`, wrote its handoff files, final message captured, head and bundle collected. Codex runs as root with `permission: yolo` (approval never, sandbox danger-full-access); there is no root refusal as there is for Claude. |
+
+### Gaps found (all but the kernel items are fixed here, with fail-first tests)
+
+| Gap | What happened | State |
+| --- | --- | --- |
+| A removed agent poisons the whole event stream | An agent-level target that outlives its agent makes the kernel report `events_refused` for the entire subscription, so every other lane went silent (one Codex lane finished unnoticed). | Worked around: unsubscribe before destroying a worker, prune stopped workers' targets at open and at loopd start, look again after an unsubscribe because the refusal clears a moment later; every lane is also read in its first minute and every 5 minutes. Reported to the kernel owner in `agents/extagent/REVIEW_INBOX.md`. |
+| New grant after a restart has an empty inbox | The old targets are gone; loopd failed with `subscription_target_missing` on every wake. | Fixed: loopd follows each running lane's sessions again (`events subscribe --session`). |
+| Decision raised during that gap | A permission raised while nothing followed the worker has no event; it times out (`default_on_timeout: deny` after 300 s) and the worker stops with a denial. | Fixed on this side: the lane status now lists `active_interactions` and the engine answers them on its next read. A typed replay from the kernel would be better (reported). |
+| Hard stop lost the head | A stop that could not confirm removal aborted the collection. | Fixed: `stop_confirmation_timeout` is soft, the final message is saved before the stop, a hard stop stops first and collects regardless of handoff files. |
+| Empty-wake archives | 1,183 empty batches were archived in one evening. | Fixed: empty wakes are not archived. |
+| Naming | The Mac's `LOOP-DOWN` check looks for a running `round.mjs`. | loopd is `round.mjs serve`, so the existing check keeps working. |
+| `notes` file | `loopbrief.sh` has no notes parameter; the optional entry field `notes` names the coordinator's REVIEW_INBOX file if it is not `agents/<lane>/REVIEW_INBOX.md`. | Documented in LANES_KERNEL.md. |
