@@ -234,21 +234,18 @@ impl ProviderOutputClaudeNativeBridge<'_> {
 }
 
 /// A native retry's receipt belongs to its original turn, never a later managed prompt.
-pub(super) fn typed_native_loads(
+/// `Some` marks that turn as the typed redirect, even when the command pinned no skill.
+pub(super) fn typed_native_redirect(
     context_file: &str,
     prompt_id: &str,
-) -> Result<Vec<crate::provider::skill_delivery::TypedSkillLoad>, DaemonError> {
+) -> Result<Option<Vec<crate::provider::skill_delivery::TypedSkillLoad>>, DaemonError> {
     let bytes = match fs::read(format!("{context_file}.typed-native-loads")) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(retry_error(error.to_string())),
     };
     let (owner, loads): (String, Vec<crate::provider::skill_delivery::TypedSkillLoad>) =
         serde_json::from_slice(&bytes)
             .map_err(|_| retry_error("invalid typed native receipt pins"))?;
-    Ok(if owner == prompt_id {
-        loads
-    } else {
-        Vec::new()
-    })
+    Ok((owner == prompt_id).then_some(loads))
 }

@@ -4093,6 +4093,73 @@ mod skill_hook_fakes {
             ))
         }
     }
+    /// A local `$name` that the harness loads through its own `/name` command, so the
+    /// kernel pins no skill body of its own.
+    pub(super) struct RedirectSkill;
+    impl crate::provider::skill_delivery::SkillPromptBridge for RedirectSkill {
+        fn acknowledge_prompt(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_hook_context(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_tools(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &ProviderPromptSignalBatch,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_typed_leased(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+            _: &str,
+            _: &[crate::provider::skill_delivery::TypedSkillLoad],
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn prepare(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &crate::prompt_assembly::PromptEnvelope,
+        ) -> Result<Option<crate::provider::skill_delivery::ProviderSkillDelivery>, DaemonError>
+        {
+            Ok(Some(
+                crate::provider::skill_delivery::ProviderSkillDelivery {
+                    visible_prompt: "/review inspect source".into(),
+                    hidden_context: String::new(),
+                    codex_input: Vec::new(),
+                    requires_native_load_ack: vec![crate::skill::v2::SkillSelection::Native {
+                        entry_id: "native-review".into(),
+                        name: "review".into(),
+                        provider: "claude".into(),
+                        account_profile: "account".into(),
+                        execution_id: "execution".into(),
+                        inventory_revision: "inventory".into(),
+                    }],
+                    typed_leased_loads: Vec::new(),
+                    leased_names: None,
+                },
+            ))
+        }
+    }
     pub(super) struct PassthroughPolicy;
     impl NativePromptHandoffPolicy for PassthroughPolicy {
         fn prepare_context(
@@ -4431,7 +4498,7 @@ fn claude_native_typed_redirect_acceptance_consumes_the_pending_handoff() {
         run.id(),
         prompt.id(),
         prompt.id(),
-        true,
+        super::context_delivery::DeliveryOrigin::TypedRedirect,
         vec![crate::provider::skill_delivery::TypedSkillLoad::Chariox {
             skill_id: "review".into(),
             digest: "digest-review".into(),
@@ -4456,5 +4523,115 @@ fn claude_native_typed_redirect_acceptance_consumes_the_pending_handoff() {
         policy.accepted.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "the accepted typed redirect left the pending handoff unconsumed"
+    );
+}
+
+// A local `$name` the harness loads through its own `/name` command is resubmitted
+// as a managed turn with no kernel-pinned skill; accepting it must still consume the
+// pending handoff (compaction recovery), whatever loads the command carried.
+#[test]
+fn claude_native_local_typed_redirect_without_loads_consumes_the_pending_handoff() {
+    use skill_hook_fakes::{CountingPolicy, RedirectSkill};
+    let worktree = crate::test_support::TestWorktree::new("claude-local-typed-redirect");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.providers
+        .set_skill_prompt_bridge(std::sync::Arc::new(RedirectSkill));
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let _attached_client = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "local-redirect-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-local-redirect-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "local-redirect-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    let mut ready_run = serde_json::to_value(&run).unwrap();
+    ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    ready_run["pty_env"]["CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS"] = serde_json::json!("1");
+    run = serde_json::from_value(ready_run).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let context_path = context_file.display().to_string();
+    let append_event = |prompt: &str, request_id: &str| {
+        let mut events = fs::read_to_string(&events_file).unwrap();
+        events.push_str(
+            &serde_json::json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": prompt,
+                "hook_context_request_id": request_id,
+            })
+            .to_string(),
+        );
+        events.push('\n');
+        fs::write(&events_file, events).unwrap();
+    };
+    let policy = CountingPolicy::default();
+    append_event("$review inspect source", "typed-redirect-first");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let mut bridge = ProviderOutputClaudeNativeBridge::new(&mut app).with_prompt_handoff(&policy);
+    bridge
+        .accept_typed_native_redirect(
+            session.id(),
+            agent.id(),
+            &run,
+            &context_path,
+            &serde_json::json!({"hook_context_request_id":"typed-redirect-first"}),
+        )
+        .unwrap();
+    for _ in 0..2 {
+        std::thread::sleep(std::time::Duration::from_millis(
+            CLAUDE_SUBMIT_DELAY_MS + 50,
+        ));
+        bridge
+            .resume_typed_native_command(session.id(), agent.id(), &run, &context_path)
+            .unwrap();
+    }
+    append_event("/review inspect source", "typed-redirect-second");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .accept_context_delivery(
+            session.id(),
+            agent.id(),
+            run.id(),
+            &context_path,
+            &serde_json::json!({"hook_context_request_id":"typed-redirect-second"}),
+        )
+        .unwrap();
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert_eq!(
+        policy.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the accepted local typed redirect left the pending handoff unconsumed"
     );
 }
