@@ -119,7 +119,13 @@ fn registered_external_provider_profile_roots_for(
 ) -> Vec<PathBuf> {
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(owner_user_id);
-    registered_external_provider_profile_roots(runtime_state, Some(&account_owner_user_id))
+    // A worker keeps its leased profile under the lease owner's own id, not the local alias.
+    let owners = [account_owner_user_id.as_str(), owner_user_id];
+    let profiles = owners
+        .into_iter()
+        .flat_map(|owner| registered_external_provider_profile_roots(runtime_state, Some(owner)))
+        .collect::<Vec<_>>();
+    profiles
         .into_iter()
         .find(|profile| profile.provider == provider && profile.account_profile == account_profile)
         .map(|profile| profile.roots)
