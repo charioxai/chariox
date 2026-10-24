@@ -2,9 +2,9 @@
 
 MP-08 / MP-09 / MP-10 / MP-11. This runbook keeps the coordinator's policy outside
 while replacing worker transport/control with the public CLI. Its adapters are
-based on `dogfood/adapters` at `4cebf9f0f32ff933db0a6bbb52e7020871c0b200`.
-The r6 runtime pin is `extagent/v2-events` at
-`0d31a2ee3bd5943765f13c47c0e35f65816c5c9b`. No protocol allocation or kernel change is made
+based on `dogfood/adapters` at `a8448698c8` (the r8 adapter fixes).
+The r8 runtime pin is `extagent/v2-events` at
+`f2220d938749fcac2a92a9aa3ce32af1a8c0f6b5` (local591/peer197). No protocol allocation or kernel change is made
 by the coordinator scripts.
 
 ## Ported loop
@@ -79,7 +79,7 @@ finished normally. All selected models were the exact id `gpt-6-luna`, effort
 `low`. Acknowledgements followed durable local batch archival. No SSH or state
 polling controlled the workers.
 
-**EA2-16C is FAIL.** The mid-round steer command succeeded and the worker's fetched
+**The r6 EA2-16C cell is FAIL.** The mid-round steer command succeeded and the worker's fetched
 notes explicitly acknowledge it, but no distinct steer event appeared in the
 complete §14 inbox. The schema exposes agent state, interaction, terminal,
 session, gap and subscription-end values; task publication suppresses an
@@ -117,3 +117,47 @@ Without that capability it reports `acknowledged-steer-status` after the accepte
 response and one status read. Neither fallback nor fake-adapter coverage closes
 EA2-16C. Upstream advertisement/schema agreement and a new full real hosted round
 remain required; r7 starts no kernels or stacks and changes no kernel code.
+
+## R8 hosted event-path acceptance
+
+MP-08 / MP-09 / MP-10. `external-agents-v2/EA2-16C` passes on the immutable
+r8 runtime pin above: three real official Codex workers (`gpt-6-luna`, `low`),
+22.346 seconds of concurrent work, one grant-owned subscription, 22 ordered
+and gap-free events, exact accepted-steer event confirmation, two ordinary
+completions before their deadlines, one active 30-second deadline, all three
+verified bundles and explicit removal events. The independent receipt audit
+and the inherited `assert-steer-event.py` both pass. The owner grant used the
+real web popup at DPR2 with a disposable product Vault; video inspection found
+a masked passphrase and ordinary approval/return to usable controls. This is
+grant-flow evidence, not cold-frame or general Browser acceptance.
+
+Evidence lives outside git under `dogfood/r8/attempt3/`, with the independent
+`dogfood/r8/EA2_LIVE_AUDIT.json`. The exact kernel/native CLI/relay build and
+hashes are in `BUILD_PROVENANCE.json`. Adapter launch/steer used `4610bd77bd`;
+collection spans that commit and `a8448698c8`, which moves remote bundle files
+beside external handoffs. This is an explicit source transition, not a claim
+that every command ran from one final adapter checkout. The changed collection
+path also has fail-first fake-adapter/real-Git regressions.
+
+The first two r8 attempts remain FAIL. Workers successfully wrote their JSON
+handoffs, but the real coordinator acceptance merger consumed them before
+collection. Fetch now reports only typed `file_not_found` for that optional
+receipt; required Markdown handoffs, other transfer errors and invalid rows
+still fail. Bundle HEAD comes from the verified artifact, independently of
+acceptance merge, with strict expected-head and base-ancestry checks. A worker
+also chose to complete its real review instead of waiting artificially; the
+passing attempt uses a short deadline during actual review work. No synthetic
+delay or manufactured event establishes its result. No kernel defect was
+attributed to these failures.
+
+## Required real implementation-lane round
+
+MP-08 / MP-09 / MP-10. `external-agents-v2/EA2-16L` requires one actual coordinator
+lane through these adapters: launch the real brief using its requested provider,
+observe its first commit through the same event inbox, deliver the supplied
+coordinator note with distinct steer confirmation, detect finish or durable
+hard stop, collect its Markdown handoffs and verified Git bundle/head, then stop
+its worker. Control uses one WaitEvents subscription, with no SSH, recurring
+state polling or Mac scripts. Worker commits remain local for coordinator
+publication. This row establishes orchestration; the worker's own source/UI
+acceptance remains a separate obligation.

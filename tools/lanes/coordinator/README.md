@@ -58,17 +58,17 @@ lane/worktree/brief/review inputs; they do not run SSH or query GitHub. Keep one
 inbox consumer at a time: finish the watch command before running deliver, then
 resume watching. Commands create private receipts, transferred files
 and an `events/` journal under the coordinator home; retain them as evidence.
-On runtime `0d31a2ee3`, a successful steer does not emit a distinct §14 receipt;
-the full coordinator acceptance row remains FAIL until extagent supplies it.
-The worker can acknowledge delivery in its fetched notes, which is supplementary.
+The r8 runtime `f2220d9387` advertises and produces the accepted-steer event.
+Older runtime `0d31a2ee3` uses the status fallback and cannot establish the
+distinct-event acceptance row. A worker acknowledgement in fetched notes is
+supplementary.
 
 MP-08 / MP-09 / MP-10 / MP-11: the r7 adapter contract expects the executing
 kernel to advertise `outside_steer_events_v1` in `RelayStatus.status.capabilities`.
-Upstream must advertise this only when it emits `type: "steer"` with
+The capability means it emits `type: "steer"` with
 `value.steer_id` equal to `ActivePromptSteered.prompt.id`. The event's kernel,
 session and agent must also match the lane. This is the returned provider steer
-id, distinct from the adapter's retry command id. The published runtime pin above
-does not advertise this capability and continues to use the fallback.
+id, distinct from the adapter's retry command id. The r8 frozen runtime advertises it; older kernels continue to use the fallback.
 
 Deliver reports `confirmation.mode: "event"` after a matching event, or
 `"acknowledged-steer-status"` after the older path's status read. The fallback
