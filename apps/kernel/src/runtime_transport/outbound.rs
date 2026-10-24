@@ -171,9 +171,7 @@ impl OutboundBoundary {
         else {
             return false;
         };
-        *response = Box::new(Some(
-            serde_json::to_value(receipt).expect("typed ending receipt serializes"),
-        ));
+        **response = Some(serde_json::to_value(receipt).expect("typed ending receipt serializes"));
         *error = None;
         true
     }
