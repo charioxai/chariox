@@ -32,6 +32,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             font_requirements: None,
             font_absent: None,
             viewport_first: None,
+            visited_links: None,
             layout_width: None,
             layout_height: None,
         },
@@ -54,6 +55,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             font_requirements: None,
             font_absent: None,
             viewport_first: None,
+            visited_links: None,
             layout_width: None,
             layout_height: None,
         },
@@ -316,6 +318,34 @@ fn browser_mirror2_viewport_first_593_shape_is_pinned() {
         fixture["subscribe"]
     );
     for name in ["subscribed", "viewport_reset", "fill_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn browser_mirror2_visited_links_593_shape_is_pinned() {
+    // MP-08/MP-10: protocol 593 (relay peer unchanged): a subscription that asks receives an empty `href` for a
+    // link the kernel saw visited from the page's origin, at its snapshot or as a later `attr` op.
+    let bytes = include_bytes!("browser-mirror2-visited-links-593.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "d38fcd89ab0ce719aac41efe7f1f7142e0d7b99432e36e676cb0625a80a34a8a"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["subscribed", "remark_delta"] {
         let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), wire);

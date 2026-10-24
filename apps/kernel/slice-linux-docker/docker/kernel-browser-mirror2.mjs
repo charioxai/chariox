@@ -186,11 +186,22 @@ export class ParsedSheets {
   }
 }
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
+  // Protocol 593: what the subscription negotiated for its snapshots; `visited_links` lists the URLs visited from the page's origin.
+  snapshotOptions(stream, world) {
+    if (!stream.viewportFirst && !stream.visitedLinks) return null;
+    let origin = null; try { origin = new URL(world.frame?.url).origin; } catch {}
+    return { ...(stream.viewportFirst ? { viewport_first: true } : {}), ...(stream.visitedLinks ? { visited_links: this.host.visitedLinks?.from(origin) ?? [] } : {}) };
+  }
+  // Protocol 593: a page visited after a snapshot re-marks the links to it in each subscription that asked (best effort: a gone world has no links).
+  visited(origin, url) {
+    const expression = stream => `${stream.world.ref}.visited(${JSON.stringify(origin)},${JSON.stringify(url)})`;
+    for (const stream of this.service.streams.values()) if (stream.wire === 2 && stream.visitedLinks && stream.world) this.evaluate(stream.world, expression(stream)).catch(() => {});
+  }
   async world(tab, stream, patience) {
     const targetAt = timestamp();
     const cached = this.host.browser.currentPageFrame?.(tab.target_id);
@@ -469,7 +480,7 @@ export class Mirror2 {
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? [], stream.viewportFirst ? { viewport_first: true } : null);
+        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);

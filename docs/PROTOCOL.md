@@ -5473,5 +5473,12 @@ The web hands over on it only when each kept box sits where the page has it, and
 for `snapshot_complete` as before. A subscription that did not ask receives whole snapshots and no
 viewport flag. Kernels below593 and older viewers keep the existing behaviour.
 
+`visited_links:true` lets a link the kernel saw visited travel with `href:""` instead of `href:"#"`; the
+viewer draws it `:visited`, because an empty `href` names the viewer document itself. Like Chrome's
+partitioned visited links, a visit counts on the origin whose page started it (a typed URL on its own
+origin). The kernel keeps the 4096 most recent visits of the browser profile in memory, applies them
+at each snapshot and re-marks a link visited later with an ordinary `attr` op, without a reset. A
+viewer that did not ask never receives an empty `href`, and its validator keeps refusing one.
+
 The relay peer protocol stays 186: the relay never parses mirror records, which travel inside
 `KernelBrowser` results, and the web offers the new fields only to kernels at local593 or later.

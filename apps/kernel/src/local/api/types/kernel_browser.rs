@@ -58,6 +58,10 @@ pub enum KernelBrowserCommand {
         /// `snapshot_viewport_complete` (needs `wire: 2`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         viewport_first: Option<bool>,
+        /// MP-08/MP-10: protocol 593: links the kernel saw visited from the page's origin travel with an empty
+        /// `href`, which the viewer draws `:visited` (needs `wire: 2`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visited_links: Option<bool>,
         /// Protocol 560/168: the person's display in CSS px; the Tab lays out at this size.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layout_width: Option<u32>,
