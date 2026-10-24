@@ -132,3 +132,19 @@ test('a lane profile overrides the provider model for that lane only', async t =
   const deadlines = Object.fromEntries(r.calls.filter(c => c.op === 'launch').map(c => [c.taskId, c.input.deadlineMs]));
   assert.equal(deadlines.beta - deadlines.alpha, 3_600_000 - 1_800_000);
 });
+
+test('round: a failing inbox records why the driver stopped and a rerun resumes', async t => {
+  const r = await rig(t, ['alpha']);
+  const cli = r.options.cli;
+  r.options.cli = async argv => { if (argv[1] === 'wait') throw Object.assign(new Error('inbox gap'), { code: 'event_stream_incomplete' }); return cli(argv); };
+  await assert.rejects(runRound(r.spec, r.options), { code: 'event_stream_incomplete' });
+  const failed = JSON.parse(await readFile(join(r.home, 'runs', 'alpha.json'), 'utf8'));
+  assert.equal(failed.driverError.code, 'event_stream_incomplete');
+  r.options.cli = cli;
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  r.idle.add('alpha');
+  const [run] = await runRound(r.spec, r.options);
+  assert.equal(run.finishReason, 'finished');
+  assert.equal(run.driverError, undefined);
+  assert.equal(run.previousDriverErrors[0].code, 'event_stream_incomplete');
+});

@@ -31,6 +31,7 @@ export async function runRound(spec, options = {}) {
   for (const entry of spec.lanes) {
     let run; try { run = await read(entry.runFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     run ??= { lane: entry.lane, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
+    if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
     lanes.push({ entry, run, finished: Boolean(run.finishReason) });
   }
   const persist = lane => save(lane.entry.runFile, lane.run);
@@ -155,20 +156,20 @@ export async function runRound(spec, options = {}) {
 
   const pending = () => lanes.filter(lane => !lane.finished);
   try {
-  while (pending().length) {
-    const batch = await coordinator('watch', [String(spec.wakeMinutes ?? 5)]);
-    const touched = await handle(batch.events || []);
-    for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
-    for (const lane of pending()) {
-      if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collect(lane, 'hard_stop'); continue; }
-      if (!touched.has(lane) || now() < lane.run.launchedAtMs + 60_000) continue;
-      lane.run.statusReads++;
-      let status;
-      try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
-      if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
+    while (pending().length) {
+      const batch = await coordinator('watch', [String(spec.wakeMinutes ?? 5)]);
+      const touched = await handle(batch.events || []);
+      for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
+      for (const lane of pending()) {
+        if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collect(lane, 'hard_stop'); continue; }
+        if (!touched.has(lane) || now() < lane.run.launchedAtMs + 60_000) continue;
+        lane.run.statusReads++;
+        let status;
+        try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
+        if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
+      }
+      for (const lane of lanes) await persist(lane);
     }
-    for (const lane of lanes) await persist(lane);
-  }
   } catch (error) {
     // The round is resumable: a rerun reuses every receipt. Say why this driver stopped.
     for (const lane of pending()) { lane.run.driverError = { code: error.code || 'driver_failed', message: String(error.message).slice(0, 300), at_ms: now() }; await persist(lane); }
