@@ -1,0 +1,38 @@
+name: Notify shared release coordinator
+
+# MP-07 / MP-11: dormant until explicitly configured; no lane/PR trigger.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Guard and notify Cloud main coordinator
+        env:
+          ENABLED: ${{ vars.RELEASE_PIPELINE_ENABLED }}
+          RUNNER_READY: ${{ vars.RELEASE_RUNNER_READY }}
+          COORDINATOR_TOKEN: ${{ secrets.RELEASE_COORDINATOR_TOKEN }}
+          REVISION: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'JS'
+          const { ENABLED, RUNNER_READY, COORDINATOR_TOKEN, REVISION } = process.env
+          if (ENABLED !== 'true' || RUNNER_READY !== 'true' || !COORDINATOR_TOKEN) {
+            console.log('MP-07 / MP-11: SKIP; configure RELEASE_PIPELINE_ENABLED, RELEASE_RUNNER_READY and RELEASE_COORDINATOR_TOKEN')
+            process.exit(0)
+          }
+          if (!/^[0-9a-f]{40}$/.test(REVISION)) throw Error('invalid main identity')
+          const response = await fetch('https://api.github.com/repos/charioxai/chariox-cloud/dispatches', {
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
+            headers: { authorization: `Bearer ${COORDINATOR_TOKEN}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' },
+            body: JSON.stringify({ event_type: 'oss-main', client_payload: { oss: REVISION } })
+          })
+          if (!response.ok) throw Error('release dispatch rejected (body suppressed)')
+          console.log('MP-07 / MP-11: exact OSS main submitted to Cloud release coordinator')
+          JS
