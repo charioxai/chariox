@@ -55,6 +55,8 @@ pub(crate) struct DictationService {
     engine: Arc<dyn SpeechEngine>,
     inner: Mutex<Inner>,
     transcribing: tokio::sync::Semaphore,
+    /// Changes whenever the model is touched, so only the newest idle timer releases it.
+    model_use: Arc<AtomicU64>,
 }
 
 fn refuse(code: &str, message: &str, retryable: bool) -> DaemonError {
@@ -90,6 +92,7 @@ impl DictationService {
                 uploads: AudioUploads::default(),
             }),
             transcribing: tokio::sync::Semaphore::new(1),
+            model_use: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -261,32 +264,45 @@ impl DictationService {
                 true,
             )
         })?;
+        self.model_use.fetch_add(1, Ordering::SeqCst);
         let service = self.clone();
-        let heard = tokio::task::spawn_blocking(move || {
+        let attempt = tokio::task::spawn_blocking(move || {
             service.engine.transcribe(
                 &service.spec.path(&service.dir),
                 &pcm16_to_f32(&pcm),
                 language.as_deref(),
             )
         })
-        .await
-        .map_err(|_| {
-            refuse(
-                "dictation_transcription_failed",
-                "Transcription stopped unexpectedly. Try again.",
-                true,
-            )
-        })?
-        .map_err(|message| refuse("dictation_transcription_failed", &message, true))?;
-        let engine = self.engine.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(RELEASE_MODEL_AFTER).await;
-            engine.release_if_idle(RELEASE_MODEL_AFTER);
-        });
+        .await;
+        self.release_model_when_idle();
+        let heard = attempt
+            .map_err(|_| {
+                refuse(
+                    "dictation_transcription_failed",
+                    "Transcription stopped unexpectedly. Try again.",
+                    true,
+                )
+            })?
+            .map_err(|message| refuse("dictation_transcription_failed", &message, true))?;
         Ok(DictationResult::Transcript {
             text: spoken_text(&heard.text),
             language: heard.language,
         })
+    }
+}
+
+impl DictationService {
+    /// Runs after every attempt that can have loaded the model, failed or not.
+    fn release_model_when_idle(&self) {
+        let latest = self.model_use.fetch_add(1, Ordering::SeqCst) + 1;
+        let engine = self.engine.clone();
+        let model_use = self.model_use.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RELEASE_MODEL_AFTER).await;
+            if model_use.load(Ordering::SeqCst) == latest {
+                engine.release();
+            }
+        });
     }
 }
 

@@ -1,7 +1,6 @@
 //! whisper.cpp behind a small trait so the service can be tested without a model.
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -17,14 +16,13 @@ pub(crate) trait SpeechEngine: Send + Sync {
         samples: &[f32],
         language: Option<&str>,
     ) -> Result<Transcription, String>;
-    /// Frees the loaded model when it has not been used for `idle`.
-    fn release_if_idle(&self, idle: Duration);
+    /// Frees the loaded model; the caller decides when the engine has been idle long enough.
+    fn release(&self);
 }
 
 struct Loaded {
     model: PathBuf,
     context: Arc<WhisperContext>,
-    used: Instant,
 }
 
 #[derive(Default)]
@@ -38,8 +36,7 @@ impl WhisperEngine {
             .loaded
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(current) = loaded.as_mut().filter(|current| current.model == model) {
-            current.used = Instant::now();
+        if let Some(current) = loaded.as_ref().filter(|current| current.model == model) {
             return Ok(current.context.clone());
         }
         let path = model.to_str().ok_or("the model path is not valid UTF-8")?;
@@ -50,7 +47,6 @@ impl WhisperEngine {
         *loaded = Some(Loaded {
             model: model.to_path_buf(),
             context: context.clone(),
-            used: Instant::now(),
         });
         Ok(context)
     }
@@ -97,17 +93,11 @@ impl SpeechEngine for WhisperEngine {
         })
     }
 
-    fn release_if_idle(&self, idle: Duration) {
-        let mut loaded = self
+    fn release(&self) {
+        *self
             .loaded
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if loaded
-            .as_ref()
-            .is_some_and(|current| current.used.elapsed() >= idle)
-        {
-            *loaded = None;
-        }
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 

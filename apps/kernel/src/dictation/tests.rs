@@ -11,11 +11,14 @@ use super::*;
 use crate::local::DictationModelState;
 
 const OWNER: &str = "user-a";
+const FAILING: &str = "fail";
 const MODEL_BYTES: &[u8] = b"pretend this is a speech model, long enough to resume in the middle";
 
 struct ScriptedEngine {
     heard: Mutex<Vec<(usize, Option<String>)>>,
     text: String,
+    fail: bool,
+    released: AtomicUsize,
 }
 
 impl SpeechEngine for ScriptedEngine {
@@ -30,12 +33,17 @@ impl SpeechEngine for ScriptedEngine {
             .lock()
             .unwrap()
             .push((samples.len(), language.map(str::to_string)));
+        if self.fail {
+            return Err("cannot start the speech model".to_string());
+        }
         Ok(Transcription {
             text: self.text.clone(),
             language: language.unwrap_or("en").to_string(),
         })
     }
-    fn release_if_idle(&self, _idle: std::time::Duration) {}
+    fn release(&self) {
+        self.released.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -111,6 +119,8 @@ fn service(
     let engine = Arc::new(ScriptedEngine {
         heard: Mutex::new(Vec::new()),
         text: text.to_string(),
+        fail: text == FAILING,
+        released: AtomicUsize::new(0),
     });
     (
         DictationService::with_parts(dir.to_path_buf(), spec, engine.clone()),
@@ -468,5 +478,49 @@ async fn a_recording_and_a_language_belong_to_the_user_who_made_them() {
     assert_eq!(service.status("bob").language, None);
     service.transcribe("alice", "rec-1").await.unwrap();
     assert_eq!(engine.heard.lock().unwrap()[0].1.as_deref(), Some("es"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_model_is_released_after_five_idle_minutes_even_when_transcription_failed() {
+    let (dir, service, engine) = ready_service("failed-idle", FAILING);
+    service
+        .lock()
+        .uploads
+        .append(OWNER, "rec-1", 0, &pcm_base64(16000))
+        .unwrap();
+    let error = service.transcribe(OWNER, "rec-1").await.err().unwrap();
+    assert_eq!(code(error), "dictation_transcription_failed");
+    tokio::time::sleep(RELEASE_MODEL_AFTER - Duration::from_secs(1)).await;
+    assert_eq!(engine.released.load(Ordering::SeqCst), 0, "not yet idle");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(engine.released.load(Ordering::SeqCst), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_newer_use_keeps_the_model_until_it_has_been_idle_too() {
+    let (dir, service, engine) = ready_service("newer-use", "words");
+    for (id, wait) in [("rec-1", 200), ("rec-2", 0)] {
+        service
+            .lock()
+            .uploads
+            .append(OWNER, id, 0, &pcm_base64(16000))
+            .unwrap();
+        service.transcribe(OWNER, id).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(wait)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(150)).await;
+    assert_eq!(
+        engine.released.load(Ordering::SeqCst),
+        0,
+        "rec-2 is only 150 s old"
+    );
+    tokio::time::sleep(Duration::from_secs(151)).await;
+    assert_eq!(
+        engine.released.load(Ordering::SeqCst),
+        1,
+        "one release for the last use"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
