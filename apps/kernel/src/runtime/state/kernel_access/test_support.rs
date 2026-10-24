@@ -444,6 +444,87 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
     assert!(state.outside_ended_response("timed").unwrap().is_some());
 }
 
+/// An until-exit grant whose revocation could not be written: the grant is
+/// gone from memory, the fault is still on, and its holder (this process) lives.
+fn failed_revocation(
+    root: &crate::test_support::TestWorktree,
+) -> (
+    crate::runtime::router::CommandRouter,
+    std::path::PathBuf,
+    crate::durable_state::agent_lifecycle::faults::TestFaultDir,
+) {
+    let faults = root.path().join("faults");
+    std::fs::create_dir(&faults).unwrap();
+    let guard = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&faults);
+    let router = reopen_kernel(root);
+    let state = router.runtime_state();
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    let summary = KernelAccessGrant {
+        grant_id: "kept".into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term: KernelAccessTerm::UntilHolderExits,
+        expires_at_ms: None,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+    }
+    std::fs::write(faults.join("writer-fail"), "").unwrap();
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    assert!(state.owned.kernel_access.lock().unwrap().grants.is_empty());
+    (router, faults, guard)
+}
+
+fn reopen_kernel(
+    root: &crate::test_support::TestWorktree,
+) -> crate::runtime::router::CommandRouter {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    config.user_config_path = root.path().join("config.toml");
+    let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+    crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        32,
+    )
+}
+
+// A revocation the kernel could not finish stays revoked: the next start, with
+// the holder still alive, must not bring the grant back.
+#[tokio::test]
+async fn a_revocation_that_failed_to_write_is_not_undone_by_a_restart() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-restart");
+    let (router, faults, _guard) = failed_revocation(&root);
+    drop(router);
+    std::fs::remove_file(faults.join("writer-fail")).unwrap();
+    let router = reopen_kernel(&root);
+    assert_eq!(
+        router
+            .runtime_state()
+            .restore_kernel_access_grants()
+            .unwrap(),
+        0
+    );
+}
+
+// The inbox of a revoked grant is ended as soon as the store takes writes again.
+#[tokio::test]
+async fn a_revoked_grants_inbox_is_ended_once_the_store_takes_writes_again() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-retry");
+    let (router, faults, _guard) = failed_revocation(&root);
+    let state = router.runtime_state();
+    assert!(state.outside_ended_response("kept").unwrap().is_none());
+    std::fs::remove_file(faults.join("writer-fail")).unwrap();
+    state.sweep_kernel_access();
+    assert!(state.outside_ended_response("kept").unwrap().is_some());
+}
+
 // A grant holder chooses among the choices a routine provider permission
 // carries, `allow_session` included; a critical decision stays terminal-only.
 #[tokio::test]

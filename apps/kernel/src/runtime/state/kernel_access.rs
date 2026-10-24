@@ -40,22 +40,44 @@ impl KernelRuntimeState {
                 },
             )?;
         }
-        if matches!(outcome, "revoked" | "expired") {
-            self.owned.durable_state_store.outside_mutate(
-                crate::durable_state::agent_lifecycle::outside::Mutation::Unsubscribe {
-                    id: grant.grant_id.clone(),
-                    targets: Vec::new(),
-                    all: true,
-                    reason: reason.unwrap_or(outcome).to_string(),
-                },
-            )?;
-        }
+        let ended = matches!(outcome, "revoked" | "expired");
+        // The recorded end comes first: it is what a restart reads, so an inbox
+        // that cannot be closed now never brings a revoked grant back.
         self.owned.durable_state_store.append_event(
             "kernel_access.grant",
             Some(grant.grant_id.clone()),
             serde_json::json!({ "outcome": outcome, "grant": grant, "holder": holder, "reason": reason }),
         )?;
+        if ended {
+            let reason = reason.unwrap_or(outcome).to_string();
+            self.end_grant_inbox(&grant.grant_id, &reason)?;
+        }
         Ok(())
+    }
+
+    /// A failure is kept and tried again by the next sweep, so the inbox of a
+    /// revoked grant does not stay open.
+    fn end_grant_inbox(&self, id: &str, reason: &str) -> Result<(), DaemonError> {
+        let ended = self.owned.durable_state_store.outside_mutate(
+            crate::durable_state::agent_lifecycle::outside::Mutation::Unsubscribe {
+                id: id.to_string(),
+                targets: Vec::new(),
+                all: true,
+                reason: reason.to_string(),
+            },
+        );
+        let mut state = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        state.owed_inbox_ends.retain(|(owed, _)| owed != id);
+        if ended.is_err() {
+            state
+                .owed_inbox_ends
+                .push((id.to_string(), reason.to_string()));
+        }
+        ended
     }
 
     pub(crate) fn revoke_kernel_access(
@@ -246,7 +268,11 @@ impl KernelRuntimeState {
         for (grant, _) in &removed {
             state.remember_ended(&grant.holder);
         }
+        let owed = std::mem::take(&mut state.owed_inbox_ends);
         drop(state);
+        for (id, reason) in owed {
+            let _ = self.end_grant_inbox(&id, &reason);
+        }
         for (grant, reason) in removed {
             self.retire_notification_grants(Some(&grant.summary.grant_id));
             self.cancel_access_prompt(&grant.summary, "extension");

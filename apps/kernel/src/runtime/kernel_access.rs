@@ -80,6 +80,8 @@ pub(crate) struct AccessState {
     /// their sudo entries carry. They live while their origin kernel keeps renewing the
     /// lease and until it says its grant ended; silence ends them here without it.
     pub(crate) remote_requesters: BTreeMap<String, RemoteRequester>,
+    /// Revoked grants whose event inbox could not be ended yet: grant id and reason.
+    pub(crate) owed_inbox_ends: Vec<(String, String)>,
 }
 
 /// Who asked from another kernel: shown in the popup, and the liveness of its sudo entries.
