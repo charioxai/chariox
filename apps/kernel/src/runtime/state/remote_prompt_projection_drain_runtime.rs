@@ -10,6 +10,8 @@ use crate::transport::relay_peer::RelayPeerEvent;
 
 pub(super) const REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(5);
+/// Bounds how much retained output a completed receipt may put ahead of its completion.
+const COMPLETED_RECEIPT_PROJECTION_DRAIN_LIMIT: usize = 64;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum RemotePromptRunBindingRecovery {
@@ -42,88 +44,104 @@ impl KernelRuntimeState {
             daemon_id: Some(dispatch.worker_kernel_id.clone()),
             daemon_alias: None,
         };
-        let acknowledged = self
-            .remote_projection_acknowledgement(&binding)
-            .map_err(|error| error.to_string())?;
-        let request = RelayPeerRequest::DrainLeasedRuntimeProjection {
-            leased_agent_id: dispatch.leased_agent_id.clone(),
-            provider_run_id: worker_provider_run_id.to_string(),
-            pump_output: true,
-            acknowledged_projection_sequence: Some(acknowledged),
-        };
-        // Relay I/O runs after relay configuration was copied and the app lock was released.
-        let relay_state = self.connected_relay_state_for_config(&relay_config).await;
-        let response = match relay_state {
-            Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay_authenticated(
-                    &relay_config,
-                    &relay_state,
-                    target,
-                    request,
-                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
-                )
-                .await
+        // A drain reply lost before the worker settled leaves that output retained
+        // ahead of the completion, so apply and acknowledge it on the way there.
+        for _ in 0..COMPLETED_RECEIPT_PROJECTION_DRAIN_LIMIT {
+            let acknowledged = self
+                .remote_projection_acknowledgement(&binding)
+                .map_err(|error| error.to_string())?;
+            let request = RelayPeerRequest::DrainLeasedRuntimeProjection {
+                leased_agent_id: dispatch.leased_agent_id.clone(),
+                provider_run_id: worker_provider_run_id.to_string(),
+                pump_output: true,
+                acknowledged_projection_sequence: Some(acknowledged),
+            };
+            // Relay I/O runs after relay configuration was copied and the app lock was released.
+            let relay_state = self.connected_relay_state_for_config(&relay_config).await;
+            let response = match relay_state {
+                Some(relay_state) => {
+                    crate::transport::relay_client::send_peer_request_via_connected_relay_authenticated(
+                        &relay_config,
+                        &relay_state,
+                        target.clone(),
+                        request,
+                        REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+                    )
+                    .await
+                }
+                None => {
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authenticated(
+                        &relay_config,
+                        target.clone(),
+                        request,
+                        REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+                    )
+                    .await
+                }
             }
-            None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection_authenticated(
-                    &relay_config,
-                    target,
-                    request,
-                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
+            .map_err(|error| format!("completed receipt projection drain failed: {error}"))?;
+            let (response, peer) = response;
+            let authority = crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
+                peer,
+                expected_binding: Some(binding.clone()),
+                expected_prompt_id: Some(dispatch.prompt_id.clone()),
+            };
+            let (event, projection_sequence) = match response {
+                RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    event: Some(event),
+                    projection_sequence,
+                } => (event, projection_sequence),
+                RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None, .. } => {
+                    return Err(
+                        "worker returned no replayable projection for its completed receipt"
+                            .to_string(),
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "unexpected completed receipt drain response: {other:?}"
+                    ));
+                }
+            };
+            let completes =
+                completed_receipt_projection_matches(dispatch, worker_provider_run_id, &event);
+            if !completes
+                && !intermediate_receipt_projection_matches(
+                    dispatch,
+                    worker_provider_run_id,
+                    &event,
                 )
-                .await
-            }
-        }
-        .map_err(|error| format!("completed receipt projection drain failed: {error}"))?;
-        let (response, peer) = response;
-        let authority = crate::runtime::relay_peer_authority::RemoteProjectionAuthority {
-            peer,
-            expected_binding: Some(binding),
-            expected_prompt_id: Some(dispatch.prompt_id.clone()),
-        };
-        let (event, projection_sequence) = match response {
-            RelayPeerResponse::LeasedRuntimeProjectionDrained {
-                event: Some(event),
-                projection_sequence,
-            } => (event, projection_sequence),
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None, .. } => {
+            {
                 return Err(
-                    "worker returned no replayable projection for its completed receipt"
+                    "worker projection did not prove completion of the exact home prompt and provider run"
                         .to_string(),
                 );
             }
-            other => {
-                return Err(format!(
-                    "unexpected completed receipt drain response: {other:?}"
-                ));
+            if !self
+                .remote_prompt_receipt_prompt_is_current(dispatch)
+                .map_err(|error| error.to_string())?
+            {
+                return Err(
+                    "home prompt changed before the completed worker projection was applied"
+                        .to_string(),
+                );
             }
-        };
-        if !completed_receipt_projection_matches(dispatch, worker_provider_run_id, &event) {
-            return Err(
-                "worker projection did not prove completion of the exact home prompt and provider run"
-                    .to_string(),
-            );
+            self.project_remote_runtime_projection_event(authority, event)
+                .await
+                .map_err(|error| {
+                    format!("completed worker projection could not be applied: {error}")
+                })?;
+            if let Some(sequence) = projection_sequence {
+                self.acknowledge_remote_projection(&binding, sequence)
+                    .map_err(|error| error.to_string())?;
+            }
+            if completes {
+                return Ok(());
+            }
         }
-        if !self
-            .remote_prompt_receipt_prompt_is_current(dispatch)
-            .map_err(|error| error.to_string())?
-        {
-            return Err(
-                "home prompt changed before the completed worker projection was applied"
-                    .to_string(),
-            );
-        }
-        let binding = authority.expected_binding.clone();
-        self.project_remote_runtime_projection_event(authority, event)
-            .await
-            .map_err(|error| {
-                format!("completed worker projection could not be applied: {error}")
-            })?;
-        if let (Some(binding), Some(sequence)) = (binding, projection_sequence) {
-            self.acknowledge_remote_projection(&binding, sequence)
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(())
+        Err(format!(
+            "worker returned {COMPLETED_RECEIPT_PROJECTION_DRAIN_LIMIT} output projections without the completion of its settled run"
+        ))
     }
 
     pub(super) fn spawn_remote_prompt_projection_drain_if_needed(
@@ -690,6 +708,22 @@ pub(super) fn completed_receipt_projection_matches(
         && completions.iter().any(|completion| {
             completion.home_prompt_id.as_deref() == Some(dispatch.prompt_id.as_str())
         })
+}
+
+/// Output of the exact settled run that a lost drain reply left ahead of its completion.
+fn intermediate_receipt_projection_matches(
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+    worker_provider_run_id: &str,
+    event: &RelayPeerEvent,
+) -> bool {
+    let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = event;
+    completions.is_empty()
+        && projection_reply_matches(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            worker_provider_run_id,
+            event,
+        )
 }
 
 pub(super) fn remote_prompt_projection_error_should_refresh_binding(
