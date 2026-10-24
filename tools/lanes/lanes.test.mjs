@@ -432,3 +432,23 @@ test('stop rejects an empty or malformed requested prompt fence before any mutat
     assert.equal(calls,0);
   }
 });
+
+test('resumed fallback launch refuses new prompt admission after its coordinator deadline', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'dogfood-expired-launch-'));const originalNow=Date.now;
+  try {
+    const brief=join(dir,'brief.md');await writeFile(brief,'MP-11: task');
+    const input={kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'state.json'),deadlineMs:Date.now()+60_000};
+    let submissions=0;
+    const execute=async(argv,body)=>{
+      if(argv[0]==='files')return {};
+      const op=Object.keys(JSON.parse(body))[0];
+      if(op==='SubmitPrompt'){submissions++;throw new LaneError('kernel_connection_lost');}
+      return {RelayStatus:{RelayStatus:{status:{capabilities:[]}}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:'t'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}}}[op];
+    };
+    await assert.rejects(run('launch',input,{execute}),{code:'kernel_connection_lost'});
+    const before=submissions;Date.now=()=>input.deadlineMs+1;
+    await assert.rejects(run('launch',input,{execute}),{code:'agent_deadline_reached'});
+    assert.equal(submissions,before);
+    assert.equal(JSON.parse(await readFile(input.stateFile)).agentId,'a');
+  }finally{Date.now=originalNow;await rm(dir,{recursive:true,force:true});}
+});

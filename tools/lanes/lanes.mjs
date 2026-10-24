@@ -192,6 +192,7 @@ export async function run(operation, input, dependencies = {}) {
       state.deadline = coordinatorDeadline(input.deadlineMs);
     }
     await save(input.stateFile, state);
+    if (state.deadline.mode === 'coordinator' && !state.promptId && Date.now() >= input.deadlineMs) fail('agent_deadline_reached', 'The coordinator deadline was reached; use the retained Room/agent state to stop the lane.');
     await remember('promptId', async () => {
       const submit = async () => {
         if (!state.pendingPrompt) {
