@@ -12,11 +12,11 @@ export function run(command, args, { cwd, env = process.env, log, timeout = 60 *
   } finally { if (descriptor !== undefined) closeSync(descriptor) }
 }
 
-export async function resourceGuard(directory) {
-  const disk = await statfs(directory)
-  if (disk.bavail / (disk.blocks - disk.bfree + disk.bavail) < 0.15) throw Error('MP-07 / MP-11: pause; disk free below 15%')
+export async function resourceGuard(directory, { statfsImpl = statfs, readFileImpl = readFile } = {}) {
+  const disk = await statfsImpl(directory)
+  if (disk.bavail / disk.blocks < 0.15) throw Error('MP-07 / MP-11: pause; disk free below 15%')
   if (process.platform === 'linux') {
-    const memory = await readFile('/proc/meminfo', 'utf8')
+    const memory = await readFileImpl('/proc/meminfo', 'utf8')
     const available = Number(memory.match(/^MemAvailable:\s+(\d+)/m)?.[1] ?? 0) * 1024
     if (available < 12 * 1024 ** 3) throw Error('MP-07 / MP-11: pause; MemAvailable below 12 GiB')
   }
