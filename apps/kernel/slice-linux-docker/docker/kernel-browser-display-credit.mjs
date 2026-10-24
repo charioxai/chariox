@@ -111,8 +111,7 @@ export async function displayCredit(host, stream, command, signal) {
     // Always run the deadline/epoch-aware verifier before unchanged reuse.
     // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
     const nativeExact=binding.native&&stream.exact&&(sample.serial===stream.compositorSerial||stream.canPatchNative(sample));
-    // A navigation preview the mirror will replace skips exact repair until its hold ends.
-    const exact=nativeExact||performance.now()<(stream.repairHoldUntil??-Infinity)?null:stream.refiner.request(binding,Math.max(compositor.changedAt,host.inputChangedAt.get(tab.tab_id)??-Infinity),()=>host.protection===policy&&compositor.sample()?.serial===sample.serial&&(host.inputEpochs.get(tab.tab_id)??0)===epoch);
+    const exact=nativeExact?null:stream.refiner.request(binding,Math.max(compositor.changedAt,host.inputChangedAt.get(tab.tab_id)??-Infinity),()=>host.protection===policy&&compositor.sample()?.serial===sample.serial&&(host.inputEpochs.get(tab.tab_id)??0)===epoch);
     stream.creditEpoch=epoch;
     stream.producer.feedback(command.push?(command.push.congested?8:0):Math.max(0,stream.sequence-command.after_sequence));
     // MP-08/MP-10: an identical readback (protection refresh) of the

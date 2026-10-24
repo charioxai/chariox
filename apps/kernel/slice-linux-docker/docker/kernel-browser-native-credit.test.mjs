@@ -141,13 +141,3 @@ test('MP-08/MP-10/MP-11 a native exact plan after an encode no frame took stays 
  assert.equal(nativeRevisionCurrent({native_exact:true,native_revision:7},{nativeRevision:undefined}),false,'a retired encoder');
  assert.equal(nativeRevisionCurrent({},encoder),true);
 });
-test('MP-08/MP-10 a navigation preview display skips exact repair until its hold ends',async()=>{
- const {displayCredit}=await import('./kernel-browser-display-credit.mjs'),f=fixture();let requests=0;
- Object.assign(f.source,{native:true,changedAt:performance.now(),regionRevision:0});f.stream.previous=null;
- Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},regionCurrent:async()=>false});
- const host=regionCreditHost(f);f.stream.refiner.request=()=>{requests++;return null};
- f.stream.repairHoldUntil=performance.now()+60_000;
- await displayCredit(host,f.stream,{generation:1,after_sequence:1});assert.equal(requests,0,'the mirror replaces this preview: no repair');
- f.stream.repairHoldUntil=performance.now()-1;
- await displayCredit(host,f.stream,{generation:1,after_sequence:1});assert.equal(requests,1,'a preview the mirror did not replace in time is repaired');
-});
