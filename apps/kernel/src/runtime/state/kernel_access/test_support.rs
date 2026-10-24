@@ -443,3 +443,97 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
     assert!(state.outside_ended_response("doomed").unwrap().is_some());
     assert!(state.outside_ended_response("timed").unwrap().is_some());
 }
+
+// A grant holder chooses among the choices a routine provider permission
+// carries, `allow_session` included; a critical decision stays terminal-only.
+#[tokio::test]
+async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
+    use crate::session::{
+        RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+        RuntimeInteractionLevel,
+    };
+    let workspace = crate::test_support::TestWorktree::new("allow-session-grant");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let second = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .unwrap();
+    let state =
+        crate::runtime::state::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+            app,
+        );
+    let grant = state.insert_access_grant_for_test(session.id());
+    let permission = |id: &str, agent_id: &str, level| {
+        RuntimeInteraction::new(
+            id,
+            agent_id,
+            RuntimeInteractionKind::Permission,
+            level,
+            Some("Approve Tool?".to_string()),
+            "A tool call",
+            vec![
+                RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
+                RuntimeInteractionChoice::new(
+                    "allow_session",
+                    "Allow for this session",
+                    "allow",
+                    None,
+                ),
+                RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+            ],
+            None,
+            Some(300),
+            Some("deny".to_string()),
+        )
+    };
+    let answer = |id: &str| {
+        LocalDaemonRequest::RespondToInteraction(
+            serde_json::from_value(serde_json::json!({
+                "session_id": session.id(), "interaction_id": id, "choice_id": "allow_session",
+            }))
+            .unwrap(),
+        )
+    };
+    for (id, agent_id, level) in [
+        (
+            "routine-permission",
+            agent.id(),
+            RuntimeInteractionLevel::Warning,
+        ),
+        (
+            "critical-permission",
+            second.id(),
+            RuntimeInteractionLevel::Critical,
+        ),
+    ] {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        state
+            .owned
+            .register_runtime_interaction(
+                session.id(),
+                permission(id, agent_id, level),
+                tx,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    state
+        .authorize_external_request(&grant, &answer("routine-permission"))
+        .expect("a holder may choose allow_session on a routine permission");
+    let refused = state
+        .authorize_external_request(&grant, &answer("critical-permission"))
+        .expect_err("a critical decision stays terminal-only");
+    assert_eq!(
+        crate::runtime::kernel_access::Refusal::of(&refused),
+        crate::runtime::kernel_access::Refusal::HumanOnly
+    );
+}
