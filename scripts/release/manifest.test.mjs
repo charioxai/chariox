@@ -42,3 +42,15 @@ test('MP-07 / MP-11: reject unexpected fields that could carry runtime secrets',
   const value = candidate(); value.environment = {}
   assert.throws(() => validateManifest(value), /unexpected/)
 })
+test('MP-07 / MP-11: component repositories and public evidence URLs are constrained', () => {
+  const value = candidate(); value.cloud.image = `ghcr.io/untrusted/other@sha256:${sha}`
+  assert.throws(() => validateManifest(value), /repository/)
+  const good = candidate(), r = receipt(good)
+  r.evidence = 'https://user:example@example.test/path?auth=example'
+  assert.throws(() => attest(good, r), /evidence/)
+})
+test('MP-07 / MP-11: semantic receipt equality does not depend on JSON key order', () => {
+  const value = candidate(), r = receipt(value)
+  r.observed = Object.fromEntries(Object.entries(r.observed).reverse())
+  assert.equal(attest(value, r).state, 'validated')
+})

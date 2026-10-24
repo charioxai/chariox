@@ -37,6 +37,9 @@ export function validateManifest(value, { validated = false } = {}) {
   // services_image_sha256 is a registry manifest digest; its repository is fixed.
   artifact(value.oss, ['commit', 'image', 'bundle_sha256'], 'oss')
   artifact(value.relay, ['commit', 'image', 'binary_sha256'], 'relay')
+  for (const [name, repository] of [['cloud', 'chariox-cloud-web'], ['oss', 'chariox-oss'], ['relay', 'chariox-relay']]) {
+    requireValue(value[name].image.startsWith(`ghcr.io/charioxai/${repository}@sha256:`), `${name}: unexpected component repository`)
+  }
   keys(value.signing, ['status', 'inventory_sha256'], 'signing')
   requireValue(['pending', 'signed'].includes(value.signing.status), 'invalid signing status')
   requireValue(value.signing.status === 'pending' ? value.signing.inventory_sha256 === null : sha256.test(value.signing.inventory_sha256), 'invalid public signing inventory hash')
@@ -57,15 +60,23 @@ export function observedPins(manifest) {
     relay: manifest.relay.image, bundle_sha256: manifest.oss.bundle_sha256, relay_sha256: manifest.relay.binary_sha256 }
 }
 
+export function validateObservation(observed, manifest) {
+  const expected = observedPins(manifest)
+  keys(observed, Object.keys(expected), 'observed')
+  requireValue(Object.keys(expected).every(name => observed[name] === expected[name]), 'observed artifact identity mismatch')
+}
+
 export function validateReceipt(receipt, candidate) {
   keys(receipt, ['environment', 'manifest_sha256', 'recorded_at', 'checks', 'observed', 'evidence'], 'validation')
   requireValue(receipt.environment === 'staging', 'validation must come from staging')
   requireValue(receipt.manifest_sha256 === hash(canonical(candidate)), 'validation candidate hash mismatch')
   requireValue(typeof receipt.recorded_at === 'string' && Number.isFinite(Date.parse(receipt.recorded_at)), 'validation timestamp required')
-  requireValue(typeof receipt.evidence === 'string' && /^https:\/\//.test(receipt.evidence), 'validation evidence HTTPS URL required')
+  let evidence
+  try { evidence = new URL(receipt.evidence) } catch { throw Error('validation evidence HTTPS URL required') }
+  requireValue(evidence.protocol === 'https:' && !evidence.username && !evidence.password && !evidence.search && !evidence.hash, 'evidence URL must be public and contain no credential/query material')
   keys(receipt.checks, checks, 'validation.checks')
   requireValue(checks.every(name => receipt.checks[name] === true), 'live acceptance checks have not all passed')
-  requireValue(canonical(receipt.observed) === canonical(observedPins(candidate)), 'observed artifact identity mismatch')
+  validateObservation(receipt.observed, candidate)
   return receipt
 }
 
