@@ -103,23 +103,36 @@ test('stop destroys an idle agent after typed no-active-prompt refusal', async (
   assert.equal(result.stopped, true);
 });
 
-test('fetch downloads all three artifacts and rejects malformed acceptance', async () => {
+test('fetch downloads all three artifacts and names each malformed acceptance field', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-fetch-'));
   try {
     const execute = async argv => { await writeFile(argv.at(-1), argv.at(-2).endsWith('.json') ? '{"rows":[{"id":"SHORT","status":"PASS"}]}' : 'MP-11: notes'); return {}; };
-    await assert.rejects(run('fetch', { kernel: 'b', taskId: 'lane', worktree: '/repo', directory: dir }, { execute }), { code: 'invalid_acceptance' });
+    const files = await run('fetch', { kernel: 'b', taskId: 'lane', worktree: '/repo', directory: dir }, { execute });
+    assert.equal(files['ACCEPTANCE_UPDATE.json'].acceptance.valid, false);
+    assert.deepEqual(files['ACCEPTANCE_UPDATE.json'].acceptance.issues.map(i => i.field), ['rows[0].id', 'rows[0].head', 'rows[0].date']);
     assert.match(await readFile(join(dir, 'PUSH_READY.md'), 'utf8'), /MP-11/);
+    const broken = async argv => { await writeFile(argv.at(-1), argv.at(-2).endsWith('.json') ? '{not json' : 'notes'); return {}; };
+    const bad = await run('fetch', { kernel: 'b', taskId: 'lane', worktree: '/repo', directory: dir }, { execute: broken });
+    assert.deepEqual(bad['ACCEPTANCE_UPDATE.json'].acceptance.issues, [{ field: '$', problem: 'is not valid JSON' }]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('fetch refuses a free-form acceptance head as invalid acceptance', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'dogfood-fetch-'));
-  try {
-    const row = { id: 'area/ROW', status: 'PASS', head: 'a7f57943ec (Cloud x); OSS 1d473d81b3', date: '2026-10-24', evidence: 'e', note: 'n' };
-    const execute = async argv => { await writeFile(argv.at(-1), argv.at(-2).endsWith('.json') ? JSON.stringify({ rows: [row] }) : 'notes'); return {}; };
-    await assert.rejects(run('fetch', { kernel: 'b', taskId: 'lane', worktree: '/repo', directory: dir }, { execute }), { code: 'invalid_acceptance' });
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
+// The two files the workers really wrote in dogfood r9 (amint r19, dictation r2): both ended finished_collect_failed.
+for (const [lane, field] of [['amint', 'rows[0].head'], ['dictation', 'rows[0].head']]) {
+  test(`fetch keeps the real ${lane} acceptance file and names the head it cannot use`, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dogfood-fetch-'));
+    try {
+      const source = new URL(`./fixtures/r9-${lane}-ACCEPTANCE_UPDATE.json`, import.meta.url).pathname;
+      const execute = async argv => { if (argv.at(-2).endsWith('.json')) await copyFile(source, argv.at(-1)); else await writeFile(argv.at(-1), 'notes'); return {}; };
+      const files = await run('fetch', { kernel: 'b', taskId: 'lane', worktree: '/repo', directory: dir }, { execute });
+      const { acceptance } = files['ACCEPTANCE_UPDATE.json'];
+      assert.equal(acceptance.valid, false);
+      assert.equal(acceptance.issues[0].field, field);
+      assert.match(acceptance.issues[0].problem, /40-character/);
+      assert.equal(JSON.parse(await readFile(join(dir, 'ACCEPTANCE_UPDATE.json'), 'utf8')).rows.length > 0, true);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+}
 
 test('status waits on events for the expected turn and ignores earlier idle', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-watch-')); const previous = process.env.CHARIOX_BIN;

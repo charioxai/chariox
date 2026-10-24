@@ -18,7 +18,7 @@ test('fetch reports consumed acceptance JSON and keeps the required handoffs', a
   assert.deepEqual(result['ACCEPTANCE_UPDATE.json'], { missing: true, reason: 'file_not_found' });
   assert.equal(await readFile(result['PUSH_READY.md'].path, 'utf8'), 'MP-08 / MP-10 handoff');
 });
-test('fetch propagates required-file, authorization and acceptance validation failures', async t => {
+test('fetch propagates required-file and authorization failures, and reports acceptance problems', async t => {
   const directory = await scratch(t);
   for (const [file, code] of [['LANE_STATUS.md', 'file_not_found'], ['ACCEPTANCE_UPDATE.json', 'kernel_access_required']]) {
     await assert.rejects(run('fetch', { ...common, worktree: '/lane-state', directory }, { execute: async argv => {
@@ -26,9 +26,10 @@ test('fetch propagates required-file, authorization and acceptance validation fa
       await writeFile(argv.at(-1), 'handoff'); return {};
     } }), { code });
   }
-  await assert.rejects(run('fetch', { ...common, worktree: '/lane-state', directory }, { execute: async argv => {
+  const files = await run('fetch', { ...common, worktree: '/lane-state', directory }, { execute: async argv => {
     await writeFile(argv.at(-1), argv.at(-2).endsWith('.json') ? '{"rows":[{}]}' : 'handoff'); return {};
-  } }), { code: 'invalid_acceptance' });
+  } });
+  assert.equal(files['ACCEPTANCE_UPDATE.json'].acceptance.valid, false);
 });
 async function bundleRig(t) {
   const dir = await scratch(t), source = join(dir, 'source'), repository = join(dir, 'imported');

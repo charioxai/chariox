@@ -1,0 +1,54 @@
+{
+ "rows": [
+  {
+   "id": "web-terminal-os/WT-07-DICTATION-CHROME",
+   "status": "PASS",
+   "head": "a7f57943ec (Cloud webterm/dictation); OSS dictation/kernel 1d473d81b3",
+   "date": "2026-10-24T19:36:33.612309+00:00",
+   "evidence": "/root/.codex/evidence/browser-resume-20260930/dictation/r2/live-chrome-final/summary.json",
+   "note": "Kernel dictation on the real path: Chrome 155, hosted wss relay, 8 Mbit/s shaped uplink, 62 ms RTT; DPR1 and DPR2; English (JFK) and Spanish (Wikimedia spoken Wikipedia) recorded speech through MediaRecorder -> kernel whisper.cpp base-q5_1 -> Prompt selection; Send reaches real Codex gpt-6-luna low (reply OK). First dictation asks, downloads with visible progress, second needs no download. stop->text 1.9-2.8 s for 6-14 s of speech. Fake-mic file feeds the real Chrome capture path. No blank frames in recordings (frame-analysis-final.json)."
+  },
+  {
+   "id": "web-terminal-os/WT-07-DICTATION-FIREFOX",
+   "status": "PASS",
+   "head": "a7f57943ec (Cloud webterm/dictation); OSS dictation/kernel 1d473d81b3",
+   "date": "2026-10-24T19:36:33.612309+00:00",
+   "evidence": "/root/.codex/evidence/browser-resume-20260930/dictation/r2/live-firefox-final/summary.json",
+   "note": "Firefox 155 real MediaRecorder (ogg/webm opus) -> decodeAudioData -> kernel transcription, English and Spanish, ask+download+ready flow, Send not driven. Limits: Firefox headless ignored deviceScaleFactor (devicePixelRatio 1 for both 'DPR' cells); Firefox cannot play a wav as fake mic, so the page's getUserMedia returns a captureStream of the recorded speech (everything after the stream is real). Caught and fixed a real defect on the way: a recorder that ends by itself made Stop fail."
+  },
+  {
+   "id": "web-terminal-os/WT-07-DICTATION-SKINS",
+   "status": "PASS",
+   "head": "a7f57943ec (Cloud webterm/dictation); OSS dictation/kernel 1d473d81b3",
+   "date": "2026-10-24T19:36:33.612309+00:00",
+   "evidence": "/root/.codex/evidence/browser-resume-20260930/dictation/r2/skins/summary.json",
+   "note": "Scope of this round only: the first-use ask menu + toast in all 8 prototype skins on the real app through Settings theme cards, no reload, computed menu/toast colours equal each preset (contact sheet ALL_EIGHT_SKINS_ASK.png). The progress state uses the same menu; its skins are mocks (mocks/progress-as-built.png), not live. The r1 Firefox one-frame partial repaint (VISUAL_FINDING.md) was not re-tested."
+  },
+  {
+   "id": "web-terminal-os/WT-07-DICTATION-SAFARI",
+   "status": "BLOCKED(coordinator: real Mac Safari microphone drill required)",
+   "head": "a7f57943ec (Cloud webterm/dictation); OSS dictation/kernel 1d473d81b3",
+   "date": "2026-10-24T19:36:33.612309+00:00",
+   "evidence": "/root/.chariox/dev/browser-resume-20260930/agents/dictation/SAFARI_DRILL.md",
+   "note": "Playwright WebKit does not start on b3 (missing host libraries) and is not Safari. SAFARI_DRILL.md lists the r2 steps (MediaRecorder audio/mp4 -> decodeAudioData -> kernel)."
+  },
+  {
+   "id": "web-terminal-os/WT-07-DICTATION-KERNEL",
+   "new": true,
+   "status": "PASS",
+   "head": "a7f57943ec (Cloud webterm/dictation); OSS dictation/kernel 1d473d81b3",
+   "date": "2026-10-24T19:36:33.612309+00:00",
+   "evidence": "/root/.codex/evidence/browser-resume-20260930/dictation/r2/kernel-size.md; /root/.codex/evidence/browser-resume-20260930/dictation/r2/kernel-red-mutations.log; /root/.codex/evidence/browser-resume-20260930/dictation/r2/model-choice.md",
+   "note": "New row from the r2 brief (tasks 1-3, docs/DICTATION.md): protocol 594/200, pinned base-q5_1 model (SHA-256, resumable, status), whisper.cpp embedded (~1.4-2.3 MB), first-use ask + progress. 14 kernel tests + protocol snapshot; mutation run fails the checksum and Range tests; live drills above."
+  },
+  {
+   "id": "web-terminal-os/WT-07-DICTATION-TRANSFER",
+   "new": true,
+   "status": "PASS",
+   "head": "a7f57943ec (Cloud webterm/dictation); OSS dictation/kernel 1d473d81b3",
+   "date": "2026-10-24T19:36:33.612309+00:00",
+   "evidence": "/root/.codex/evidence/browser-resume-20260930/dictation/r2/transfer/result.json",
+   "note": "New row from the r2 brief (task 4): 'Copy a kernel here' with the opt-in 'Include dictation' item between two real kernels on the hosted relay: unchecked by default, language es copied, target downloaded the pinned model and reported ready, source unchanged. There was no BYOM or VM item in this dialog to copy the pattern from."
+  }
+ ]
+}

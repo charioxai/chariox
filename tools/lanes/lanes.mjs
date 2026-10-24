@@ -66,18 +66,28 @@ export async function save(path, value) {
 }
 const variant = (value, name) => value?.[name] || fail('unexpected_response', `expected ${name}`);
 
+// Every problem with its exact field, so a worker (or the coordinator) knows what to correct.
+export function acceptanceIssues(value) {
+  if (!value || !Array.isArray(value.rows)) return [{ field: 'rows', problem: 'must be an array of rows' }];
+  const issues = [], seen = new Set();
+  value.rows.forEach((row, index) => {
+    const at = name => `rows[${index}].${name}`;
+    if (!row || typeof row !== 'object') { issues.push({ field: `rows[${index}]`, problem: 'must be an object' }); return; }
+    if (typeof row.id !== 'string' || !/^[a-z][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(row.id)) issues.push({ field: at('id'), problem: 'must be a full area/ROW id' });
+    else if (seen.has(row.id)) issues.push({ field: at('id'), problem: 'duplicate id' });
+    else seen.add(row.id);
+    if (!['PASS', 'FAIL', 'NOT RUN'].includes(row.status) && !/^BLOCKED\([^():]+: [^\n]+\)$/.test(row.status)) issues.push({ field: at('status'), problem: 'must be PASS, FAIL, NOT RUN or BLOCKED(<owner>: <reason>)' });
+    if ('new' in row && typeof row.new !== 'boolean') issues.push({ field: at('new'), problem: 'must be boolean' });
+    if (!/^[a-f0-9]{40}$/.test(row.head)) issues.push({ field: at('head'), problem: 'must be one full 40-character git commit id' });
+    if (typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(row.date) || !Number.isFinite(Date.parse(row.date))) issues.push({ field: at('date'), problem: 'must be an ISO date' });
+    for (const key of ['evidence', 'note']) if (key in row && typeof row[key] !== 'string') issues.push({ field: at(key), problem: 'must be text' });
+  });
+  return issues;
+}
+
 export function validateAcceptance(value) {
-  if (!value || !Array.isArray(value.rows)) fail('invalid_acceptance', 'ACCEPTANCE_UPDATE requires rows');
-  const seen = new Set();
-  for (const row of value.rows) {
-    if (!row || !/^[a-z][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(row.id) || seen.has(row.id)) fail('invalid_acceptance', 'each row needs a unique full area/ROW id');
-    seen.add(row.id);
-    if (!['PASS', 'FAIL', 'NOT RUN'].includes(row.status) && !/^BLOCKED\([^():]+: [^\n]+\)$/.test(row.status)) fail('invalid_acceptance', 'invalid row status');
-    if ('new' in row && typeof row.new !== 'boolean') fail('invalid_acceptance', 'new must be boolean');
-    if (!/^[a-f0-9]{40}$/.test(row.head)) fail('invalid_acceptance', 'each row head must be one full git commit id');
-    if (typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(row.date) || !Number.isFinite(Date.parse(row.date))) fail('invalid_acceptance', 'invalid date');
-    for (const key of ['evidence', 'note']) text(row[key], key);
-  }
+  const [first] = acceptanceIssues(value);
+  if (first) fail('invalid_acceptance', `${first.field}: ${first.problem}`);
   return value;
 }
 
@@ -288,8 +298,13 @@ export async function run(operation, input, dependencies = {}) {
         continue;
       }
       const bytes = await readFile(local);
-      if (name.endsWith('.json')) validateAcceptance(JSON.parse(bytes.toString('utf8')));
       result[name] = { path: local, sha256: createHash('sha256').update(bytes).digest('hex') };
+      // Workers write what they can; collection keeps the round's work and reports what to correct.
+      if (name.endsWith('.json')) {
+        let issues;
+        try { issues = acceptanceIssues(JSON.parse(bytes.toString('utf8'))); } catch { issues = [{ field: '$', problem: 'is not valid JSON' }]; }
+        result[name].acceptance = issues.length ? { valid: false, issues: issues.slice(0, 20) } : { valid: true };
+      }
     }
     return result;
   }

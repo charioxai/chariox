@@ -1,11 +1,11 @@
 // MP-08 / MP-09 / MP-10 / MP-11: each coordinator step against fake adapters.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { coordinate, save } from './loop.mjs';
-import { execute } from '../lanes.mjs';
+import { execute, run } from '../lanes.mjs';
 const head = 'a'.repeat(40);
 async function rig(t) {
   const home = await mkdtemp(join(tmpdir(), 'coordinator-')); t.after(() => rm(home, { recursive: true, force: true }));
@@ -17,7 +17,7 @@ async function rig(t) {
     if (op === 'launch') return launch;
     if (op === 'steer') return { ActivePromptSteered: { prompt: { id: 'steer' } } };
     if (op === 'status') return { state: 'idle', currentPrompt: null, lastActivityMs: 1, deadline: { mode: 'kernel', state: 'armed' } };
-    if (op === 'fetch') { await mkdir(input.directory, { recursive: true }); await save(join(input.directory, 'ACCEPTANCE_UPDATE.json'), { rows: [{ head }] }); return { fetched: true }; }
+    if (op === 'fetch') { await mkdir(input.directory, { recursive: true }); await save(join(input.directory, 'ACCEPTANCE_UPDATE.json'), { rows: [{ head }] }); return { 'ACCEPTANCE_UPDATE.json': { acceptance: { valid: true } } }; }
     return { stopped: true };
   }, cli: async argv => {
     calls.push({ argv });
@@ -190,6 +190,35 @@ test('lanefin collects the bundle when acceptance merge already consumed the upd
   const result = await coordinate('lanefin', ['lane'], r.options);
   assert.equal(result.bundle.head, head);
   assert.deepEqual(r.calls.map(c => c.op), ['status', 'fetch', 'bundle']);
+});
+
+test('lanefin bundles the worktree head when the worker wrote a free-form acceptance head', async t => {
+  const r = await launched(t), adapter = r.options.adapter;
+  const issues = [{ field: 'rows[0].head', problem: 'must be one full 40-character git commit id' }];
+  r.options.adapter = async (op, input) => {
+    if (op === 'fetch') { r.calls.push({ op, input }); return { 'ACCEPTANCE_UPDATE.json': { path: 'x', sha256: 'y', acceptance: { valid: false, issues } } }; }
+    if (op === 'bundle') { r.calls.push({ op, input }); assert.equal(input.head, undefined); return { head }; }
+    return adapter(op, input);
+  };
+  const result = await coordinate('lanefin', ['lane'], r.options);
+  assert.equal(result.bundle.head, head);
+  assert.deepEqual(result.acceptanceIssues, issues);
+});
+
+test('lanefin bundles after the real dogfood r9 acceptance files through the real fetch adapter', async t => {
+  for (const lane of ['amint', 'dictation']) {
+    const r = await launched(t), adapter = r.options.adapter;
+    const fixture = new URL(`../fixtures/r9-${lane}-ACCEPTANCE_UPDATE.json`, import.meta.url).pathname;
+    r.options.adapter = async (op, input) => {
+      if (op === 'fetch') return run('fetch', input, { execute: async argv => { if (argv.at(-2).endsWith('.json')) await copyFile(fixture, argv.at(-1)); else await writeFile(argv.at(-1), 'notes'); return {}; } });
+      if (op === 'bundle') { r.calls.push({ op, input }); return { head: 'd'.repeat(40), sha256: 'e'.repeat(64), path: 'p' }; }
+      return adapter(op, input);
+    };
+    const result = await coordinate('lanefin', ['lane'], r.options);
+    assert.equal(result.bundle.head, 'd'.repeat(40), lane);
+    assert.equal(r.calls.find(c => c.op === 'bundle').input.head, undefined);
+    assert.equal(result.acceptanceIssues[0].field, 'rows[0].head');
+  }
 });
 
 test('stop archives exact removal before ack and reuses the confirmed receipt', async t => {

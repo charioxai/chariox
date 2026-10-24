@@ -108,6 +108,19 @@ test('lanefin after stop collects without a status read of the removed worker', 
   assert.equal(r.calls.some(c => c.op === 'status'), false);
 });
 
+test('round: a free-form acceptance head still finishes with head, bundle and the field to fix', async t => {
+  const r = await rig(t, ['alpha']);
+  const adapter = r.options.adapter, issues = [{ field: 'rows[0].head', problem: 'must be one full 40-character git commit id' }];
+  r.options.adapter = async (op, input) => op === 'fetch' ? { 'ACCEPTANCE_UPDATE.json': { path: 'x', sha256: 'y', acceptance: { valid: false, issues } } } : adapter(op, input);
+  r.idle.add('alpha');
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(alpha.finishReason, 'finished', JSON.stringify(alpha.collectError));
+  assert.equal(alpha.head, head);
+  assert.equal(alpha.bundleSha256, 'c'.repeat(64));
+  assert.deepEqual(alpha.acceptanceIssues, issues);
+});
+
 test('round: extra repositories get their own verified bundle', async t => {
   const r = await rig(t, ['alpha']);
   r.spec.lanes[0].extraBundles = [{ name: 'cloud', worktree: '/work/alpha-cloud', base: 'd'.repeat(40), repository: '/repo/cloud.git' }, { name: 'bad', worktree: '/x', base: 'nope', repository: '/r' }];

@@ -137,6 +137,7 @@ export async function runRound(spec, options = {}) {
       lane.run.bundle = finished.bundle?.path;
       lane.run.bundleSha256 = finished.bundle?.sha256;
       lane.run.files = Object.keys(finished.files || {});
+      if (finished.acceptanceIssues) lane.run.acceptanceIssues = finished.acceptanceIssues;
       lane.run.extraBundles = await bundleExtras(lane);
       if (reason !== 'hard_stop') lane.run.stop = await coordinator('stop', [lane.entry.lane]);
       lane.run.stopped = true;
