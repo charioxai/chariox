@@ -454,27 +454,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
       if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); record.css = used; } }
     };
-    // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
-    // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
-    const childrenOf = function* (node, id, kind, depth) {
-      const seen = new Set();
-      for (let more = true; more;) {
-        more = false;
-        for (const child of [...node.childNodes]) {
-          if (nodes.get(id) !== node || kindOf.get(id) !== kind) return;
-          if (seen.has(child)) continue;
-          seen.add(child); more = true;
-          if (child.parentNode !== node || node.nodeType === 9 && child.nodeType !== 1) continue;
-          // Published elsewhere and moved here: this parent's diff carries the move once the walk closes it.
-          const existing = mirrored(child);
-          if (existing) { if (parentOf.get(existing) !== id) dirty.children.add(node); continue; }
-          yield* serializeTree(child, id, depth + 1);
-        }
-      }
-    };
-    // Pre-order records; a record's children are the following records naming it.
-    const serializeTree = function* (node, parent, depth = 0) {
-      yield null; // even dropped nodes consume a bounded amount of this task
+    // One node of a walk: its record (null when it is not mirrored) and, in `walk.then`, what follows it (its children).
+    const visit = (node, parent, depth, walk) => {
       if (parent && (!nodes.has(parent) || ['tile', 'mask'].includes(kindOf.get(parent)))) return null;
       const type = node.nodeType;
       if (type !== 1 && type !== 3 && type !== 9 && type !== 11) return null;
@@ -483,18 +464,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (type === 3) {
         if (node.parentNode?.localName === 'style') return null;
         record.kind = 'text'; record.text = node.data;
-        spend(32 + (record.text?.length ?? 0)); remember(record, node); yield record; return id;
+        spend(32 + (record.text?.length ?? 0)); remember(record, node); return record;
       }
       if (type === 9 || type === 11) {
         record.kind = type === 9 ? 'document' : 'shadow';
         const sheets = adopted(node); if (sheets.length) record.adopted = sheets;
         if (type === 9 && node !== document) { const fragment = fragmentOf(node); fragments.set(id, fragment); if (fragment) record.fragment = fragment; }
-        spend(32); remember(record, node); yield record;
-        if (nodes.get(id) !== node) return null;
-        watch(node, id); rootSignatures.set(id, adoptedSignature(node));
-        open.add(id);
-        try { yield* childrenOf(node, id, record.kind, depth); } finally { open.delete(id); }
-        return id;
+        spend(32); remember(record, node);
+        walk.then = { node, id, kind: record.kind, depth, root: true }; return record;
       }
       const tag = node.localName, ns = node.namespaceURI, base = node.baseURI;
       if (ns === HTML) {
@@ -503,11 +480,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       } else if (ns === SVG) { if (!SVG_TAGS.has(tag)) { if (tag !== 'foreignObject') return null; } }
       else if (ns === MATH) { if (!MATH_TAGS.has(tag)) return null; }
       else return null;
-      if (secretElement(node)) { maskRecord(node, record); spend(64); remember(record, node); yield record; return id; }
-      if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); remember(record, node); yield record; return id; }
-      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); remember(record, node); yield record; return id; }
-      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); remember(record, node); yield record; return id; }
-      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); remember(record, node); yield record; return id; }
+      if (secretElement(node)) { maskRecord(node, record); spend(64); remember(record, node); return record; }
+      if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); remember(record, node); return record; }
+      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); remember(record, node); return record; }
+      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); remember(record, node); return record; }
+      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); remember(record, node); return record; }
       if (ns === HTML && !/^[a-z][a-z0-9-]*$/.test(tag)) { record.tag = 'span'; } else record.tag = tag;
       if (ns === SVG) record.ns = 'svg'; else if (ns === MATH) record.ns = 'math';
       record.attrs = attributes(node, base);
@@ -515,11 +492,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         let nested = null; try { nested = node.contentDocument; } catch {}
         // Cross-origin: the kernel mirrors it through the frame's own CDP session
         // (or paints it as a protected opaque region when that is unavailable).
-        if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); yield record; foreign.add(id); return id; }
+        if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); foreign.add(id); return record; }
         record.kind = 'frame'; record.tag = 'iframe';
-        spend(64); remember(record, node); yield record;
-        if (!mirrored(nested)) { open.add(id); try { yield* serializeTree(nested, id, depth + 1); } finally { open.delete(id); } }
-        return id;
+        spend(64); remember(record, node);
+        walk.then = { id, depth, nested }; return record;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === SVG && (tag === 'image' || tag === 'use')) { const key = tag === 'image' ? svgImageKey(node) : spriteKey(node); if (key) { record.res = key; resOf.set(id, key); } }
@@ -529,15 +505,71 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       spend(64 + JSON.stringify(record.attrs).length);
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
-      yield record;
-      if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) return null;
-      // Mutations meanwhile are diffed after this node closes (drain).
-      open.add(id);
-      try {
-        yield* childrenOf(node, id, record.kind, depth);
-        if (node.shadowRoot && nodes.get(id) === node && !mirrored(node.shadowRoot)) yield* serializeTree(node.shadowRoot, id, depth + 1);
-      } finally { open.delete(id); }
-      return id;
+      walk.then = { node, id, kind: record.kind, depth, root: false }; return record;
+    };
+    // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
+    // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
+    const nextChild = frame => {
+      const { node, id, list } = frame;
+      while (!frame.done) {
+        if (frame.index === list.length) {
+          // Children appended (or the list changed) while the walk was suspended: walk the ones not seen yet.
+          const live = node.childNodes;
+          if (live.length === list.length && list.every((child, i) => live[i] === child)) { frame.done = true; break; }
+          frame.seen ??= new Set(); for (const child of list) frame.seen.add(child);
+          frame.list = [...live]; frame.index = 0;
+          return nextChild(frame);
+        }
+        if (nodes.get(id) !== node || kindOf.get(id) !== frame.kind) { frame.done = true; break; }
+        const child = list[frame.index++];
+        if (frame.seen?.has(child) || child.parentNode !== node || node.nodeType === 9 && child.nodeType !== 1) continue;
+        // Published elsewhere and moved here: this parent's diff carries the move once the walk closes it.
+        const existing = mirrored(child);
+        if (existing) { if (parentOf.get(existing) !== id) dirty.children.add(node); continue; }
+        return child;
+      }
+      if (frame.shadow) { frame.shadow = false; const root = node.shadowRoot; if (root && nodes.get(id) === node && !mirrored(root)) return root; }
+      return null;
+    };
+    // Pre-order records; a record's children are the following records naming it. An explicit stack (not nested
+    // generators, whose every record passes through each enclosing level). Each visit first yields null: even
+    // dropped nodes consume a bounded amount of the caller's task.
+    const serializeTree = (node, parent, depth = 0) => {
+      const stack = [], walk = { then: null };
+      let pending = { node, parent, depth }, fresh = true;
+      const close = frame => { if (frame.opened) open.delete(frame.id); };
+      const iterator = {
+        [Symbol.iterator]() { return iterator; },
+        next() {
+          for (;;) {
+            if (fresh) { fresh = false; return { value: null, done: false }; }
+            const then = walk.then;
+            if (then) {
+              walk.then = null;
+              if (then.nested) { if (!mirrored(then.nested)) { open.add(then.id); stack.push({ id: then.id, depth: then.depth, nested: then.nested, opened: true }); } continue; }
+              if (nodes.get(then.id) !== then.node || !then.root && kindOf.get(then.id) !== then.kind) continue;
+              if (then.root) { watch(then.node, then.id); rootSignatures.set(then.id, adoptedSignature(then.node)); }
+              open.add(then.id);
+              stack.push({ node: then.node, id: then.id, kind: then.kind, depth: then.depth, list: [...then.node.childNodes], index: 0, seen: null, done: false, shadow: !then.root, opened: true });
+              continue;
+            }
+            if (pending) {
+              const { node: next, parent: under, depth: at } = pending; pending = null;
+              const record = visit(next, under, at, walk);
+              if (record) return { value: record, done: false };
+              continue;
+            }
+            const frame = stack.at(-1);
+            if (!frame) return { value: undefined, done: true };
+            let child = null;
+            if (frame.nested) { child = frame.nested; frame.nested = null; } else if (frame.list) child = nextChild(frame);
+            if (child) { pending = { node: child, parent: frame.id, depth: frame.depth + 1 }; fresh = true; continue; }
+            stack.pop(); close(frame);
+          }
+        },
+        return() { for (const frame of stack) close(frame); stack.length = 0; pending = null; walk.then = null; fresh = false; return { value: undefined, done: true }; },
+      };
+      return iterator;
     };
     const serialize = (node, parent, out, depth = 0) => {
       for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);

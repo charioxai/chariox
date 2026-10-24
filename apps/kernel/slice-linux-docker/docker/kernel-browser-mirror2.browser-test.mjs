@@ -889,6 +889,18 @@ test("MP-10: past the resource-key budget the least recently used URL mapping go
     assert.equal(new Set(images.map(row => row[4].res)).size, 4200, "MP-10: keys are never reused");
   }));
 
+// browserperf r10: every record of a nested-generator walk passed through each enclosing level, so a deep page cost
+// time in proportion to records times depth (the walk is now one explicit stack).
+test("MP-08/MP-10: a snapshot of a deeply nested page costs about what a flat one does", () => mirrored(
+  `<div id="deep"></div><div id="flat"></div><script>let d=document.getElementById("deep");for(let i=0;i<400;i++){const c=document.createElement("div");d.append(c);d=c}for(let i=0;i<6000;i++)d.append(document.createElement("b"));const f=document.getElementById("flat");for(let i=0;i<6000;i++)f.append(document.createElement("i"))</script>`, async ({ next, host }) => {
+    assert.equal((await next()).reset, true);
+    const stream = [...host.mirror.streams.values()][0], time = away => host.mirror.v2.evaluate(stream.world, `(() => { const away = document.getElementById(${JSON.stringify(away)}); away.remove(); const t = performance.now(); ${stream.world.ref}.snapshot(); const ms = performance.now() - t; document.body.append(away); return ms; })()`);
+    const deep = [], flat = [];
+    for (let i = 0; i < 3; i++) { flat.push(await time("deep")); deep.push(await time("flat")); }
+    const median = list => list.sort((a, b) => a - b)[1];
+    assert(median(deep) < 3 * median(flat) + 20, `deep ${median(deep).toFixed(1)} ms vs flat ${median(flat).toFixed(1)} ms`);
+  }));
+
 // #1073 review: a URL evicted from the key budget keeps its key reserved, so a later URL whose hash lands on it gets another.
 const urlKeyNumber = url => { let n = 2166136261; for (let i = 0; i < url.length; i++) n = Math.imul(n ^ url.charCodeAt(i), 16777619); return (n >>> 0) % 999999 + 1; };
 const GIF = "data:image/gif;base64,R0lGODlhAQABAAAAACw=#k";
