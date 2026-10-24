@@ -173,10 +173,13 @@ export async function run(operation, input, dependencies = {}) {
       delete state.attachmentId; delete state.attachCommand;
       await save(input.stateFile, state);
     };
-    if (state.attachmentId && !state.pendingPrompt && !state.promptId) {
+    const replayingPrompt = Boolean(state.pendingPrompt);
+    const refreshAttachment = async () => {
+      if (!state.attachmentId) return;
       const heartbeat = variant(await request('HeartbeatAttachments', { attachments: [{ session_id: session(), attachment_id: state.attachmentId }] }, 'attachment-check', false), 'AttachmentsHeartbeated');
       if (heartbeat.lapsed.includes(state.attachmentId)) await retireAttachment();
-    }
+    };
+    if (!replayingPrompt) await refreshAttachment();
     await attach();
     await remember('profileRefreshed', async () => {
       state.refreshAttempt = (state.refreshAttempt || 0) + 1; await save(input.stateFile, state);
@@ -218,8 +221,13 @@ export async function run(operation, input, dependencies = {}) {
         submitted = await submit();
       }
       const prompt = submitted.outcome?.Started?.prompt || submitted.outcome?.Queued?.prompt;
-      return text(prompt?.id, 'submitted prompt id');
+      const id = text(prompt?.id, 'submitted prompt id');
+      delete state.pendingPrompt;
+      return id;
     });
+    if (replayingPrompt) {
+      await refreshAttachment(); await attach();
+    }
     if (state.deadline.mode === 'coordinator' && !state.coordinatorTimer) {
       // The same task/stop command ids make an interrupted timer start safe to retry.
       state.coordinatorTimer = await (dependencies.startTimer || startCoordinatorTimer)(input.stateFile);

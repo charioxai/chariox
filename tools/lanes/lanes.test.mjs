@@ -289,7 +289,7 @@ test('resumed launch replaces a lapsed attachment without duplicating Room, agen
         assert.equal(req[op].attachment_id, 'new-attachment');
         return {PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}};
       }
-      return {GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:resumed?'new-attachment':'old-attachment'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['old-attachment']}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
+      return {HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:[]}},GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:resumed?'new-attachment':'old-attachment'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['old-attachment']}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
     };
     await assert.rejects(run('launch',input,{execute}), {code:'kernel_incompatible'});
     resumed = true;
@@ -320,7 +320,7 @@ test('attachment replacement first replays an uncertain prompt with identical by
         if (req[op].attachment_id === 't1') throw new LaneError('attachment_not_found');
         return {PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}};
       }
-      return {GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
+      return {HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:[]}},GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
     };
     await assert.rejects(run('launch',input,{execute}),{code:'kernel_connection_lost'});
     resumed = true;
@@ -374,4 +374,30 @@ test('coordinator timer stops the exact lane at expiry and retains a safe failur
     assert.equal(refused.status,'failed'); assert.equal(refused.code,'kernel_access_ended');
     assert.ok(!JSON.stringify(refused).includes('PRIVATE-CANARY'));
   } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test('replayed successful submission renews its expired attachment without a second prompt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dogfood-replayed-attachment-'));
+  try {
+    const brief = join(dir,'brief.md'); await writeFile(brief,'MP-11: task');
+    const input={kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'state.json'),deadlineMs:Date.now()+60_000};
+    const prompts=[];let replay=false,attachments=0;
+    const execute=async(argv,body)=>{
+      if(argv[0]==='files')return {};
+      const req=JSON.parse(body),op=Object.keys(req)[0];
+      if(op==='AttachToSession')return {SessionAttached:{attachment:{id:`t${++attachments}`}}};
+      if(op==='SubmitPrompt'){
+        prompts.push({argv,body});
+        if(!replay)throw new LaneError('kernel_connection_lost');
+        return {PromptSubmitted:{outcome:{Started:{prompt:{id:'original'}}}}};
+      }
+      return {RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}},CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['t1']}}}[op];
+    };
+    await assert.rejects(run('launch',input,{execute}),{code:'kernel_connection_lost'});
+    replay=true;
+    const state=await run('launch',input,{execute});
+    assert.equal(state.promptId,'original');assert.equal(state.attachmentId,'t2');assert.equal(prompts.length,3);
+    assert.deepEqual(prompts[0],prompts[2]);
+    assert.equal(state.pendingPrompt,undefined);
+  }finally{await rm(dir,{recursive:true,force:true});}
 });
