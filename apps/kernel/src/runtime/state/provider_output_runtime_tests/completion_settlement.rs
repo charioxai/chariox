@@ -338,6 +338,163 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
     );
 }
 
+// A person cannot resume a task whose agent is archived: the choice is refused with a
+// reason, nothing is committed, and the same decision comes back after unarchive.
+#[tokio::test]
+async fn owner_resume_of_an_archived_agents_task_is_refused_until_unarchive() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("owner-resume-archived");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let owner = session.owner_user_id().to_string();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.update_provider_run_projection(run);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: owner.clone(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: "archived-task".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: "archived-task".into(),
+            prompt: "archived-task".into(),
+            reason: "Owner clarification required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let interaction = format!(
+        "task-blocked-{}-{}",
+        blocked.task_id, blocked.blocked_revision
+    );
+    runtime
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    let archive = |archived| crate::local::ArchiveAgentRequest {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+        archived,
+    };
+    runtime
+        .archive_agent_in_session(&archive(true), &owner)
+        .await
+        .unwrap();
+
+    runtime
+        .owned
+        .resolve_runtime_interaction(
+            session.id(),
+            &interaction,
+            "resume",
+            None,
+            Some(&owner),
+            false,
+        )
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let history = runtime
+                .owned
+                .operational_history_store
+                .load_session_history_entries(session.id(), Some(agent.id()))
+                .unwrap();
+            if history
+                .iter()
+                .any(|entry| entry.text.contains("unarchive this agent"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a refused resume must tell the person why");
+    let task = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .remove(0);
+    assert_eq!(task.state, ExecutionState::Blocked);
+    assert_eq!(task.pending_prompt_id, None, "nothing may be committed");
+
+    runtime
+        .archive_agent_in_session(&archive(false), &owner)
+        .await
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|i| i.id() == interaction),
+        "the same decision must be offered again once the agent is back"
+    );
+    runtime
+        .owned
+        .resolve_runtime_interaction(
+            session.id(),
+            &interaction,
+            "resume",
+            None,
+            Some(&owner),
+            false,
+        )
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let task = store
+                .agent_tasks(Some(session.id()), Some(agent.id()))
+                .unwrap()
+                .remove(0);
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap();
+            if task.state == ExecutionState::Working
+                && runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("resume after unarchive must submit the continuation prompt");
+}
+
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
