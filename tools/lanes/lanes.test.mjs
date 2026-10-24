@@ -112,6 +112,15 @@ test('fetch downloads all three artifacts and rejects malformed acceptance', asy
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('fetch refuses a free-form acceptance head as invalid acceptance', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dogfood-fetch-'));
+  try {
+    const row = { id: 'area/ROW', status: 'PASS', head: 'a7f57943ec (Cloud x); OSS 1d473d81b3', date: '2026-10-24', evidence: 'e', note: 'n' };
+    const execute = async argv => { await writeFile(argv.at(-1), argv.at(-2).endsWith('.json') ? JSON.stringify({ rows: [row] }) : 'notes'); return {}; };
+    await assert.rejects(run('fetch', { kernel: 'b', taskId: 'lane', worktree: '/repo', directory: dir }, { execute }), { code: 'invalid_acceptance' });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('status waits on events for the expected turn and ignores earlier idle', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-watch-')); const previous = process.env.CHARIOX_BIN;
   try {

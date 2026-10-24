@@ -28,6 +28,7 @@ const remediation = code => ({
   agent_deadline_reached: 'The lane deadline was reached; start a new lane agent for new work.',
   agent_deadline_requires_executor: 'Arm the deadline on the executing kernel; deadline-bound agents cannot move to a leased worker.',
   agent_deadline_extension_refused: 'Deadlines cannot be extended; start a new lane agent.',
+  invalid_acceptance: 'Fix ACCEPTANCE_UPDATE.json: full area/ROW ids, a known status, a date, and one full 40-character commit id as every row head; then collect again.',
   agent_deadline_invalid: 'Supply deadline_ms as a positive bounded epoch millisecond.',
 }[code] || 'chariox refused the operation; inspect its typed code and retained lane state');
 
@@ -73,7 +74,7 @@ export function validateAcceptance(value) {
     seen.add(row.id);
     if (!['PASS', 'FAIL', 'NOT RUN'].includes(row.status) && !/^BLOCKED\([^():]+: [^\n]+\)$/.test(row.status)) fail('invalid_acceptance', 'invalid row status');
     if ('new' in row && typeof row.new !== 'boolean') fail('invalid_acceptance', 'new must be boolean');
-    hash(row.head, 'head');
+    if (!/^[a-f0-9]{40}$/.test(row.head)) fail('invalid_acceptance', 'each row head must be one full git commit id');
     if (typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(row.date) || !Number.isFinite(Date.parse(row.date))) fail('invalid_acceptance', 'invalid date');
     for (const key of ['evidence', 'note']) text(row[key], key);
   }
