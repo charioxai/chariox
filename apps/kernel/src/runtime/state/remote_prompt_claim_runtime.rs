@@ -295,21 +295,6 @@ impl KernelRuntimeState {
                     return Ok(true);
                 }
                 Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
-                    // The binding's worker run is kept in memory only; the durable
-                    // delivery names it, so a restart restores it before resuming.
-                    if let Some(provider_run_id) = prompt.durable_delivery_provider_run_id() {
-                        if agent
-                            .remote_execution()
-                            .is_some_and(|binding| binding.active_worker_provider_run_id.is_none())
-                        {
-                            self.owned
-                                .agent_store
-                                .set_remote_execution_active_worker_provider_run_id(
-                                    agent_id,
-                                    Some(provider_run_id.to_string()),
-                                )?;
-                        }
-                    }
                     let Some(dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
                         return Ok(true);
                     };

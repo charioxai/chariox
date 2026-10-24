@@ -376,7 +376,9 @@ impl DaemonApp {
             .migrate_effective_defaults(crate::session::DEFAULT_LOCAL_USER_ID, &provider_home)?;
 
         let mut app = Self {
-            agents: AgentServiceStore::new(AgentService::new()),
+            agents: AgentServiceStore::new(
+                AgentService::new().with_worker_run_durability(durable_state.clone()),
+            ),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
             room_terminals: crate::room_terminal::RoomTerminalService::new(

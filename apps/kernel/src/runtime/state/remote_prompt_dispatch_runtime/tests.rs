@@ -6389,131 +6389,6 @@ mod projection_acknowledgement {
         assert_eq!(finals, 1, "the retained output is applied exactly once");
     }
 
-    // MP-08 / MP-10 A10-S02 (amint r17 live): the binding's worker run id lives in
-    // memory only, so a home restarted during Ctrl+C came back without it. Its
-    // cancellation was refused as "no longer owns the delivered prompt run" and
-    // stayed held until the next prompt; the durable delivery names the run.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn restarted_cancellation_restores_the_worker_run_from_the_delivery() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("fake relay listener should bind");
-        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
-        let run = "worker-run-restart-binding";
-        let fixture = delivered_fixture(&relay_url, "restart-binding", run).await;
-        let worker_id = fixture.worker_id.clone();
-        let worker_machine_id = fixture.worker_machine_id.clone();
-        let worker_public_key = fixture.worker_public_key.clone();
-        let worker_private_key = fixture.worker_private_key.clone();
-        let home_public_key = fixture.home_public_key.clone();
-        let prompt_id = fixture.dispatch.prompt_id.clone();
-        let completion = projection(&fixture, run, 1, true);
-        let server = tokio::spawn(async move {
-            let mut seen = Vec::new();
-            loop {
-                let request = receive_fake_worker_peer_request(
-                    &listener,
-                    &worker_id,
-                    &worker_machine_id,
-                    &worker_public_key,
-                    &worker_private_key,
-                    None,
-                )
-                .await;
-                let response = match &request.request {
-                    RelayPeerRequest::GetLeasedPromptReceipt { .. } => {
-                        seen.push("receipt");
-                        RelayPeerResponse::LeasedPromptReceiptQueried {
-                            receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
-                                home_prompt_id: prompt_id.clone(),
-                                worker_provider_run_id: run.to_string(),
-                                phase:
-                                    crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
-                                target_home_prompt_id: None,
-                                execution_lease_id: Some(
-                                    "lease-receipt-restart-binding".to_string(),
-                                ),
-                            }),
-                        }
-                    }
-                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => {
-                        seen.push("drain");
-                        completion.clone()
-                    }
-                    RelayPeerRequest::ObserveLeasedGitAfter { .. } => {
-                        seen.push("observe");
-                        RelayPeerResponse::LeasedGitObserved {
-                            provider_run_id: run.to_string(),
-                            git_observations: Vec::new(),
-                            workspace_live_sync_change: None,
-                        }
-                    }
-                    other => panic!("unexpected worker request {other:?}"),
-                };
-                let done = matches!(
-                    &request.request,
-                    RelayPeerRequest::ObserveLeasedGitAfter { .. }
-                );
-                send_fake_worker_peer_response(
-                    request,
-                    &worker_id,
-                    &worker_private_key,
-                    &home_public_key,
-                    response,
-                )
-                .await;
-                if done {
-                    return seen;
-                }
-            }
-        });
-
-        let runtime = &fixture.runtime;
-        let owned = &runtime.owned;
-        owned
-            .begin_remote_prompt_cancellation_if_matches(
-                &fixture.session_id,
-                &fixture.agent_id,
-                &fixture.dispatch.source_attachment_id,
-                Some(&fixture.dispatch.prompt_id),
-            )
-            .expect("Ctrl+C starts the cancellation")
-            .expect("the delivered prompt is cancelling");
-        // What the restarted home restores: the delivery, without the binding's run.
-        owned
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(&fixture.agent_id, None)
-            .expect("the restored binding has no worker run");
-        runtime
-            .recover_remote_prompt_after_kernel_restart(
-                &fixture.session_id,
-                &fixture.agent_id,
-                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
-                Some(run),
-            )
-            .await
-            .expect("restart recovery runs");
-        let seen = tokio::time::timeout(std::time::Duration::from_secs(10), server)
-            .await
-            .expect("fake worker should see the recovery")
-            .expect("fake worker assertions should hold");
-        assert_eq!(seen, vec!["receipt", "drain", "observe"]);
-
-        let session = owned
-            .session_store
-            .get_session(&fixture.session_id)
-            .unwrap();
-        assert_ne!(
-            owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, &fixture.agent_id)
-                .map(|prompt| prompt.id().to_string())
-                .as_deref(),
-            Some(fixture.dispatch.prompt_id.as_str()),
-            "the cancellation settles without waiting for another prompt"
-        );
-    }
-
     // MP-08 / MP-10 A10-S02 (#1065 review P1 @2a7b19e4e): a home restarted during
     // Ctrl+C whose first worker-receipt query failed only drained output, so a
     // worker that came back still running never got the cancellation and the
@@ -6640,10 +6515,6 @@ mod projection_acknowledgement {
             )
             .expect("Ctrl+C starts the cancellation")
             .expect("the delivered prompt is cancelling");
-        owned
-            .agent_store
-            .set_remote_execution_active_worker_provider_run_id(&fixture.agent_id, None)
-            .expect("the restored binding has no worker run");
         runtime
             .recover_remote_prompt_after_kernel_restart(
                 &fixture.session_id,
@@ -6683,5 +6554,34 @@ mod projection_acknowledgement {
             settled.is_ok(),
             "the cancellation settles without another user action"
         );
+    }
+
+    // MP-08 / MP-10 A10-S02 (amint r17 live): the binding's worker run id lived in
+    // memory only, so a home restarted during a leased turn came back without it
+    // and its Ctrl+C was refused as "no longer owns the delivered prompt run".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restarted_home_keeps_the_binding_worker_run() {
+        let run = "worker-run-durable-binding";
+        let worker_run = |app: &DaemonApp, agent_id: &str| {
+            app.agents()
+                .get_agent(agent_id)
+                .expect("the home agent is restored")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.clone())
+        };
+        let (config, agent_id) = {
+            let fixture = delivered_fixture("ws://127.0.0.1:9", "durable-binding", run).await;
+            let config = fixture.app.lock().await.config().clone();
+            (config, fixture.agent_id.clone())
+        };
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("the home restarts");
+            assert_eq!(worker_run(&app, &agent_id).as_deref(), Some(run));
+            app.agents()
+                .set_remote_execution_active_worker_provider_run_id(&agent_id, None)
+                .expect("the worker run settles");
+        }
+        let app = DaemonApp::bootstrap(config).expect("the home restarts again");
+        assert_eq!(worker_run(&app, &agent_id), None);
     }
 }

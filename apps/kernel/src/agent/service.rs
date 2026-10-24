@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
 use crate::provider::{
@@ -16,13 +17,22 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct AgentService {
     store: AgentStore,
+    worker_run_durable_state: Option<DurableKernelStateStore>,
 }
 
 impl AgentService {
     pub fn new() -> Self {
         Self {
             store: AgentStore::new(),
+            worker_run_durable_state: None,
         }
+    }
+
+    /// A restarted home resumes a leased turn against the worker run its binding names,
+    /// so every change of that run is written as the agent's durable update.
+    pub(crate) fn with_worker_run_durability(mut self, state: DurableKernelStateStore) -> Self {
+        self.worker_run_durable_state = Some(state);
+        self
     }
 
     /// Create a new agent in a session
@@ -922,8 +932,23 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_id.to_string(),
             })?;
+        let previous = agent.clone();
         agent.set_remote_execution_active_worker_provider_run_id(provider_run_id);
-        Ok(agent.clone())
+        if agent.remote_execution() == previous.remote_execution() {
+            return Ok(previous);
+        }
+        let updated = agent.clone();
+        if let Some(state) = self.worker_run_durable_state.as_ref() {
+            if let Err(error) = state.append_event(
+                "agent.updated",
+                Some(updated.id().to_string()),
+                serde_json::json!({ "agent": &updated, "source": "remote_worker_run_changed" }),
+            ) {
+                self.store.insert_restored(previous);
+                return Err(error);
+            }
+        }
+        Ok(updated)
     }
 
     pub fn clear_remote_execution(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
