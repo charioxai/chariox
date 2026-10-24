@@ -1,0 +1,342 @@
+#!/usr/bin/env node
+// MP-08 / MP-09 / MP-10 / MP-11: the lasting dev lanes kernel (executor) and its access kernel (coordinator).
+// Usage: lanes-kernel.mjs setup|start|stop|status|grant|exec|env  (see docs/LANES_KERNEL.md)
+import { spawn } from 'node:child_process';
+import { createServer, connect } from 'node:net';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkSync, chmodSync, unlinkSync, copyFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+
+const STATE = process.env.LANES_KERNEL_STATE || '/root/.chariox/dev/lanes-kernel';
+const config = JSON.parse(readFileSync(join(STATE, 'config.json'), 'utf8'));
+const ROLES = ['executor', 'coordinator'];
+const dir = role => join(STATE, role);
+const file = (role, name) => join(dir(role), name);
+const readText = path => readFileSync(path, 'utf8').trim();
+const out = value => console.log(JSON.stringify(value));
+
+function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } }
+// Only act on a pid whose executable and kernel home both match what this script started.
+function ownedPid(role, pidFile, executable) {
+  if (!existsSync(pidFile)) return undefined;
+  const pid = Number(readText(pidFile));
+  if (!Number.isSafeInteger(pid) || pid <= 1 || !pidAlive(pid)) return undefined;
+  try {
+    if (readlinkSync(`/proc/${pid}/exe`) !== executable) return undefined;
+    if (!readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').includes(`CHARIOX_HOME=${file(role, 'chariox')}`)) return undefined;
+  } catch { return undefined; }
+  return pid;
+}
+const kernelBinary = join(STATE, 'bin', 'chariox-kernel');
+const kernelPid = role => ownedPid(role, file(role, 'kernel.pid'), kernelBinary);
+
+function roleEnv(role) {
+  const root = dir(role);
+  return {
+    PATH: `${config.toolchain}/cargo/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin`,
+    HOME: join(root, 'home'), SHELL: '/bin/bash', TMPDIR: join(root, 'tmp'),
+    CARGO_HOME: `${config.toolchain}/cargo`, RUSTUP_HOME: `${config.toolchain}/rustup`,
+    XDG_CONFIG_HOME: join(root, 'xdg-config'), XDG_STATE_HOME: join(root, 'xdg-state'), XDG_CACHE_HOME: join(root, 'xdg-cache'),
+    CHARIOX_HOME: file(role, 'chariox'), CHARIOX_LOG_DIR: join(root, 'logs'), CHARIOX_SESSION_HISTORY_DIR: join(root, 'history'),
+    CHARIOX_DAEMON_SOCKET: join(root, 'daemon.sock'), CHARIOX_DAEMON_ALIAS: `lanes-${role}`, CHARIOX_MACHINE_ALIAS: `lanes-${role}`,
+    NODE_OPTIONS: '--max-old-space-size=4096',
+  };
+}
+
+let ipc;
+async function client(role) {
+  ipc ??= await import(join(config.runtime.worktree, 'packages/kernel-client/dist/ipc.js'));
+  const port = config.ports[role];
+  return new ipc.LocalIpcClient(`ws://127.0.0.1:${port}/kernel`, { localAuthEnvironment: roleEnv(role) });
+}
+async function rpc(role, request) {
+  const c = await client(role);
+  try {
+    const result = await c.send(request);
+    if (result.Error) throw new Error(`kernel refused ${Object.keys(request)[0]}: ${JSON.stringify(result.Error).slice(0, 160)}`);
+    return result;
+  } finally { await c.close?.().catch?.(() => {}); }
+}
+async function relayStatus(role, attempts = 60) {
+  for (let i = 0; i < attempts; i++) {
+    try { return (await rpc(role, { RelayStatus: null })).RelayStatus.status; } catch { await delay(500); }
+  }
+  throw new Error(`${role} kernel is not reachable`);
+}
+
+function prepare(role) {
+  for (const name of ['chariox', 'home', 'xdg-config', 'xdg-state', 'xdg-cache', 'logs', 'history', 'tmp']) mkdirSync(file(role, name), { recursive: true, mode: 0o700 });
+  const home = file(role, 'chariox');
+  if (!existsSync(join(home, 'config.toml'))) {
+    writeFileSync(join(home, 'config.toml'), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${join(home, 'vault.json')}"\nunlock_policy = "kernel_init"\n[kernel_access]\nrequest_timeout_minutes = 10\n`, { mode: 0o600 });
+  }
+  if (!existsSync(file(role, 'passphrase'))) writeFileSync(file(role, 'passphrase'), randomBytes(24).toString('hex'), { mode: 0o600 });
+  const gitconfig = join(dir(role), 'home', '.gitconfig');
+  if (role === 'executor' && !existsSync(gitconfig) && existsSync('/root/.gitconfig')) copyFileSync('/root/.gitconfig', gitconfig);
+}
+
+async function startKernel(role) {
+  prepare(role);
+  const existing = kernelPid(role);
+  if (existing) return { role, pid: existing, started: false };
+  if (!existsSync(kernelBinary)) throw new Error('kernel binary missing; see docs/LANES_KERNEL.md');
+  const port = config.ports[role];
+  const log = openSync(file(role, 'logs/kernel.out'), 'a');
+  const child = spawn(kernelBinary, [], {
+    env: { ...roleEnv(role), CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_PORT: String(port + 1), CHARIOX_OPENCODE_PORT: String(port + 2), CHARIOX_CODEX_PORT: String(port + 3) },
+    detached: true, stdio: ['ignore', log, log],
+  });
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error('invalid kernel pid');
+  writeFileSync(file(role, 'kernel.pid'), String(child.pid)); child.unref();
+  const status = await relayStatus(role);
+  writeFileSync(file(role, 'ids.json'), JSON.stringify({ kernel_id: status.daemon_id, machine_id: status.machine_id }));
+  return { role, pid: child.pid, started: true, kernel_id: status.daemon_id };
+}
+
+async function stopKernel(role) {
+  const pid = kernelPid(role);
+  if (!pid) return { role, stopped: false, reason: 'not running' };
+  process.kill(pid, 'SIGTERM');
+  for (let i = 0; i < 60 && pidAlive(pid); i++) await delay(500);
+  if (pidAlive(pid)) throw new Error(`${role} kernel ${pid} did not exit after SIGTERM; inspect it before stopping it by hand`);
+  return { role, stopped: true, pid };
+}
+
+// The Vault relocks on every kernel restart; its disposable passphrase never leaves this state directory.
+async function ensureVault(role) {
+  const status = (await rpc(role, { GetCredentialVaultStatus: null }));
+  const body = status.CredentialVaultStatus?.status ?? status.CredentialVaultStatus ?? status;
+  if (body.unlocked === true || body.state === 'unlocked' || body.locked === false) return { role, vault: 'unlocked' };
+  // A restored session cannot answer a new unlock decision; each unlock asks in a fresh owner session.
+  const workspace = join(dir(role), 'workspace');
+  mkdirSync(workspace, { recursive: true, mode: 0o700 });
+  const made = (await rpc(role, { CreateSession: { workspace_id: workspace, worktree_id: workspace, alias: `lanes-${role}-unlock-${Date.now()}` } })).SessionCreated;
+  const { session, agent } = made;
+  if (!existsSync(file(role, 'session.id'))) { writeFileSync(file(role, 'session.id'), session.id); writeFileSync(file(role, 'agent.id'), agent.id); }
+  const pending = rpc(role, { ManageCredentialVault: { session_id: session.id, agent_id: agent.id } });
+  pending.catch(() => {});
+  let prompt;
+  for (let i = 0; i < 80 && !prompt; i++) {
+    const state = (await rpc(role, { GetSessionState: { session_id: session.id } })).SessionState.session;
+    prompt = state.active_interactions?.find(item => item.id.startsWith('vault-unlock-'));
+    if (!prompt) await delay(100);
+  }
+  if (!prompt) throw new Error('vault prompt missing');
+  await rpc(role, { RespondToInteraction: { session_id: session.id, interaction_id: prompt.id, choice_id: 'passphrase', custom_reply: readText(file(role, 'passphrase')) } });
+  await pending;
+  return { role, vault: 'unlocked-now' };
+}
+
+async function enroll(role) {
+  const status = await relayStatus(role);
+  const meta = JSON.parse(readFileSync(`/w/valenv/prs/${config.stack}/metadata.json`, 'utf8'));
+  const origin = `https://${meta.hostname}`, relayUrl = `wss://${meta.relay_hostname}`;
+  if (status.connected && status.relay_url === relayUrl) return { role, relay: 'connected' };
+  if (!status.connected && existsSync(file(role, 'enrolled'))) {
+    await rpc(role, { ConnectCloudRelay: null });
+  } else {
+    const { chromium } = await import('/w/valenv/tools/node_modules/playwright-core/index.mjs');
+    const login = (await rpc(role, { StartCloudRelayLogin: { api_url: origin, client_id: 'lanes-kernel', client_alias: `lanes-${role}`, machine_id: status.machine_id, machine_alias: `lanes-${role}` } })).CloudRelayLoginStarted.login;
+    if (new URL(login.verification_url).origin !== origin) throw new Error('verification origin mismatch');
+    const browser = await chromium.launch({ executablePath: '/opt/google/chrome/chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    try {
+      const page = await (await browser.newContext()).newPage();
+      await page.goto(login.verification_url);
+      let approved = false;
+      for (let i = 0; i < 30 && !approved; i++) {
+        const button = page.getByRole('button', { name: /approve|allow|connect/i });
+        if (await button.count() === 1 && await button.isVisible()) await button.click();
+        await delay(Math.max(5000, (login.interval_seconds ?? 5) * 1000));
+        approved = (await rpc(role, { PollCloudRelayLogin: { api_url: origin, device_code: login.device_code } })).CloudRelayLoginPolled.result.status === 'approved';
+      }
+      if (!approved) throw new Error('device login was not approved');
+    } finally { await browser.close(); }
+    await rpc(role, { ConnectCloudRelay: null });
+    writeFileSync(file(role, 'enrolled'), new Date().toISOString());
+  }
+  for (let i = 0; i < 120; i++) {
+    const s = await relayStatus(role, 1).catch(() => ({}));
+    if (s.connected && s.relay_url === relayUrl) return { role, relay: 'connected', kernel_id: s.daemon_id };
+    await delay(500);
+  }
+  throw new Error(`${role} relay did not connect over ${relayUrl}`);
+}
+
+// The existing lanes Claude setup token is stored through the product, fed from its file and never printed.
+async function ensureClaudeProfile() {
+  const profiles = async () => (await rpc('executor', { ListProviderAccountProfiles: { provider: 'claude' } })).ProviderAccountProfilesListed.profiles;
+  let profile = (await profiles()).find(p => p.label === 'lanes-claude' && p.origin === 'chariox_created');
+  if (!profile) {
+    await rpc('executor', { CreateProviderAccountProfile: { provider: 'claude', label: 'lanes-claude' } });
+    profile = (await profiles()).find(p => p.label === 'lanes-claude' && p.origin === 'chariox_created');
+  }
+  if (!profile) throw new Error('lanes-claude profile was not created');
+  const authStatus = async () => (await rpc('executor', { GetProviderAuthStatus: { provider: 'claude', account_profile: profile.profile_id } }));
+  let auth = JSON.stringify(await authStatus());
+  if (!/authenticated/.test(auth) || /unauthenticated/.test(auth)) {
+    await rpc('executor', { SetProviderAccountCredential: { provider: 'claude', account_profile: profile.profile_id, value: readText(config.claudeToken), overwrite: true } });
+    auth = JSON.stringify(await authStatus());
+  }
+  writeFileSync(file('executor', 'claude-profile.id'), profile.profile_id);
+  return { claudeProfile: profile.profile_id, auth: (auth.match(/"(?:auth_)?(?:state|status)":"[a-z_]+"/g) || []).slice(0, 2) };
+}
+
+const holderSocket = join(STATE, 'holder.sock'), holderPidFile = join(STATE, 'holder.pid');
+const holderPid = () => {
+  if (!existsSync(holderPidFile)) return undefined;
+  const pid = Number(readText(holderPidFile));
+  return Number.isSafeInteger(pid) && pid > 1 && pidAlive(pid) && readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('lanes-kernel.mjs\0holder') ? pid : undefined;
+};
+
+// The holder is the long-lived ancestor an until-exit access grant binds to; exec runs commands beneath it.
+function runHolder() {
+  const env = { ...roleEnv('coordinator'), CHARIOX_BIN: join(STATE, 'bin/chariox'), CHARIOX_COORDINATOR_HOME: join(STATE, 'loop'), CHARIOX_CLI_ACCESS_HOLDER_PID: String(process.pid) };
+  try { unlinkSync(holderSocket); } catch {}
+  const server = createServer(socket => {
+    let buffer = '';
+    socket.on('error', () => {});
+    socket.on('data', chunk => {
+      buffer += chunk;
+      if (!buffer.includes('\n')) return;
+      const request = JSON.parse(buffer.split('\n')[0]); buffer = '';
+      const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', request.logFile ? openSync(request.logFile, 'a') : 'pipe', request.logFile ? openSync(request.logFile, 'a') : 'pipe'], detached: Boolean(request.detach) });
+      child.on('error', error => socket.end(JSON.stringify({ err: Buffer.from(String(error.message)).toString('base64'), exit: 127 }) + '\n'));
+      if (request.detach) { child.unref(); socket.end(JSON.stringify({ pid: child.pid }) + '\n'); return; }
+      child.stdout.on('data', data => socket.write(JSON.stringify({ out: data.toString('base64') }) + '\n'));
+      child.stderr.on('data', data => socket.write(JSON.stringify({ err: data.toString('base64') }) + '\n'));
+      child.on('close', code => socket.end(JSON.stringify({ exit: code ?? 1 }) + '\n'));
+    });
+  });
+  server.listen(holderSocket, () => { chmodSync(holderSocket, 0o600); writeFileSync(holderPidFile, String(process.pid)); });
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { server.close(); try { unlinkSync(holderSocket); } catch {} process.exit(0); });
+  setInterval(() => {}, 1 << 30);
+}
+
+function ensureHolder() {
+  const existing = holderPid();
+  if (existing) return existing;
+  try { unlinkSync(holderSocket); } catch {}
+  const log = openSync(join(STATE, 'holder.log'), 'a');
+  const child = spawn(process.execPath, [new URL(import.meta.url).pathname, 'holder'], { env: { PATH: process.env.PATH, HOME: process.env.HOME, LANES_KERNEL_STATE: STATE }, detached: true, stdio: ['ignore', log, log] });
+  child.unref();
+  return child.pid;
+}
+
+function execInHolder(request) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(holderSocket);
+    const result = { code: 1, stdout: [], stderr: [] };
+    let buffer = '';
+    socket.on('connect', () => socket.write(JSON.stringify(request) + '\n'));
+    socket.on('data', chunk => {
+      buffer += chunk;
+      let index;
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const message = JSON.parse(buffer.slice(0, index)); buffer = buffer.slice(index + 1);
+        if (message.out) result.stdout.push(Buffer.from(message.out, 'base64'));
+        if (message.err) result.stderr.push(Buffer.from(message.err, 'base64'));
+        if (message.pid) result.pid = message.pid;
+        if ('exit' in message) result.code = message.exit;
+      }
+    });
+    socket.on('close', () => resolve({ code: result.code, pid: result.pid, stdout: Buffer.concat(result.stdout).toString(), stderr: Buffer.concat(result.stderr).toString() }));
+    socket.on('error', reject);
+  });
+}
+const chariox = join(STATE, 'bin/chariox');
+
+// The owner approves the until-exit grant in the real web popup, typing the coordinator Vault passphrase.
+async function approveInPopup() {
+  const meta = JSON.parse(readFileSync(`/w/valenv/prs/${config.stack}/metadata.json`, 'utf8'));
+  const ids = JSON.parse(readFileSync(file('coordinator', 'ids.json'), 'utf8'));
+  const { chromium } = await import('/w/valenv/tools/node_modules/playwright-core/index.mjs');
+  const browser = await chromium.launch({ executablePath: '/opt/google/chrome/chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+  try {
+    const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 })).newPage();
+    await page.goto(`https://${meta.hostname}/terminal?kernel=${ids.kernel_id}&session=${readText(file('coordinator', 'session.id'))}`);
+    const input = page.locator('[data-passkey-popup-input]').first();
+    await input.waitFor({ state: 'visible', timeout: 120_000 });
+    const lifetime = page.locator('[data-passkey-popup-lifetime]');
+    if (await lifetime.count()) await lifetime.selectOption('until_exit');
+    await input.click();
+    await page.keyboard.type(readText(file('coordinator', 'passphrase')), { delay: 10 });
+    await page.locator('[data-passkey-popup-approve]').click();
+    await input.waitFor({ state: 'hidden', timeout: 60_000 });
+  } finally { await browser.close(); }
+}
+
+async function grantAccess() {
+  const pid = ensureHolder();
+  for (let i = 0; i < 40 && !existsSync(holderSocket); i++) await delay(250);
+  const holder = holderPid() ?? pid;
+  const check = async () => {
+    const result = await execInHolder({ argv: [chariox, 'access', 'status', '--holder-pid', String(holder)], cwd: STATE });
+    try { return result.code === 0 ? JSON.parse(result.stdout).status : `exit_${result.code}`; } catch { return 'unparsed'; }
+  };
+  const current = await check();
+  if (current === 'granted' || current === 'approved' || current === 'active') return { holder, granted: 'existing', status: current };
+  const request = execInHolder({ argv: [chariox, 'access', 'request', '--until-exit', '--holder-pid', String(holder)], cwd: STATE });
+  const [approved] = await Promise.all([request, approveInPopup()]);
+  if (approved.code !== 0) throw new Error(`access request exited ${approved.code}: ${approved.stderr.slice(0, 200)}`);
+  return { holder, granted: 'now', status: await check() };
+}
+
+async function status() {
+  const result = { state: STATE, runtime: config.runtime.head, stack: config.stack };
+  for (const role of ROLES) {
+    const pid = kernelPid(role);
+    const entry = { pid: pid ?? null };
+    if (pid) {
+      try {
+        const s = await relayStatus(role, 3);
+        entry.relay_connected = s.connected; entry.kernel_id = s.daemon_id; entry.protocol = s.protocol_version ?? null;
+        const vault = await rpc(role, { GetCredentialVaultStatus: null });
+        entry.vault = vault.CredentialVaultStatus?.status ?? vault.CredentialVaultStatus ?? 'unknown';
+      } catch (error) { entry.error = String(error.message).slice(0, 160); }
+    }
+    result[role] = entry;
+  }
+  result.holder = holderPid() ?? null;
+  const url = `https://${JSON.parse(readFileSync(`/w/valenv/prs/${config.stack}/metadata.json`, 'utf8')).hostname}/validation/ready`;
+  result.stack_ready = await fetch(url).then(r => r.ok, () => false);
+  return result;
+}
+
+const [command, ...rest] = process.argv.slice(2);
+try {
+  if (command === 'holder') runHolder();
+  else if (command === 'start' || command === 'setup') {
+    const started = [];
+    for (const role of ['executor', 'coordinator']) started.push(await startKernel(role));
+    const steps = [];
+    for (const role of ROLES) steps.push(await ensureVault(role));
+    for (const role of ROLES) steps.push(await enroll(role));
+    steps.push(await ensureClaudeProfile());
+    steps.push({ grant: await grantAccess() });
+    out({ started, steps });
+  } else if (command === 'stop') {
+    const results = [];
+    const holder = holderPid();
+    if (holder) { process.kill(holder, 'SIGTERM'); results.push({ holder, stopped: true }); }
+    for (const role of ROLES) results.push(await stopKernel(role));
+    out(results);
+  } else if (command === 'status') out(await status());
+  else if (command === 'grant') out(await grantAccess());
+  else if (command === 'exec') {
+    const detach = rest[0] === '--detach' ? rest.shift() : undefined;
+    const log = detach && rest[0] === '--log' ? (rest.shift(), rest.shift()) : undefined;
+    if (rest[0] === '--') rest.shift();
+    const result = await execInHolder({ argv: rest, cwd: process.cwd(), detach: Boolean(detach), logFile: log });
+    process.stdout.write(result.stdout); process.stderr.write(result.stderr);
+    if (result.pid) out({ pid: result.pid });
+    process.exitCode = result.code;
+  } else if (command === 'env') {
+    const env = roleEnv('coordinator');
+    for (const key of ['CHARIOX_HOME', 'CHARIOX_DAEMON_SOCKET']) console.log(`${key}=${env[key]}`);
+    console.log(`CHARIOX_BIN=${join(STATE, 'bin/chariox')}`, `CHARIOX_COORDINATOR_HOME=${join(STATE, 'loop')}`);
+  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant|exec|env'); process.exitCode = 2; }
+} catch (error) {
+  console.error(JSON.stringify({ error: String(error.message).replace(/(?:Bearer\s+|token[=:]\s*)\S+/gi, '[redacted]').slice(0, 300) }));
+  process.exitCode = 1;
+}
