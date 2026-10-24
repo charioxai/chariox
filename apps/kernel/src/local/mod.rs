@@ -278,6 +278,7 @@ pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
     ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
+    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
 pub use api::{
     ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,

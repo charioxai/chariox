@@ -11,6 +11,9 @@ pub(crate) use leased_processes::LeasedProcessMutation;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 mod delivery_waits;
 #[cfg(test)]
+mod fault_tests;
+pub(crate) mod faults;
+#[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;
 mod migration;
@@ -18,6 +21,7 @@ mod migration;
 mod plain_tests;
 mod quarantine;
 mod replies;
+mod subscriptions;
 mod supervision;
 #[cfg(test)]
 mod tests;
@@ -36,7 +40,9 @@ use transitions::apply;
 pub(super) use types::Request;
 pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
 mod wake_receipts;
-pub(crate) use types::{unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration};
+pub(crate) use types::{
+    unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration, WakeEnd,
+};
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;
@@ -175,6 +181,18 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }
+    /// Steers into a leased turn whose outcome is still unconfirmed, as
+    /// `(room, agent, steer id)`: a restart must ask their workers again.
+    pub(crate) fn agent_unconfirmed_leased_steers(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.unconfirmed_leased_steers")?;
+        let mut q = db.prepare("SELECT room_id,agent_id,json_extract(payload,'$.prompt_id') FROM agent_inbox WHERE json_valid(payload) AND json_extract(payload,'$.state') IN ('uncertain','blocked') AND json_extract(payload,'$.target_prompt_id') IS NOT NULL AND json_extract(payload,'$.prompt_id') IS NOT NULL AND json_extract(payload,'$.provider_run_id') LIKE 'leased:%' ORDER BY sequence").map_err(sql)?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
     pub(crate) fn agent_event_for_prompt(
         &self,
         room: &str,
@@ -223,7 +241,7 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
-pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
+pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::AgentFaults) -> bool {
     // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: no objective or operation payload in diagnostics.
     let trace = match &request.operation {
         Operation::ControlGoal { task, action, .. } => match action.as_str() {
@@ -243,8 +261,19 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql)?;
         let begun = std::time::Instant::now();
+        let duplicate = faults
+            .duplicates_deliveries()
+            .then(|| {
+                faults::delivery_kind(&request.operation)
+                    .map(|kind| (kind, request.operation.clone()))
+            })
+            .flatten();
         let value = apply(&tx, request.operation)?;
         let applied = std::time::Instant::now();
+        if faults.writer_fails() {
+            drop(tx);
+            return Err(error("agent lifecycle write failed (CHARIOX_AGENT_FAULT_DIR/writer-fail); nothing was committed"));
+        }
         let committed = tx.commit();
         if let Some((key, action)) = trace {
             crate::runtime::command_latency::log_goal_writer_phases(
@@ -264,10 +293,27 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                 e.to_string()
             }));
         }
+        // A scheduler tick that fired nothing delivered nothing.
+        let delivered = !matches!(&value, Outcome::Wakes(fired) if fired.is_empty());
+        if let Some((kind, operation)) = duplicate.filter(|_| delivered) {
+            redeliver(db, faults, kind, operation);
+        }
         Ok(value)
     })();
     let _ = request.response.send(result);
     uncertain
+}
+/// G05 drill: the same delivery arrives again after the first committed.
+fn redeliver(db: &mut Connection, faults: &faults::AgentFaults, kind: &str, operation: Operation) {
+    let outcome = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)
+        .and_then(|tx| {
+            let applied = apply(&tx, operation).map(|_| ());
+            tx.commit().map_err(sql)?;
+            applied
+        });
+    faults.record_duplicate(kind, outcome.as_ref().err());
 }
 fn load(tx: &Transaction<'_>, id: &str) -> Result<AgentTaskExecution, DaemonError> {
     let row: Option<(String, String, String, String)> = tx
@@ -421,11 +467,11 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     {
         return Err(error("completion_check cannot mutate work or authority"));
     }
-    if task.prompt_id != prompt
-        || task.state != ExecutionState::Working
-        || task.pending_prompt_id.is_some()
-    {
-        return Err(error("turn mutation admission closed or stale"));
+    if task.prompt_id != prompt {
+        return Err(error("origin_prompt_id is not this running turn's. Retry with the task_id and origin_prompt_id from this turn's <chariox-task-context>; never reuse ids from an earlier turn"));
+    }
+    if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
+        return Err(error("this turn can no longer change its task: it is waiting, finished or already ending. End the turn without more tools"));
     }
     Ok(())
 }
@@ -673,7 +719,7 @@ pub(crate) fn lacks_live_executor(
         check.result.is_none()
             && check.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
             && check.started_at_ms <= now
-            && now < check.deadline_ms
+            && (check.paused_at_ms.is_some() || now < check.deadline_ms)
     });
     task.state == ExecutionState::Working
         && now.saturating_sub(task.last_progress_at_ms) >= DELIVERY_TIMEOUT_MS

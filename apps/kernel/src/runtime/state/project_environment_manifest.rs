@@ -65,11 +65,14 @@ impl KernelRuntimeState {
 
     // MP-08/MP-10/MP-11: keep an Always-policy unlock alive through resolution,
     // replacement and queue activation; failures leave the unactivated queue intact.
+    // A launch that turns out to need the locked Vault (a Claude token, no Project
+    // environment to unlock for up front) asks the owner and runs once more, so a
+    // queued prompt never waits on a popup nobody was shown.
     pub(super) async fn with_project_prompt_environment<T>(
         &self,
         session_id: &str,
         agent_id: &str,
-        operation: impl FnOnce(&mut DaemonApp) -> Result<T, DaemonError>,
+        mut operation: impl FnMut(&mut DaemonApp) -> Result<T, DaemonError>,
     ) -> Result<T, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
@@ -90,7 +93,17 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        self.with_authorized_app_side_effect(operation).await
+        match self.with_authorized_app_side_effect(&mut operation).await {
+            Err(error)
+                if _vault.is_none() && crate::secret::is_chariox_vault_locked_error(&error) =>
+            {
+                let _vault = self
+                    .ensure_vault_unlocked_for_agent(session_id, agent_id, "launch provider run")
+                    .await?;
+                self.with_authorized_app_side_effect(operation).await
+            }
+            result => result,
+        }
     }
 
     pub(crate) fn project_environment_for_shell(

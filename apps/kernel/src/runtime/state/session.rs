@@ -81,10 +81,16 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
-        session.set_agent_tasks(
+        session.set_agent_tasks(super::agent_task_projection::visible_tasks(
             self.durable_state_store
-                .agent_tasks(Some(session_id), None)?,
-        );
+                .agent_tasks(Some(session_id), None)?
+                .into_iter()
+                .map(|mut task| {
+                    task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                    task
+                })
+                .collect(),
+        ));
         session.set_agent_wakes(super::agent_wake_scheduler::visible_wakes(
             self.durable_state_store
                 .agent_wakes(Some(session_id), None)?,

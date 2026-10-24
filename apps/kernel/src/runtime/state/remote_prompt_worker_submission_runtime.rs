@@ -698,7 +698,7 @@ fn classify_remote_prompt_submission_outcome(
     }
 }
 
-fn remote_prompt_error_is_known_pre_admission_rejection(error: &DaemonError) -> bool {
+pub(super) fn remote_prompt_error_is_known_pre_admission_rejection(error: &DaemonError) -> bool {
     let DaemonError::RelayTransport {
         operation, code, ..
     } = error
@@ -720,7 +720,9 @@ fn remote_prompt_error_is_known_pre_admission_rejection(error: &DaemonError) -> 
     )
 }
 
-fn remote_prompt_error_is_definitely_pre_send_after_transport_start(error: &DaemonError) -> bool {
+pub(super) fn remote_prompt_error_is_definitely_pre_send_after_transport_start(
+    error: &DaemonError,
+) -> bool {
     let operation = match error {
         DaemonError::LocalTransport { operation, .. }
         | DaemonError::RelayTransport { operation, .. } => *operation,
@@ -1138,6 +1140,7 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
         "not currently visible on relay",
         "did not appear on relay",
         "connection reset",
+        "connection abort",
         "connection refused",
         "connection closed",
         "relay closed temporary peer connection",

@@ -40,7 +40,14 @@ export function agentTaskStatus(session: AgentTaskStatusSession | null | undefin
     return { state, deadline_ms: Number(records([task.wait])[0]?.deadline_ms), label: `WAITING ON ${reason} UNTIL ${deadline}${next}${suffix}`, tone: "idle" }
   }
   if (state === "blocked") return { state, label: `BLOCKED: ${reason}${suffix}`, tone: "error" }
+  if (state === "working" && waitsForOwner(task)) return { state, label: `WORKING: ${reason}${suffix}`, tone: "working" }
   return { state, label: `${state.toUpperCase()}${suffix}`, tone: state === "working" ? "working" : "idle" }
+}
+
+// The kernel pauses a completion check's bound while it waits on the owner (the Vault unlock).
+function waitsForOwner(task: Record<string, unknown>): boolean {
+  const evaluation = records([task.goal])[0]?.evaluation ?? records([task.completion_check])[0]?.evaluation
+  return typeof records([evaluation])[0]?.paused_at_ms === "number"
 }
 
 // MP-08/MP-09/MP-10/MP-11 G13: bounded countdown for permanent client chrome.

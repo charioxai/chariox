@@ -40,12 +40,15 @@ mod provider_processes;
 mod provider_prompt_launch;
 mod provider_run_read;
 mod provider_runtime;
+mod provider_tool_close;
 mod provider_tracking;
 mod relay_runtime;
 mod remote_agent_binding;
 mod remote_kernel_selection;
 mod remote_lease;
 mod remote_workspace_live_sync_fanout;
+#[cfg(all(test, unix))]
+mod room_terminal_managed_tests;
 mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod terminal_input;
@@ -88,6 +91,7 @@ pub(crate) use provider_output_claude_native::{
     format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
     NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
+pub(crate) use provider_tool_close::{ended_open_provider_tool_rows, ProviderToolEnding};
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
 };
@@ -139,8 +143,8 @@ pub(crate) use provider_processes::{
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
-    LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget, PreparedLeasedProviderRun,
-    RemoteLeaseRuntime,
+    DrainedLeasedProjection, LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget,
+    PreparedLeasedProviderRun, RemoteLeaseRuntime,
 };
 #[cfg(test)]
 pub(crate) use remote_lease::{
@@ -154,6 +158,9 @@ pub struct DaemonApp {
     pub(crate) agents: AgentServiceStore,
     pub(crate) attachments: AttachmentServiceStore,
     pty: PtyManager,
+    /// Shared with the runtime state; held here so lease teardown, which
+    /// runs on the app alone, can end a leased Room's terminals.
+    room_terminals: crate::room_terminal::RoomTerminalService,
     pub(crate) providers: ProviderProcessServiceStore,
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
@@ -205,6 +212,7 @@ pub struct DaemonApp {
     pending_workflow_remote_prompt_dispatches: Vec<KernelRemotePromptDispatch>,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    leased_projection_deliveries: BTreeMap<String, remote_lease::LeasedProjectionDelivery>,
     execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     completed_execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
@@ -368,9 +376,14 @@ impl DaemonApp {
             .migrate_effective_defaults(crate::session::DEFAULT_LOCAL_USER_ID, &provider_home)?;
 
         let mut app = Self {
-            agents: AgentServiceStore::new(AgentService::new()),
+            agents: AgentServiceStore::new(
+                AgentService::new().with_worker_run_durability(durable_state.clone()),
+            ),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
+            room_terminals: crate::room_terminal::RoomTerminalService::new(
+                config.private_runtime_state_root().join("room-terminals"),
+            ),
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
@@ -426,6 +439,7 @@ impl DaemonApp {
             pending_workflow_remote_prompt_dispatches: Vec::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            leased_projection_deliveries: BTreeMap::new(),
             execution_lease_callers: BTreeMap::new(),
             leased_agent_callers: BTreeMap::new(),
             completed_execution_lease_callers: BTreeMap::new(),
@@ -787,6 +801,10 @@ impl DaemonApp {
 
     pub fn pty(&self) -> &PtyManager {
         &self.pty
+    }
+
+    pub(crate) fn room_terminals(&self) -> crate::room_terminal::RoomTerminalService {
+        self.room_terminals.clone()
     }
 
     pub(crate) fn pty_output_signal(&self) -> PtyOutputSignal {

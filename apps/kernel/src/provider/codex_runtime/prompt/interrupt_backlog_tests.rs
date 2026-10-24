@@ -131,3 +131,56 @@ fn mp08_interrupt_backlogged_command_output_sends_before_timeout() {
         assert!(state.active_turn_id.is_none());
     }
 }
+
+// MP-08 / MP-10 (amint r19, webterm r15 Stop timing): a Codex app-server that reads the Stop's
+// interrupt but never answers held the abort for the generic 30 s request timeout. It now
+// fails at the named interrupt deadline, so the turn ends with the cancellation notice.
+#[test]
+fn mp08_unanswered_interrupt_fails_at_the_named_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = accept(stream).unwrap();
+        let mut methods = Vec::new();
+        for _ in 0..2 {
+            let request = socket
+                .read()
+                .ok()
+                .and_then(|message| message.into_text().ok())
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+            methods
+                .push(request.map(|request| request["method"].as_str().unwrap_or("").to_string()));
+        }
+        // Stay connected and silent until the client gives up.
+        let _ = done_rx.recv_timeout(Duration::from_secs(40));
+        methods
+    });
+    let (socket, _) = connect(&endpoint).unwrap();
+    let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+    state.active_turn_id = Some("submitted".into());
+    let started = Instant::now();
+    let result = abort_codex_turn("run", &mut state);
+    let elapsed = started.elapsed();
+    done_tx.send(()).unwrap();
+    let methods = server.join().unwrap();
+    assert_eq!(
+        methods,
+        vec![
+            Some("turn/interrupt".to_string()),
+            Some("thread/backgroundTerminals/clean".to_string())
+        ]
+    );
+    assert!(
+        result.is_err(),
+        "an unanswered interrupt is not a cancellation"
+    );
+    assert!(
+        elapsed >= crate::provider::codex_client::CODEX_INTERRUPT_ANSWER_DEADLINE
+            && elapsed
+                < crate::provider::codex_client::CODEX_INTERRUPT_ANSWER_DEADLINE
+                    + Duration::from_secs(3),
+        "the abort ends at the named interrupt deadline: {elapsed:?}"
+    );
+}

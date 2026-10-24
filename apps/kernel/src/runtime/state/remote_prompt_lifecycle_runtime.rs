@@ -5,6 +5,11 @@
 use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding;
 use super::*;
 
+/// How long a cancelled leased turn waits for a worker that does not answer
+/// before home ends it; the same bound as an unconfirmed inbox delivery.
+pub(super) const REMOTE_CANCEL_WORKER_ANSWER_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
 impl KernelRuntimeState {
     pub(super) async fn cancel_remote_agent_prompt_if_remote(
         &self,
@@ -14,14 +19,31 @@ impl KernelRuntimeState {
         expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
-        self.cancel_remote_agent_prompt_if_matches(
-            session_id,
-            target_agent_id,
-            attachment_id,
-            expected_prompt_id,
-            authority,
-        )
-        .await
+        let cancellation = self
+            .cancel_remote_agent_prompt_if_matches(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                expected_prompt_id,
+                authority,
+            )
+            .await?;
+        // Interactive cancellation keeps its no-active-prompt response. Exact
+        // supervised cleanup calls the idempotent matching operation directly.
+        if cancellation.is_none()
+            && expected_prompt_id.is_some()
+            && self
+                .owned
+                .agent_store
+                .get_agent(target_agent_id)?
+                .remote_execution()
+                .is_some()
+        {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
+        Ok(cancellation)
     }
 
     pub(super) async fn cancel_remote_agent_prompt_if_matches(
@@ -441,6 +463,78 @@ impl KernelRuntimeState {
         Ok(Some(submission))
     }
 
+    /// Ctrl+C on a leased turn whose worker no longer answers. The cancel cannot
+    /// reach the worker, so after [`REMOTE_CANCEL_WORKER_ANSWER_DEADLINE`] of silence
+    /// the home ends the turn as Cancelled and says why, rather than waiting forever.
+    pub(super) fn end_remote_cancellation_the_worker_never_answered(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling)
+        else {
+            return Ok(false);
+        };
+        let Some(binding) = self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let message = format!(
+            "{}: Worker kernel `{}` did not answer for {} s, so the cancel could not reach it. \
+             Chariox cancelled this turn here; anything the worker still does for it is not shown.",
+            self.agent_notice_name(agent_id),
+            binding.worker_kernel_id,
+            REMOTE_CANCEL_WORKER_ANSWER_DEADLINE.as_secs(),
+        );
+        crate::logging::warn_with_fields(
+            "daemon.remote_prompt_dispatch",
+            "worker never answered a remote prompt cancellation; cancelled at home",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "worker_kernel_id": binding.worker_kernel_id,
+                "leased_agent_id": binding.leased_agent_id,
+                "prompt_id": prompt.id(),
+            }),
+        );
+        if let Some(run) = prompt.durable_delivery_provider_run_id() {
+            let projected =
+                crate::provider::projected_leased_provider_run_id(&binding.leased_agent_id, run);
+            self.owned.end_open_provider_tools(
+                session_id,
+                &projected,
+                agent_id,
+                crate::app::ProviderToolEnding::Cancelled,
+            )?;
+            self.end_lost_leased_provider_run(session_id, &projected)?;
+        }
+        self.owned.record_notice_for_agent(
+            session_id,
+            None,
+            Some(agent_id),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(session_id),
+            message,
+        );
+        self.finalize_remote_prompt_cancellation_and_advance(
+            session_id,
+            agent_id,
+            prompt.source_attachment_id(),
+        )?;
+        Ok(true)
+    }
+
     pub(super) fn finalize_remote_prompt_cancellation_and_advance(
         &self,
         session_id: &str,
@@ -474,7 +568,9 @@ impl KernelRuntimeState {
     }
 
     /// A10: a leased turn's completion settles its home task through the same
-    /// settlement as a local turn, so delegators and reply waiters wake.
+    /// settlement as a local turn, so delegators and reply waiters wake. A
+    /// `failure` (the worker's provider run ended abnormally) never promotes
+    /// the partial output to Done: the task ends like a failed local turn.
     pub(super) async fn settle_leased_agent_task(
         &self,
         session_id: &str,
@@ -482,20 +578,27 @@ impl KernelRuntimeState {
         completed: &crate::session::PromptQueueItem,
         leased_agent_id: &str,
         worker_provider_run_id: &str,
+        failure: Option<&str>,
     ) {
         let run = crate::provider::projected_leased_provider_run_id(
             leased_agent_id,
             worker_provider_run_id,
         );
         let cancelled = completed.status() == crate::session::PromptStatus::Cancelled;
-        let settled = match self.owned.settle_agent_task_answered_by(
-            session_id,
-            agent_id,
-            completed,
-            &run,
-            worker_provider_run_id,
-            cancelled,
-        ) {
+        let settlement = match failure {
+            Some(reason) => self
+                .owned
+                .end_failed_agent_task(session_id, agent_id, completed, &run, reason),
+            None => self.owned.settle_agent_task_answered_by(
+                session_id,
+                agent_id,
+                completed,
+                &run,
+                worker_provider_run_id,
+                cancelled,
+            ),
+        };
+        let settled = match settlement {
             Ok(settlement) => {
                 Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
             }
@@ -720,14 +823,48 @@ impl KernelRuntimeState {
                     });
                 }
             };
+        let completion = self
+            .settle_remote_prompt_receipt(
+                session_id,
+                target_agent_id,
+                RemotePromptReceipt {
+                    prompt_id: completion_prompt.id(),
+                    binding: &remote_execution,
+                    provider_run_id: &remote_provider_run_id,
+                    termination: provider_termination,
+                    diagnostic: provider_diagnostic,
+                },
+                next_queued_prompt,
+            )
+            .await?;
+        Ok(Some(completion))
+    }
+
+    /// Settles the home side of a leased turn that ended on its worker: the
+    /// prompt, its task and workflow node, then the next queued prompt.
+    pub(super) async fn settle_remote_prompt_receipt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        receipt: RemotePromptReceipt<'_>,
+        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        let owned = &self.owned;
+        let RemotePromptReceipt {
+            prompt_id,
+            binding: remote_execution,
+            provider_run_id: remote_provider_run_id,
+            termination: provider_termination,
+            diagnostic: provider_diagnostic,
+        } = receipt;
         // The worker completion is committed; settle its home receipt even after revocation.
         let completion = owned.complete_remote_prompt_owner_for_receipt(
             session_id,
             target_agent_id,
-            &remote_provider_run_id,
+            remote_provider_run_id,
             next_queued_prompt,
             provider_termination.clone(),
-            Some((completion_prompt.id(), &remote_execution)),
+            Some((prompt_id, remote_execution)),
         )?;
         // A10: home alone commits the leased task outcome.
         self.settle_leased_agent_task(
@@ -735,7 +872,11 @@ impl KernelRuntimeState {
             target_agent_id,
             &completion.completed,
             &remote_execution.leased_agent_id,
-            &remote_provider_run_id,
+            remote_provider_run_id,
+            provider_termination
+                .as_ref()
+                .map(|termination| termination.reason.as_str())
+                .or(provider_diagnostic.as_deref()),
         )
         .await;
         if completion.completed.workflow_run_id().is_some() {
@@ -747,7 +888,7 @@ impl KernelRuntimeState {
                 let dispatches = owned.workflow_fail_provider_prompt(
                     session_id,
                     &completion.completed,
-                    Some(&remote_provider_run_id),
+                    Some(remote_provider_run_id),
                     diagnostic,
                 )?;
                 self.spawn_workflow_prompt_dispatches(dispatches);
@@ -755,7 +896,7 @@ impl KernelRuntimeState {
                 let dispatches = owned.workflow_complete_prompt(
                     session_id,
                     &completion.completed,
-                    Some(&remote_provider_run_id),
+                    Some(remote_provider_run_id),
                 )?;
                 self.spawn_workflow_prompt_dispatches(dispatches);
             }
@@ -852,8 +993,18 @@ impl KernelRuntimeState {
                 started_next.attachments(),
             );
         }
-        Ok(Some(completion))
+        Ok(completion)
     }
+}
+
+/// The worker-side end of one leased home prompt.
+pub(super) struct RemotePromptReceipt<'a> {
+    pub(super) prompt_id: &'a str,
+    /// The agent's current binding; settlement refuses a binding that changed.
+    pub(super) binding: &'a crate::agent::RemoteAgentBinding,
+    pub(super) provider_run_id: &'a str,
+    pub(super) termination: Option<crate::provider::ProviderRunTermination>,
+    pub(super) diagnostic: Option<String>,
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 A10/G03: this worker has lost the

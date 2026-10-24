@@ -17,6 +17,7 @@ mod native_provider;
 mod profile_update;
 mod project_environment;
 mod projection;
+mod projection_delivery;
 mod prompt_attachments;
 mod prompt_lifecycle;
 mod provider_account;
@@ -25,6 +26,7 @@ mod relay_context;
 mod skill_sync;
 mod turn_capacity;
 
+pub(crate) use projection_delivery::{DrainedLeasedProjection, LeasedProjectionDelivery};
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;
 
@@ -91,6 +93,7 @@ pub(crate) enum LeasedAgentCleanupPhase {
     Attachment,
     Agent,
     BackingSessionEnd,
+    BackingTerminals,
     BackingSessionDelete,
 }
 
@@ -107,7 +110,8 @@ impl LeasedAgentCleanupPhase {
             Self::Provider => Some(Self::Attachment),
             Self::Attachment => Some(Self::Agent),
             Self::Agent => Some(Self::BackingSessionEnd),
-            Self::BackingSessionEnd => Some(Self::BackingSessionDelete),
+            Self::BackingSessionEnd => Some(Self::BackingTerminals),
+            Self::BackingTerminals => Some(Self::BackingSessionDelete),
             Self::BackingSessionDelete => None,
         }
     }
@@ -119,6 +123,7 @@ impl LeasedAgentCleanupPhase {
             Self::Attachment => "leased_agent.cleanup.attachment",
             Self::Agent => "leased_agent.cleanup.agent",
             Self::BackingSessionEnd => "leased_agent.cleanup.session_end",
+            Self::BackingTerminals => "leased_agent.cleanup.terminals",
             Self::BackingSessionDelete => "leased_agent.cleanup.session_delete",
         }
     }
@@ -863,6 +868,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .map(|_| ())
                     }
                 }
+                LeasedAgentCleanupPhase::BackingTerminals => {
+                    // Terminals live beside the session, not in it. They are
+                    // swept only once the Room has ended: an open that raced
+                    // the cleanup then sees the end and removes its own shell.
+                    if !backing_session_still_used {
+                        self.app
+                            .room_terminals
+                            .end_session(&agent.backing_session_id);
+                    }
+                    Ok(())
+                }
                 LeasedAgentCleanupPhase::BackingSessionDelete => (|| {
                     self.app
                         .operational_history_store()
@@ -891,6 +907,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         self.app.leased_agent_cleanup_phases.remove(leased_agent_id);
         self.app.leased_agents.remove(leased_agent_id);
+        self.app
+            .leased_projection_deliveries
+            .remove(leased_agent_id);
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);

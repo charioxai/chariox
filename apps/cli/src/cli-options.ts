@@ -238,6 +238,7 @@ function printUsage() {
   process.stdout.write([
     "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME) [--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID]] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
     "       chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
+    "       chariox-cli terminal --session REF [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]",
     cliAppUsage(),
     "",
     "commands:",
@@ -255,6 +256,7 @@ function printUsage() {
     "  /provider processes teardown <n> tear down safe daemon-tracked provider processes",
     "  /model <id>           select the active model",
     "  /variant <name>       select the model variant",
+    "  /room terminal [list|new [TITLE]|close ID|ID]  list, open, close or attach a Room terminal (Ctrl-] detaches)",
     "  /workspace [path]     show or set the next-session workspace path",
     "  /workspace link ...   manage workspace links for the attached session",
     "  /worktree [path]      show or set the next-session worktree path",

@@ -294,7 +294,7 @@ impl WorkerSpy {
                                 *counter.lock().unwrap() += 1;
                             }
                             let response = match request {
-                                RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                                RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None, projection_sequence: None },
                                 RelayPeerRequest::CompleteLeasedPrompt { .. } => RelayPeerResponse::LeasedPromptCompleted {
                                     provider_run_id: Some("worker-run".into()), provider_diagnostic: None, provider_termination: None,
                                     git_observations: vec![], workspace_live_sync_change: None,

@@ -22,17 +22,20 @@ by text matching. Session identity checks prevent applying a late full refresh
 to another Room. This is a bounded display projection, not a second history
 authority or a durable replacement for `/room actions`.
 
+MP-08/MP-10: explicit `/agent wakes` inspections use the same bounded,
+session-scoped projection so their results also survive provider-history I/O.
+
 Validation:
 
 ```sh
 bun test apps/cli/src/agent-pane-refresh-controller.test.ts \
   apps/cli/src/room-environment-activity-controller.test.ts \
   apps/cli/src/transcript-event-controller.test.ts \
-  apps/cli/src/room-activity-notice-state.test.ts
+  apps/cli/src/kernel-projection-notice-state.test.ts
 ```
 
 The two refresh regressions failed before the fix. A reviewer-found key collision
-also has a failing-before/passing-after reset/resync regression. The focused
-suite has 28 passing tests. Codex Web + both TUIs passed before the source-key
+also has a failing-before/passing-after reset/resync regression. The original Room follow-up
+suite had 28 passing tests. Codex Web + both TUIs passed before the source-key
 follow-up; latest-head live validation and review remain required. No serialized
 protocol shape or minimum client version changes.

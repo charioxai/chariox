@@ -271,6 +271,23 @@ impl<'a> KernelAgentService<'a> {
             completion.provider_run_id.as_deref(),
         )?;
         if let Some(provider_run_id) = completion_provider_run_id.as_deref() {
+            let ending = match completion.settlement_status {
+                crate::git_observer::CompletedTurnSettlementStatus::Completed => None,
+                crate::git_observer::CompletedTurnSettlementStatus::Cancelled => {
+                    Some(crate::app::ProviderToolEnding::Cancelled)
+                }
+                crate::git_observer::CompletedTurnSettlementStatus::Failed => {
+                    Some(crate::app::ProviderToolEnding::Failed)
+                }
+            };
+            if let Some(ending) = ending {
+                self.end_open_provider_tools_of_run(
+                    &completion.session_id,
+                    &completion.agent_id,
+                    provider_run_id,
+                    ending,
+                );
+            }
             flow_control::clear_prompt_activity(self.app, provider_run_id);
         }
         let started_next = if self
@@ -307,6 +324,32 @@ impl<'a> KernelAgentService<'a> {
             &prompt_completion,
         )?;
         Ok(prompt_completion)
+    }
+
+    /// The turn still settles when its open tool rows cannot be read: the rows
+    /// then stay as they were, and the log says why.
+    pub(super) fn end_open_provider_tools_of_run(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        ending: crate::app::ProviderToolEnding,
+    ) {
+        if let Err(error) =
+            self.app
+                .end_open_provider_tools(session_id, agent_id, provider_run_id, ending)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.prompt_completion",
+                "could not end the open tool rows of an ended provider run",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "provider_run_id": provider_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(super) fn record_assistant_message_completion(

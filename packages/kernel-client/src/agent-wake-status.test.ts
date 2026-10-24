@@ -8,7 +8,7 @@ import { sessionAgentTaskStatus } from "./session-runtime-status.js"
 function wake(overrides: Partial<AgentWake>): AgentWake {
   return { id: "w", task_id: "t", room_id: "room", agent_id: "agent", registration_id: "completion-w", kind: "timer",
     label: "check-in", state: "scheduled", created_at_ms: 0, verified_at_ms: 1, next_due_ms: Date.UTC(2026, 9, 7, 12, 30),
-    interval_ms: null, command: [], match_text: null, matched_at_ms: null, pid: null, exit_code: null, fire_count: 0,
+    interval_ms: null, command: [], match_text: null, matched_at_ms: null, pid: null, exit_code: null, summary: "", detail: null, fire_count: 0,
     missed_fires: 0, last_fired_at_ms: null, last_sequence: null, last_delivery: null, last_delivered_at_ms: null,
     last_acknowledged_at_ms: null, alerted_sequence: null, ...overrides }
 }
@@ -34,7 +34,7 @@ test("MP-08/MP-09/MP-10/MP-11 A03 wake list shows proof of life and receipts", (
       last_delivered_at_ms: Date.UTC(2026, 9, 7, 12, 0, 2), last_acknowledged_at_ms: Date.UTC(2026, 9, 7, 12, 0, 9), last_delivery: "handled" }),
   ] } as RuntimeSession
   const [armed, fired] = formatAgentWakeLines(session, "agent")
-  assert.match(armed!, /timer 'check-in' scheduled next 12:30:00Z every 60s UNVERIFIED \| 0x, last not fired/)
+  assert.match(armed!, /timer 'check-in' scheduled next 2026-10-07 12:30:00Z every 60s UNVERIFIED \| 0x, last not fired/)
   assert.match(fired!, /fired 12:00:01Z delivered 12:00:02Z acked 12:00:09Z \(handled\)/)
   assert.deepEqual(formatAgentWakeLines(session, "other"), ["no wakes"])
 })

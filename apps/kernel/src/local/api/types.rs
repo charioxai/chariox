@@ -41,6 +41,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_terminal;
 mod screenshot;
 mod session_control;
 mod slice;
@@ -84,6 +85,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_terminal::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
@@ -338,4 +340,12 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;
+/// Agent-model line (537, relay peer 145) contracts were integrated in 570/178:
+/// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
+/// and owner-managed contexts (MP-08/MP-10/MP-11).
+/// Room terminal service (`RoomTerminal`, formerly provisional 569) is retained.
+/// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
+/// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
+/// MP-08/MP-10/MP-11: allocated 573/181 binds leased assessment wire identities to the home check.
+/// MP-08/MP-10/MP-11: allocated 590/196 carries the acknowledged leased projection drain.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 590;

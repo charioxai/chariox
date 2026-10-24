@@ -145,6 +145,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetRoomBrowserBar(_) => "environment.browser_bar.set",
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
         LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
         LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_) => {
             "environment.browser_action.submit"

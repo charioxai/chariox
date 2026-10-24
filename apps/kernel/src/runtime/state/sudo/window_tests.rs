@@ -459,6 +459,76 @@ async fn sudo_start_does_not_report_its_own_prompt_as_deferred() {
         .unwrap();
 }
 
+// MP-08 / MP-10 / MP-11 A10-S05: the worker runs a leased agent's turns, so
+// the end of its sudo window must start the prompts the window deferred
+// through the leased dispatch; otherwise they and every later message wait
+// forever behind an idle agent.
+#[tokio::test]
+async fn sudo_window_end_starts_a_leased_agents_deferred_prompt() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    let agent = window.agent_id.clone();
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session(&f), &agent)
+        .unwrap();
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(
+            &agent,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "worker-lease".into(),
+                leased_agent_id: "leased-agent".into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let deferred = crate::app::KernelPreparedPromptSubmission {
+        session_id: window.session_id.clone(),
+        prompt: PromptQueueItem::new(
+            "deferred-owner-prompt",
+            &f.request.attachment_id,
+            &agent,
+            "deferred",
+            PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    f.state
+        .owned
+        .submit_remote_prepared_prompt_with_queue_policy(&deferred, true)
+        .unwrap();
+    assert_eq!(deferred_prompt_notices(&f), 1);
+    let queued = |f: &Fixture| {
+        session(f)
+            .queued_prompts_for_agent(&agent)
+            .is_some_and(|queue| !queue.is_empty())
+    };
+    assert!(queued(&f));
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while queued(&f) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the deferred prompt must leave the queue once the window ends"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn sudo_extension_before_the_first_turn_keeps_the_window() {
     let f = fixture_with_options(None, true);
@@ -588,10 +658,9 @@ async fn sudo_extend_needs_a_fresh_passkey_and_settles_once() {
     let state = f.state.clone();
     let extend = tokio::spawn(async move { state.extend_sudo_window(guest, "local").await });
     let prompt = popup(&f.state).await;
-    assert_eq!(
-        prompt.interaction_id,
-        format!("{}:extend:1", window.entry_id)
-    );
+    assert!(prompt
+        .interaction_id
+        .starts_with(&format!("{}:extend:1:", window.entry_id)));
     // A wrong passkey or a remembered presence leaves the deadline unchanged.
     let wrong = f
         .state
@@ -1527,6 +1596,61 @@ async fn sudo_deferred_app_queue_child() {
     );
     drop(app);
     assert_eq!(f.state.list_sudo_turns("local").len(), 1);
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
+// MP-08 / MP-10 / MP-11: a refused extension cannot hide its replacement in an answering client.
+#[tokio::test]
+async fn sudo_extension_retry_has_a_fresh_interaction_without_changing_the_window() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    let request = ExtendKernelSudoRequest {
+        session_id: window.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        entry_id: window.entry_id.clone(),
+        revision: window.revision,
+    };
+    let begin = |request| {
+        let state = f.state.clone();
+        tokio::spawn(async move { state.extend_sudo_window(request, "local").await })
+    };
+    let first = begin(request.clone());
+    let refused = popup(&f.state).await;
+    f.state
+        .answer_terminal_runtime_interaction(
+            &refused.session_id,
+            &refused.interaction_id,
+            "refuse",
+            None,
+            Some("local"),
+            None,
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    assert!(first.await.unwrap().is_err());
+    let unchanged = f.state.list_sudo_turns("local").pop().unwrap();
+    assert_eq!(unchanged.revision, window.revision);
+    assert_eq!(unchanged.expires_at_ms, window.expires_at_ms);
+    let second = begin(request);
+    let retry = popup(&f.state).await;
+    assert_ne!(
+        retry.interaction_id, refused.interaction_id,
+        "a retry must not reuse an interaction already answered by a client"
+    );
+    assert!(
+        approve(&f, &refused, Some("120")).await.is_err(),
+        "stale approval cannot answer a retry"
+    );
+    approve(&f, &retry, Some("120")).await.unwrap();
+    let LocalDaemonResponse::KernelSudoExtended { turn } = second.await.unwrap().unwrap() else {
+        panic!("extension")
+    };
+    assert_eq!(turn.revision, window.revision + 1);
+    assert_eq!(turn.duration_minutes, 120);
     f.state
         .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
         .unwrap();

@@ -180,6 +180,12 @@ impl<'a> KernelAgentService<'a> {
                 &format!("prompt-complete:{}", prompt.id()),
                 crate::session::unix_epoch_ms(),
             );
+            self.end_open_provider_tools_of_run(
+                session_id,
+                agent_id,
+                provider_run_id,
+                crate::app::ProviderToolEnding::Cancelled,
+            );
             flow_control::clear_prompt_activity(self.app, provider_run_id);
         }
         // The prompt owner is already finalized. A failed workflow callback must

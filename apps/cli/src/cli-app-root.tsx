@@ -1050,6 +1050,21 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleRoomWorkflowsKey: roomWorkflows.handleKey,
     roomWorkflowsOwnsInput: roomWorkflows.ownsInput,
     appHostTerminal: createAppHostTerminal(renderer),
+    // The terminal program gets plain keys: kitty key reports would turn Ctrl-C into an escape sequence.
+    roomTerminalScreen: (() => {
+      let kittyKeyboard = false
+      return {
+        suspend: () => {
+          kittyKeyboard = renderer.useKittyKeyboard
+          if (kittyKeyboard) renderer.disableKittyKeyboard()
+          renderer.suspend()
+        },
+        resume: () => {
+          renderer.resume()
+          if (kittyKeyboard) renderer.enableKittyKeyboard()
+        },
+      }
+    })(),
     lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, cloudClient, kernelConnected, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,

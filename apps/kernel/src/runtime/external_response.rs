@@ -15,11 +15,11 @@ pub(crate) fn finish_response(
     }
     // Parser/provider diagnostics can echo stored values. Preserve the shared
     // mapper's public code/retryability before discarding those diagnostics.
-    let response = result.map_err(protect_error)?;
+    let response = result.map_err(|error| protect_error(command, error))?;
     project(response)
 }
 
-fn protect_error(error: DaemonError) -> DaemonError {
+fn protect_error(command: &KernelCommand, error: DaemonError) -> DaemonError {
     // These exact lifecycle messages are kernel constants, never provider or
     // parser output. Preserve refusal/revocation so callers can react correctly.
     if matches!(&error, DaemonError::LocalTransport { operation: "kernel access", message }
@@ -28,6 +28,17 @@ fn protect_error(error: DaemonError) -> DaemonError {
         return error;
     }
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    // The caller only learns the code; the host log keeps the cause the reply
+    // points to ("details are available only in the host terminal").
+    crate::logging::warn_with_fields(
+        "daemon.external_response",
+        "external request failed",
+        serde_json::json!({
+            "command_type": command.command_type,
+            "code": mapped.code,
+            "error": error.to_string(),
+        }),
+    );
     DaemonError::ExternalRequestFailed {
         code: mapped.code,
         retryable: mapped.retryable,
@@ -169,6 +180,7 @@ response_policies! {
         KernelAccessGrantsListed,
         KernelAccessRevoked,
         RoomBrowserArtifact,
+        RoomTerminal,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,
         AppPackageUploadStatus,

@@ -444,6 +444,17 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_room_terminal(
+        &self,
+        leased_agent_id: &str,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RoomTerminalOperation,
+    ) -> Result<crate::local::RoomTerminalResult, DaemonError> {
+        self.runtime_state
+            .relay_room_terminal(leased_agent_id, actor, operation)
+            .await
+    }
+
     pub(crate) async fn relay_resize_leased_provider_terminal(
         &self,
         leased_agent_id: &str,
@@ -896,31 +907,14 @@ impl CommandRouter {
         relay_peer_runtime::try_pump_relay_leased_runtime_projections(&self.runtime_state).await
     }
 
-    pub(crate) async fn relay_drain_leased_runtime_projection(
-        &self,
-        leased_agent_id: &str,
-        provider_run_id: &str,
-        pump_output: bool,
-        replay_settled_completion: bool,
-    ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
-        relay_peer_runtime::drain_relay_leased_runtime_projection(
-            &self.runtime_state,
-            leased_agent_id,
-            provider_run_id,
-            pump_output,
-            replay_settled_completion,
-            false,
-        )
-        .await
-    }
-
     pub(crate) async fn relay_drain_leased_runtime_projection_authorized(
         &self,
         leased_agent_id: &str,
         provider_run_id: &str,
         pump_output: bool,
         replay_settled_completion: bool,
-    ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
+        acknowledged_projection_sequence: u64,
+    ) -> Result<Option<crate::app::DrainedLeasedProjection>, DaemonError> {
         relay_peer_runtime::drain_relay_leased_runtime_projection(
             &self.runtime_state,
             leased_agent_id,
@@ -928,6 +922,7 @@ impl CommandRouter {
             pump_output,
             replay_settled_completion,
             true,
+            acknowledged_projection_sequence,
         )
         .await
     }

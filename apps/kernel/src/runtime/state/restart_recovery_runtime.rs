@@ -26,6 +26,19 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) queued_local_prompts_started: usize,
     pub(crate) orphaned_workflow_prompts_finalized: usize,
     pub(crate) failed_reconciliations: usize,
+    pub(crate) unrecoverable_local_prompts_cancelled: usize,
+    pub(crate) handed_off_local_prompts_ended: usize,
+    failed_local_prompts: Vec<DurableRestartRecoveryTarget>,
+    agents_awaiting_vault: BTreeSet<(String, String)>,
+}
+
+impl DurableRestartRecoverySummary {
+    fn note_vault_locked(&mut self, session_id: &str, agent_id: &str, error: &DaemonError) {
+        if crate::secret::is_chariox_vault_locked_error(error) {
+            self.agents_awaiting_vault
+                .insert((session_id.to_string(), agent_id.to_string()));
+        }
+    }
 }
 
 pub(super) enum UncertainLocalRecoveryOutcome {
@@ -43,6 +56,10 @@ pub(super) enum CancelledLocalPromptRestartOutcome {
 type DurableRestartRecoveryTarget = (String, String, String);
 type DurableRestartDispatchTarget = (String, String, String, String);
 const TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH: u32 = 9;
+// Wall clock, not attempts: one attempt can take seconds (a launch that waits on a locked Vault).
+const RESTART_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart (the provider could not start, for example because the Chariox Vault stayed locked)";
+const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct DurableRestartRecoveryTask(tokio::task::JoinHandle<()>);
 
@@ -73,6 +90,18 @@ impl KernelRuntimeState {
         let dispatch_targets = self.durable_restart_dispatch_targets(&recovery_targets);
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
         let uncertain_steer_targets = self.durable_restart_uncertain_remote_steer_targets();
+        let unconfirmed_inbox_steers = self
+            .owned
+            .durable_state_store
+            .agent_unconfirmed_leased_steers()
+            .unwrap_or_else(|error| {
+                crate::logging::warn_with_fields(
+                    "durable_state.recovery",
+                    "could not list unconfirmed leased inbox steers; the delivery sweep blocks them for the owner",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                Vec::new()
+            });
         crate::logging::info_with_fields(
             "durable_state.recovery",
             "captured durable restart recovery targets",
@@ -81,6 +110,7 @@ impl KernelRuntimeState {
                 "unobserved_dispatch_targets": dispatch_targets.len(),
                 "queued_publication_targets": queued_recovery_targets.len(),
                 "uncertain_remote_steer_targets": uncertain_steer_targets.len(),
+                "unconfirmed_inbox_steers": unconfirmed_inbox_steers.len(),
             }),
         );
         let state = self.clone();
@@ -92,56 +122,18 @@ impl KernelRuntimeState {
                     session_id, agent_id, prompt_id,
                 );
             }
-            let mut attempt = 0_u32;
-            let mut pending_dispatch_targets = dispatch_targets;
-            let summary = loop {
-                let mut summary = state
-                    .recover_durable_runtime_after_restart_targets(
-                        &recovery_targets,
-                        &queued_recovery_targets,
-                    )
-                    .await;
-                if should_rearm_unobserved_dispatches(
-                    attempt,
-                    summary.transcript_recovery_pending,
-                    pending_dispatch_targets.len(),
-                ) {
-                    match state
-                        .rearm_unobserved_restart_recovery_dispatches(&mut pending_dispatch_targets)
-                    {
-                        Ok(rearmed) if rearmed > 0 => {
-                            crate::logging::warn_with_fields(
-                                "durable_state.recovery",
-                                "rearmed unobserved restart recovery dispatches",
-                                serde_json::json!({
-                                    "rearmed_prompt_count": rearmed,
-                                    "observation_attempts": attempt.saturating_add(1),
-                                }),
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            summary.failed_reconciliations =
-                                summary.failed_reconciliations.saturating_add(1);
-                            crate::logging::error_with_fields(
-                                "durable_state.recovery",
-                                "failed to durably rearm unobserved restart recovery dispatch",
-                                serde_json::json!({
-                                    "error": error.to_string(),
-                                    "observation_attempts": attempt.saturating_add(1),
-                                }),
-                            );
-                        }
-                    }
-                }
-                if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
-                    || attempt >= 299
-                {
-                    break summary;
-                }
-                attempt = attempt.saturating_add(1);
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            };
+            for (room, agent, steer_id) in unconfirmed_inbox_steers {
+                state.spawn_leased_inbox_steer_reconciliation(room, agent, steer_id);
+            }
+            let summary = state
+                .drive_durable_restart_recovery(
+                    &recovery_targets,
+                    &queued_recovery_targets,
+                    dispatch_targets,
+                    RESTART_RECOVERY_WINDOW,
+                    RESTART_RECOVERY_RETRY_DELAY,
+                )
+                .await;
             crate::logging::info_with_fields(
                 "durable_state.recovery",
                 "reconciled durable runtime work after kernel restart",
@@ -156,9 +148,222 @@ impl KernelRuntimeState {
                     "queued_local_prompts_started": summary.queued_local_prompts_started,
                     "orphaned_workflow_prompts_finalized": summary.orphaned_workflow_prompts_finalized,
                     "failed_reconciliations": summary.failed_reconciliations,
+                    "unrecoverable_local_prompts_cancelled": summary.unrecoverable_local_prompts_cancelled,
+                    "handed_off_local_prompts_ended": summary.handed_off_local_prompts_ended,
                 }),
             );
         }))
+    }
+
+    async fn drive_durable_restart_recovery(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        mut pending_dispatch_targets: BTreeSet<DurableRestartDispatchTarget>,
+        window: std::time::Duration,
+        retry_delay: std::time::Duration,
+    ) -> DurableRestartRecoverySummary {
+        let started = std::time::Instant::now();
+        let mut attempt = 0_u32;
+        // The unlock is held across the next attempt so the redelivery never needs to prompt.
+        let mut vault_unlocks = Vec::new();
+        // An owner who dismissed the unlock is not asked again by this recovery: the
+        // prompt settles Cancelled at the end of the window and the owner resends it.
+        let mut vault_declined = BTreeSet::new();
+        loop {
+            let mut summary = self
+                .recover_durable_runtime_after_restart_targets(
+                    recovery_targets,
+                    queued_recovery_targets,
+                )
+                .await;
+            if should_rearm_unobserved_dispatches(
+                attempt,
+                summary.transcript_recovery_pending,
+                pending_dispatch_targets.len(),
+            ) {
+                match self
+                    .rearm_unobserved_restart_recovery_dispatches(&mut pending_dispatch_targets)
+                {
+                    Ok(rearmed) if rearmed > 0 => {
+                        crate::logging::warn_with_fields(
+                            "durable_state.recovery",
+                            "rearmed unobserved restart recovery dispatches",
+                            serde_json::json!({
+                                "rearmed_prompt_count": rearmed,
+                                "observation_attempts": attempt.saturating_add(1),
+                            }),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        summary.failed_reconciliations =
+                            summary.failed_reconciliations.saturating_add(1);
+                        crate::logging::error_with_fields(
+                            "durable_state.recovery",
+                            "failed to durably rearm unobserved restart recovery dispatch",
+                            serde_json::json!({
+                                "error": error.to_string(),
+                                "observation_attempts": attempt.saturating_add(1),
+                            }),
+                        );
+                    }
+                }
+            }
+            if summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0 {
+                return summary;
+            }
+            if started.elapsed() >= window {
+                self.cancel_unrecoverable_local_prompts_after_restart(&mut summary)
+                    .await;
+                return summary;
+            }
+            vault_unlocks.clear();
+            vault_unlocks.extend(
+                self.unlock_vault_for_failed_recoveries(&summary, &mut vault_declined)
+                    .await,
+            );
+            attempt = attempt.saturating_add(1);
+            tokio::time::sleep(retry_delay).await;
+        }
+    }
+
+    /// MP-08/MP-09/MP-10 G13: the turn yielded (or its task already settled) before the kernel
+    /// stopped, so no provider turn is owed for this prompt. The ledger refuses to redispatch it,
+    /// and retrying that for the whole recovery window held the task's fired wakes for minutes.
+    fn local_prompt_task_handed_off(&self, room: &str, agent: &str, prompt_id: &str) -> bool {
+        self.owned
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))
+            .is_ok_and(|tasks| {
+                tasks.iter().any(|task| {
+                    task.prompt_id == prompt_id
+                        && task.pending_prompt_id.is_none()
+                        && task.state
+                            != crate::durable_state::agent_lifecycle::ExecutionState::Working
+                })
+            })
+    }
+
+    /// Ends the prompt without touching its task, which keeps its wait or outcome, and delivers
+    /// what the task's inbox already holds.
+    async fn end_handed_off_local_prompt_after_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, agent_id, Some(prompt.id()))
+        else {
+            return Ok(());
+        };
+        let (active_prompt, queued_prompts) = self
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id);
+        self.owned.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.finalize_cancelled_local_prompt_after_restart(session_id, agent_id, &prompt)
+            .await?;
+        Box::pin(self.deliver_agent_inbox(session_id, agent_id)).await
+    }
+
+    /// The synchronous redelivery cannot open the Vault unlock, so a launch that needs a locked
+    /// Vault would fail silently until the window ends. Ask the owner here, once per agent.
+    async fn unlock_vault_for_failed_recoveries(
+        &self,
+        summary: &DurableRestartRecoverySummary,
+        declined: &mut BTreeSet<(String, String)>,
+    ) -> Vec<super::runtime_vault_unlock_state::VaultUnlockGuard> {
+        let mut unlocks = Vec::new();
+        for (session_id, agent_id) in &summary.agents_awaiting_vault {
+            if declined.contains(&(session_id.clone(), agent_id.clone())) {
+                continue;
+            }
+            match self
+                .ensure_vault_unlocked_for_agent(session_id, agent_id, "restore interrupted prompt")
+                .await
+            {
+                Ok(guard) => unlocks.push(guard),
+                Err(error) => {
+                    declined.insert((session_id.clone(), agent_id.clone()));
+                    log_restart_recovery_failure(session_id, agent_id, "vault-unlock", &error)
+                }
+            }
+        }
+        unlocks
+    }
+
+    /// A prompt restart recovery still cannot redeliver after its whole retry window (a locked
+    /// Vault nobody unlocked, a provider that will not launch) must not hold its agent's queue
+    /// forever: settle it Cancelled with the reason, so the person can resend.
+    async fn cancel_unrecoverable_local_prompts_after_restart(
+        &self,
+        summary: &mut DurableRestartRecoverySummary,
+    ) {
+        for (session_id, agent_id, prompt_id) in std::mem::take(&mut summary.failed_local_prompts) {
+            let cancelled = async {
+                let session = self.owned.session_store.get_session(&session_id)?;
+                let Some(prompt) = self
+                    .owned
+                    .prompt_state_owner
+                    .begin_cancelling_prompt_if_matches(&session, &agent_id, Some(&prompt_id))
+                else {
+                    return Ok(false);
+                };
+                let (active_prompt, queued_prompts) = self
+                    .owned
+                    .prompt_state_owner
+                    .state_parts(&session, &agent_id);
+                self.owned.mirror_prompt_owner_agent_state(
+                    &session_id,
+                    &agent_id,
+                    active_prompt,
+                    queued_prompts,
+                )?;
+                self.finalize_cancelled_local_prompt_after_restart(&session_id, &agent_id, &prompt)
+                    .await?;
+                Ok::<_, DaemonError>(true)
+            }
+            .await;
+            match cancelled {
+                Ok(true) => {
+                    summary.unrecoverable_local_prompts_cancelled += 1;
+                    if let Err(error) = self.owned.block_failed_prompt_task(
+                        &session_id,
+                        &agent_id,
+                        &prompt_id,
+                        None,
+                        UNRECOVERABLE_PROMPT_REASON,
+                    ) {
+                        log_restart_recovery_failure(&session_id, &agent_id, &prompt_id, &error);
+                    }
+                    let recipients = self
+                        .owned
+                        .attachment_store
+                        .list_session_attachment_ids(&session_id);
+                    self.owned.record_notice_for_agent(
+                        &session_id,
+                        None,
+                        Some(&agent_id),
+                        recipients,
+                        UNRECOVERABLE_PROMPT_REASON,
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    log_restart_recovery_failure(&session_id, &agent_id, &prompt_id, &error)
+                }
+            }
+        }
     }
 
     fn rearm_unobserved_restart_recovery_dispatches(
@@ -332,6 +537,7 @@ impl KernelRuntimeState {
                 Ok(None) => {}
                 Err(error) => {
                     summary.failed_reconciliations += 1;
+                    summary.note_vault_locked(session_id, agent_id, &error);
                     log_restart_recovery_failure(session_id, agent_id, prompt_id, &error);
                 }
             }
@@ -452,6 +658,30 @@ impl KernelRuntimeState {
                         }
                         Err(error) => {
                             summary.failed_reconciliations += 1;
+                            summary.failed_local_prompts.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
+                if self.local_prompt_task_handed_off(session.id(), agent_id, prompt.id()) {
+                    match self
+                        .end_handed_off_local_prompt_after_restart(session.id(), agent_id, &prompt)
+                        .await
+                    {
+                        Ok(()) => summary.handed_off_local_prompts_ended += 1,
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
                             log_restart_recovery_failure(
                                 session.id(),
                                 agent_id,
@@ -470,6 +700,12 @@ impl KernelRuntimeState {
                         Ok(()) => summary.accepted_local_redispatched += 1,
                         Err(error) => {
                             summary.failed_reconciliations += 1;
+                            summary.failed_local_prompts.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
                             log_restart_recovery_failure(
                                 session.id(),
                                 agent_id,
@@ -504,6 +740,12 @@ impl KernelRuntimeState {
                         }
                         Err(error) => {
                             summary.failed_reconciliations += 1;
+                            summary.failed_local_prompts.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
                             log_restart_recovery_failure(
                                 session.id(),
                                 agent_id,
@@ -1190,6 +1432,34 @@ fn log_restart_recovery_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A launch the synchronous redelivery cannot complete because the Vault is locked must be
+    // handed to the unlock prompt; any other failure must not open one.
+    #[test]
+    fn only_a_locked_vault_failure_asks_the_owner_to_unlock() {
+        let mut summary = DurableRestartRecoverySummary::default();
+        summary.note_vault_locked(
+            "session",
+            "other",
+            &DaemonError::LocalTransport {
+                operation: "provider_launch",
+                message: "provider could not start".into(),
+            },
+        );
+        assert!(summary.agents_awaiting_vault.is_empty());
+        summary.note_vault_locked(
+            "session",
+            "agent",
+            &DaemonError::LocalTransport {
+                operation: "credential_vault_locked",
+                message: "Chariox vault is locked".into(),
+            },
+        );
+        assert_eq!(
+            summary.agents_awaiting_vault,
+            BTreeSet::from([("session".to_string(), "agent".to_string())])
+        );
+    }
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
@@ -1215,7 +1485,15 @@ mod tests {
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
         worktree: &str,
     ) -> (KernelRuntimeState, String, String, String) {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        runtime_with_active_prompt_config(delivery_phase, worktree, DaemonConfig::for_tests())
+    }
+
+    fn runtime_with_active_prompt_config(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        worktree: &str,
+        config: DaemonConfig,
+    ) -> (KernelRuntimeState, String, String, String) {
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 "workspace-restart-recovery",
@@ -1649,6 +1927,296 @@ mod tests {
             .active_prompt_for_agent(&session, &agent_id)
             .expect("unrecoverable prompt should remain preserved");
         assert_eq!(prompt.id(), prompt_id);
+    }
+
+    // Cancelling the recovery's Vault unlock must stay cancelled for the rest of the recovery:
+    // the next pass finds the same locked Vault and must not open the same popup again.
+    #[tokio::test]
+    async fn a_dismissed_recovery_vault_unlock_is_not_asked_again_by_later_passes() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let worktree = crate::test_support::TestWorktree::new("restart-recovery-vault-dismissed");
+        let vault = worktree.path().join("recovery.vault");
+        crate::secret::create_chariox_encrypted_vault_for_test(&vault, "recovery passphrase")
+            .expect("vault should create");
+        crate::secret::lock_chariox_encrypted_vault(&vault).expect("vault should lock");
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_config(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            worktree.path().to_string_lossy().as_ref(),
+            config,
+        );
+        let mut summary = DurableRestartRecoverySummary::default();
+        summary.note_vault_locked(
+            &session_id,
+            &agent_id,
+            &DaemonError::LocalTransport {
+                operation: "credential_vault_locked",
+                message: "Chariox vault is locked".into(),
+            },
+        );
+        let mut declined = BTreeSet::new();
+        let mut asked = 0;
+        for pass in 0..3 {
+            let unlock = runtime.unlock_vault_for_failed_recoveries(&summary, &mut declined);
+            let dismiss = async {
+                for _ in 0..40 {
+                    let session = runtime
+                        .session_snapshot(&session_id)
+                        .await
+                        .expect("session should project");
+                    if let Some(interaction) = session.active_interaction_for_agent(&agent_id) {
+                        runtime
+                            .answer_terminal_runtime_interaction(
+                                &session_id,
+                                interaction.id(),
+                                "cancel",
+                                None,
+                                Some("local"),
+                                None,
+                                None,
+                                Some(crate::local::KernelConnectionClass::Terminal),
+                            )
+                            .await
+                            .expect("owner can dismiss the unlock");
+                        return true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                false
+            };
+            let (unlocks, dismissed) = tokio::join!(unlock, dismiss);
+            assert!(
+                unlocks.is_empty(),
+                "pass {pass}: a dismissed unlock holds nothing"
+            );
+            asked += usize::from(dismissed);
+        }
+        assert_eq!(asked, 1, "the dismissed unlock came back in a later pass");
+    }
+
+    #[tokio::test]
+    async fn restart_recovery_cancels_a_prompt_that_cannot_be_redispatched() {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+            config,
+        );
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: "local".into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt_id.clone(),
+                run: None,
+                now: 1,
+            })
+            .expect("task should begin");
+        // A provider whose account is not signed in cannot launch, whatever the retry count.
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("claude".into()), None, None)
+            .expect("agent provider should change");
+        let targets = runtime.durable_restart_recovery_targets();
+
+        let summary = runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                BTreeSet::new(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        assert_eq!(summary.failed_reconciliations, 1, "{summary:?}");
+        assert_eq!(summary.unrecoverable_local_prompts_cancelled, 1);
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_none_or(|prompt| prompt.id() != prompt_id),
+            "a prompt that restart recovery cannot redeliver must settle, not stay active"
+        );
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .expect("tasks should load")
+            .into_iter()
+            .find(|task| task.prompt_id == prompt_id)
+            .expect("task should exist");
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Blocked,
+            "the task must carry the definitive outcome: {task:?}"
+        );
+        assert!(
+            task.reason.contains("could not be restored"),
+            "{}",
+            task.reason
+        );
+    }
+
+    // MP-08 / MP-09 / MP-10 G13 (accam r12): the kernel stopped right after a turn yielded,
+    // while its prompt was still active. Recovery retried redispatching that prompt for the
+    // whole window ("non-working task cannot dispatch a provider turn"), so the wake that had
+    // already fired stayed pending for about five minutes after the restart.
+    #[tokio::test]
+    async fn a_prompt_whose_turn_yielded_before_the_restart_ends_and_its_wake_is_delivered() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+        for phase in [
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+        ] {
+            let mut config = DaemonConfig::for_tests();
+            config.room_agent_tools = true;
+            let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+                phase,
+                std::env::current_dir()
+                    .expect("test workspace should resolve")
+                    .to_string_lossy()
+                    .as_ref(),
+                config,
+            );
+            let store = &runtime.owned.durable_state_store;
+            let now = crate::session::unix_epoch_ms();
+            let Outcome::Task(task) = store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: session_id.clone(),
+                    agent: agent_id.clone(),
+                    prompt: prompt_id.clone(),
+                    run: None,
+                    now,
+                })
+                .expect("task should begin")
+            else {
+                panic!("begin returns the task");
+            };
+            let wake: crate::durable_state::agent_lifecycle::AgentWake =
+                serde_json::from_value(serde_json::json!({
+                    "id": "g13-timer", "task_id": task.task_id, "room_id": session_id,
+                    "agent_id": agent_id, "registration_id": "completion-g13-timer",
+                    "kind": "timer", "label": "one-minute timer", "state": "",
+                    "created_at_ms": now, "verified_at_ms": null, "next_due_ms": now + 1,
+                    "interval_ms": null, "command": [], "match_text": null,
+                    "matched_at_ms": null, "pid": null, "exit_code": null, "summary": "",
+                    "detail": null, "fire_count": 0, "missed_fires": 0,
+                    "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
+                    "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
+                    "alerted_sequence": null
+                }))
+                .expect("wake should parse");
+            store
+                .agent_lifecycle(Operation::CreateWake {
+                    task: task.task_id.clone(),
+                    prompt: prompt_id.clone(),
+                    wake,
+                })
+                .expect("wake should register");
+            store
+                .agent_lifecycle(Operation::Yield {
+                    task: task.task_id.clone(),
+                    prompt: prompt_id.clone(),
+                    registrations: vec!["completion-g13-timer".into()],
+                    cursor: 0,
+                    deadline: now + 120_000,
+                    reason: "Wait for the one-minute timer".into(),
+                    now,
+                })
+                .expect("the turn yields");
+            // The provider turn ended in the ledger; its session prompt was still active
+            // when the kernel stopped.
+            store
+                .agent_lifecycle(Operation::Settle {
+                    room: session_id.clone(),
+                    agent: agent_id.clone(),
+                    prompt: prompt_id.clone(),
+                    run: "provider-run-yielded".into(),
+                    has_answer: true,
+                    cancelled: false,
+                    now,
+                })
+                .expect("the yielded turn settles to its wait");
+            store
+                .agent_lifecycle(Operation::FireWakes { now: now + 1_000 })
+                .expect("the timer fires");
+            assert_eq!(
+                store
+                    .agent_wake("g13-timer")
+                    .expect("wake should load")
+                    .expect("wake exists")
+                    .last_delivery
+                    .as_deref(),
+                Some("pending"),
+                "{phase:?}: the timer fired before the restart"
+            );
+            let targets = runtime.durable_restart_recovery_targets();
+
+            let window = std::time::Duration::from_secs(2);
+            let started = std::time::Instant::now();
+            let summary = runtime
+                .drive_durable_restart_recovery(
+                    &targets,
+                    &BTreeSet::new(),
+                    BTreeSet::new(),
+                    window,
+                    std::time::Duration::from_millis(1),
+                )
+                .await;
+
+            assert!(
+                started.elapsed() < window,
+                "{phase:?}: recovery must not spend its window on a turn that yielded: {summary:?}"
+            );
+            assert_eq!(summary.failed_reconciliations, 0, "{phase:?}: {summary:?}");
+            assert_eq!(
+                summary.unrecoverable_local_prompts_cancelled, 0,
+                "{phase:?}"
+            );
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should load");
+            assert!(
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .is_none_or(|prompt| prompt.id() != prompt_id),
+                "{phase:?}: the yielded prompt ends: {summary:?} {:?}",
+                store.agent_tasks(Some(&session_id), Some(&agent_id))
+            );
+            let task = store
+                .agent_tasks(Some(&session_id), Some(&agent_id))
+                .expect("tasks should load")
+                .into_iter()
+                .find(|candidate| candidate.task_id == task.task_id)
+                .expect("task should exist");
+            assert!(
+                task.state == ExecutionState::Working && task.prompt_id != prompt_id,
+                "{phase:?}: the fired timer is delivered as the task's next turn: {task:?}"
+            );
+        }
     }
 
     #[tokio::test]

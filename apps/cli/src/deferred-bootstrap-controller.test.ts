@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type {
   BootstrapDeferredState,
+  RuntimeProviderRun,
   SessionHistoryCursorState,
   TranscriptEntry,
 } from "./cli-types.js"
@@ -70,7 +71,7 @@ test("MP-08/MP-10 a provider launch starts after mount, once, for the attached s
     attachmentSessionId: "session-1",
     deferred: { providerLaunch: {
       sessionId: "session-1", agentId: "agent-1", isPending: () => true,
-      start: async () => { starts++; return { providerRun: null } },
+      start: async () => { starts++; return { providerRun: null, issue: null } },
     } },
   })
   assert.equal(starts, 0)
@@ -87,7 +88,7 @@ test("MP-08/MP-10 leaving a bootstrap session prevents its deferred provider lau
     attachmentSessionId: "other-session",
     deferred: { providerLaunch: {
       sessionId: "session-1", agentId: "agent-1", isPending: () => true,
-      start: async () => { starts++; return { providerRun: null } },
+      start: async () => { starts++; return { providerRun: null, issue: null } },
     } },
   })
   harness.controller.apply()
@@ -295,6 +296,34 @@ test("MP-08 / MP-10 PANE-03: a failed attach-time launch is reported, never swal
   assert.match(harness.launchFailures[0]!, /launch refused/)
 })
 
+// MP-08/MP-10/MP-11 F02: a late protected launch cannot overwrite another Room.
+test("deferred provider launch is attachment scoped", async () => {
+  let finish!: (value: { providerRun: RuntimeProviderRun; issue: null }) => void
+  const result = new Promise<{ providerRun: RuntimeProviderRun; issue: null }>(resolve => { finish = resolve })
+  const h = bootstrapHarness({ attachmentSessionId: "room", deferred: {
+    providerLaunch: { sessionId: "room", agentId: null, isPending: () => true, start: () => result },
+  } })
+  h.controller.apply()
+  h.attachmentSessionId = "other-room"
+  finish({ providerRun: { id: "old-run" } as RuntimeProviderRun, issue: null })
+  await flushPromises()
+  assert.deepEqual(h.providerRuns, [])
+})
+
+// MP-08/MP-10/MP-11: a locked vault keeps its recovery guidance after deferred startup.
+test("deferred provider launch reports a locked vault only for the current attachment", async () => {
+  const start = () => Promise.resolve({ providerRun: null, issue: "credential_vault_locked" as const })
+  const current = bootstrapHarness({ attachmentSessionId: "room", deferred: { providerLaunch: { sessionId: "room", agentId: null, isPending: () => true, start } } })
+  current.controller.apply()
+  await flushPromises()
+  assert.deepEqual(current.launches, [{ sessionId: "room", session: null, providerRun: null, issue: "credential_vault_locked" }])
+  const stale = bootstrapHarness({ attachmentSessionId: "room", deferred: { providerLaunch: { sessionId: "room", agentId: null, isPending: () => true,
+    start: async () => { stale.attachmentSessionId = "other"; return start() } } } })
+  stale.controller.apply()
+  await flushPromises()
+  assert.deepEqual(stale.launches, [])
+})
+
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
@@ -311,6 +340,7 @@ function bootstrapHarness(options: {
     providerCatalog: null as ProviderCatalog | null,
     providerCommandCatalogs: null as ProviderCommandCatalogs | null,
     chromeUpdates: 0,
+    providerRuns: [] as unknown[],
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
     promptHistoryIndex: null as number | null,
@@ -329,6 +359,7 @@ function bootstrapHarness(options: {
   }
   harness.controller = createDeferredBootstrapController({
     getDeferred: () => harness.deferred,
+    setProviderRun: (run) => { harness.providerRuns.push(run) },
     currentAttachmentSessionId: () => harness.attachmentSessionId,
     currentAttachmentId: () => harness.attachmentId,
     currentPromptHistoryEntries: () => harness.promptHistoryEntries,

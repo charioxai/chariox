@@ -26,6 +26,44 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    /// A01-S01: a run an agent starts while its workflow is busy is admitted
+    /// as a queued prompt and its obligation names that queue item. It stays
+    /// open while queued, then follows the run promoted from it.
+    pub(super) fn agent_workflow_obligation_outcome(
+        &self,
+        session: &crate::session::RuntimeSession,
+        source: &str,
+    ) -> Result<Option<bool>, DaemonError> {
+        let queued = session
+            .workflow_queued_prompts()
+            .iter()
+            .find(|queued| queued.id() == source);
+        let run = match queued {
+            Some(queued) => match queued.workflow_run_id() {
+                Some(run) => self.agent_workflow_source(session, run)?,
+                None if queued.status()
+                    == crate::session::WorkflowQueuedPromptStatus::Cancelled =>
+                {
+                    return Ok(Some(false))
+                }
+                None => return Ok(None),
+            },
+            None => self.agent_workflow_source(session, source)?.or_else(|| {
+                session
+                    .workflow_runs()
+                    .iter()
+                    .find(|run| run.queue_item_id() == Some(source))
+                    .cloned()
+            }),
+        };
+        Ok(run.map_or(Some(false), |run| match run.status() {
+            crate::session::WorkflowRunStatus::Completed => Some(true),
+            crate::session::WorkflowRunStatus::Failed
+            | crate::session::WorkflowRunStatus::Stopped => Some(false),
+            _ => None,
+        }))
+    }
+
     pub(super) fn bind_agent_workflow_task(
         &self,
         task: &AgentTaskExecution,

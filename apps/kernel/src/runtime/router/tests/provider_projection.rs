@@ -815,3 +815,81 @@ fn ended_local_opencode_run_keeps_local_selection_sync_read_path() {
         "local OpenCode reads must still refresh selection through the provider registry"
     );
 }
+
+// MP-08 / MP-11 (accam r11b F4): after enrolment the TUI could not attach to a
+// room it created while the kernel was local only: its catch-up read of the
+// room's run was refused because the run is owned by `local`.
+#[test]
+fn the_enrolled_owner_of_a_legacy_local_room_reads_its_run() {
+    run_provider_projection_large_stack_test(
+        "enrolled-owner-reads-legacy-local-run",
+        the_enrolled_owner_of_a_legacy_local_room_reads_its_run_inner,
+    );
+}
+
+async fn the_enrolled_owner_of_a_legacy_local_room_reads_its_run_inner() {
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolled-user".to_string(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    assert_eq!(
+        session.owner_user_id(),
+        crate::session::DEFAULT_LOCAL_USER_ID
+    );
+    let provider_run = RuntimeProviderRun::from_control_capability_inference(
+        "legacy-local-run",
+        session.id().to_string(),
+        Some(agent.id().to_string()),
+        "claude-code".to_string(),
+    );
+    app.update_provider_run_projection(provider_run.clone());
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+
+    let read = |user_id: &str| {
+        let request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+            provider_run_id: provider_run.id().to_string(),
+        });
+        let caller = KernelCaller {
+            caller_id: "terminal".to_string(),
+            caller_kind: KernelCallerKind::LocalClient,
+            user_id: Some(user_id.to_string()),
+            connection_class: Some(crate::local::KernelConnectionClass::Terminal),
+            ..Default::default()
+        };
+        let command = KernelCommand::from_local_request_with_caller(
+            "read-legacy-local-run",
+            KernelCommandSource::LocalIpc,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        (command, request)
+    };
+    let (command, request) = read("enrolled-user");
+    match router
+        .dispatch(command, request)
+        .await
+        .expect("the enrolled owner reads the run of its local room")
+    {
+        LocalDaemonResponse::ProviderRun {
+            provider_run: served,
+        } => {
+            assert_eq!(served.id(), provider_run.id());
+        }
+        other => panic!("unexpected provider response: {other:?}"),
+    }
+    let (command, request) = read("another-user");
+    assert!(
+        matches!(
+            router.dispatch(command, request).await,
+            Err(DaemonError::OwnershipAccessDenied { .. })
+        ),
+        "another user still cannot read it"
+    );
+}

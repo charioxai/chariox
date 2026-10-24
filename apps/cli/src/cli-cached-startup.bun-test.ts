@@ -94,3 +94,20 @@ test("fresh attach history replaces a stale cached view before the full app moun
     assert.equal(frames[firstShown - 1]!.mounted, false, "the app mounted before the fresh history frame")
   } finally { harness.renderer.destroy() }
 })
+
+// MP-08 / MP-10: the hosted pairing-link TUI once showed only "Unable to attach to this session."
+// and the reason was dropped, so nobody could tell what failed.
+test("a failed attach says why", async () => {
+  const view = createRoot(() => createCliCachedStartup())
+  const pending = Promise.reject(new Error("session 18e1666aae78beab is not visible to this user"))
+  const harness = await testRender(() => createComponent(CliCachedStartup, { pending: pending as never, view }), { width: 100, height: 20, useThread: false })
+  try {
+    let text = ""
+    for (let attempt = 0; attempt < 40 && !text.includes("Unable to attach"); attempt++) {
+      await harness.renderOnce()
+      text = harness.captureCharFrame()
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    assert.match(text, /Unable to attach to this session: session 18e1666aae78beab is not visible to this user/)
+  } finally { harness.renderer.destroy(); view.finish() }
+})

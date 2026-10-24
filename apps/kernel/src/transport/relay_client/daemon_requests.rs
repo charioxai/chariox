@@ -48,6 +48,7 @@ pub(super) struct RelayRequestOutcome {
     pub(super) error: Option<RelayError>,
 }
 
+#[cfg(test)]
 pub(super) async fn handle_daemon_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,

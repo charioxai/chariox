@@ -147,6 +147,13 @@ impl KernelRuntimeOwnedState {
         if active_prompt.id() != prompt_id {
             return Ok(None);
         }
+        self.block_failed_prompt_task(
+            session_id,
+            agent_id,
+            prompt_id,
+            Some(provider_run_id),
+            message,
+        )?;
         let workflow_prompt_settled = if active_prompt.workflow_run_id().is_some() {
             match self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
@@ -549,13 +556,30 @@ impl KernelRuntimeOwnedState {
             )?;
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let hidden_system_context = join_hidden_context(
+            let mut hidden_system_context = join_hidden_context(
                 &self.hidden_context_with_failed_requests(
                     agent_id,
                     started_next.hidden_system_context(),
                 ),
                 &granted_skill_context,
             );
+            if self.config_projection.snapshot().room_agent_tools
+                && !self
+                    .provider_run_projection
+                    .is_leased_provider_run(&provider_run_id)
+            {
+                self.bind_agent_task_run(
+                    session_id,
+                    agent_id,
+                    started_next.id(),
+                    &provider_run_id,
+                )?;
+                if let Some(hint) =
+                    self.agent_task_context_hint(session_id, agent_id, started_next.id())?
+                {
+                    hidden_system_context = join_hidden_context(&hidden_system_context, &hint);
+                }
+            }
             let (source_client_id, _source_user_id) = self.prompt_source_attribution(&started_next);
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                 agent_id,

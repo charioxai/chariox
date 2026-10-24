@@ -5,7 +5,9 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod agent_lifecycle;
 mod agent_workflow;
+mod aggregate_agent_model;
 mod app_events;
 mod app_fetch;
 mod app_install;
@@ -49,6 +51,7 @@ mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
+mod room_terminal;
 mod session_view;
 mod slice_disk_quota;
 mod slice_display;
@@ -99,12 +102,9 @@ fn history_page_entry(
     }
 }
 
-mod agent_lifecycle;
 mod owner_handoff;
+mod relay_transport;
 mod room_workflows;
 mod screenshot;
-
-mod relay_transport;
 mod ssh_machine;
-
 mod waiting_room_workspace;
