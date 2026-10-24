@@ -11,7 +11,6 @@ use crate::managed_context::owner_authority::TICKET_ENDPOINT;
 use crate::managed_context::owner_managed::*;
 use crate::managed_context::{development::*, kernel::*, package::*};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
-use crate::transport::relay_client::RelayOutgoingSender;
 use chariox_relay::auth::RelaySubjectKind;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -461,11 +460,9 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     };
     let (router, _store) = target_router(target.clone()).await;
     let state = Arc::new(RwLock::new(RelayClientState::default()));
-    let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
     let harness = ManagedPeerRequestHarness {
         router: &router,
         state: &state,
-        outgoing_tx: &outgoing_tx,
     };
     let arm = RelayPeerRequest::ArmManagedContextImport {
         plan: plan.clone(),
@@ -651,7 +648,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         harness: ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         },
         source: &source,
         identity: identity.clone(),
@@ -674,7 +670,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         harness: ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         },
         source: &source,
         identity,
