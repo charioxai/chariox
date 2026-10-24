@@ -125,8 +125,10 @@ test('round: extra repositories get their own verified bundle', async t => {
 test('a lane profile overrides the provider model for that lane only', async t => {
   const r = await rig(t);
   const { coordinate } = await import('./loop.mjs');
-  r.options.config.laneProfiles = { alpha: { model: 'claude-opus-5-5' } };
+  r.options.config.deadlineSeconds = 3600; r.options.config.laneProfiles = { alpha: { model: 'claude-opus-5-5', deadlineSeconds: 1800 } };
   for (const spec of r.spec.lanes) await coordinate('brief', [spec.lane, spec.worktree, 'claude', spec.brief], r.options);
   const models = Object.fromEntries(r.calls.filter(c => c.op === 'launch').map(c => [c.taskId, c.input.model]));
   assert.deepEqual(models, { alpha: 'claude-opus-5-5', beta: 'm' });
+  const deadlines = Object.fromEntries(r.calls.filter(c => c.op === 'launch').map(c => [c.taskId, c.input.deadlineMs]));
+  assert.equal(deadlines.beta - deadlines.alpha, 3_600_000 - 1_800_000);
 });
