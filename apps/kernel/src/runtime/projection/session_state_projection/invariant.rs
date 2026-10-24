@@ -451,6 +451,7 @@ fn prompt_origin_label(prompt_origin: crate::session::PromptOrigin) -> &'static 
         crate::session::PromptOrigin::External => "external",
         crate::session::PromptOrigin::CompletionCheck => "completion_check",
         crate::session::PromptOrigin::Schedule => "schedule",
+        crate::session::PromptOrigin::Http => "http",
         crate::session::PromptOrigin::Notification => "notification",
     }
 }

@@ -7,7 +7,7 @@ export function installRawBodyParsers(app: ReturnType<typeof Fastify>) {
     try {
       done(null, body ? JSON.parse(body) : {})
     } catch (error) {
-      done(error as Error)
+      done(Object.assign(error as Error, { statusCode: 400 }))
     }
   })
 

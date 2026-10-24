@@ -4814,9 +4814,17 @@ schedule triggers in the old shape), and `CreateAgentPromptSchedule` / `CancelAg
 still create and delete schedule triggers. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
-Provisional 582 (relay peer unchanged) makes every trigger firing a labelled prompt and lets a person
-resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
-`schedule` (a schedule trigger) or `notification` (a workflow notification) and is recorded before
+Allocated 579/187 adds the HTTP trigger source `{"kind": "http", "ingress_id", "port"}` (the
+create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgentTrigger
+{session_id, trigger_id, payload}` answering `AgentTriggerInvoked {invocation}` and
+`ReadAgentTriggerTranscript {session_id, trigger_id, cursor?}` answering `AgentTriggerTranscript`.
+A 576 kernel cannot decode them and a 576 client cannot decode a session that holds an HTTP
+trigger, so clients that create or list HTTP triggers require 579; the other client minimums are
+unchanged. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
+
+Allocated 583/191 makes every trigger firing a labelled prompt and lets a person
+resend one the provider did not confirm. The new `schedule`, `http` and `notification` origins also travel in `SubmitLeasedPrompt.git_context.prompt_origin`, so peer 191 is required before sending them to a leased worker. A firing's transcript prompt carries `prompt_origin`
+`schedule` (a schedule trigger), `http` (an HTTP trigger) or `notification` (a workflow notification) and is recorded before
 the provider write, so it exists even if the kernel stops first. A steered firing that the provider
 did not confirm, whether a receipt was lost or the kernel restarted mid-delivery, is never sent
 again by itself: the session lists it in `trigger_deliveries` as `{prompt_id, trigger_id,
@@ -4826,7 +4834,9 @@ last, 32 kept). `ResendTriggerDelivery {session_id, prompt_id}` answers `Trigger
 and refuses a second resend. A transient claim excludes concurrent clicks. The replacement's
 durable admission atomically consumes the resend; a failed admission leaves it `not_confirmed`.
 Once admitted, it stays `resent` even after the replacement finishes, a later processing error,
-or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. The shape is
+or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. An HTTP
+trigger's `AgentTriggerTranscript` also carries `deliveries`, the `not_confirmed` entries of that
+trigger, for the local trigger page. The shape is
 pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
 
 The TUI advertises `/trigger resend <prompt-id>` and shows unconfirmed firings

@@ -6,6 +6,7 @@ use crate::session::{AgentPromptScheduleKind, AgentTriggerBusyPolicy, AgentTrigg
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentTriggerSourceRequest {
+    Http,
     Schedule {
         interval_seconds: u64,
         repeat: AgentTriggerRepeat,
@@ -41,7 +42,7 @@ pub struct DeleteAgentTriggerRequest {
     pub trigger_id: String,
 }
 
-/// Protocol 582: sends a trigger firing the provider did not confirm once
+/// Protocol 583: sends a trigger firing the provider did not confirm once
 /// more, following the trigger's busy policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResendTriggerDeliveryRequest {
@@ -64,4 +65,33 @@ pub struct CreateAgentPromptScheduleRequest {
 pub struct CancelAgentPromptScheduleRequest {
     pub session_id: String,
     pub schedule_id: String,
+}
+
+/// MP-08/MP-10/MP-11: external payload is data; authority remains the local owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvokeAgentTriggerRequest {
+    pub session_id: String,
+    pub trigger_id: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AgentTriggerInvocation {
+    Accepted {
+        prompt_id: String,
+        outcome: crate::session::AgentTriggerOutcome,
+    },
+    Offline,
+    Disabled,
+    Busy,
+    PayloadTooLarge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadAgentTriggerTranscriptRequest {
+    pub session_id: String,
+    pub trigger_id: String,
+    #[serde(default)]
+    pub cursor: Option<crate::local::SessionHistoryOutlineCursor>,
 }

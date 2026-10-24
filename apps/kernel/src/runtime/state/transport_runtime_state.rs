@@ -94,6 +94,7 @@ impl KernelRuntimeState {
             .schedule_recovery(tokio::runtime::Handle::current());
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
+        self.reconcile_agent_trigger_gateways().await;
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
             self,
         )

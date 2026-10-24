@@ -55,6 +55,7 @@ impl SessionActor {
                 | LocalDaemonRequest::CreateAgentTrigger(_)
                 | LocalDaemonRequest::UpdateAgentTrigger(_)
                 | LocalDaemonRequest::DeleteAgentTrigger(_)
+                | LocalDaemonRequest::InvokeAgentTrigger(_)
                 | LocalDaemonRequest::ResendTriggerDelivery(_)
                 | LocalDaemonRequest::AliasAgent(_)
                 | LocalDaemonRequest::UpdateAgentConfig(_)

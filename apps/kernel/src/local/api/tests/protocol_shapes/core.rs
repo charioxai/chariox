@@ -327,7 +327,7 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
     );
 }
 
-/// Protocol 582: a trigger firing the provider did not confirm is listed on the
+/// Protocol 583: a trigger firing the provider did not confirm is listed on the
 /// session, and the person resends it.
 #[test]
 fn local_daemon_protocol_trigger_delivery_shape_is_versioned() {
@@ -1304,4 +1304,52 @@ fn mp08_exact_prompt_cancellation_shape_requires_a_new_protocol() {
         .remove("expected_prompt_id");
     let decoded: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
     assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+}
+
+// MP-08 / MP-10 / MP-11: local ingress uses the reserved trigger protocol.
+#[test]
+fn local_daemon_protocol_http_agent_trigger_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert!(
+        crate::test_support::expected_local_protocol_version() >= 579,
+        "the HTTP source and its invoke/read variants are protocol 579"
+    );
+    let request = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: "s1".into(),
+        agent_id: "a1".into(),
+        source: crate::local::AgentTriggerSourceRequest::Http,
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        prompt: Some("Handle input".into()),
+    });
+    let shape = serde_json::to_value(request).unwrap();
+    assert_eq!(
+        shape,
+        serde_json::json!({"CreateAgentTrigger":{"session_id":"s1","agent_id":"a1","source":{"kind":"http"},"busy_policy":"queue","prompt":"Handle input"}})
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_string(&shape).unwrap().as_bytes())
+        ),
+        "f9419e3fcbadc4c17da27366023f63894597569187c6da123b425d755249596d"
+    );
+    let invoke = LocalDaemonRequest::InvokeAgentTrigger(crate::local::InvokeAgentTriggerRequest {
+        session_id: "s1".into(),
+        trigger_id: "h1".into(),
+        payload: serde_json::json!({"prompt":"Hello"}),
+    });
+    assert_eq!(
+        serde_json::to_value(invoke).unwrap(),
+        serde_json::json!({"InvokeAgentTrigger":{"session_id":"s1","trigger_id":"h1","payload":{"prompt":"Hello"}}})
+    );
+    let response = LocalDaemonResponse::AgentTriggerInvoked {
+        invocation: crate::local::AgentTriggerInvocation::Offline,
+    };
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"AgentTriggerInvoked":{"invocation":{"status":"offline"}}})
+    );
 }

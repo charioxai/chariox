@@ -50,6 +50,7 @@ const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
     include_str!("provider/agent_message_context_instructions.md");
 const RUNTIME_SKILL_CONTEXT: &str = include_str!("provider/skill_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
+const RUNTIME_AGENT_TRIGGER: &str = include_str!("provider/runtime_agent_trigger_instructions.md");
 const RUNTIME_SCHEDULED_PROMPT: &str =
     include_str!("provider/runtime_scheduled_prompt_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
@@ -662,6 +663,7 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
         id if id.starts_with("runtime/metaagent") || id == "runtime/meta-mode-entered" => {
             ("Meta-agent runtime guidance", "runtime", "meta-agent")
         }
+        "runtime/agent-trigger" => ("External trigger context", "runtime", "provider-agent"),
         "runtime/scheduled-prompt" => ("Scheduled prompt context", "runtime", "provider-agent"),
         id if id.starts_with("utility/") => ("Utility prompt", "utility", "utility-agent"),
         id if id.starts_with("runtime/") => {
@@ -1075,6 +1077,7 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         ),
         BundledPromptTemplate::new("runtime/skill-context", RUNTIME_SKILL_CONTEXT),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
+        BundledPromptTemplate::new("runtime/agent-trigger", RUNTIME_AGENT_TRIGGER),
         BundledPromptTemplate::new("runtime/scheduled-prompt", RUNTIME_SCHEDULED_PROMPT),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
