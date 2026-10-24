@@ -75,6 +75,8 @@ export async function runRound(spec, options = {}) {
       const lane = byTarget.get(target(event));
       if (!lane || lane.finished) continue;
       lane.run.events.push({ ...compact(event), kind: 'event' });
+      // The agent's own last_activity_at_ms only moves at turn boundaries; event times show a worker is alive.
+      lane.run.lastEventAtMs = Math.max(lane.run.lastEventAtMs ?? 0, event.at_ms ?? 0);
       if (event.type === 'interaction' && event.value?.state === 'pending') await answer(lane, event);
       else if (event.type !== 'interaction') touched.add(lane);
     }

@@ -55,7 +55,7 @@ test('newSections splits appended sections and ignores earlier bytes', () => {
 
 test('round: permission answered, note delivered once, finish collected, hard stop stops', async t => {
   const r = await rig(t);
-  r.waits.push({ events: [r.ev('alpha', { type: 'interaction', refs: { interaction_id: 'claude-permission-1' }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } }),
+  r.waits.push({ events: [r.ev('alpha', { at_ms: 123_456, type: 'interaction', refs: { interaction_id: 'claude-permission-1' }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } }),
     r.ev('beta', { type: 'interaction', refs: { interaction_id: 'ask-1' }, summary: 'Question for the user', value: { state: 'pending' } })] });
   r.waits.push({});
   r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
@@ -67,6 +67,7 @@ test('round: permission answered, note delivered once, finish collected, hard st
   const [alpha, beta] = await runRound(r.spec, r.options);
   assert.equal(r.calls.filter(c => c.op === 'respond').length, 1);
   assert.equal(alpha.permissions[0].choice, 'allow_once');
+  assert.equal(alpha.lastEventAtMs, 123_456);
   assert.deepEqual(beta.unanswered.map(u => u.interactionId), ['ask-1']);
   assert.equal(alpha.notes.length, 1);
   assert.equal(alpha.notes[0].delivered, true);
