@@ -103,8 +103,13 @@ def capture_pixels():
             return image.copy()
 
 
-def native_coverage():
+def native_coverage(browser_protection=None):
     import importlib.util
+    if browser_protection is not None:
+        spec = importlib.util.spec_from_file_location('room_native_protection', Path(__file__).with_name('room-native-protection.py'))
+        room = importlib.util.module_from_spec(spec); spec.loader.exec_module(room)
+        processes = room.binding()
+        return room.accessibility().capture_snapshot(processes, [p for p in processes if p.get('browser')], browser_protection)
     spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
     fills = importlib.util.module_from_spec(spec); spec.loader.exec_module(fills)
     return {'available': True, 'complete': True, 'protected': False, 'masks': fills.regions()}
@@ -144,8 +149,20 @@ def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixel
 
 if __name__ == '__main__':
     try:
-        policy = json.load(sys.stdin)
-        observe(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None, policy)
+        if sys.argv[1] == '--measured':
+            request = json.load(sys.stdin)
+            policy, protection = request['policy'], request['browser_protection']
+            if policy.get('unknown') or not isinstance(protection.get('pages'), list):
+                raise ObservationRedacted(RETRY_MESSAGE)
+            observe(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None, policy,
+                    locate=lambda _: [], native=lambda: native_coverage(protection))
+        else:
+            # The supervisor buffers OCR and publishes screenshots only after
+            # the shared before/after document and presentation fence passes.
+            result = subprocess.run(['node', str(Path(__file__).with_name('browser-observation-regions.mjs')),
+                                     '--capture', *sys.argv[1:]], input=sys.stdin.read(), text=True,
+                                    timeout=150, check=False)
+            raise SystemExit(result.returncode)
     except ObservationRedacted:
         print(RETRY_MESSAGE, file=sys.stderr)
         raise SystemExit(75)

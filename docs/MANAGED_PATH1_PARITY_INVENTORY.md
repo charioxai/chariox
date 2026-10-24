@@ -1,29 +1,21 @@
 # Managed Path-1 parity inventory (MP-11)
 
-## MP-08 / MP-10 / MP-11 typed sensitive model captures (2026-10-19)
+## MP-08 / MP-10 / MP-11 Room Vault captures (2026-10-24)
 
-The 2026-10-18 22:59 owner decision allows ordinary human and agent typing,
-including password, payment-card and one-time-code fields. Native browser-band
-input retains document/generation ownership without reading sensitive focus.
-Model Browser screenshots and Computer screenshot/OCR observations additionally
-mask nonempty inputs with type=password and input/textarea controls with
-autocomplete cc-*/one-time-code/current-password/new-password. Password
-autocomplete continues to identify a password field after Show password changes
-its type to text.
-This transient measurement shares Vault geometry, frame/shadow traversal and
-before/after capture fences; it stores no typed values or durable registrations.
-Empty protection measurements need no compositor wait. Native placement binds
-an oversized canonical document viewport to its browser-owned frame before
-clipping masks to that exact X11 window; another window cannot lend its document.
-Empty/cleared fields retire their masks. Owner Browser and Computer streams do
-not opt into typed-field measurement. Existing Vault fill masks are independent.
-Browser AX values and native sensitive-field content remain withheld while
-public navigation labels/actions remain usable.
+The r52 scope limits visual masking to exact Vault fill targets. Person-typed
+password, card and OTP fields contribute no pixel masks. Ordinary authorized
+input remains available. Existing AX password semantics remain independent.
+Room screenshot/OCR now shares the browser document/compositor capture fence
+with host observations. A private Python adapter places the measured browser
+regions through live AT-SPI geometry, including DPR2, and applies native Vault
+fill masks. OCR output and masked screenshot files leave private scratch only
+after the complete capture fence passes. No echo scanning is added.
 
-DPR1/2 real-Chromium fixture checks and source regressions are supplementary;
-real-provider hosted acceptance is separate. Current MP-11 semantic review is
-required for the input and observation anchors changed here. Internal helper
-options add no LocalDaemon/relay shape; protocol remains 553/161.
+The changed capture and placement anchors require current MP-11 semantic review.
+Focused regressions are supplementary, not hosted real-provider acceptance.
+The owner-unmasked/other-viewer-masked Room stream split still requires an
+authenticated audience contract; no viewer-supplied flag may grant it.
+Internal helper changes add no LocalDaemon/relay shape; protocol remains 553/161.
 
 ## MP-08 / MP-10 / MP-11 native extension recipient admission (2026-10-19)
 

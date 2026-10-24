@@ -35,7 +35,8 @@ def binding():
             if path.stat().st_uid != uid:
                 continue
             text = (path / 'stat').read_text()
-            processes.append({'pid': int(path.name), 'started': text[text.rindex(')') + 2:].split()[19]})
+            processes.append({'pid': int(path.name), 'started': text[text.rindex(')') + 2:].split()[19],
+                              'browser': bool(re.search(r'(?:chromium|chrome)(?:-headless-shell)?$', os.readlink(path / 'exe')))})
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             continue
     return processes

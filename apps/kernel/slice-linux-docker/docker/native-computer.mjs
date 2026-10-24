@@ -172,7 +172,7 @@ export class NativeComputer {
     // retry a capture whose kernel-browser window stayed unbound (withheld).
     let result;
     for(let attempt=0;attempt<3;attempt++){
-      result=browser?await fenceBrowserCapture(browser,policy,observe,3,{modelCapture:/(?:^|:)agent:/.test(command.observed_by??'')}):await observe(null);
+      result=browser?await fenceBrowserCapture(browser,policy,observe):await observe(null);
       if(!browser||!result.browser_withheld||signal?.aborted)break;
       await delay(250);
     }

@@ -205,3 +205,13 @@ test('MP-08/MP-11 ordinary native input remains usable while another field has a
  assert.equal(calls.length,3);
  assert(!JSON.stringify(calls).includes('test-vault-canary'));
 });
+
+// MP-08/MP-11: person-typed values are outside the Vault target policy.
+test('MP-11 model captures without Vault targets do not discover person-typed fields', async () => {
+  let connections=0;
+  const browser={ensureConnection:async()=>{connections++;throw Error('unexpected typed-field discovery');}};
+  const bound={...binding,browser:()=>browser};
+  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async()=>({data_base64:''})});
+  await adapter.request({op:'screenshot',observed_by:'agent:a',surface_id:'surface',generation:'generation'},{unknown:false,targets:[],values:[]});
+  assert.equal(connections,0);
+});

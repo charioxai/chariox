@@ -576,7 +576,6 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: Browser Controller files"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-artifacts.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-image.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
-  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs" "$SLICE_NAME:/opt/chariox-slice/kernel-browser-refusal.mjs" "MP-08/MP-10/MP-11 controller dependency"
   for shared_display_asset in "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.mjs "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.py "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/room-shared-display.mjs; do
     case "$shared_display_asset" in *.test.mjs) continue ;; esac
     copy_required_slice_overlay "$shared_display_asset" "$SLICE_NAME:/opt/chariox-slice/$(basename "$shared_display_asset")" "MP-08/MP-10/MP-11 shared display dependency"
@@ -585,6 +584,11 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-accessibility.mjs" "$SLICE_NAME:/opt/chariox-slice/native-accessibility.mjs" "MP-08/MP-10/MP-11 controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-computer.mjs" "$SLICE_NAME:/opt/chariox-slice/native-computer.mjs" "MP-08/MP-10/MP-11 controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-protection-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-protection-regions.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-capture-presentation.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-response-bodies.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-focus-world.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-observation-regions.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-typed-field-protection.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-typed-field-protection.mjs" "MP-08/MP-10/MP-11 controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/linux-owned-process.mjs" "$SLICE_NAME:/opt/chariox-slice/linux-owned-process.mjs" "MP-08/MP-10/MP-11 controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-keyboard-channel.mjs" "$SLICE_NAME:/opt/chariox-slice/native-keyboard-channel.mjs" "MP-08/MP-10/MP-11 controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-notes.mjs" "MP-08/MP-10/MP-11 controller dependency"

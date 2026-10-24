@@ -233,6 +233,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs /opt/chariox-slice/browser-controller-notes.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs /opt/chariox-slice/browser-focus-world.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-typed-field-protection.mjs /opt/chariox-slice/browser-typed-field-protection.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs /opt/chariox-slice/browser-controller-response-bodies.mjs

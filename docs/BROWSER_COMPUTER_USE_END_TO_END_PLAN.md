@@ -101,13 +101,13 @@ frame + backend node + document/generation; native identity is window + AT-SPI
 object path. Retire tracking when the document/generation changes, the element
 is removed, or its value is cleared/replaced by the user. No text-echo,
 container/order/bidi/budget, iframe or media masking remains.
-The owner's 2026-10-18 22:59 UX-first amendment permits ordinary human and agent
-typing in sensitive fields. In MODEL screenshots/OCR only, additionally mask
-nonempty password inputs and fields with autocomplete cc-*/one-time-code
-or current-password/new-password (including Show password);
-the owner view remains unmasked by this transient typed-field policy. Retire
-these masks when the field is empty. Retain the independent Vault lifecycle
-and document/generation capture fences described above.
+MP-08/MP-11, 2026-10-24 r52 scope: ordinary human and agent typing is
+allowed. Only exact Vault fill targets contribute visual masks; person-typed
+password, card and OTP fields do not create capture registrations. Room
+screenshot/OCR uses the shared before/after browser presentation fence and
+native AT-SPI placement at both display densities. The owner sees Vault targets
+unmasked; model observations and other viewers receive masked plain fields.
+Audience authority must come from the kernel, never a viewer-supplied flag.
 Client disconnect and reconnect must not duplicate provider runs or split Room
 state. Every drill must remove everything it created.
 
