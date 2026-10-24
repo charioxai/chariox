@@ -628,3 +628,26 @@ output. Fresh running output and independent field offsets must still progress,
 including after projection-state reload. These are supplementary regressions.
 The real hosted backlog/reload and native queued-steer/reconnect cells must also
 pass on the exact candidate; source tests do not establish MP-10 acceptance.
+
+### MP-08 / MP-10 / MP-11: delayed replacement after completed history
+
+A terminal durable snapshot closes its run/tool generation for terminal-drain
+copies, including same-size or shorter non-append replacements. A running
+snapshot still allows fresh replacements and output growth. This fence is
+worker-local projection state, persists across store reopen, and adds no wire
+fields or protocol version.
+
+Supplementary fail-first regression:
+`mp08_completed_history_fences_a_delayed_running_replacement` produces running
+`abcdef`, running `UVWXYZ`, then completed `UVWXYZ` through the real fanout.
+It holds those terminal records while history projects completion, reopens the
+store, then drains them; no stale replacement may be forwarded.
+
+Required live cell `integ2/MP08-completed-history-delayed-replacement`: two real
+kernels, the lane's hosted WSS relay, the real Web/TUI client, and official Codex
+`gpt-6-luna` low. Delay a real replacement terminal record beyond worker turn
+completion, then release it. Retain source identities, scheduling fault details,
+provider/model evidence, screenshots/logs, and the completed home tool history
+before/after release. Reproduce on the base and pass on the fixed source. The
+home must keep the completed output/status without another history row or a
+regression to running. A source test alone does not satisfy this live cell.

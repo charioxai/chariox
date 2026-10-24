@@ -441,6 +441,96 @@ fn history_owned_tool_ignores_late_terminal_records(field: &str, stderr: Option<
 }
 
 #[test]
+fn mp08_completed_history_fences_a_delayed_running_replacement() {
+    let (mut app, leased) = worker_lease();
+    app.providers_mut()
+        .insert_run_for_test(super::explicit_completion_tests::provider_run(
+            "run",
+            &leased.backing_session_id,
+            &leased.backing_agent_id,
+            "managed-dev-stub",
+            "managed-dev-stub",
+            crate::provider::ProviderClientInterface::Chariox,
+        ));
+    // Real fanout persists only the status transitions. Hold its terminal
+    // records while history overtakes the running, non-append replacement.
+    let mut delayed = Vec::new();
+    for (status, output) in [
+        ("running", "abcdef"),
+        ("running", "UVWXYZ"),
+        ("completed", "UVWXYZ"),
+    ] {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "id": "rewritten-tool", "name": "Bash", "status": status, "output": output,
+        }))
+        .unwrap();
+        crate::app::provider_output_fanout::ProviderOutputFanout::new(&app).fan_out(
+            &leased.backing_session_id,
+            "run",
+            TerminalOutputKind::ProviderTool,
+            Some("rewritten-tool".into()),
+            vec![leased.backing_attachment_id.clone()],
+            &payload,
+        );
+        delayed.extend(
+            app.terminal_mut()
+                .drain_output_records(&leased.backing_session_id, &leased.backing_attachment_id),
+        );
+    }
+    assert_eq!(delayed.len(), 3);
+    let replacement: serde_json::Value = serde_json::from_slice(&delayed[1].bytes).unwrap();
+    assert_eq!(replacement["chariox_output_replaced"], true);
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap()
+        .expect("history must project before delayed terminal records")
+        .1;
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        output_chunks,
+        delivery: Some(receipt),
+        ..
+    } = &first
+    else {
+        panic!("receipted history projection required")
+    };
+    assert_eq!(output_chunks.len(), 2);
+    let completed: serde_json::Value = serde_json::from_slice(&output_chunks[1].bytes).unwrap();
+    assert_eq!(completed["status"], "completed");
+    assert!(RemoteLeaseRuntime::new(&mut app)
+        .acknowledge_leased_runtime_projection(&leased.id, "run", receipt)
+        .unwrap());
+    // Reopen to prove the completion fence is durable, not just a drain cache.
+    app.operational_history = crate::history::OperationalHistoryStore::open(
+        app.operational_history_store().path().to_path_buf(),
+    )
+    .unwrap();
+    for record in delayed {
+        app.terminal_mut().fan_out_output(
+            &leased.backing_session_id,
+            "run",
+            Some(&leased.backing_agent_id),
+            record.kind,
+            record.merge_key,
+            vec![leased.backing_attachment_id.clone()],
+            &record.bytes,
+        );
+    }
+    let late = RemoteLeaseRuntime::new(&mut app)
+        .drain_retained_leased_runtime_projection(&leased.id, "run", false, false)
+        .unwrap();
+    assert!(
+        late.is_none_or(|(_, event)| {
+            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+            output_chunks.is_empty()
+        }),
+        "completed history must fence the delayed running replacement"
+    );
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased.id)
+        .unwrap();
+}
+
+#[test]
 fn mp08_history_owned_tool_keeps_logical_bounds_of_capped_output() {
     capped_output_keeps_history_bounds(30_100, |status, len| {
         serde_json::json!({
