@@ -28,6 +28,21 @@ struct Evidence {
 fn client_protocol_conformance_gate_covers_required_surfaces_and_axes() {
     let evidence = conformance_evidence();
     let mut failures = Vec::new();
+    assert_file_contains(
+        "packages/kernel-client/src/kernel-types-provider.ts",
+        &[
+            "ProviderUsageAccount",
+            "AgentUsageSnapshot",
+            "used_tokens",
+            "target_kernel_id",
+        ],
+        &mut failures,
+    );
+    assert_file_contains(
+        "apps/kernel/src/local/api/tests/protocol_shapes/usage_snapshot.rs",
+        &["usage_snapshot_589_contract_roundtrips_without_private_profiles"],
+        &mut failures,
+    );
 
     let expected_surfaces = REQUIRED_SURFACES.iter().copied().collect::<BTreeSet<_>>();
     let actual_surfaces = evidence.keys().copied().collect::<BTreeSet<_>>();

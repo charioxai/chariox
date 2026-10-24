@@ -47,6 +47,7 @@ mod slice;
 mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod usage_snapshot;
 mod user_domain_access;
 mod waiting_room;
 mod workflow;
@@ -90,6 +91,7 @@ pub use slice::*;
 pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
@@ -338,4 +340,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;
+/// Version 589 adds read-only account usage, per-agent context and execution route snapshots.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 589;

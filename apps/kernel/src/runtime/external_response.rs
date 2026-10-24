@@ -359,6 +359,8 @@ response_policies! {
         ProviderAuthStatus,
         ProviderLoginInputSent,
         ProviderLoggedOut,
+        ProviderUsageSnapshot,
+        AgentUsageSnapshot,
         ProviderAccountProfilesListed,
         ProviderAccountProfile,
         ProviderAccountProfileRemoved,
