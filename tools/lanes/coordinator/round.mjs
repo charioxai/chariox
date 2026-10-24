@@ -19,43 +19,45 @@ export function newSections(text, offset) {
   return tail.split(/^(?=## )/m).filter(s => s.trim());
 }
 
-export async function runRound(spec, options = {}) {
+// One engine, one inbox: lanes can join while the round runs (the standing loopd service) or all
+// at once (runRound). Every lane keeps its own receipts, so a restarted driver resumes, never relaunches.
+export function createRound(options) {
   const now = options.now || Date.now;
   const respond = options.respond || ((input) => execute([new URL('../lane-respond.mjs', import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const coordinator = (operation, args) => coordinate(operation, args, options);
   const adapter = options.adapter || (async (op, input) => execute([new URL(`../lane-${op}.mjs`, import.meta.url).pathname], JSON.stringify(input), process.execPath));
-  const home = options.home || spec.home;
+  const home = options.home;
   const roundDirectory = join(home, 'rounds');
-  await mkdir(roundDirectory, { recursive: true });
   const lanes = [];
-  for (const entry of spec.lanes) {
-    let run; try { run = await read(entry.runFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    run ??= { lane: entry.lane, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
-    if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
-    lanes.push({ entry, run, finished: Boolean(run.finishReason) });
-  }
   const persist = lane => save(lane.entry.runFile, lane.run);
   const log = (lane, kind, detail) => { lane.run.events.push({ at_ms: now(), kind, ...detail }); lane.run.events = lane.run.events.slice(-KEEP_EVENTS); };
   const byTarget = new Map();
 
-  for (const lane of lanes) {
-    if (lane.run.launchedAtMs) continue;
-    const brief = await readFile(lane.entry.brief, 'utf8');
-    const inbox = await stat(lane.entry.inbox).catch(error => { if (error.code === 'ENOENT') return { size: 0 }; throw error; });
-    lane.run.briefSha256 = sha256(brief);
-    lane.run.inboxOffset = inbox.size;
-    lane.run.launchedAtMs = now();
-    await persist(lane);
-  }
-  // Launch is idempotent: an identical resume reuses the original launch and its deadline.
-  for (const lane of lanes) {
-    if (lane.finished) continue;
-    const record = await coordinator('brief', [lane.entry.lane, lane.entry.worktree, lane.entry.provider, lane.entry.brief]);
-    lane.run.launch = { kernel: record.launch.kernel, sessionId: record.launch.sessionId, agentId: record.launch.agentId };
-    byTarget.set(`${record.launch.kernel}/${record.launch.sessionId}/${record.launch.agentId}`, lane);
-    log(lane, 'launched', { agentId: record.launch.agentId });
-    await persist(lane);
-  }
+  // Joining is idempotent: an identical resume reuses the original launch and its deadline.
+  const add = async entry => {
+    await mkdir(roundDirectory, { recursive: true });
+    let run; try { run = await read(entry.runFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    run ??= { lane: entry.lane, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
+    if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
+    const lane = { entry, run, finished: Boolean(run.finishReason) };
+    if (!lane.finished) {
+      if (!run.launchedAtMs) {
+        const brief = await readFile(entry.brief, 'utf8');
+        const inbox = await stat(entry.inbox).catch(error => { if (error.code === 'ENOENT') return { size: 0 }; throw error; });
+        run.briefSha256 = sha256(brief);
+        run.inboxOffset = inbox.size;
+        run.launchedAtMs = now();
+        await persist(lane);
+      }
+      const record = await coordinator('brief', [entry.lane, entry.worktree, entry.provider, entry.brief]);
+      run.launch = { kernel: record.launch.kernel, sessionId: record.launch.sessionId, agentId: record.launch.agentId };
+      byTarget.set(`${record.launch.kernel}/${record.launch.sessionId}/${record.launch.agentId}`, lane);
+      log(lane, 'launched', { agentId: record.launch.agentId });
+      await persist(lane);
+    }
+    lanes.push(lane);
+    return lane;
+  };
 
   const answer = async (lane, event) => {
     const id = event.refs?.interaction_id;
@@ -158,27 +160,34 @@ export async function runRound(spec, options = {}) {
   };
 
   const pending = () => lanes.filter(lane => !lane.finished);
-  try {
-    while (pending().length) {
-      const batch = await coordinator('watch', [String(spec.wakeMinutes ?? 5)]);
-      const touched = await handle(batch.events || []);
-      for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
-      for (const lane of pending()) {
-        if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collect(lane, 'hard_stop'); continue; }
-        if (!touched.has(lane) || now() < lane.run.launchedAtMs + 60_000) continue;
-        lane.run.statusReads++;
-        let status;
-        try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
-        if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
-      }
-      for (const lane of lanes) await persist(lane);
+  // One wake: wait on the shared inbox, answer, deliver notes, detect finishes and hard stops.
+  const step = async wakeMinutes => {
+    const batch = await coordinator('watch', [String(wakeMinutes)]);
+    const touched = await handle(batch.events || []);
+    for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
+    for (const lane of pending()) {
+      if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collect(lane, 'hard_stop'); continue; }
+      if (!touched.has(lane) || now() < lane.run.launchedAtMs + 60_000) continue;
+      lane.run.statusReads++;
+      let status;
+      try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
+      if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
     }
-  } catch (error) {
-    // The round is resumable: a rerun reuses every receipt. Say why this driver stopped.
+    for (const lane of lanes) await persist(lane);
+  };
+  // The round is resumable: a rerun reuses every receipt. Say why this driver stopped.
+  const failed = async error => {
     for (const lane of pending()) { lane.run.driverError = { code: error.code || 'driver_failed', message: String(error.message).slice(0, 300), at_ms: now() }; await persist(lane); }
-    throw error;
-  }
-  return lanes.map(lane => lane.run);
+  };
+  return { lanes, add, step, pending, failed };
+}
+
+export async function runRound(spec, options = {}) {
+  const round = createRound({ ...options, home: options.home || spec.home });
+  for (const entry of spec.lanes) await round.add(entry);
+  try { while (round.pending().length) await round.step(spec.wakeMinutes ?? 5); }
+  catch (error) { await round.failed(error); throw error; }
+  return round.lanes.map(lane => lane.run);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
