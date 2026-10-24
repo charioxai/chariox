@@ -40,6 +40,7 @@ mod provider_processes;
 mod provider_prompt_launch;
 mod provider_run_read;
 mod provider_runtime;
+mod provider_tool_close;
 mod provider_tracking;
 mod relay_runtime;
 mod remote_agent_binding;
@@ -90,6 +91,7 @@ pub(crate) use provider_output_claude_native::{
     format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
     NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
+pub(crate) use provider_tool_close::{ended_open_provider_tool_rows, ProviderToolEnding};
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
 };

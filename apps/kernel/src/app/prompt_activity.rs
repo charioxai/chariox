@@ -31,18 +31,7 @@ impl ActivePromptState {
         let Some(record) = value.as_object() else {
             return;
         };
-        let status = record
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| {
-                record
-                    .get("state")
-                    .and_then(serde_json::Value::as_object)
-                    .and_then(|state| state.get("status"))
-                    .and_then(serde_json::Value::as_str)
-            })
-            .map(|status| status.to_ascii_lowercase());
-        let Some(status) = status else {
+        let Some(status) = provider_tool_record_status(record) else {
             return;
         };
         let id = ["id", "call_id", "tool_call_id"]
@@ -53,37 +42,57 @@ impl ActivePromptState {
         let Some(id) = id else {
             return;
         };
-        if matches!(
-            status.as_str(),
-            "pending" | "queued" | "started" | "running" | "in_progress" | "inprogress" | "waiting"
-        ) {
-            self.active_tool_ids.insert(id.to_string());
-        } else if matches!(
-            status.as_str(),
-            "completed"
-                | "complete"
-                | "succeeded"
-                | "success"
-                | "error"
-                | "failed"
-                | "declined"
-                | "aborted"
-                | "interrupted"
-                | "rejected"
-                | "skipped"
-                | "stopped"
-                | "timeout"
-                | "timed_out"
-                | "cancelled"
-                | "canceled"
-        ) {
-            self.active_tool_ids.remove(id);
+        match provider_tool_phase(&status) {
+            Some(ProviderToolPhase::Open) => {
+                self.active_tool_ids.insert(id.to_string());
+            }
+            Some(ProviderToolPhase::Ended) => {
+                self.active_tool_ids.remove(id);
+            }
+            None => {}
         }
     }
 
     #[cfg(test)]
     pub(crate) fn has_active_provider_tools(&self) -> bool {
         !self.active_tool_ids.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderToolPhase {
+    Open,
+    Ended,
+}
+
+/// A provider tool row's status, lowercased.
+pub(crate) fn provider_tool_record_status(
+    record: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    record
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            record
+                .get("state")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|state| state.get("status"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(|status| status.to_ascii_lowercase())
+}
+
+/// How a provider tool row's lowercased `status` reads; `None` for a status
+/// that says neither.
+pub(crate) fn provider_tool_phase(status: &str) -> Option<ProviderToolPhase> {
+    match status {
+        "pending" | "queued" | "started" | "running" | "in_progress" | "inprogress" | "waiting" => {
+            Some(ProviderToolPhase::Open)
+        }
+        "completed" | "complete" | "succeeded" | "success" | "error" | "failed" | "declined"
+        | "aborted" | "interrupted" | "rejected" | "skipped" | "stopped" | "timeout"
+        | "timed_out" | "cancelled" | "canceled" => Some(ProviderToolPhase::Ended),
+        _ => None,
     }
 }
 

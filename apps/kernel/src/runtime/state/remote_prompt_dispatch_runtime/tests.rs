@@ -5665,17 +5665,13 @@ mod lost_worker_run {
         ))
     }
 
-    // MP-08 / MP-10 / MP-11 A10-S02: a worker that restarts during an accepted
-    // turn loses it. Home never runs that instruction again on its own: the
-    // turn ends, its task waits for the owner, and the queue moves on.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn worker_lost_accepted_turn_blocks_its_task_instead_of_replaying_it() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("fake relay listener should bind");
-        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
-        let lost_run = "worker-run-lost";
-        let fixture = delivered_fixture(&relay_url, "lost-run", lost_run).await;
+    /// The fake worker answers home's drain with the lease gone, then accepts
+    /// home's queued successor.
+    async fn lose_the_accepted_turn(
+        listener: TcpListener,
+        fixture: &ReceiptReconciliationFixture,
+        lost_run: &'static str,
+    ) {
         let worker_id = fixture.worker_id.clone();
         let worker_machine_id = fixture.worker_machine_id.clone();
         let worker_public_key = fixture.worker_public_key.clone();
@@ -5745,6 +5741,74 @@ mod lost_worker_run {
             .await
             .expect("fake worker should see the drain and the successor")
             .expect("fake worker assertions should hold");
+    }
+
+    // MP-08 / MP-10 / MP-11 A10-S02: a tool the worker was running when it lost
+    // the turn stayed RUNNING at home; the worker that owned it will never close it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_lost_accepted_turn_ends_its_running_tool_rows() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let lost_run = "worker-run-lost";
+        let fixture = delivered_fixture(&relay_url, "lost-tool", lost_run).await;
+        let owned = &fixture.runtime.owned;
+        let projected =
+            crate::provider::projected_leased_provider_run_id(&fixture.leased_agent_id, lost_run);
+        let running = serde_json::json!({
+            "id": "call-1", "type": "commandExecution", "command": "sleep 600", "status": "inProgress",
+        });
+        owned.append_history_entries(
+            &fixture.session_id,
+            vec![crate::history::SessionHistoryEntry::provider_output(
+                &fixture.session_id,
+                &projected,
+                Some(&fixture.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderTool,
+                Some("call-1".to_string()),
+                running.to_string(),
+            )],
+        );
+
+        lose_the_accepted_turn(listener, &fixture, lost_run).await;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let statuses = owned
+                .operational_history_store
+                .load_provider_tool_entries_for_run(&fixture.session_id, &projected)
+                .unwrap()
+                .into_iter()
+                .map(|entry| {
+                    let row: serde_json::Value = serde_json::from_str(&entry.text).unwrap();
+                    row["status"].as_str().unwrap().to_string()
+                })
+                .collect::<Vec<_>>();
+            if statuses == ["inProgress", "error"] {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the lost turn's running tool must end with it: {statuses:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    // MP-08 / MP-10 / MP-11 A10-S02: a worker that restarts during an accepted
+    // turn loses it. Home never runs that instruction again on its own: the
+    // turn ends, its task waits for the owner, and the queue moves on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_lost_accepted_turn_blocks_its_task_instead_of_replaying_it() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let lost_run = "worker-run-lost";
+        let fixture = delivered_fixture(&relay_url, "lost-run", lost_run).await;
+        lose_the_accepted_turn(listener, &fixture, lost_run).await;
+        let successor_prompt_id = fixture.successor_prompt_id.clone();
 
         let owned = &fixture.runtime.owned;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
