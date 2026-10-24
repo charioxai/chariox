@@ -144,8 +144,9 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // MP-07/MP-10: reviewed predecessors retained by the 32-entry policy in 9699c3776 and the current union.
-  const admittedProtocols = [343, 367, ...Array.from({ length: 9 }, (_, index) => 370 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 520, 525, 528, 552, 556, runtimeProtocol]
+  // MP-07/MP-10: reviewed predecessors retained by the 32-entry policy in 9699c3776 and the current union; 370 and 371
+  // never shipped on main, so 593 dropped them to admit 578 within 32 entries.
+  const admittedProtocols = [343, 367, ...Array.from({ length: 7 }, (_, index) => 372 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 520, 525, 528, 552, 556, 567, 578, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -166,7 +167,7 @@ test("repository release policy admits reviewed predecessors and matches the run
     }
   }
 
-  for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), ...Array.from({ length: 36 }, (_, index) => 436 + index)]) {
+  for (const unsupportedProtocol of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), 370, 371, ...Array.from({ length: 31 }, (_, index) => 379 + index), ...Array.from({ length: 36 }, (_, index) => 436 + index)]) {
     for (const [currentRoot, currentProtocol, targetRoot, targetProtocol] of [
       [current, unsupportedProtocol, target, runtimeProtocol],
       [target, runtimeProtocol, current, unsupportedProtocol],
