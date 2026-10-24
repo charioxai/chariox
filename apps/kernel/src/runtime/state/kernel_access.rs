@@ -188,6 +188,9 @@ impl KernelRuntimeState {
         if kernel.contains(peer) {
             return Vec::new();
         }
+        let Ok(chain) = process::ancestry(peer) else {
+            return Vec::new();
+        };
         let mut grants: Vec<_> = self
             .owned
             .kernel_access
@@ -195,13 +198,16 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .grants
             .values()
-            .filter(|grant| grant.holder.contains(peer))
-            .cloned()
+            .filter_map(|grant| {
+                let distance = chain.iter().position(|p| *p == grant.holder)?;
+                grant.holder.alive().then(|| (distance, grant.clone()))
+            })
             .collect();
-        // A process's own grant takes precedence over an inherited grant for
-        // all requests. Authority is local-kernel-wide.
-        grants.sort_by_key(|grant| grant.holder != *peer);
-        grants
+        // The nearest holder's grant comes first, the requester's own before
+        // any inherited one, so separate invocations of one command series
+        // keep the same grant and event inbox. Authority is local-kernel-wide.
+        grants.sort_by_key(|(distance, _)| *distance);
+        grants.into_iter().map(|(_, grant)| grant).collect()
     }
 
     /// True when this peer sits under a holder whose grant has ended.

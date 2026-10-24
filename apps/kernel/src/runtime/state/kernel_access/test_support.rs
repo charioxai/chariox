@@ -4,6 +4,7 @@ mod capability_room_authority;
 mod control_authority;
 mod credential_authority;
 mod gateway_authority;
+mod inherited_grants;
 mod inner_authority;
 mod input_control_authority;
 mod meta_authority;
