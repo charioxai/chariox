@@ -111,7 +111,8 @@ export async function coordinate(operation, args, options = {}) {
     return { lane, ...status, flags, limitation: 'Activity/deadline flags are signals; working state alone does not prove progress.' };
   }
   if (operation === 'lanefin') {
-    const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
+    // A stopped worker is gone from its Room; its worktree and bundle are still collectable.
+    const status = record.stopped ? { state: 'stopped', currentPrompt: null } : await adapter('status', { ...common, stateFile: record.input.stateFile });
     if (status.currentPrompt || status.state === 'working') throw new LaneError('lane_still_running');
     const directory = join(home, 'artifacts', lane);
     const files = await adapter('fetch', { ...common, worktree: record.laneDirectory || record.input.worktree, directory });

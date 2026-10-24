@@ -488,3 +488,10 @@ test('guarded cancellation and unconditional cleanup use separate command receip
   assert.notEqual(cancellations[0].id,cancellations[1].id);
   assert.equal(cancellations[1].id,cancellations[2].id);
 });
+
+test('respond answers one interaction by id with a stable command identity', async () => {
+  const calls = [];
+  await run('respond', { kernel: 'b', taskId: 'lane', sessionId: 's', interactionId: 'claude-permission-run-1-tool', choiceId: 'allow_once' }, { execute: async (argv, body) => { calls.push([argv, JSON.parse(body)]); return {}; } });
+  assert.deepEqual(calls, [[['request', '--kernel', 'b', '--command-id', 'lane:respond-claude-permission-run-1-tool'], { RespondToInteraction: { session_id: 's', interaction_id: 'claude-permission-run-1-tool', choice_id: 'allow_once' } }]]);
+  await assert.rejects(run('respond', { kernel: 'b', taskId: 'lane', sessionId: 's', interactionId: 'i' }, { execute: async () => ({}) }));
+});

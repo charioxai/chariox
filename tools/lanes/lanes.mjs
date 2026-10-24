@@ -242,6 +242,10 @@ export async function run(operation, input, dependencies = {}) {
     return receipt;
   }
   if (operation === 'steer') return request('SteerActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), expected_active_prompt_id: text(input.expectedPromptId, 'expectedPromptId'), prompt: text(input.prompt, 'prompt'), attachments: [] }, text(input.steerId, 'steerId'));
+  if (operation === 'respond') {
+    const interaction = text(input.interactionId, 'interactionId');
+    return request('RespondToInteraction', { session_id: session(), interaction_id: interaction, choice_id: text(input.choiceId, 'choiceId') }, `respond-${interaction}`);
+  }
   if (operation === 'status') {
     if (input.waitForIdle) {
       attachment(); text(input.expectedPromptId, 'expectedPromptId');
