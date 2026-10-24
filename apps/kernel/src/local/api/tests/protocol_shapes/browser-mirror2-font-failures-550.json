@@ -1,6 +1,6 @@
 {
-  "local_protocol": 567,
-  "peer_protocol": 175,
+  "local_protocol": 588,
+  "peer_protocol": 194,
   "allocation": "mirror unreleased539/147 additive, coordinator2026-10-16T04:55Z",
   "max_failures": 128,
   "descriptor_canonical": "[\"nativefailed\",\"normal\",\"400\",\"100%\",\"U+0-10FFFF\"]",

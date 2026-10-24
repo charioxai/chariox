@@ -212,6 +212,7 @@ response_policies! {
         ProviderRunsLaunchAccepted,
         ProjectsListed,
         ProjectPinned,
+        RoomPinned,
         ProjectRenamed,
         ProjectWorkspacesUpdated,
         ProjectArchived,

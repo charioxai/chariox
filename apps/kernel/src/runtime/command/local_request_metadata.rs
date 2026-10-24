@@ -72,6 +72,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::SetRoomPinned(request) => {
+            LocalRequestMetadata::new("room.pin", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
         LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
         LocalDaemonRequest::CaptureVisibleRegion(_) => {
@@ -596,6 +599,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",

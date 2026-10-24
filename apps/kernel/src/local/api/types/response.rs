@@ -370,6 +370,7 @@ pub enum LocalDaemonResponse {
         answer: Option<String>,
     },
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
+    RoomPinned { session: RuntimeSession, },
     KernelAccessDecisionResponded { interaction_id: String, },
     InteractionResponded { interaction_id: String, session: RuntimeSession, },
     DeploymentCredentialEnrollmentArmed {

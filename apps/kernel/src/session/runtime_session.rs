@@ -90,6 +90,8 @@ pub struct RuntimeSession {
     #[serde(default)]
     project_id: String,
     alias: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pinned: bool,
     workspace_id: String,
     worktree_id: String,
     #[serde(default = "default_session_owner_user_id")]
@@ -283,6 +285,7 @@ impl RuntimeSession {
             queued_metaagent_tasks: VecDeque::new(),
             agent_prompt_schedules: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
+            pinned: false,
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
                 format!("worktree-assignment-{id}-1"),
@@ -379,6 +382,14 @@ impl RuntimeSession {
 
     pub fn worktree_id(&self) -> &str {
         &self.worktree_id
+    }
+
+    pub fn pinned(&self) -> bool {
+        self.pinned
+    }
+
+    pub(crate) fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
     }
 
     pub fn owner_user_id(&self) -> &str {
