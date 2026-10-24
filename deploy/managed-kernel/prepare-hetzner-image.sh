@@ -268,6 +268,8 @@ apt-get install -y --no-install-recommends \
   build-essential \
   ca-certificates \
   cloud-init \
+  cmake \
+  libclang-dev \
   curl \
   docker-buildx \
   docker.io \
