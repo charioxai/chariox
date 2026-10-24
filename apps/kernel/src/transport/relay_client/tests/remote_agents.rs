@@ -8,13 +8,20 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 #[test]
 fn public_remote_completion_preserves_worker_termination() {
     crate::test_support::isolated_env_test!();
-    run_async_with_large_test_stack(
-        "public-remote-completion-worker-termination",
-        public_remote_completion_preserves_worker_termination_async,
-    );
+    run_async_with_large_test_stack("public-remote-completion-worker-termination", || {
+        public_remote_completion_preserves_worker_termination_async(false)
+    });
 }
 
-async fn public_remote_completion_preserves_worker_termination_async() {
+#[test]
+fn compat_remote_completion_accepts_mapped_already_settled_error() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("public-remote-completion-already-settled", || {
+        public_remote_completion_preserves_worker_termination_async(true)
+    });
+}
+
+async fn public_remote_completion_preserves_worker_termination_async(already_settled: bool) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
@@ -277,8 +284,14 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 serde_json::to_string(
                     &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
                         relay_request_id,
-                        encrypted_response: Some(encrypted_response),
-                        error: None,
+                        encrypted_response: (!already_settled).then_some(encrypted_response),
+                        error: already_settled.then(|| {
+                            super::super::request_errors::map_relay_error(
+                                &crate::error::DaemonError::NoActivePrompt {
+                                    session_id: "worker-room".to_string(),
+                                },
+                            )
+                        }),
                     },
                 )
                 .expect("worker response envelope should serialize")
@@ -381,12 +394,27 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         None,
         &completion_request,
     );
-    let LocalDaemonResponse::PromptCompleted { completion } = router
-        .dispatch(completion_command, completion_request)
-        .await
-        .expect("public remote completion should succeed")
-    else {
-        panic!("public remote completion should return a completed prompt");
+    let completion = if already_settled {
+        // The provider-side compatibility service consumes the peer DaemonError
+        // directly; the public router has its own typed error projection.
+        let mut home = app.lock().await;
+        tokio::task::block_in_place(|| {
+            crate::app::KernelAgentService::new(&mut home).complete_active_prompt(
+                &session_id,
+                &agent_id,
+                None,
+            )
+        })
+        .expect("mapped already-settled peer error must finalize the home prompt")
+    } else {
+        let LocalDaemonResponse::PromptCompleted { completion } = router
+            .dispatch(completion_command, completion_request)
+            .await
+            .expect("public remote completion should succeed")
+        else {
+            panic!("public remote completion should return a completed prompt");
+        };
+        completion
     };
     worker_response
         .await
@@ -400,14 +428,17 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         .expect("remote completion should be projected");
     assert_eq!(
         projected.provider_termination,
-        Some(crate::provider::ProviderRunTermination::process_exit(
-            23, 17_600
-        )),
+        (!already_settled)
+            .then(|| crate::provider::ProviderRunTermination::process_exit(23, 17_600)),
         "normal public completion must retain the worker-reported termination"
     );
     assert_eq!(
         projected.settlement_status,
-        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        if already_settled {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        } else {
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        },
         "worker-reported termination must not project a successful turn"
     );
     assert_eq!(
@@ -417,8 +448,18 @@ async fn public_remote_completion_preserves_worker_termination_async() {
             .get_agent(&agent_id)
             .expect("remote agent should remain available")
             .state(),
-        crate::agent::AgentState::Error,
+        if already_settled {
+            crate::agent::AgentState::Focused
+        } else {
+            crate::agent::AgentState::Error
+        },
     );
+    assert!(app
+        .lock()
+        .await
+        .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+        .unwrap()
+        .is_none());
 
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay server task should join");
