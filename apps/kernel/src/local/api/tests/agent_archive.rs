@@ -182,7 +182,7 @@ fn archive_agent_checks_membership_and_ownership_without_mutation() {
 fn archive_agent_state_survives_kernel_restart() {
     let worktree = crate::test_support::TestWorktree::new("agent-archive-restart");
     let config = DaemonConfig::for_tests();
-    let (room, id, run_id) = {
+    let (room, id) = {
         let h = LocalRouterTestHarness::with_config(config.clone());
         let LocalDaemonResponse::SessionCreated { session, .. } = h
             .dispatch(LocalDaemonRequest::CreateSession(
@@ -227,7 +227,16 @@ fn archive_agent_state_survives_kernel_restart() {
         .unwrap();
         h.dispatch(archive_request(session.id(), agent.id(), true))
             .unwrap();
-        (session.id().to_string(), agent.id().to_string(), run_id)
+        assert_eq!(
+            h.with_app(|app| app
+                .providers()
+                .get_run(&run_id)
+                .unwrap()
+                .agent_instance_id()
+                .map(str::to_string)),
+            Some(agent.id().to_string())
+        );
+        (session.id().to_string(), agent.id().to_string())
     };
     let h = LocalRouterTestHarness::with_config(config);
     let snapshot: LocalDaemonRequest =
@@ -239,15 +248,6 @@ fn archive_agent_state_survives_kernel_restart() {
         .unwrap()
         .iter()
         .any(|agent| agent["id"] == id && agent["archived"] == true));
-    assert_eq!(
-        h.with_app(|app| app
-            .providers()
-            .get_run(&run_id)
-            .unwrap()
-            .agent_instance_id()
-            .map(str::to_string)),
-        Some(id.clone())
-    );
     let history = h
         .dispatch(LocalDaemonRequest::GetSessionHistoryOutline(
             GetSessionHistoryOutlineRequest {
