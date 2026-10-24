@@ -23,6 +23,16 @@ impl KernelRuntimeState {
             .await
     }
 
+    /// A preview only computes times from a trigger. It belongs to no Room, so it
+    /// is answered here instead of on a Room's workflow lane.
+    pub(crate) fn preview_workflow_schedule(
+        &self,
+        request: crate::local::PreviewWorkflowScheduleRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.authorize_current_external_command()?;
+        self.owned.workflow_preview_schedule(request)
+    }
+
     #[inline(never)]
     fn boxed_admitted_workflow_request(
         self,
@@ -489,9 +499,6 @@ impl KernelRuntimeState {
                 let result = owned.workflow_remove_schedule(request);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
-            }
-            LocalDaemonRequest::PreviewWorkflowSchedule(request) => {
-                (owned.workflow_preview_schedule(request), None)
             }
             LocalDaemonRequest::ListWorkflowPromptQueues(request) => {
                 (owned.workflow_list_prompt_queues(request), None)
