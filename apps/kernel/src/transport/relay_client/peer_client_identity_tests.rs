@@ -611,3 +611,35 @@ async fn mp11_persistent_peer_response_rejects_another_key() {
         "persistent response accepted the wrong encrypted sender key"
     );
 }
+
+// A caller deadline that fires before the helper's own response deadline drops the waiter;
+// the registered worker never answers, so no pending request may be left behind.
+#[tokio::test]
+async fn abandoned_peer_request_leaves_no_pending_entry() {
+    let home = crate::config::DaemonConfig::for_tests();
+    let worker = crate::config::DaemonConfig::for_tests();
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (sender, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(8);
+    state
+        .write()
+        .await
+        .test_set_connected_sender(sender, "ws://fixture");
+    for _ in 0..3 {
+        let probe = peer_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
+            &home,
+            &state,
+            ClientTarget {
+                daemon_id: Some("worker".into()),
+                daemon_alias: None,
+            },
+            &worker.relay_public_key,
+            RelayPeerRequest::Ping {
+                value: "unanswered".into(),
+            },
+            Duration::from_secs(30),
+        );
+        assert!(timeout(Duration::from_millis(50), probe).await.is_err());
+        assert!(priority_rx.try_recv().is_ok(), "request was not sent");
+        assert!(state.read().await.pending_peer_requests.is_empty());
+    }
+}

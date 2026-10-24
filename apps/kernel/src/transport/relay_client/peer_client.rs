@@ -87,6 +87,31 @@ impl RelayPeerRequestTrace {
     }
 }
 
+/// Removes a queued peer request from the pending map however its waiter ends, including
+/// a caller deadline that drops the waiter before the response deadline fires.
+struct PendingPeerRequest {
+    state: Arc<RwLock<RelayClientState>>,
+    request_id: String,
+}
+
+impl Drop for PendingPeerRequest {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.state.try_write() {
+            guard.pending_peer_requests.remove(&self.request_id);
+        } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let state = Arc::clone(&self.state);
+            let request_id = std::mem::take(&mut self.request_id);
+            runtime.spawn(async move {
+                state
+                    .write()
+                    .await
+                    .pending_peer_requests
+                    .remove(&request_id);
+            });
+        }
+    }
+}
+
 /// A peer request whose outbound envelope has been queued on the relay sender.
 /// The caller can release any ordering lane before waiting for the remote reply.
 #[must_use = "the peer response must be awaited or intentionally cancelled"]
@@ -308,6 +333,10 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let response_deadline = tokio::time::Instant::now() + response_timeout;
     let private_key = config.relay_private_key.clone();
     let state = Arc::clone(state);
+    let pending = PendingPeerRequest {
+        state: Arc::clone(&state),
+        request_id: request_id.clone(),
+    };
     let authority = crate::runtime::relay_peer_authority::RelayPeerAuthority {
         kernel_id: expected_kernel_id.clone(),
         public_key: expected_public_key.clone(),
@@ -324,8 +353,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 });
             }
             Err(_) => {
-                let mut guard = state.write().await;
-                guard.pending_peer_requests.remove(&request_id);
+                drop(pending);
                 let message = format!(
                     "timed out waiting for relay peer response after {}ms",
                     response_timeout.as_millis()
