@@ -614,6 +614,14 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    /// An event the kernel recorded for the agent moves its liveness
+    /// (coalesced); false when it did not move or the agent is gone.
+    pub fn note_agent_event_activity(&mut self, agent_id: &str, at_ms: u64) -> bool {
+        self.store
+            .get_mut(agent_id)
+            .is_some_and(|agent| agent.note_event_activity(at_ms))
+    }
+
     pub fn note_prompt_sent_at(
         &mut self,
         agent_id: &str,

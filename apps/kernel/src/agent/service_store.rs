@@ -209,6 +209,10 @@ impl AgentServiceStore {
         self.write().set_agent_processing(agent_id, is_processing)
     }
 
+    pub fn note_agent_event_activity(&self, agent_id: &str, at_ms: u64) -> bool {
+        self.write().note_agent_event_activity(agent_id, at_ms)
+    }
+
     pub fn note_prompt_sent_at(
         &self,
         agent_id: &str,
