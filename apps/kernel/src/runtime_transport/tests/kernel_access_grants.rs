@@ -520,6 +520,8 @@ impl Kernel {
         // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
         let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
         std::fs::create_dir(&root).unwrap();
+        crate::config::validate_local_socket_path(&root.join("run/k.sock"))
+            .expect("the test kernel's socket does not fit under this TMPDIR; use a shorter one");
         let child = Command::new(std::env::current_exe().unwrap())
             .args(["kernel_access_child_server", "--ignored", "--nocapture"])
             .env("CHARIOX_ACCESS_TEST_ROOT", &root)
@@ -1649,7 +1651,10 @@ async fn every_event_request_is_refused_as_ended_after_a_real_grant_expiry() {
     ] {
         let (back, answer) = answered_within(holder, request.clone()).await;
         holder = back;
-        assert_eq!(answer["error"]["code"], "kernel_access_ended", "{request}: {answer}");
+        assert_eq!(
+            answer["error"]["code"], "kernel_access_ended",
+            "{request}: {answer}"
+        );
         assert!(answer["response"].is_null(), "{request}: {answer}");
     }
 }
