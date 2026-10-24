@@ -236,7 +236,8 @@ function runHolder() {
       const request = JSON.parse(buffer.split('\n')[0]); buffer = '';
       const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', request.logFile ? openSync(request.logFile, 'a') : 'pipe', request.logFile ? openSync(request.logFile, 'a') : 'pipe'], detached: Boolean(request.detach) });
       child.on('error', error => socket.end(JSON.stringify({ err: Buffer.from(String(error.message)).toString('base64'), exit: 127 }) + '\n'));
-      if (request.detach) { child.unref(); socket.end(JSON.stringify({ pid: child.pid }) + '\n'); return; }
+      // A detached command is acknowledged once it has really started; a failed spawn answers through the error above.
+      if (request.detach) { child.on('spawn', () => { child.unref(); socket.end(JSON.stringify({ pid: child.pid, exit: 0 }) + '\n'); }); return; }
       child.stdout.on('data', data => socket.write(JSON.stringify({ out: data.toString('base64') }) + '\n'));
       child.stderr.on('data', data => socket.write(JSON.stringify({ err: data.toString('base64') }) + '\n'));
       child.on('close', code => socket.end(JSON.stringify({ exit: code ?? 1 }) + '\n'));

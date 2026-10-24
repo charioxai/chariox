@@ -9,6 +9,7 @@ import { execute } from '../lanes.mjs';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const sha256 = text => createHash('sha256').update(text).digest('hex');
 const KEEP_EVENTS = 400;
+const NOTE_ATTEMPTS = 10;
 const sameCommit = /^[0-9a-f]{40}$/;
 
 const target = event => `${event.kernel}/${event.session_id}/${event.agent_id}`;
@@ -70,16 +71,21 @@ export function createRound(options) {
     return lane;
   };
 
+  // A reply that failed stays unresolved: the next read of the lane's status lists the decision again and it is retried.
   const answer = async (lane, event) => {
     const id = event.refs?.interaction_id;
-    if (!id || lane.run.permissions.some(p => p.interactionId === id)) return;
-    if (!/^Approve Claude Code /.test(event.summary || '')) { lane.run.unanswered.push({ interactionId: id, summary: event.summary }); return; }
-    const entry = { interactionId: id, summary: event.summary, at_ms: now() };
+    if (!id || lane.run.permissions.some(p => p.interactionId === id && p.choice)) return;
+    if (!/^Approve Claude Code /.test(event.summary || '')) { if (!lane.run.unanswered.some(p => p.interactionId === id)) lane.run.unanswered.push({ interactionId: id, summary: event.summary }); return; }
+    let entry = lane.run.permissions.find(p => p.interactionId === id);
+    if (!entry) lane.run.permissions.push(entry = { interactionId: id, summary: event.summary, at_ms: now() });
+    entry.attempts = (entry.attempts ?? 0) + 1;
     try {
       await respond({ kernel: lane.run.launch.kernel, taskId: lane.entry.lane, sessionId: lane.run.launch.sessionId, interactionId: id, choiceId: 'allow_once' });
-      entry.choice = 'allow_once';
-    } catch (error) { entry.error = error.code || 'respond_failed'; }
-    lane.run.permissions.push(entry);
+      entry.choice = 'allow_once'; delete entry.error;
+    } catch (error) {
+      entry.error = error.code || 'respond_failed';
+      lane.needsRead = true;
+    }
   };
 
   const handle = async events => {
@@ -91,7 +97,7 @@ export function createRound(options) {
       // The agent's own last_activity_at_ms only moves at turn boundaries; event times show a worker is alive.
       lane.run.lastEventAtMs = Math.max(lane.run.lastEventAtMs ?? 0, event.at_ms ?? 0);
       if (event.type === 'interaction' && event.value?.state === 'pending') await answer(lane, event);
-      else if (event.type !== 'interaction') touched.add(lane);
+      else if (event.type !== 'interaction') { touched.add(lane); lane.needsRead = true; }
     }
     for (const lane of lanes) lane.run.events = lane.run.events.slice(-KEEP_EVENTS);
     return touched;
@@ -102,6 +108,8 @@ export function createRound(options) {
     return touched;
   };
 
+  // A section that could not be delivered stays pending: the next wake sends the same content, which resumes the
+  // same steer receipt. Only a worker that has settled, or ten failures in a row, ends the attempts.
   const deliverNotes = async lane => {
     const text = await readFile(lane.entry.inbox, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
     const sections = newSections(text, lane.run.inboxOffset);
@@ -111,11 +119,21 @@ export function createRound(options) {
       const file = join(roundDirectory, `${lane.entry.lane}.note-${lane.run.notes.length + 1}.md`);
       await writeFile(file, section, { mode: 0o600 });
       const note = { heading: section.split('\n', 1)[0].slice(0, 120), sha256: sha256(section), at_ms: now() };
+      const failures = lane.run.noteFailures?.sha256 === note.sha256 ? lane.run.noteFailures.count : 0;
       try {
         const result = await coordinator('deliver', [lane.entry.lane, file]);
         note.mode = result.confirmation?.mode; note.delivered = true;
         for (const other of await archived(result.confirmation?.archives)) touched.add(other);
-      } catch (error) { note.delivered = false; note.reason = error.code || 'deliver_failed'; }
+      } catch (error) {
+        note.delivered = false; note.reason = error.code || 'deliver_failed';
+        if (error.code !== 'no_active_prompt' && failures + 1 < NOTE_ATTEMPTS) {
+          lane.run.noteFailures = { sha256: note.sha256, count: failures + 1, reason: note.reason, at_ms: now() };
+          await persist(lane);
+          break;
+        }
+        note.attempts = failures + 1;
+      }
+      delete lane.run.noteFailures;
       lane.run.notes.push(note);
       offset += Buffer.byteLength(section);
       lane.run.inboxOffset = offset;

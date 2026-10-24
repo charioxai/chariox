@@ -218,3 +218,71 @@ test('round: a failing inbox records why the driver stopped and a rerun resumes'
   assert.equal(run.driverError, undefined);
   assert.equal(run.previousDriverErrors[0].code, 'event_stream_incomplete');
 });
+
+test('round: a note that could not be delivered stays pending, is retried with the same content, and survives a driver restart', async t => {
+  const r = await rig(t, ['alpha']);
+  const adapter = r.options.adapter;
+  let failures = 2;
+  const prompts = [];
+  r.options.adapter = async (op, input) => { if (op === 'steer') prompts.push(input.prompt); if (op === 'steer' && failures-- > 0) throw Object.assign(new Error('timeout'), { code: 'kernel_request_timeout' }); return adapter(op, input); };
+  const cli = r.options.cli;
+  let wakes = 0;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait' && ++wakes === 1) await appendFile(join(r.home, 'alpha.inbox.md'), '## 11:00Z coordinator\nplease change X\n');
+    if (argv[1] === 'wait' && wakes === 3) throw Object.assign(new Error('driver stopped'), { code: 'event_stream_incomplete' });
+    return cli(argv);
+  };
+  r.waits.push({}, {}, {});
+  await assert.rejects(runRound(r.spec, r.options), { code: 'event_stream_incomplete' });
+  const pending = JSON.parse(await readFile(join(r.home, 'runs', 'alpha.json'), 'utf8'));
+  assert.equal(pending.notes.length, 0, 'nothing is recorded as delivered or skipped');
+  assert.equal(pending.noteFailures.count, 2);
+  let resumed = 0;
+  r.options.cli = async argv => { if (argv[1] === 'wait' && ++resumed === 2) r.idle.add('alpha'); return cli(argv); };
+  r.waits.push({}, { events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const [run] = await runRound(r.spec, r.options);
+  assert.deepEqual(run.notes.map(n => [n.delivered, n.reason]), [[true, undefined]]);
+  assert.equal(run.noteFailures, undefined);
+  assert.equal(prompts.length, 3);
+  assert.ok(prompts.every(prompt => prompt === prompts[0]) && /please change X/.test(prompts[0]));
+});
+
+test('round: a permission reply that failed is retried from the lane status until it succeeds', async t => {
+  const r = await rig(t, ['alpha']);
+  const respond = r.options.respond;
+  let failures = 1;
+  r.options.respond = async input => { if (failures-- > 0) throw Object.assign(new Error('link down'), { code: 'kernel_connection_lost' }); return respond(input); };
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => {
+    const status = await adapter(op, input);
+    return op === 'status' && !r.calls.some(c => c.op === 'respond') ? { ...status, interactions: [{ id: 'claude-permission-1', kind: 'permission', title: 'Approve Claude Code Read?' }] } : status;
+  };
+  r.waits.push({ events: [r.ev('alpha', { type: 'interaction', refs: { interaction_id: 'claude-permission-1' }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } })] });
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  r.idle.add('alpha');
+  const [run] = await runRound(r.spec, r.options);
+  assert.equal(r.calls.filter(c => c.op === 'respond').length, 1);
+  assert.deepEqual(run.permissions.map(p => [p.interactionId, p.choice, p.attempts]), [['claude-permission-1', 'allow_once', 2]]);
+  assert.equal(run.permissions[0].error, undefined);
+});
+
+test('round: a completion wake received while another lane is stopping is not lost', async t => {
+  const r = await rig(t);
+  r.spec.lanes[0].hardStopMinutes = 2;
+  const cli = r.options.cli;
+  let combined = false;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait' && !combined && r.calls.some(c => c.op === 'stop')) {
+      combined = true;
+      r.calls.find(c => c.op === 'stop').served = true;
+      r.idle.add('beta');
+      r.clock.ms += 15_000;
+      return { events: [r.ev('alpha', { cursor: 100, type: 'session', value: { state: 'agent_removed' } }), r.ev('beta', { cursor: 101, type: 'agent', value: { state: 'idle' } })], next_cursor: 101 };
+    }
+    return cli(argv);
+  };
+  r.waits.push({}, {});
+  const [alpha, beta] = await runRound(r.spec, r.options);
+  assert.equal(alpha.finishReason, 'hard_stop');
+  assert.equal(beta.finishReason, 'finished', 'beta is read in the same wake, not at its hard stop');
+});
