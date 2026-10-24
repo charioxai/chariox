@@ -269,7 +269,7 @@ impl KernelRuntimeOwnedState {
             .kernel_operation_owner
             .as_deref()
             .or(pending.terminal_credential_owner.as_deref())
-            .is_some_and(|owner| Some(owner) != caller_user_id)
+            .is_some_and(|owner| !self.answers_for_owner(owner, caller_user_id))
         {
             return Err(interaction_reference_error(
                 session_id,
@@ -338,7 +338,7 @@ impl KernelRuntimeOwnedState {
             } else {
                 owner.to_owned()
             };
-            if Some(owner.as_str()) != caller_user_id
+            if !self.answers_for_owner(&owner, caller_user_id)
                 || (review
                     && session.as_ref().is_none_or(|session| {
                         self.owner_context_review_owner(session.owner_user_id()) != owner
