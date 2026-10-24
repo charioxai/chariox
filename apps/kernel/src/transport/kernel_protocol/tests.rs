@@ -1107,7 +1107,7 @@ fn missing_account_resolution_is_definitive_on_kernel_transport() {
         message: "account is absent on this kernel; copy login or sign in".into(),
     };
     let mapped = map_kernel_error(&error);
-    assert_eq!(mapped.code, "local_transport_error");
+    assert_eq!(mapped.code, "provider_profile_unavailable");
     assert!(!mapped.retryable);
     assert_eq!(mapped.message, error.to_string());
     let transient = DaemonError::LocalTransport {

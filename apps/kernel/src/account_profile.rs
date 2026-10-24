@@ -1203,6 +1203,18 @@ impl ProviderAccountProfileRegistry {
         model: Option<&str>,
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
+        // MP-08 / MP-10 / MP-11: existing peers use the admission operation to
+        // classify a leased-account refusal. Keep that context and only static text.
+        let refused = |reason: crate::error::ProviderProfileRefusal| {
+            if operation == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION {
+                DaemonError::LocalTransport {
+                    operation,
+                    message: crate::error::external_request_failure_message(reason.code()).into(),
+                }
+            } else {
+                DaemonError::ProviderProfileRefused { reason }
+            }
+        };
         let profile = self.get(owner_user_id, provider, profile_id)?;
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
@@ -1219,44 +1231,27 @@ impl ProviderAccountProfileRegistry {
                 &profile.profile_id,
             )? || self.is_home_token_claude_replica(owner_user_id, &profile.profile_id)?);
         if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
-            if let Some(block) = provider_account_usage_block(
+            if provider_account_usage_block(
                 &profile.provider,
                 model,
                 &profile.usage,
                 crate::session::unix_epoch_ms(),
-            ) {
-                let capacity = if block.requires_exhausted_credits {
-                    "usage allowance and credits are exhausted"
-                } else {
-                    "usage is exhausted"
-                };
-                return Err(DaemonError::LocalTransport {
-                    operation,
-                    message: format!(
-                        "selected {} account `{}` cannot start new work because its {capacity} ({}); refresh usage or select another account",
-                        profile.provider,
-                        profile.label,
-                        block.exhausted_labels.join(", ")
-                    ),
-                });
+            )
+            .is_some()
+            {
+                return Err(refused(
+                    crate::error::ProviderProfileRefusal::UsageExhausted,
+                ));
             }
             return Ok(profile);
         }
-        let action = match profile.auth_state {
-            ProviderAccountAuthState::Expired => "reconnect",
-            ProviderAccountAuthState::Error => "test or reconnect",
-            ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured => {
-                "authenticate"
-            }
-            ProviderAccountAuthState::Authenticated => unreachable!(),
-        };
-        Err(DaemonError::LocalTransport {
-            operation,
-            message: format!(
-                "selected {} account `{}` is not authenticated; {action} it in Provider Accounts before starting new work",
-                profile.provider, profile.label
-            ),
-        })
+        Err(refused(
+            if profile.auth_state == ProviderAccountAuthState::Unknown {
+                crate::error::ProviderProfileRefusal::Unverified
+            } else {
+                crate::error::ProviderProfileRefusal::Unauthenticated
+            },
+        ))
     }
 
     pub(crate) fn require_agent_authenticated(
@@ -5022,6 +5017,56 @@ mod tests {
             );
             assert!(mapped.message.contains("this kernel"));
             assert!(mapped.message.contains("copy login"));
+        }
+    }
+
+    #[test]
+    fn lane_profile_refusals_preserve_refresh_action_without_profile_values() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("lane-profile-refusals");
+        let registry =
+            ProviderAccountProfileRegistry::open(root.path().join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "codex", "private-profile-label")
+            .unwrap();
+        for (state, code) in [
+            (
+                ProviderAccountAuthState::Unknown,
+                "provider_profile_unverified",
+            ),
+            (
+                ProviderAccountAuthState::NotConfigured,
+                "provider_profile_unauthenticated",
+            ),
+            (
+                ProviderAccountAuthState::Expired,
+                "provider_profile_unauthenticated",
+            ),
+            (
+                ProviderAccountAuthState::Error,
+                "provider_profile_unauthenticated",
+            ),
+        ] {
+            registry
+                .update_observation(
+                    "local",
+                    "codex",
+                    &profile.profile_id,
+                    state,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let error = registry
+                .require_authenticated("local", "codex", &profile.profile_id, None, "test launch")
+                .unwrap_err();
+            let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+            assert_eq!(mapped.code, code);
+            assert!(!mapped.retryable);
+            assert!(mapped.message.contains("RefreshProviderAccountProfile"));
+            assert!(!mapped.message.contains("private-profile-label"));
         }
     }
 
