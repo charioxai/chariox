@@ -303,11 +303,12 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
         snapshot.pointer("/3/AgentForked/provider_run/pty_env"),
         None
     );
+    assert_eq!(snapshot[3]["AgentForked"]["agent"]["archived"], false);
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "3ae4a6662952561e71558786fecdd029cb52da933fca33e0933445a27fe3ba90"
+        "de74e3acd80c5c7547c8450874c1728015ba6253603c11c5adb38f916be860b3"
     );
 }
 

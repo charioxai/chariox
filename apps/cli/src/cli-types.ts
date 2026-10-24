@@ -134,7 +134,6 @@ import type {
 import {
   normalizeAgentPromptState as normalizeKernelAgentPromptState,
   normalizeRuntimeSession as normalizeKernelRuntimeSession,
-  normalizeRuntimeSessions as normalizeKernelRuntimeSessions,
   normalizeRuntimeSessionWithAgentActivity as normalizeKernelRuntimeSessionWithAgentActivity,
 } from "@chariox/kernel-client/runtime-session-normalization"
 import type { ThemeRegistry } from "./theme-registry.js"
@@ -506,7 +505,8 @@ export function normalizeAgentPromptState(
 }
 
 export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession {
-  return normalizeKernelRuntimeSession(session as unknown as KernelRuntimeSession) as unknown as RuntimeSession
+  const normalized = normalizeKernelRuntimeSession(session as unknown as KernelRuntimeSession) as unknown as RuntimeSession
+  return { ...normalized, agents: normalized.agents.filter(agent => !agent.archived) }
 }
 
 export function normalizeRuntimeSessionWithAgentActivity(payload: {
@@ -514,15 +514,15 @@ export function normalizeRuntimeSessionWithAgentActivity(payload: {
   agent_activity?: RuntimeSession["agent_activity"] | null | undefined
   agent_activity_revision?: number | null | undefined
 }): RuntimeSession {
-  return normalizeKernelRuntimeSessionWithAgentActivity(
+  return normalizeRuntimeSession(normalizeKernelRuntimeSessionWithAgentActivity(
     payload as unknown as {
       session: KernelRuntimeSession
       agent_activity?: KernelRuntimeSession["agent_activity"] | null | undefined
       agent_activity_revision?: number | null | undefined
     },
-  ) as unknown as RuntimeSession
+  ) as unknown as RuntimeSession)
 }
 
 export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {
-  return normalizeKernelRuntimeSessions(sessions as unknown as KernelRuntimeSession[]) as unknown as RuntimeSession[]
+  return sessions.map(normalizeRuntimeSession)
 }

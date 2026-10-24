@@ -169,7 +169,12 @@ impl AgentService {
         }
 
         // Check max agents limit
-        let current_count = self.store.count_by_session(&request.session_id);
+        let current_count = self
+            .store
+            .get_by_session(&request.session_id)
+            .iter()
+            .filter(|agent| !agent.archived())
+            .count();
         if request.spawned_by_agent_id.is_none() && current_count >= session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
                 session_id: request.session_id.clone(),
@@ -379,8 +384,12 @@ impl AgentService {
         self.store.remove(agent_id);
 
         // Recalculate positions for remaining agents
-        let mut remaining_agents: Vec<_> =
-            self.store.get_by_session(&session_id).into_iter().collect();
+        let mut remaining_agents: Vec<_> = self
+            .store
+            .get_by_session(&session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived())
+            .collect();
 
         if !remaining_agents.is_empty() {
             recalculate_positions(&mut remaining_agents);
@@ -425,6 +434,48 @@ impl AgentService {
         }
 
         Ok(agent)
+    }
+
+    pub(crate) fn archive_agent(
+        &mut self,
+        agent_id: &str,
+        archived: bool,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self.get_agent(agent_id)?;
+        let session_id = agent.session_id().to_string();
+        let session = sessions.get_session(&session_id)?;
+        let active_count = self
+            .store
+            .get_by_session(&session_id)
+            .iter()
+            .filter(|a| !a.archived())
+            .count();
+        if !archived && agent.archived() && active_count >= session.max_agents() as usize {
+            return Err(DaemonError::AgentLimitReached {
+                session_id,
+                max_agents: session.max_agents(),
+            });
+        }
+        self.store
+            .get_mut(agent_id)
+            .expect("agent checked")
+            .set_archived(archived);
+        let mut active: Vec<_> = self
+            .store
+            .get_by_session(&session_id)
+            .into_iter()
+            .filter(|a| !a.archived())
+            .collect();
+        recalculate_positions(&mut active);
+        for agent in active {
+            self.store
+                .get_mut(agent.id())
+                .expect("stored agent")
+                .set_position(agent.position().clone());
+        }
+        self.repair_stale_session_focus(&session_id, sessions)?;
+        self.get_agent(agent_id)
     }
 
     pub(crate) fn repair_stale_session_focus(
@@ -477,7 +528,7 @@ impl AgentService {
         // Validate agent exists in session
         let _target_agent = agents
             .iter()
-            .find(|a| a.id() == agent_id)
+            .find(|a| a.id() == agent_id && !a.archived())
             .cloned()
             .ok_or_else(|| DaemonError::AgentNotInSession {
                 session_id: session_id.to_string(),
@@ -509,7 +560,12 @@ impl AgentService {
         session_id: &str,
         current_agent_id: &str,
     ) -> Option<AgentInstance> {
-        let agents = self.store.get_by_session(session_id);
+        let agents: Vec<_> = self
+            .store
+            .get_by_session(session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived())
+            .collect();
 
         if let Some(current_index) = agents.iter().position(|a| a.id() == current_agent_id) {
             let next_index = (current_index + 1) % agents.len();
@@ -525,7 +581,12 @@ impl AgentService {
         session_id: &str,
         sessions: &mut SessionService,
     ) -> Result<Option<AgentInstance>, DaemonError> {
-        let agents = self.store.get_by_session(session_id);
+        let agents: Vec<_> = self
+            .store
+            .get_by_session(session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived())
+            .collect();
 
         if agents.is_empty() {
             return Ok(None);
