@@ -116,7 +116,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let mut publication_progress = UnpublishedSessionPublicationProgress::default();
         let publication = async {
-            if let LocalDaemonResponse::SessionCreated { session, agent } = response {
+            if let LocalDaemonResponse::SessionCreated { session, agent, .. } = response {
                 let project = if session.is_hidden() {
                     None
                 } else {
@@ -239,7 +239,11 @@ impl KernelRuntimeState {
             }),
         );
         Ok((
-            LocalDaemonResponse::SessionCreated { session, agent },
+            LocalDaemonResponse::SessionCreated {
+                session,
+                agent,
+                event_subscription_error: None,
+            },
             unpublished_session,
         ))
     }
@@ -347,7 +351,11 @@ impl KernelRuntimeState {
             }),
         );
         Ok((
-            LocalDaemonResponse::SessionCreated { session, agent },
+            LocalDaemonResponse::SessionCreated {
+                session,
+                agent,
+                event_subscription_error: None,
+            },
             unpublished_session,
         ))
     }
@@ -2177,7 +2185,11 @@ mod tests {
             .owned
             .session_snapshot(&session_id)
             .expect("session snapshot should refresh");
-        let response = LocalDaemonResponse::SessionCreated { session, agent };
+        let response = LocalDaemonResponse::SessionCreated {
+            session,
+            agent,
+            event_subscription_error: None,
+        };
         let mut guard = UnpublishedSessionGuard::new(&runtime.owned.session_store, &session_id);
         let LocalDaemonResponse::SessionCreated { agent, .. } = &response else {
             unreachable!("test response is session.created");

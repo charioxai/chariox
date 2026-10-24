@@ -130,7 +130,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider
         }))
         .expect("workflow agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 

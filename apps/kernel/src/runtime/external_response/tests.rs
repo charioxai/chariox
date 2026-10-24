@@ -275,7 +275,7 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
         http_headers.insert("Authorization".into(), CANARY.into());
     }
     vec![
-        LocalDaemonResponse::AgentSpawned { agent },
+        LocalDaemonResponse::AgentSpawned { agent, event_subscription_error: None},
         LocalDaemonResponse::McpServer { mcp: http },
         LocalDaemonResponse::CredentialRegistered {
             credential: credential.clone(),

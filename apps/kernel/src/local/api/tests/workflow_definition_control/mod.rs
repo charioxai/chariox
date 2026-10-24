@@ -120,7 +120,7 @@ fn create_publication_test_graph_in_workspace(
         }))
         .expect("agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     let agent = match harness

@@ -350,3 +350,125 @@ fn outside_router_acked_cancellation_still_returns_the_ending_receipt() {
         );
     });
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 R1080-1: following is separate from creation.
+#[test]
+fn outside_router_preserves_create_results_after_subscription_cancellation() {
+    run("outside-create-after-cancel", async {
+        let worktree = crate::test_support::TestWorktree::new("outside-create-after-cancel");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+        let grant = router
+            .runtime_state()
+            .insert_access_grant_for_test(session.id());
+        dispatch(&router, &grant, request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":session.id()}]}}))).await;
+        dispatch(
+            &router,
+            &grant,
+            request(serde_json::json!({"UnsubscribeEvents":{"all":true}})),
+        )
+        .await;
+        for input in [
+            LocalDaemonRequest::CreateSession(worktree.session_request()),
+            request(
+                serde_json::json!({"SpawnAgent":{"session_id":session.id(),"provider":"dev-stub"}}),
+            ),
+            request(
+                serde_json::json!({"SpawnAgents":{"session_id":session.id(),"agents":[{"provider":"dev-stub"}]}}),
+            ),
+        ] {
+            let response = dispatch(&router, &grant, input).await;
+            let value = serde_json::to_value(&response).unwrap();
+            let body = value.as_object().unwrap().values().next().unwrap();
+            assert_eq!(
+                body["event_subscription_error"]["code"],
+                "events_subscription_failed"
+            );
+            if let Some(created) = body.get("session") {
+                assert!(app
+                    .lock()
+                    .await
+                    .sessions()
+                    .get_session(created["id"].as_str().unwrap())
+                    .is_ok());
+            }
+            assert!(
+                body.get("session").is_some()
+                    || body.get("agent").is_some()
+                    || body.get("agents").is_some()
+            );
+        }
+        let mut opt_out = worktree.session_request();
+        opt_out.no_subscribe = true;
+        let value = serde_json::to_value(
+            dispatch(&router, &grant, LocalDaemonRequest::CreateSession(opt_out)).await,
+        )
+        .unwrap();
+        assert!(value["SessionCreated"]
+            .get("event_subscription_error")
+            .is_none());
+    });
+}
+
+#[test]
+fn outside_router_preserves_create_ids_when_event_target_capacity_is_full() {
+    run("outside-create-at-capacity", async {
+        let worktree = crate::test_support::TestWorktree::new("outside-create-at-capacity");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let grant = router
+            .runtime_state()
+            .insert_access_grant_for_test(session.id());
+        let kernel = router.config_projection.snapshot().daemon_id;
+        router
+            .runtime_state()
+            .outside_store()
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Subscribe {
+                    id: grant.clone(),
+                    home: true,
+                    baseline: vec![],
+                    targets: (0..1024)
+                        .map(|i| EventTarget {
+                            kernel: kernel.clone(),
+                            session_id: session.id().into(),
+                            agent_id: Some(format!("capacity-agent-{i}")),
+                        })
+                        .collect(),
+                },
+            )
+            .unwrap();
+        let response = dispatch(
+            &router,
+            &grant,
+            LocalDaemonRequest::CreateSession(worktree.session_request()),
+        )
+        .await;
+        let value = serde_json::to_value(response).unwrap();
+        assert!(value["SessionCreated"]["session"]["id"].is_string());
+        assert_eq!(
+            value["SessionCreated"]["event_subscription_error"]["code"],
+            "events_subscription_failed"
+        );
+        assert_eq!(
+            router
+                .runtime_state()
+                .outside_store()
+                .outside_part(&grant)
+                .unwrap()
+                .unwrap()
+                .targets
+                .len(),
+            1024
+        );
+    });
+}

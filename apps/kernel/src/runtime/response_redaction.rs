@@ -17,10 +17,11 @@ pub(crate) fn redact_response_for_user(
         None => Ok(session.redacted_for_user(caller_user_id)),
     };
     Ok(match response {
-        LocalDaemonResponse::SessionCreated { session, agent } => {
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => {
             LocalDaemonResponse::SessionCreated {
                 session: redact_session(session)?,
                 agent,
+                event_subscription_error: None,
             }
         }
         LocalDaemonResponse::SessionResolved { session } => LocalDaemonResponse::SessionResolved {

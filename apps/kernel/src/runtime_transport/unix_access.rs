@@ -637,7 +637,7 @@ pub(super) fn serve_gateway(
                     crate::runtime::kernel_gateway::ledger::deadline_for(&request),
                 );
                 // A wait that outlasts the owner revoking the gateway ends with the revoke.
-                let answered = if crate::runtime::kernel_gateway::ledger::is_long_wait(&request) {
+                let mut answered = if crate::runtime::kernel_gateway::ledger::is_long_wait(&request) {
                     tokio::select! {
                         answered = forwarded => answered,
                         error = gateway.until_unaccepted(&kernel, &origin) => Err(error),
@@ -645,19 +645,11 @@ pub(super) fn serve_gateway(
                 } else {
                     forwarded.await
                 };
-                if let Ok(response) = &answered {
+                if let Ok(response) = &mut answered {
                     gateway.note_forwarded(&kernel, &origin, &request, response);
-                    if let Err(error) = gateway
-                        .follow_forwarded(&origin, &kernel, &request, response)
-                        .await
-                    {
-                        Err(error)
-                    } else {
-                        answered
-                    }
-                } else {
-                    answered
+                    gateway.follow_forwarded(&origin, &kernel, &request, response).await;
                 }
+                answered
             }
             GatewayRoute::List => router.kernel_gateway().kernels().await.map(|kernels| {
                 serde_json::to_value(crate::local::LocalDaemonResponse::GatewayKernelsListed {

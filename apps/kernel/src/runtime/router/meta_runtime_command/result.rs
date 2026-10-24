@@ -96,7 +96,7 @@ fn summarize_meta_command_response(
     room_tools: bool,
 ) -> serde_json::Value {
     match response {
-        LocalDaemonResponse::AgentSpawned { agent } => serde_json::json!({
+        LocalDaemonResponse::AgentSpawned { agent, .. } => serde_json::json!({
             "type": "AgentSpawned",
             "agent": summarize_meta_agent(agent),
         }),

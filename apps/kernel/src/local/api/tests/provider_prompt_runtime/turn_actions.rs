@@ -14,7 +14,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected response: {other:?}"),
     };
     harness.launch_workflow_test_provider(session.id(), agent.id());
@@ -149,7 +149,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     // Launch the provider up front so the admitted prompt starts deterministically.
@@ -252,7 +252,7 @@ fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let attachment = match harness
@@ -377,7 +377,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let attachment = match harness
@@ -523,7 +523,7 @@ fn undo_turn_request_restores_workspace_states_and_preserves_head_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let before = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
@@ -671,7 +671,7 @@ fn undo_turn_request_allows_noop_turns_without_workspace_changes_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let before = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
@@ -813,7 +813,7 @@ fn undo_turn_request_conflict_fails_without_partial_writes_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let attachment = match harness
@@ -933,7 +933,7 @@ fn turn_actions_without_agent_ref_require_focused_agent() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     harness.with_app_mut(|app| {
@@ -985,7 +985,7 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let source = match harness
@@ -1007,7 +1007,7 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
         }))
         .expect("source agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         other => panic!("unexpected spawn response: {other:?}"),
     };
     let attachment = match harness
@@ -1131,7 +1131,7 @@ fn editing_a_queued_note_prompt_to_empty_text_keeps_the_note_request() {
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected response: {other:?}"),
     };
     harness.launch_workflow_test_provider(session.id(), agent.id());

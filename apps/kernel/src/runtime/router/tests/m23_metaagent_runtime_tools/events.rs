@@ -63,6 +63,7 @@ async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not_i
         .expect("human spawn should dispatch");
     let LocalDaemonResponse::AgentSpawned {
         agent: human_worker,
+        ..
     } = spawned
     else {
         panic!("unexpected human spawn response");

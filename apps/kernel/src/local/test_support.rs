@@ -227,7 +227,7 @@ impl LocalRouterTestHarness {
             }))
             .expect("workflow test agent should spawn")
         {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
             _ => panic!("unexpected local response"),
         }
     }

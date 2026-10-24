@@ -278,7 +278,7 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection_inner(
         }))
         .expect("agent spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 

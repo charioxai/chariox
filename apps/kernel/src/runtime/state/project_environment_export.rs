@@ -459,7 +459,7 @@ impl KernelRuntimeState {
             )
             .await?;
         match response {
-            LocalDaemonResponse::SessionCreated { session, agent } => Ok((
+            LocalDaemonResponse::SessionCreated { session, agent, .. } => Ok((
                 session.id().into(),
                 agent.id().into(),
                 Some(EnvironmentUtilityCleanup {

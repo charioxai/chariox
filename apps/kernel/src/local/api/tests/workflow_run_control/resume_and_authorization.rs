@@ -174,7 +174,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
         }))
         .expect("agent spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     let workflow = match harness

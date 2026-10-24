@@ -13,7 +13,7 @@ fn local_request_api_queues_workflow_code_run_behind_active_meta_task() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     harness.with_app_mut(|app| {

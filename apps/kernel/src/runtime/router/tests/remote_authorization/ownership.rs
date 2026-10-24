@@ -60,7 +60,7 @@ async fn remote_owned_session_objects_record_caller_user_inner() {
         .await
         .expect("agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         other => panic!("unexpected spawn response: {other:?}"),
     };
     assert_eq!(agent_one.owner_user_id(), "user-2");
@@ -89,7 +89,7 @@ async fn remote_owned_session_objects_record_caller_user_inner() {
         .await
         .expect("second agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         other => panic!("unexpected spawn response: {other:?}"),
     };
     assert_eq!(agent_two.owner_user_id(), "user-2");
@@ -214,7 +214,7 @@ async fn remote_created_session_records_caller_as_owner_and_default_agent_owner(
         .await
         .expect("remote create session should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected create session response: {other:?}"),
     };
 
@@ -428,7 +428,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
         .await
         .expect("user two should spawn own agent")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         other => panic!("unexpected spawn response: {other:?}"),
     };
     let add_user_two_node = LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {

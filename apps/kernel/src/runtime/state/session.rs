@@ -238,7 +238,11 @@ impl KernelRuntimeOwnedState {
                 "agent_count": session.agents().len(),
             }),
         );
-        Ok(LocalDaemonResponse::SessionCreated { session, agent })
+        Ok(LocalDaemonResponse::SessionCreated {
+            session,
+            agent,
+            event_subscription_error: None,
+        })
     }
 
     pub(super) fn update_session_config(

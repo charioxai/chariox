@@ -355,11 +355,12 @@ impl SessionRuntimeStore {
                         .await;
                 }
                 match self.reconcile_room_environment_actors_if_started(&session_id) {
-                    Ok(()) => self
-                        .state
-                        .session_snapshot(&session_id)
-                        .await
-                        .map(|_| LocalDaemonResponse::AgentSpawned { agent }),
+                    Ok(()) => self.state.session_snapshot(&session_id).await.map(|_| {
+                        LocalDaemonResponse::AgentSpawned {
+                            agent,
+                            event_subscription_error: None,
+                        }
+                    }),
                     Err(error) => Err(error),
                 }
             }
@@ -396,7 +397,10 @@ impl SessionRuntimeStore {
                 .ok()
                 .map(SessionProjectionAction::Update);
             return (
-                Ok(LocalDaemonResponse::AgentsSpawned { agents: Vec::new() }),
+                Ok(LocalDaemonResponse::AgentsSpawned {
+                    agents: Vec::new(),
+                    event_subscription_error: None,
+                }),
                 projection_action,
             );
         }
@@ -599,6 +603,7 @@ impl SessionRuntimeStore {
         }
         self.with_session_projection_action_result(Ok(LocalDaemonResponse::AgentsSpawned {
             agents,
+            event_subscription_error: None,
         }))
         .await
     }

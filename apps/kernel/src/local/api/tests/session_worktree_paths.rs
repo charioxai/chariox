@@ -48,7 +48,7 @@ fn session_worktree_paths_accept_absolute_and_preserve_existing_session() {
         ))
         .expect("absolute existing paths should be accepted")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => {
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => {
             assert_eq!(agent.worktree_id(), Some(session.worktree_id()));
             session
         }

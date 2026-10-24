@@ -116,7 +116,7 @@ async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
         .await
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent.id().to_string(),
         _ => panic!("unexpected spawn response"),
     };
     assert!(

@@ -10,7 +10,7 @@ fn lane_deadline_public_dispatch_sets_reads_and_rejects_wrong_room() {
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("expected room"),
     };
     let (room, agent) = create();

@@ -32,7 +32,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         }))
         .expect("workflow agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 
@@ -139,7 +139,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
         }))
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 
@@ -366,7 +366,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         }))
         .expect("source workflow agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     let workflow = match harness

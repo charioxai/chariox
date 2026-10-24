@@ -57,7 +57,7 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
     .expect("owned local agent spawn should not wait for the app lock")
     .expect("agent spawn should succeed");
 
-    let LocalDaemonResponse::AgentSpawned { agent } = response else {
+    let LocalDaemonResponse::AgentSpawned { agent, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agent.session_id(), session_id);
@@ -172,7 +172,7 @@ async fn local_spawn_agents_batch_uses_owned_runtime_state_without_app_lock() {
     .expect("owned local batch spawn should not wait for the app lock")
     .expect("agent batch spawn should succeed");
 
-    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+    let LocalDaemonResponse::AgentsSpawned { agents, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agents.len(), 2);
@@ -297,7 +297,7 @@ async fn local_spawn_agents_batch_normalizes_local_kernel_ref_to_bulk_owned_path
     .expect("local kernel-ref batch spawn should not wait for the app lock")
     .expect("local kernel-ref batch spawn should succeed");
 
-    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+    let LocalDaemonResponse::AgentsSpawned { agents, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agents.len(), 2);
@@ -376,7 +376,7 @@ async fn local_spawn_agents_batch_emits_one_compact_metaagent_lifecycle_event() 
         .dispatch_session_command(command, request)
         .await
         .expect("agent batch spawn should succeed");
-    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+    let LocalDaemonResponse::AgentsSpawned { agents, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agents.len(), 3);
@@ -476,7 +476,7 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
             .dispatch_session_command(command, request)
             .await
             .expect("agent batch spawn should succeed");
-        let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+        let LocalDaemonResponse::AgentsSpawned { agents, .. } = response else {
             panic!("unexpected response");
         };
         let restored_ids = (

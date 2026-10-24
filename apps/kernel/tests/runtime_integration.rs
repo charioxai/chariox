@@ -513,7 +513,9 @@ fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated {
+            session, agent: _, ..
+        } => session,
         _ => panic!("unexpected local response"),
     };
 

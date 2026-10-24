@@ -27,12 +27,12 @@ impl KernelGateway {
                 session_id: session.id().into(),
                 agent_id: None,
             }],
-            LocalDaemonResponse::AgentSpawned { agent } => vec![EventTarget {
+            LocalDaemonResponse::AgentSpawned { agent, .. } => vec![EventTarget {
                 kernel: kernel.into(),
                 session_id: agent.session_id().into(),
                 agent_id: Some(agent.id().into()),
             }],
-            LocalDaemonResponse::AgentsSpawned { agents } => agents
+            LocalDaemonResponse::AgentsSpawned { agents, .. } => agents
                 .iter()
                 .map(|agent| EventTarget {
                     kernel: kernel.into(),
@@ -55,19 +55,49 @@ impl KernelGateway {
         origin: &Origin,
         target: &str,
         request: &LocalDaemonRequest,
-        response: &serde_json::Value,
-    ) -> Result<(), GatewayError> {
+        response: &mut serde_json::Value,
+    ) {
         if !follows_created(request) {
-            return Ok(());
+            return;
         }
-        let kernel = self.resolve(target).await?.kernel_id;
-        let response: LocalDaemonResponse =
-            serde_json::from_value(response.clone()).map_err(|_| GatewayError::Remote {
-                name: target.into(),
-                code: "events_response_invalid".into(),
-                message: "created work returned an invalid response".into(),
-                retryable: false,
-            })?;
-        self.follow_created(origin,&kernel,request,&response).map_err(|_| GatewayError::Remote { name:target.into(),code:"events_subscription_failed".into(),message:"work was created but could not be followed; subscribe to the created work before continuing".into(),retryable:false })
+        let Ok(mut created) = serde_json::from_value::<LocalDaemonResponse>(response.clone())
+        else {
+            // Preserve the target's reply; decoding that reply belongs to the caller.
+            return;
+        };
+        let failed = match self.resolve(target).await {
+            Ok(kernel) => self
+                .follow_created(origin, &kernel.kernel_id, request, &created)
+                .is_err(),
+            Err(_) => true,
+        };
+        if failed {
+            created.record_event_subscription_failure();
+            *response = serde_json::to_value(created).expect("created work response serializes");
+        }
+    }
+}
+
+impl LocalDaemonResponse {
+    pub(crate) fn record_event_subscription_failure(&mut self) {
+        let issue = match self {
+            Self::SessionCreated {
+                event_subscription_error,
+                ..
+            }
+            | Self::AgentSpawned {
+                event_subscription_error,
+                ..
+            }
+            | Self::AgentsSpawned {
+                event_subscription_error,
+                ..
+            } => event_subscription_error,
+            _ => return,
+        };
+        *issue = Some(EventKernelIssue {
+            code: "events_subscription_failed".into(),
+            message: "Work was created, but automatic event subscription failed. Keep the returned IDs. Run chariox events subscription; if it ended, request a new access grant, otherwise remove unneeded targets or restore the connection, then subscribe using those IDs.".into(),
+        });
     }
 }

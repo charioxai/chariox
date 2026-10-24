@@ -33,19 +33,27 @@ impl CommandRouter {
         // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
         let response_command = command.clone();
         let follow_request = request.clone();
-        let response = Box::pin(router.dispatch_authorized(command, request)).await;
-        if let (Some(grant_id), Ok(response)) = (response_command.external_grant_id(), &response) {
+        let mut response = Box::pin(router.dispatch_authorized(command, request)).await;
+        if let (Some(grant_id), Ok(response)) =
+            (response_command.external_grant_id(), &mut response)
+        {
             if let Some(grant) = router.runtime_state.access_grant_summary(&grant_id) {
                 let origin = crate::runtime::kernel_gateway::Origin {
                     grant_id,
                     harness: crate::runtime::kernel_gateway::harness_name(&grant),
                 };
-                router.kernel_gateway.follow_created(
-                    &origin,
-                    &router.config_projection.snapshot().daemon_id,
-                    &follow_request,
-                    response,
-                )?;
+                if router
+                    .kernel_gateway
+                    .follow_created(
+                        &origin,
+                        &router.config_projection.snapshot().daemon_id,
+                        &follow_request,
+                        response,
+                    )
+                    .is_err()
+                {
+                    response.record_event_subscription_failure();
+                }
             }
         }
         crate::runtime::external_response::finish_response(&response_command, response)

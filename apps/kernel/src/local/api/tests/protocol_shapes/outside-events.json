@@ -177,5 +177,9 @@
     "CreateSession": true,
     "SpawnAgent": true,
     "SpawnAgents": true
+  },
+  "creation_response_error": {
+    "code": "events_subscription_failed",
+    "message": "Work was created, but automatic event subscription failed. Keep the returned IDs. Run chariox events subscription; if it ended, request a new access grant, otherwise remove unneeded targets or restore the connection, then subscribe using those IDs."
   }
 }

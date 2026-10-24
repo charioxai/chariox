@@ -458,7 +458,7 @@ async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
         .await
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected spawn response"),
     };
 

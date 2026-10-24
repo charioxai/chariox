@@ -88,7 +88,7 @@ pub enum LocalDaemonResponse {
     AppFileGrantsRevoked { installation_id: String, requests: u32, files: u32, },
     AppHostActionAccepted { operation_id: String, action: AppHostAction, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
-    SessionCreated { session: RuntimeSession, agent: AgentInstance, },
+    SessionCreated { session: RuntimeSession, agent: AgentInstance, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
     SessionAttached { attachment: RuntimeAttachment, },
     SessionViewAttached {
         attachment: RuntimeAttachment,
@@ -462,8 +462,8 @@ pub enum LocalDaemonResponse {
     SessionAliased { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
     AgentProfileUpdated { agent: AgentInstance, session: RuntimeSession, },
-    AgentSpawned { agent: AgentInstance, },
-    AgentsSpawned { agents: Vec<AgentInstance>, },
+    AgentSpawned { agent: AgentInstance, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
+    AgentsSpawned { agents: Vec<AgentInstance>, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
     TurnUndone { result: TurnUndoResult, },
     AgentForked {
         source_agent_id: String,

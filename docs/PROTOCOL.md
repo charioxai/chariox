@@ -5293,3 +5293,11 @@ end the subscription. The final control record is the only reply an admitted wai
 may send after its grant ends. Remote cleanup remains durable through reconnect.
 Sessions and agents created under an external grant are followed automatically;
 `no_subscribe: true` on CreateSession, SpawnAgent or SpawnAgents opts out.
+
+Creation and event interest have separate outcomes. `SessionCreated`, `AgentSpawned`
+and `AgentsSpawned` retain their successful IDs if automatic following fails,
+including an already cancelled subscription or the 1,024-target limit. The reply
+then includes optional `event_subscription_error: {code, message}` (code
+`events_subscription_failed`); normal success omits it. Keep the returned IDs
+and recover the subscription rather than retrying creation. Local 585 covers
+this metadata too; relay peer 181 is unchanged.

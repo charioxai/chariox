@@ -728,7 +728,7 @@ fn local_request_api_exports_agent_app_publication_package() {
         }))
         .expect("workflow agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     let workflow = match harness
