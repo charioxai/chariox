@@ -35,6 +35,9 @@ pub(crate) async fn run_room_secret_text_input(
     ))
 }
 
+/// The only error the target capture raises once the helper ran and found no usable field.
+pub(crate) const FOCUSED_TARGET_UNAVAILABLE: &str = "focused desktop target is unavailable";
+
 pub(crate) async fn capture_computer_secret_target(
     capture_guard: tokio::sync::OwnedRwLockReadGuard<()>,
 ) -> Result<crate::transport::room_browser_controller::RoomComputerSecretTarget, DaemonError> {
@@ -43,11 +46,9 @@ pub(crate) async fn capture_computer_secret_target(
             .await?;
     let target: crate::transport::room_browser_controller::RoomComputerSecretTarget =
         serde_json::from_str(output.stdout.as_str())
-            .map_err(|_| room_computer_input_error("focused desktop target is unavailable"))?;
+            .map_err(|_| room_computer_input_error(FOCUSED_TARGET_UNAVAILABLE))?;
     if !output.success || output.stdout_truncated || !target.valid() {
-        return Err(room_computer_input_error(
-            "focused desktop target is unavailable",
-        ));
+        return Err(room_computer_input_error(FOCUSED_TARGET_UNAVAILABLE));
     }
     Ok(target)
 }

@@ -284,7 +284,6 @@ struct KernelRuntimeOwnedState {
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
     private_assessment_results: agent_assessment_result::AssessmentResults,
-    private_work_results: agent_assessment_result::AssessmentResults,
     private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
@@ -817,6 +816,18 @@ impl KernelRuntimeState {
                 }
             };
         provider_store.set_managed_kernel_admission_gate(managed_kernel_quiescence.clone());
+        let kernel_browser_secret_observations =
+            room_secret_observation::RoomSecretObservations::new(
+                config
+                    .private_runtime_state_root()
+                    .join("kernel-browser/observations"),
+                BTreeSet::new(),
+            )
+            .with_identity(&config.relay_private_key);
+        // A value pasted through the owner's kernel browser is redacted from that owner's
+        // Rooms by the same stream filter, watchers and scrubbing as a Room-registered one.
+        let user_domain = kernel_browser_secret_observations.clone();
+        let sessions = session_store.clone();
         let room_secret_observations = room_secret_observation::RoomSecretObservations::new(
             config
                 .private_runtime_state_root()
@@ -840,6 +851,19 @@ impl KernelRuntimeState {
                 .collect(),
         )
         .with_identity(&config.relay_private_key)
+        .with_user_domain(
+            move |room| {
+                sessions
+                    .get_session(room)
+                    .ok()
+                    .map(|session| session.owner_user_id().to_string())
+            },
+            move |owner| {
+                user_domain.all_values(
+                    &crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key(owner),
+                )
+            },
+        )
         .with_worker_room(
             config
                 .room_environment_worker_binding
@@ -864,7 +888,6 @@ impl KernelRuntimeState {
                             PrivateAssessmentDispatch::new(
                                 config_projection.clone(),
                                 durable_state_store.clone(),
-                                room_secret_observations.clone(),
                             )
                         })
                         .clone();
@@ -934,10 +957,7 @@ impl KernelRuntimeState {
                 room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
-                kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
-                    config.private_runtime_state_root().join("kernel-browser/observations"),
-                    BTreeSet::new(),
-                ).with_identity(&config.relay_private_key),
+                kernel_browser_secret_observations,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -991,7 +1011,6 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 private_assessment_results: Default::default(),
-                private_work_results: private_assessment_dispatch.work_results.clone(),
                 private_assessment_dispatch,
                 metaagent_events,
                 metaagent_trace_subscriptions,

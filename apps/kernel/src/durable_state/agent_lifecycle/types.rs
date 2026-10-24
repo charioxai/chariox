@@ -168,6 +168,8 @@ pub(crate) enum Operation {
     },
     TimeoutGoal {
         task: String,
+        /// Kernel-observed protected-step failure kept when the check is unusable.
+        known_block: Option<String>,
         prompt: String,
         now: u64,
     },
@@ -180,6 +182,7 @@ pub(crate) enum Operation {
     },
     EvaluateGoal {
         task: String,
+        known_block: Option<String>,
         prompt: String,
         result: String,
         now: u64,

@@ -210,7 +210,8 @@ impl KernelRuntimeState {
                     self.owned.room_secret_observations.clone(),
                     wake.room_id.clone(),
                 );
-                if let Some(line) = protect(super::agent_process_output::sanitize(line.as_bytes()))
+                if let Some(line) =
+                    protect.scrub(super::agent_process_output::sanitize(line.as_bytes()))
                 {
                     store.agent_lifecycle(Operation::ProcessMatched {
                         id: wake.id.clone(),
@@ -225,10 +226,11 @@ impl KernelRuntimeState {
                 self.owned.room_secret_observations.clone(),
                 wake.room_id.clone(),
             );
-            let tail = protect(super::agent_process_output::sanitize(
-                receipt.output_tail.as_bytes(),
-            ))
-            .unwrap_or_else(|| "[output protected]".into());
+            let tail = protect
+                .scrub(super::agent_process_output::sanitize(
+                    receipt.output_tail.as_bytes(),
+                ))
+                .unwrap_or_else(|| "[output protected]".into());
             store.agent_lifecycle(Operation::ProcessExited {
                 id: wake.id.clone(),
                 exit_code: receipt.wake.exit_code,

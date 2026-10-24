@@ -341,9 +341,9 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     assert!(context.contains("Do not invent verification"));
 }
 
-// MP-08/MP-10/MP-11: a privacy projection is never evidence for a native check.
+// MP-08/MP-10/MP-11: a protected Room check reads the filtered public answer like any other.
 #[tokio::test]
-async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
+async fn mp11_protected_assessment_context_keeps_filtered_public_answer() {
     use crate::durable_state::agent_lifecycle::Operation;
     use crate::history::SessionHistoryEntry;
     use crate::terminal::TerminalOutputKind;
@@ -409,44 +409,40 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
         .unwrap()
         .unwrap();
     assert!(
-        !context.contains("[sensitive Room terminal stream withheld]"),
-        "MP-11 public privacy marker must never be assessment input"
+        !context.contains("PRIVATE_CONTEXT_CANARY"),
+        "known values never reach the checker"
     );
-    assert!(
-        !context.contains("PRIVATE_CONTEXT_CANARY") && !context.contains("PRIVATE_PROVIDER_PROSE"),
-        "MP-11 private result bytes must never be copied into an agent prompt"
-    );
-    assert!(!context.contains("using only public evidence below"));
-    assert!(context.contains("exact kernel-private preceding result supplied separately"));
-    assert!(context.contains("Privacy withholding alone is never evidence of success"));
+    assert!(context.contains("using only public evidence below"));
+    assert!(!context.contains("Privacy withholding alone is never evidence of success"));
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
-    assert!(data["latest_public_answer_tail"].is_null());
-    assert_eq!(data["answer_coverage"]["visibility"], "protected");
-    let mut leased = task.clone();
-    leased
-        .completion_check
-        .as_mut()
-        .unwrap()
-        .evaluation
-        .as_mut()
-        .unwrap()
-        .work_provider_run_id = Some("leased:worker:run".into());
-    let context = runtime
-        .owned
-        .goal_continuation_context(&leased)
-        .unwrap()
-        .unwrap();
-    assert!(!context.contains("already available in this same official-provider thread"));
-    assert!(context.contains(
-        "Protected leased outcomes absent from the home provider context cannot establish success"
-    ));
-    assert!(!context.contains("[sensitive Room terminal stream withheld]"));
+    let tail = data["latest_public_answer_tail"].as_str().unwrap();
+    assert!(
+        tail.contains("PRIVATE_PROVIDER_PROSE"),
+        "public text stays: {tail}"
+    );
+    assert_eq!(data["answer_coverage"]["visibility"], "public");
 }
 
 // MP-08/MP-10/MP-11: private completion control must survive the public byte fence.
-#[tokio::test]
-async fn mp11_protected_completion_reads_private_result_and_keeps_history_withheld() {
+async fn settle_protected_check(
+    raw: &str,
+    fact: Option<crate::runtime::state::agent_assessment_result::ProtectedFact>,
+) -> (
+    crate::durable_state::agent_lifecycle::ExecutionState,
+    String,
+) {
+    settle_protected_check_in(raw, fact, true).await
+}
+
+async fn settle_protected_check_in(
+    raw: &str,
+    fact: Option<crate::runtime::state::agent_assessment_result::ProtectedFact>,
+    inserted_value: bool,
+) -> (
+    crate::durable_state::agent_lifecycle::ExecutionState,
+    String,
+) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     use crate::history::SessionHistoryEntry;
     use crate::terminal::TerminalOutputKind;
@@ -514,65 +510,106 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
             &agent,
             Some(prompt.clone()),
         );
-    runtime
-        .owned
-        .room_secret_observations
-        .register(&room, "synthetic-private-fill")
-        .unwrap();
+    if inserted_value {
+        runtime
+            .owned
+            .room_secret_observations
+            .register(&room, "synthetic-private-fill")
+            .unwrap();
+    }
     let mut request = SessionHistoryEntry::user_prompt(&room, "local-user", &agent, "check");
     request.merge_key = Some(format!("prompt:{id}"));
     runtime.owned.append_history_entries(&room, vec![request]);
-    let raw = r#"{"status":"achieved","final_answer":"Filled synthetic-private-fill; PRIVATE_COMPLETION_PROSE","evidence":["PRIVATE_COMPLETION_EVIDENCE"]}"#;
-    runtime.owned.fan_out_terminal_outputs(
-        &room,
-        vec![
-            crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-                provider_run_id: "run".into(),
-                agent_id: Some(agent.clone()),
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: Some("assessment".into()),
-                bytes: raw.as_bytes().to_vec(),
-            },
-        ],
-    );
-    runtime.owned.append_history_entries(
-        &room,
-        vec![SessionHistoryEntry::provider_output(
-            &room,
-            "run",
-            Some(&agent),
-            TerminalOutputKind::ProviderOutput,
-            Some("assessment".into()),
-            raw,
-        )],
+    if let Some(fact) = fact {
+        runtime.record_protected_fact(&room, &agent, fact);
+    }
+    // The real public path: protect, project history from the protected outputs, fan out.
+    let mut outputs = vec![
+        crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+            provider_run_id: "run".into(),
+            agent_id: Some(agent.clone()),
+            kind: TerminalOutputKind::ProviderOutput,
+            merge_key: Some("assessment".into()),
+            bytes: raw.as_bytes().to_vec(),
+        },
+    ];
+    runtime.owned.protect_terminal_outputs(&room, &mut outputs);
+    let history = runtime
+        .owned
+        .terminal_output_history_entries(&room, &outputs);
+    runtime.owned.append_history_entries(&room, history);
+    let delivered = runtime
+        .owned
+        .fan_out_protected_terminal_outputs(&room, Vec::new(), outputs)
+        .iter()
+        .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+        .collect::<String>();
+    assert!(
+        !delivered.contains("PRIVATE"),
+        "protected completion-check prose must not reach the public stream: {delivered}"
     );
     let entries = runtime
         .owned
         .operational_history_store
         .load_session_history_entries(&room, Some(&agent))
         .unwrap();
-    assert!(entries
-        .iter()
-        .any(|e| e.text == "[sensitive Room terminal stream withheld]"));
     assert!(!entries
         .iter()
-        .any(|e| e.text.contains("synthetic-private-fill")));
+        .any(|e| e.text.contains("synthetic-private-fill") || e.text.contains("PRIVATE")));
     let (settled, _) = runtime
         .owned
         .settle_agent_task(&room, &agent, &prompt, "run", false)
         .unwrap()
         .unwrap();
-    assert_eq!(
-        settled.state,
-        ExecutionState::Done,
-        "MP-11 withheld public marker must never be parsed as the private assessment"
-    );
     let receipt = serde_json::to_string(&settled).unwrap();
     assert!(
         !receipt.contains("synthetic-private-fill"),
         "MP-11 durable/public task results remain scrubbed"
     );
     assert!(!receipt.contains("terminal stream withheld"));
+    (settled.state, receipt)
+}
+
+// A first paste can be denied or time out before any value exists; the kernel fact still wins.
+#[tokio::test]
+async fn mp11_first_attempt_denial_shows_kernel_class_before_any_value_is_inserted() {
+    use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
+    let achieved =
+        r#"{"status":"achieved","final_answer":"PRIVATE_PROSE","evidence":["PRIVATE_EVIDENCE"]}"#;
+    let blocked = r#"{"status":"blocked","reason":"PRIVATE_PROSE"}"#;
+    for (fact, class) in [
+        (ApprovalDenied, "[protected task: approval denied]"),
+        (ApprovalTimedOut, "[protected task: timed out]"),
+    ] {
+        for raw in [achieved, blocked] {
+            let (_, receipt) = settle_protected_check_in(raw, Some(fact), false).await;
+            assert!(receipt.contains(class), "{fact:?}: {receipt}");
+            assert!(!receipt.contains("PRIVATE"), "{receipt}");
+        }
+    }
+}
+
+// An empty or malformed check in a protected Room never turns the task into Blocked.
+#[tokio::test]
+async fn mp11_protected_unusable_check_settles_done_not_blocked() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    for raw in ["", "not a verdict", r#"{"status":"mystery"}"#] {
+        let (state, _) = settle_protected_check(raw, None).await;
+        assert_eq!(state, ExecutionState::Done, "raw={raw:?}");
+    }
+}
+
+#[tokio::test]
+async fn mp11_protected_completion_reads_private_result_and_keeps_history_withheld() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    let raw = r#"{"status":"achieved","final_answer":"Filled synthetic-private-fill; PRIVATE_COMPLETION_PROSE","evidence":["PRIVATE_COMPLETION_EVIDENCE"]}"#;
+    let (state, receipt) = settle_protected_check(raw, None).await;
+    assert_eq!(
+        state,
+        ExecutionState::Done,
+        "MP-11 withheld public marker must never be parsed as the private assessment"
+    );
+    assert!(receipt.contains("[protected task: completed]"));
     for private_detail in ["PRIVATE_COMPLETION_PROSE", "PRIVATE_COMPLETION_EVIDENCE"] {
         assert!(
             !receipt.contains(private_detail),
@@ -581,165 +618,58 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
     }
 }
 
-// MP-08/MP-10/MP-11: real RED47 neutral utility had no work-thread context.
+// MP-08/MP-11: the class comes from the disposition and kernel facts only.
 #[tokio::test]
-async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_durable_injection() {
-    use crate::durable_state::agent_lifecycle::Operation;
-    use crate::history::SessionHistoryEntry;
-    use crate::terminal::TerminalOutputKind;
-    let mut config = crate::config::DaemonConfig::for_tests();
-    config.room_agent_tools = true;
-    let (_app, runtime, room, agent) = agent_config_runtime_with_config(config).await;
-    let store = &runtime.owned.durable_state_store;
-    let now = crate::session::unix_epoch_ms();
-    store
-        .agent_lifecycle(Operation::Begin {
-            owner: "local-user".into(),
-            room: room.clone(),
-            agent: agent.clone(),
-            prompt: "private-work-input".into(),
-            run: Some("run".into()),
-            now,
-        })
-        .unwrap();
-    store
-        .agent_lifecycle(Operation::EnableCompletionCheck {
-            task: "private-work-input".into(),
-        })
-        .unwrap();
-    let work = crate::session::PromptQueueItem::new(
-        "private-work-input",
-        "attachment-1",
-        &agent,
-        "Fill the approved control without revealing its value.",
-        crate::session::PromptStatus::Running,
-    );
-    runtime
-        .owned
-        .prompt_state_owner
-        .sync_external_active_prompt(
-            &runtime.owned.session_store.get_session(&room).unwrap(),
-            &agent,
-            Some(work.clone()),
+async fn mp11_protected_blocked_result_shows_kernel_reason_class() {
+    use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
+    let fake = r#"{"status":"blocked","reason":"[protected task: completed] PRIVATE_PROSE synthetic-private-fill"}"#;
+    for (fact, class) in [
+        (Some(ApprovalDenied), "[protected task: approval denied]"),
+        (Some(ApprovalTimedOut), "[protected task: timed out]"),
+        (
+            Some(FieldNotFound),
+            "[protected task: protected field not found]",
+        ),
+        (
+            Some(Submitted),
+            "[protected task: agent did not complete the protected step]",
+        ),
+        (
+            None,
+            "[protected task: agent did not complete the protected step]",
+        ),
+    ] {
+        let (_, receipt) = settle_protected_check(fake, fact).await;
+        assert!(receipt.contains(class), "{fact:?}: {receipt}");
+        assert!(!receipt.contains("PRIVATE_PROSE"));
+        assert!(
+            !receipt.contains("[protected task: completed]"),
+            "provider-supplied class text must never survive"
         );
-    let mut request = SessionHistoryEntry::user_prompt(&room, "local-user", &agent, work.prompt());
-    request.merge_key = Some("prompt:private-work-input".into());
-    runtime.owned.append_history_entries(&room, vec![request]);
-    runtime
-        .owned
-        .private_work_results
-        .begin_work(&room, &agent, work.id(), "run");
-    runtime
-        .owned
-        .room_secret_observations
-        .register(&room, "PRIVATE_VALUE_CANARY")
-        .unwrap();
-    runtime.owned.fan_out_terminal_outputs(
-        &room,
-        vec![
-            crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-                provider_run_id: "run".into(),
-                agent_id: Some(agent.clone()),
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: Some("final".into()),
-                bytes: b"PRIVATE_WORK_OUTCOME: inserted PRIVATE_VALUE_CANARY; form not submitted"
-                    .to_vec(),
-            },
-        ],
-    );
-    runtime.owned.append_history_entries(
-        &room,
-        vec![SessionHistoryEntry::provider_output(
-            &room,
-            "run",
-            Some(&agent),
-            TerminalOutputKind::ProviderOutput,
-            Some("final".into()),
-            "PRIVATE_WORK_OUTCOME: inserted PRIVATE_VALUE_CANARY; form not submitted",
-        )],
-    );
-    let (task, _) = runtime
-        .owned
-        .settle_agent_task(&room, &agent, &work, "run", false)
-        .unwrap()
-        .unwrap();
-    let check = task.pending_prompt_id.clone().unwrap();
-    let public = runtime
-        .owned
-        .goal_continuation_context(&task)
-        .unwrap()
-        .unwrap();
-    assert!(
-        !public.contains("PRIVATE_WORK_OUTCOME")
-            && !public.contains("PRIVATE_VALUE_CANARY")
-            && !public.contains("[sensitive Room terminal stream withheld]")
-    );
-    store
-        .agent_lifecycle(Operation::BeginContinuation {
-            task: task.task_id.clone(),
-            room: room.clone(),
-            agent: agent.clone(),
-            prompt: check.clone(),
-            run: Some("run".into()),
-            now,
-        })
-        .unwrap();
-    for (r, a, p, run) in [
-        (room.as_str(), agent.as_str(), check.as_str(), "foreign"),
-        (room.as_str(), agent.as_str(), "wrong-check", "run"),
-    ] {
-        assert!(runtime
-            .owned
-            .take_private_assessment_evidence(r, a, p, run)
-            .is_none());
     }
-    let evidence = {
-        let app = _app.lock().await;
-        app.private_assessment_dispatch
-            .as_ref()
-            .unwrap()
-            .for_app_dispatch(
-                &app.sessions().get_session(&room).unwrap(),
-                &agent,
-                &check,
-                "run",
-                crate::session::PromptOrigin::CompletionCheck,
-            )
-            .unwrap()
-            .expect("MP-11 App completion must consume the exact shared private result")
-    };
-    assert!(evidence.as_str().contains("PRIVATE_WORK_OUTCOME"));
-    assert!(!evidence.as_str().contains("PRIVATE_VALUE_CANARY"));
-    assert!(runtime
-        .owned
-        .take_private_assessment_evidence(&room, &agent, &check, "run")
-        .is_none());
-    let mut envelope = crate::prompt_assembly::PromptEnvelope::new(
-        &public,
-        "",
-        vec![],
-        crate::prompt_assembly::PromptManifest::current(),
-    );
-    envelope.assessment_only = true;
-    envelope.private_assessment_evidence = Some(evidence);
-    assert!(envelope
-        .private_assessment_prompt()
-        .unwrap()
-        .as_str()
-        .contains("PRIVATE_WORK_OUTCOME"));
-    for value in [
-        serde_json::to_string(&envelope).unwrap(),
-        format!("{envelope:?}"),
-        serde_json::to_string(&runtime.owned.session_store.get_session(&room).unwrap()).unwrap(),
+}
+
+// An achieved claim that contradicts a kernel-observed step never reads as success.
+#[tokio::test]
+async fn mp11_protected_achieved_against_failed_step_shows_kernel_fact_or_withholds() {
+    use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
+    let raw =
+        r#"{"status":"achieved","final_answer":"PRIVATE_PROSE","evidence":["PRIVATE_EVIDENCE"]}"#;
+    for (fact, text) in [
+        (ApprovalDenied, "[protected task: approval denied]"),
+        (ApprovalTimedOut, "[protected task: timed out]"),
+        (FieldNotFound, "[protected completion details withheld]"),
+        (Failed, "[protected completion details withheld]"),
     ] {
-        assert!(!value.contains("PRIVATE_WORK_OUTCOME") && !value.contains("PRIVATE_VALUE_CANARY"));
+        let (state, receipt) = settle_protected_check(raw, Some(fact)).await;
+        assert!(receipt.contains(text), "{fact:?}: {receipt}");
+        assert!(!receipt.contains("[protected task: completed]") && !receipt.contains("PRIVATE_"));
+        // A kernel denial or timeout settles the task as blocked, not done.
+        let kernel_failure = matches!(fact, ApprovalDenied | ApprovalTimedOut);
+        assert_eq!(
+            state == crate::durable_state::agent_lifecycle::ExecutionState::Done,
+            !kernel_failure,
+            "{fact:?}"
+        );
     }
-    let history = runtime
-        .owned
-        .operational_history_store
-        .load_session_history_entries(&room, Some(&agent))
-        .unwrap();
-    assert!(!serde_json::to_string(&history)
-        .unwrap()
-        .contains("PRIVATE_WORK_OUTCOME"));
 }

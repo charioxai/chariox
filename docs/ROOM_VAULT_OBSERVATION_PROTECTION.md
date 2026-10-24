@@ -32,8 +32,20 @@ registry into every private controller request, including replacement controller
 before raw CDP reads or compaction. Raw snapshots, controller responses and events,
 kernel tools, MCP results, framed history, Recall and context handoff retain their
 shared scrubbing paths. Bound slice provider sessions use their home Room registry.
-Unframed terminal bytes and streamed assistant/reasoning remain withheld when a
-registry protects that Room: chunk-local matching cannot catch split values.
+Unframed terminal bytes and streamed assistant/reasoning are filtered, not
+withheld: before persistence, delivery or watcher matching the kernel redacts every
+live, retired and stored value (and the encodings above) in text with terminal
+escapes removed, holding back only a tail that may begin a value until the next
+chunk or the end of the message. Public text, answers, progress and watcher matches
+stay visible; only an untracked (unknown) value still withholds the stream.
+The tail is held on every append-only channel (assistant text, reasoning, native
+terminal bytes); tool snapshots, errors, status and echoes are redacted in place.
+A shorter value never matches while a longer value that it prefixes may still be
+streaming. The filter also redacts the owner's user-domain values (the local
+`chariox.kernel_browser_paste_secret` fill) and values stored for a Room through
+`SetCredentialSecret{session_id}`, so one registry decides what the model receives.
+A protected completion check's verdict prose stays off the public stream and history;
+only the kernel-authored reason class reaches the receipt.
 This requires no human clearance and does not block complete scrubbed tool results.
 
 MP-08/MP-11 visual protection follows Miguel's 2026-10-09 fill-target model.

@@ -1,6 +1,7 @@
 use crate::error::DaemonError;
 
 use super::*;
+use crate::runtime::state::agent_assessment_result::ProtectedFact;
 
 impl KernelRuntimeState {
     pub(super) async fn dispatch_computer_secret_input_tool(
@@ -31,7 +32,26 @@ impl KernelRuntimeState {
         .await
     }
 
-    async fn dispatch_computer_secret_input_for_authority(
+    pub(in crate::runtime::state) async fn dispatch_computer_secret_input_for_authority(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let result = self
+            .paste_secret_to_computer(session_id, agent_id, arguments)
+            .await;
+        if result.is_err() {
+            // A failed attempt must not leave an earlier paste reading as success.
+            self.owned
+                .private_assessment_dispatch
+                .protected_facts
+                .record_failure(session_id, agent_id);
+        }
+        result
+    }
+
+    async fn paste_secret_to_computer(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -77,6 +97,7 @@ impl KernelRuntimeState {
             .await?
             != target
         {
+            self.record_protected_fact(session_id, agent_id, ProtectedFact::FieldNotFound);
             return Err(DaemonError::LocalTransport {
                 operation: "computer_secret_input.target",
                 message: "computer credential input aborted: focused control or window changed"
@@ -110,6 +131,7 @@ impl KernelRuntimeState {
                 Some(approved_generation),
             )
             .await?;
+        self.record_protected_fact(session_id, agent_id, ProtectedFact::Submitted);
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({

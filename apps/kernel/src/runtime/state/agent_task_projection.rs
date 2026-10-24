@@ -408,6 +408,7 @@ mod tests {
         }
         let Outcome::Settled { task, .. } = store
             .agent_lifecycle(Operation::EvaluateGoal {
+                known_block: None,
                 task: "child-prompt".into(),
                 prompt: check.clone(),
                 result: raw,

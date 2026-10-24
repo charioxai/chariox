@@ -7,28 +7,27 @@ use crate::durable_state::agent_lifecycle::{
 use zeroize::Zeroize;
 
 mod cache;
+mod protected_class;
 pub(super) use cache::AssessmentResults;
+pub(in crate::runtime::state) use protected_class::{ProtectedFact, ProtectedFacts};
 
 /// MP-11: App queue/promotion and runtime actors share this exact private cell.
 /// No App pointer or runtime actor is captured, so this cannot create an ownership cycle.
 #[derive(Clone)]
 pub(crate) struct PrivateAssessmentDispatch {
-    pub(super) work_results: AssessmentResults,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     durable_state_store: crate::durable_state::DurableKernelStateStore,
-    room_secret_observations: super::room_secret_observation::RoomSecretObservations,
+    pub(super) protected_facts: ProtectedFacts,
 }
 impl PrivateAssessmentDispatch {
     pub(super) fn new(
         config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
         durable_state_store: crate::durable_state::DurableKernelStateStore,
-        room_secret_observations: super::room_secret_observation::RoomSecretObservations,
     ) -> Self {
         Self {
-            work_results: Default::default(),
             config_projection,
             durable_state_store,
-            room_secret_observations,
+            protected_facts: Default::default(),
         }
     }
     pub(crate) fn for_app_dispatch(
@@ -38,7 +37,7 @@ impl PrivateAssessmentDispatch {
         prompt: &str,
         run: &str,
         origin: crate::session::PromptOrigin,
-    ) -> Result<Option<crate::prompt_assembly::AssessmentEvidence>, crate::error::DaemonError> {
+    ) -> Result<(), crate::error::DaemonError> {
         if self.config_projection.snapshot().room_agent_tools {
             self.durable_state_store.agent_lifecycle(
                 crate::durable_state::agent_lifecycle::Operation::Begin {
@@ -51,130 +50,85 @@ impl PrivateAssessmentDispatch {
                 },
             )?;
         }
-        Ok(self.for_dispatch(session.id(), agent, prompt, run, origin, false))
+        self.for_dispatch(session.id(), agent, origin, false);
+        Ok(())
     }
     pub(crate) fn for_dispatch(
         &self,
         room: &str,
         agent: &str,
-        prompt: &str,
-        run: &str,
         origin: crate::session::PromptOrigin,
         steering: bool,
-    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
-        if origin == crate::session::PromptOrigin::CompletionCheck {
-            self.take_private_assessment_evidence(room, agent, prompt, run)
-        } else {
-            if !steering && self.config_projection.snapshot().room_agent_tools {
-                self.work_results.begin_work(room, agent, prompt, run);
-            }
-            None
+    ) {
+        // A new work turn must not inherit a previous turn's paste outcome.
+        if origin != crate::session::PromptOrigin::CompletionCheck
+            && !steering
+            && self.config_projection.snapshot().room_agent_tools
+        {
+            self.protected_facts.clear(room, agent);
         }
-    }
-    fn take_private_assessment_evidence(
-        &self,
-        room: &str,
-        agent: &str,
-        prompt: &str,
-        run: &str,
-    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
-        let task = self
-            .durable_state_store
-            .agent_tasks(Some(room), Some(agent))
-            .ok()?
-            .into_iter()
-            .find(|t| {
-                t.state == ExecutionState::Working
-                    && t.prompt_id == prompt
-                    && t.provider_run_id.as_deref() == Some(run)
-                    && goals::is_check(t, prompt)
-            })?;
-        let check = crate::durable_state::agent_lifecycle::completion::evaluation(&task)?;
-        let work_run = check.work_provider_run_id.as_deref()?;
-        if work_run != run || work_run.starts_with("leased:") {
-            return None;
-        }
-        let bytes = self
-            .work_results
-            .take(room, agent, &check.work_prompt_id, work_run)?;
-        if !self.room_secret_observations.protects_bytes(room) {
-            return None;
-        }
-        let text = std::str::from_utf8(&bytes).ok()?.trim();
-        if text.is_empty() {
-            return None;
-        }
-        let text = self
-            .room_secret_observations
-            .scrub(room, text.to_string())
-            .ok()?;
-        let text = crate::secret_redaction::redact_secrets(&text);
-        crate::prompt_assembly::AssessmentEvidence::new(serde_json::json!({"task_id":task.task_id,"work_prompt_id":check.work_prompt_id,"provider_run_id":work_run,"complete":true,"provider_assistant_result":text}).to_string())
     }
 }
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn private_evidence_for_dispatch(
+    pub(super) fn note_dispatch(
         &self,
         room: &str,
         agent: &str,
-        prompt: &str,
-        run: &str,
         origin: crate::session::PromptOrigin,
         steering: bool,
-    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
+    ) {
         self.private_assessment_dispatch
-            .for_dispatch(room, agent, prompt, run, origin, steering)
+            .for_dispatch(room, agent, origin, steering)
     }
+    /// Whether the check's output must stay private: a Room holding inserted values, or a
+    /// protected step the kernel itself observed (e.g. a first paste that was denied).
+    pub(super) fn protects_completion_check(&self, room: &str, agent: Option<&str>) -> bool {
+        self.room_secret_observations.protects_bytes(room)
+            || agent.is_some_and(|agent| {
+                self.private_assessment_dispatch
+                    .protected_facts
+                    .peek(room, agent)
+                    .is_some()
+            })
+    }
+    /// Caches the check's verdict privately; true when the output is a completion check.
     pub(super) fn collect_private_assessment(
         &self,
         room: &str,
         output: &super::prompt_transcript_owned_state::TerminalOutputBatchAppend,
-    ) {
+    ) -> bool {
         if output.kind != crate::terminal::TerminalOutputKind::ProviderOutput {
-            return;
+            return false;
         }
         let Some(agent) = output.agent_id.as_deref() else {
-            return;
+            return false;
         };
         let Ok(session) = self.session_store.get_session(room) else {
-            return;
+            return false;
         };
         let Some(prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent)
         else {
-            return;
+            return false;
         };
+        if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
+            return false;
+        }
         let Ok(tasks) = self
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))
         else {
-            return;
+            return false;
         };
-        if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
-            if tasks.iter().any(|t| {
-                t.state == ExecutionState::Working
-                    && t.prompt_id == prompt.id()
-                    && t.provider_run_id.as_deref() == Some(&output.provider_run_id)
-            }) {
-                self.private_work_results.append_work(
-                    room,
-                    agent,
-                    prompt.id(),
-                    &output.provider_run_id,
-                    &output.bytes,
-                );
-            }
-            return;
-        }
         if !tasks.iter().any(|task| {
             task.state == ExecutionState::Working
                 && task.prompt_id == prompt.id()
                 && task.provider_run_id.as_deref() == Some(&output.provider_run_id)
                 && goals::is_check(task, prompt.id())
         }) {
-            return;
+            return false;
         }
         self.private_assessment_results.append(
             room,
@@ -183,17 +137,23 @@ impl KernelRuntimeOwnedState {
             &output.provider_run_id,
             &output.bytes,
         );
+        true
     }
-    #[cfg(test)]
-    pub(super) fn take_private_assessment_evidence(
-        &self,
-        room: &str,
-        agent: &str,
-        prompt: &str,
-        run: &str,
-    ) -> Option<crate::prompt_assembly::AssessmentEvidence> {
-        self.private_assessment_dispatch
-            .take_private_assessment_evidence(room, agent, prompt, run)
+    /// A kernel-observed approval denial or timeout of an agent's protected step, if unresolved.
+    pub(super) fn known_protected_block(&self, room: &str, agent: &str) -> Option<String> {
+        let fact = self
+            .private_assessment_dispatch
+            .protected_facts
+            .peek(room, agent);
+        protected_class::known_block(fact).map(String::from)
+    }
+    /// The kernel fact was applied as the task's block: it is consumed like a terminal verdict.
+    pub(super) fn settle_known_block(&self, room: &str, agent: &str, state: &ExecutionState) {
+        if *state == ExecutionState::Blocked {
+            self.private_assessment_dispatch
+                .protected_facts
+                .clear(room, agent);
+        }
     }
     pub(super) fn take_private_assessment(
         &self,
@@ -224,7 +184,12 @@ impl KernelRuntimeOwnedState {
         let Ok(mut value) = serde_json::from_str::<Assessment>(text) else {
             return String::new();
         };
-        if self.room_secret_observations.protects_bytes(room) {
+        // A kernel-observed protected step fences the verdict even before any value is inserted.
+        let fact = self
+            .private_assessment_dispatch
+            .protected_facts
+            .peek(room, agent);
+        if fact.is_some() || self.room_secret_observations.protects_bytes(room) {
             let live = if matches!(value, Assessment::Waiting { .. }) {
                 let task = self
                     .durable_state_store
@@ -252,8 +217,12 @@ impl KernelRuntimeOwnedState {
             } else {
                 Vec::new()
             };
-            if !fence_private_assessment(&mut value, &live) {
+            let facts = &self.private_assessment_dispatch.protected_facts;
+            if !fence_private_assessment(&mut value, &live, fact) {
                 return String::new();
+            }
+            if protected_class::is_terminal(&value) {
+                facts.clear(room, agent);
             }
         }
         self.room_secret_observations
@@ -266,10 +235,16 @@ impl KernelRuntimeOwnedState {
 
 // The structured disposition is control input. Protected provider prose cannot
 // enter the ledger/audit/public result, including through a malformed receipt.
-fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
+// The only public prose is a fixed kernel-authored reason class.
+fn fence_private_assessment(
+    value: &mut Assessment,
+    live: &[String],
+    fact: Option<ProtectedFact>,
+) -> bool {
+    let public = protected_class::public_text(value, fact);
     let fence = |text: &mut String| {
         text.zeroize();
-        *text = "[protected completion details withheld]".into();
+        *text = public.into();
     };
     match value {
         Assessment::Achieved {
@@ -313,6 +288,17 @@ fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
             registration_ids.dedup();
         }
     }
+    // The kernel's own denial or timeout wins over an "achieved" claim.
+    if matches!(value, Assessment::Achieved { .. })
+        && matches!(
+            fact,
+            Some(ProtectedFact::ApprovalDenied | ProtectedFact::ApprovalTimedOut)
+        )
+    {
+        *value = Assessment::Blocked {
+            reason: public.into(),
+        };
+    }
     true
 }
 
@@ -328,7 +314,11 @@ mod tests {
             r#"{"status":"waiting","reason":"PRIVATE_DERIVED","registration_ids":["known-live"],"deadline_ms":123}"#,
         ] {
             let mut value: Assessment = serde_json::from_str(raw).unwrap();
-            assert!(fence_private_assessment(&mut value, &["known-live".into()]));
+            assert!(fence_private_assessment(
+                &mut value,
+                &["known-live".into()],
+                None
+            ));
             assert!(!serde_json::to_string(&value).unwrap().contains("PRIVATE_"));
         }
         for raw in [
@@ -339,13 +329,42 @@ mod tests {
             let mut value: Assessment = serde_json::from_str(raw).unwrap();
             assert!(!fence_private_assessment(
                 &mut value,
-                &["known-live".into()]
+                &["known-live".into()],
+                None
             ));
         }
         assert!(serde_json::from_str::<Assessment>(
             r#"{"status":"blocked","reason":"safe","extra":"PRIVATE_DERIVED"}"#
         )
         .is_err());
+    }
+    #[test]
+    fn mp11_reason_class_is_fixed_and_fails_closed() {
+        use ProtectedFact::*;
+        let class = |raw: &str, fact| {
+            let mut value: Assessment = serde_json::from_str(raw).unwrap();
+            assert!(fence_private_assessment(&mut value, &["live".into()], fact));
+            serde_json::to_string(&value).unwrap()
+        };
+        let waiting = r#"{"status":"waiting","reason":"PRIVATE","registration_ids":["live"],"deadline_ms":1}"#;
+        let cont = r#"{"status":"continue","reason":"PRIVATE"}"#;
+        let achieved = r#"{"status":"achieved","final_answer":"PRIVATE","evidence":["PRIVATE"]}"#;
+        assert!(class(waiting, None).contains("[protected task: waiting]"));
+        assert!(class(waiting, Some(ApprovalDenied)).contains("approval denied"));
+        assert!(class(cont, Some(FieldNotFound)).contains("protected field not found"));
+        assert!(class(achieved, Some(Submitted)).contains("[protected task: completed]"));
+        let denied = class(achieved, Some(ApprovalDenied));
+        assert!(denied.contains("blocked") && denied.contains("[protected task: approval denied]"));
+        let timed_out = class(achieved, Some(ApprovalTimedOut));
+        assert!(timed_out.contains("blocked") && timed_out.contains("[protected task: timed out]"));
+        assert!(!denied.contains("PRIVATE") && !timed_out.contains("PRIVATE"));
+        for fact in [FieldNotFound, Failed] {
+            let out = class(achieved, Some(fact));
+            assert!(
+                out.contains("[protected completion details withheld]"),
+                "{out}"
+            );
+        }
     }
     #[test]
     fn mp11_private_assessment_is_single_use_binding_exact_and_never_truncates() {

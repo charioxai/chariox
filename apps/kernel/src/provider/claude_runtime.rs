@@ -186,15 +186,11 @@ pub(crate) fn submit_claude_prompt(
     write_claude_hidden_context(run.id(), state, &envelope.hidden_system_context)?;
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
-    let private_prompt = envelope.private_assessment_prompt();
-    let input = private_prompt
-        .as_ref()
-        .map_or(envelope.visible_user_prompt.as_str(), |p| p.as_str());
     let message = json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": claude_user_content(input, &envelope.attachments)
+            "content": claude_user_content(&envelope.visible_user_prompt, &envelope.attachments)
         }
     });
     write_json_line(&mut state.stdin, &message)?;

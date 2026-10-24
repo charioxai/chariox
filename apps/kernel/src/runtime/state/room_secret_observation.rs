@@ -1,7 +1,8 @@
 //! MP-08/MP-10/MP-11: Room-scoped observation protection, below every client.
 //! Values use zeroizing memory and a private runtime-identity-sealed registry.
 //! Retired values are scrub-only for the Room lifetime; deletion wipes them.
-//! Vault values never inserted into the Room are scrub-only and never fence streams.
+//! Provider output is filtered (not withheld): known values are redacted before
+//! persistence or delivery. Only an unknown (untracked) value withholds a stream.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,7 @@ use zeroize::Zeroizing;
 mod lifecycle;
 mod revocation;
 mod storage;
+mod stream_filter;
 
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
@@ -31,11 +33,24 @@ pub(super) struct RoomSecretObservations {
     migration_failed: bool,
     rooms: Arc<Mutex<BTreeMap<String, Protection>>>,
     barriers: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
+    pending_streams: Arc<Mutex<stream_filter::Pending>>,
+    // Values registered outside this store that also apply to a Room (the owner's
+    // user-domain browser values), so one registry decides what is redacted.
+    user_domain: Option<UserDomain>,
     vault_lifecycle: Arc<tokio::sync::RwLock<()>>,
     revocation_delivery: Arc<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
     pub(super) epoch: u64,
     #[cfg(test)]
     pub(super) history_retention_checks: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct UserDomain {
+    owner_of: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    values: Arc<dyn Fn(&str) -> Vec<Zeroizing<String>> + Send + Sync>,
+    // The history projector runs under the history lock and may not take the session
+    // lock, so it records the owner it already knows before any lookup.
+    owners: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 #[derive(Default)]
@@ -51,6 +66,7 @@ struct Protection {
     recovered_artifacts: bool,
     history_before_ms: u64,
     history_boundary_bytes: Option<usize>,
+    filtered_streams: bool,
 }
 
 impl Protection {
@@ -102,6 +118,8 @@ impl RoomSecretObservations {
             migration_failed: false,
             rooms: Default::default(),
             barriers: Default::default(),
+            pending_streams: Default::default(),
+            user_domain: None,
             vault_lifecycle: Default::default(),
             revocation_delivery: Default::default(),
             epoch: crate::session::unix_epoch_ms(),
@@ -118,6 +136,91 @@ impl RoomSecretObservations {
     pub(super) fn with_worker_room(mut self, room: Option<String>) -> Self {
         self.worker_room = room;
         self
+    }
+
+    pub(super) fn with_user_domain(
+        mut self,
+        owner_of: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+        values: impl Fn(&str) -> Vec<Zeroizing<String>> + Send + Sync + 'static,
+    ) -> Self {
+        self.user_domain = Some(UserDomain {
+            owner_of: Arc::new(owner_of),
+            values: Arc::new(values),
+            owners: Default::default(),
+        });
+        self
+    }
+
+    pub(super) fn remember_owner(&self, room: &str, owner: &str) {
+        if let Some(domain) = &self.user_domain {
+            if let Ok(mut owners) = domain.owners.lock() {
+                owners.insert(room.into(), owner.into());
+            }
+        }
+    }
+
+    fn external(&self, room: &str) -> Vec<Zeroizing<String>> {
+        let Some(domain) = &self.user_domain else {
+            return Vec::new();
+        };
+        let known = domain.owners.lock().ok().and_then(|o| o.get(room).cloned());
+        let owner = known.or_else(|| {
+            let owner = (domain.owner_of)(room)?;
+            self.remember_owner(room, &owner);
+            Some(owner)
+        });
+        owner.map_or_else(Vec::new, |owner| (domain.values)(&owner))
+    }
+
+    /// Every registered value of `scope`, live, retired or stored.
+    pub(super) fn all_values(&self, scope: &str) -> Vec<Zeroizing<String>> {
+        if self.blocked(scope, false).is_err() {
+            return Vec::new();
+        }
+        self.rooms.lock().map_or_else(
+            |_| Vec::new(),
+            |rooms| {
+                let protection = &rooms[scope];
+                [
+                    &protection.values,
+                    &protection.retired_values,
+                    &protection.stored_values,
+                ]
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect()
+            },
+        )
+    }
+
+    /// Whether `text` ends with the beginning of a registered multi-line value.
+    pub(super) fn multiline_prefix(&self, room: &str, text: &str) -> bool {
+        let room = self.room_key(room);
+        if self.blocked(room, false).is_err() {
+            return false;
+        }
+        let external = self.external(room);
+        let Ok(rooms) = self.rooms.lock() else {
+            return false;
+        };
+        let protection = &rooms[room];
+        let found = [
+            &external,
+            &protection.values,
+            &protection.retired_values,
+            &protection.stored_values,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|value| value.contains('\n'))
+        .any(|value| {
+            text.char_indices().any(|(i, _)| {
+                let suffix = &text[i..];
+                suffix.len() < value.len() && value.starts_with(suffix)
+            })
+        });
+        found
     }
 
     fn room_key<'a>(&'a self, room: &'a str) -> &'a str {
@@ -170,6 +273,7 @@ impl RoomSecretObservations {
             unknown,
             recovered_artifacts: unknown,
             history_before_ms: if unknown { self.epoch } else { 0 },
+            filtered_streams: !unknown,
             ..Default::default()
         })
     }
@@ -542,6 +646,8 @@ impl RoomSecretObservations {
             .unwrap_or_else(|_| "[sensitive Room observation withheld]".into())
     }
 
+    // Whether the Room holds, or lost track of, an inserted value. Gates private
+    // completion evidence only; output is filtered by `protect_stream`.
     pub(super) fn protects_bytes(&self, room: &str) -> bool {
         let room = self.room_key(room);
         if self.blocked(room, false).is_err() {
@@ -586,16 +692,19 @@ impl RoomSecretObservations {
     ) -> Result<T, DaemonError> {
         let room = self.room_key(room);
         self.blocked(room, false)?;
+        // The owner lookup takes the session lock, so it never runs under the value lock.
+        let external = self.external(room);
         let rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = &rooms[room];
         // Recheck under the value lock: another mutation can follow admission.
         if observation && protection.unknown {
             return Err(fenced_observation_error());
         }
-        if protection.value_count() == 0 {
+        if protection.value_count() == 0 && external.is_empty() {
             return Ok(input);
         }
         let mut value = serde_json::to_value(input).map_err(|_| protection_error())?;
+        scrub_value(&mut value, &external);
         scrub_value(&mut value, &protection.values);
         scrub_value(&mut value, &protection.retired_values);
         scrub_value(&mut value, &protection.stored_values);
@@ -606,18 +715,10 @@ impl RoomSecretObservations {
         &self,
         mut entry: crate::history::SessionHistoryEntry,
     ) -> crate::history::SessionHistoryEntry {
-        use crate::history::SessionHistoryEntryKind;
         if self.withholds_history(&entry.session_id, entry.timestamp_ms) {
             entry.text = "[recovered sensitive Room history withheld]".into();
             entry.attachments.clear();
             return entry;
-        }
-        if matches!(
-            entry.kind,
-            SessionHistoryEntryKind::ProviderOutput | SessionHistoryEntryKind::ProviderReasoning
-        ) && self.protects_bytes(&entry.session_id)
-        {
-            entry.text = "[sensitive Room terminal stream withheld]".into();
         }
         match self.scrub(&entry.session_id, entry.clone()) {
             Ok(entry) => entry,
@@ -645,16 +746,6 @@ impl RoomSecretObservations {
             });
         }
         self.scrub(room, value)
-    }
-
-    pub(super) fn protect_unframed_bytes(&self, room: &str, bytes: &[u8]) -> Vec<u8> {
-        if self.protects_bytes(room) {
-            // Matching individual chunks cannot catch a secret split across chunks.
-            // Retain the fence for the session lifetime, without a human clearance.
-            b"[sensitive Room terminal stream withheld]".to_vec()
-        } else {
-            bytes.to_vec()
-        }
     }
 
     pub(super) fn scrub_response(
@@ -699,15 +790,6 @@ impl RoomSecretObservations {
             let room = self.room_key(&room);
             if self.withholds_history(room, event.timestamp_ms) {
                 event.content = Some("[recovered sensitive Room history withheld]".into());
-                event.content_ref = None;
-                event.metadata.clear();
-            } else if matches!(
-                event.kind,
-                crate::history::HistoryEventKind::ProviderOutput
-                    | crate::history::HistoryEventKind::ProviderReasoning
-            ) && self.protects_bytes(room)
-            {
-                event.content = Some("[sensitive Room terminal stream withheld]".into());
                 event.content_ref = None;
                 event.metadata.clear();
             } else if let Ok(scrubbed) = self.scrub(room, event.clone()) {

@@ -170,15 +170,6 @@ impl KernelRuntimeOwnedState {
             })?;
         }
         self.reconcile_workflow_delegation(room, agent, prompt)?;
-        if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
-            if cancelled {
-                self.private_work_results
-                    .discard(room, agent, prompt.id(), answer_run);
-            } else {
-                self.private_work_results
-                    .seal_work(room, agent, prompt.id(), answer_run);
-            }
-        }
         if !cancelled {
             let catalog_handoff = self
                 .pending_mcp_continuations
@@ -227,15 +218,20 @@ impl KernelRuntimeOwnedState {
                 .find(|t| ledger::goals::is_check(t, prompt.id()))
             {
                 let result = self.take_private_assessment(room, agent, prompt.id(), answer_run);
+                let known_block = self.known_protected_block(room, agent);
                 return match self
                     .durable_state_store
                     .agent_lifecycle(Operation::EvaluateGoal {
                         task: task.task_id,
                         prompt: prompt.id().into(),
                         result,
+                        known_block,
                         now: crate::session::unix_epoch_ms(),
                     })? {
-                    Outcome::Settled { task, correction } => Ok(Some((task, correction))),
+                    Outcome::Settled { task, correction } => {
+                        self.settle_known_block(room, agent, &task.state);
+                        Ok(Some((task, correction)))
+                    }
                     _ => unreachable!(),
                 };
             }
@@ -604,9 +600,14 @@ impl KernelRuntimeState {
                         .agent_lifecycle(Operation::TimeoutGoal {
                             task: task.task_id.clone(),
                             prompt: check.prompt_id.clone(),
+                            known_block: self
+                                .owned
+                                .known_protected_block(&task.room_id, &task.agent_id),
                             now,
                         })?
                 {
+                    self.owned
+                        .settle_known_block(&task.room_id, &task.agent_id, &stopped.state);
                     let _ = self.stop_goal_turn(&stopped).await;
                     blocked.push(stopped);
                 }

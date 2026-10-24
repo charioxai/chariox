@@ -21,28 +21,12 @@ pub(super) fn execute_assessment(
     envelope: PromptEnvelope,
     prompt_id: &str,
 ) -> Result<super::ProviderPromptSubmitAcknowledgement, DaemonError> {
-    // MP-11 review1016: never submit private evidence to a durable provider session.
-    // OpenCode's current utility endpoint creates persistent sessions. Until an
-    // official nonpersistent seam is available, reject before any provider I/O.
-    if envelope.private_assessment_evidence.is_some()
-        && !matches!(run.adapter_key(), "codex" | "claude")
-    {
-        return Err(DaemonError::ProviderProtocol {
-            provider_run_id: run.id().to_string(),
-            operation: "assessment_session_persistence_unavailable",
-            message: "provider has no nonpersistent private assessment path".into(),
-        });
-    }
     let scratch = AssessmentScratch::new()?;
     let assessment = prepare_assessment_run(run, scratch.0.clone());
     let timeout = std::time::Duration::from_millis(
         crate::durable_state::agent_lifecycle::goals::CHECK_BOUND_MS,
     );
     let policy = ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery;
-    let private_prompt = envelope.private_assessment_prompt();
-    let input = private_prompt
-        .as_ref()
-        .map_or(envelope.visible_user_prompt.as_str(), |p| p.as_str());
     let output = if assessment.adapter_key() == "claude" {
         super::command_execution::execute_utility_command(
             registry, assessment, envelope, timeout, policy,
@@ -50,7 +34,7 @@ pub(super) fn execute_assessment(
     } else {
         crate::provider::run_blocking_provider_utility_prompt(
             &assessment,
-            input,
+            &envelope.visible_user_prompt,
             &envelope.hidden_system_context,
             timeout,
             "completion assessment",
@@ -164,36 +148,6 @@ mod tests {
                         .iter()
                         .any(|a| a == "--no-session-persistence"),
                     "MP-11 review1016: private assessor must never write a Claude transcript"
-                );
-            }
-            if provider == "opencode" {
-                let mut envelope = PromptEnvelope::new(
-                    "public check",
-                    "",
-                    vec![],
-                    crate::prompt_assembly::PromptManifest::default(),
-                );
-                envelope.assessment_only = true;
-                envelope.private_assessment_evidence =
-                    crate::prompt_assembly::AssessmentEvidence::new(
-                        "SYNTHETIC_PRIVATE_RESULT".into(),
-                    );
-                let error = execute_assessment(
-                    &ProviderRunRuntimeRegistry::default(),
-                    &run,
-                    envelope,
-                    "check",
-                )
-                .unwrap_err();
-                assert!(
-                    matches!(
-                        error,
-                        DaemonError::ProviderProtocol {
-                            operation: "assessment_session_persistence_unavailable",
-                            ..
-                        }
-                    ),
-                    "MP-11: reject before contacting a durable provider session: {error}"
                 );
             }
             assert!(assessment.mcp_servers().is_empty());

@@ -126,11 +126,9 @@ impl KernelRuntimeOwnedState {
                     .get_session(&prepared.session_id)?
                     .owner_user_id()
                     .into(),
-                objective: String::from_utf8(
-                    self.room_secret_observations
-                        .protect_unframed_bytes(&prepared.session_id, goal.objective.as_bytes()),
-                )
-                .map_err(|_| ledger::error("protected objective encoding"))?,
+                objective: self
+                    .room_secret_observations
+                    .scrub_text_or_withhold(&prepared.session_id, &goal.objective),
                 minutes: goal.minutes,
                 now: crate::session::unix_epoch_ms(),
             })?;
@@ -207,17 +205,23 @@ impl KernelRuntimeState {
         let state = self.clone();
         let task_id = task.task_id.clone();
         let prompt = check.prompt_id.clone();
+        let (room, agent) = (task.room_id.clone(), task.agent_id.clone());
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(wait)).await;
+            let known_block = state.owned.known_protected_block(&room, &agent);
             let result = state
                 .owned
                 .durable_state_store
                 .agent_lifecycle(Operation::TimeoutGoal {
                     task: task_id,
                     prompt,
+                    known_block,
                     now: crate::session::unix_epoch_ms(),
                 });
             if let Ok(Outcome::Task(task)) = result {
+                state
+                    .owned
+                    .settle_known_block(&task.room_id, &task.agent_id, &task.state);
                 let _ = state.stop_goal_turn(&task).await;
                 let _ = state.ensure_task_owner_interaction(task.clone()).await;
                 let _ = state.owned.session_snapshot(&task.room_id);
@@ -273,12 +277,10 @@ impl KernelRuntimeState {
         let value = raw_value
             .map(|v| {
                 if action == "edit" {
-                    String::from_utf8(
-                        self.owned
-                            .room_secret_observations
-                            .protect_unframed_bytes(session.id(), v.as_bytes()),
-                    )
-                    .map_err(|_| ledger::error("protected objective encoding"))
+                    Ok(self
+                        .owned
+                        .room_secret_observations
+                        .scrub_text_or_withhold(session.id(), v))
                 } else {
                     Ok(v.to_owned())
                 }

@@ -214,7 +214,6 @@ impl KernelRuntimeState {
             return Ok(Vec::new());
         }
         let mut terminal_outputs = Vec::with_capacity(request.outputs.len());
-        let mut history_entries = Vec::new();
         let mut provider_run_agent_cache =
             std::collections::BTreeMap::<String, Option<String>>::new();
         for output in request.outputs {
@@ -242,26 +241,6 @@ impl KernelRuntimeState {
                     agent_id
                 }
             };
-            let prompt_metadata = self.owned.active_prompt_transcript_metadata_for_agent(
-                &request.session_id,
-                agent_id.as_deref(),
-            );
-            if output.kind != crate::terminal::TerminalOutputKind::PromptEcho
-                && output.kind != crate::terminal::TerminalOutputKind::ProviderTerminal
-            {
-                history_entries.push(
-                    crate::history::SessionHistoryEntry::provider_output(
-                        &request.session_id,
-                        &output.provider_run_id,
-                        agent_id.as_deref(),
-                        output.kind.clone(),
-                        output.merge_key.clone(),
-                        output.text.clone(),
-                    )
-                    .with_prompt_origin(prompt_metadata.prompt_origin)
-                    .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-                );
-            }
             terminal_outputs.push(
                 super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                     provider_run_id: output.provider_run_id,
@@ -272,9 +251,20 @@ impl KernelRuntimeState {
                 },
             );
         }
-        let records = self
+        self.owned
+            .protect_terminal_outputs(&request.session_id, &mut terminal_outputs);
+        let history_entries = self
             .owned
-            .fan_out_terminal_outputs(&request.session_id, terminal_outputs);
+            .terminal_output_history_entries(&request.session_id, &terminal_outputs);
+        let recipients = self
+            .owned
+            .attachment_store
+            .list_session_attachment_ids(&request.session_id);
+        let records = self.owned.fan_out_protected_terminal_outputs(
+            &request.session_id,
+            recipients,
+            terminal_outputs,
+        );
         self.owned
             .append_history_entries(&request.session_id, history_entries);
         Ok(records)

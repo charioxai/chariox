@@ -316,6 +316,7 @@ impl KernelRuntimeOwnedState {
                     Some(provider_run_id.to_string()),
                     provider_run.provider_session_id().map(str::to_string),
                 )?;
+                self.note_dispatch(session_id, agent_id, started_next.prompt_origin(), false);
                 self.provider_store.enqueue_structured_prompt_submit(
                     session_id.to_string(),
                     provider_run_id.to_string(),
@@ -327,14 +328,6 @@ impl KernelRuntimeOwnedState {
                     &hidden_system_context,
                     started_next.attachments(),
                     mode.with_prompt_origin(started_next.prompt_origin()),
-                    self.private_evidence_for_dispatch(
-                        session_id,
-                        agent_id,
-                        started_next.id(),
-                        provider_run_id,
-                        started_next.prompt_origin(),
-                        false,
-                    ),
                     false,
                 )?;
                 self.note_prompt_started(provider_run_id);

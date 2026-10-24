@@ -304,9 +304,8 @@ async fn public_history_new_vault_credential_retires_prior_public_value() {
 
 #[tokio::test]
 async fn public_history_protected_room_withholds_fragmented_answers() {
-    // MP-08 / MP-10 / MP-11: protected Rooms withhold provider streams even
-    // when each delta lacks a complete secret. Assembly must not recover raw
-    // fragments through read or turn.
+    // MP-08 / MP-10 / MP-11: protected Rooms redact a value split across
+    // deltas and keep the rest. Assembly must not recover the raw value through read or turn.
     let _environment = crate::env_lock::lock();
     let root = TestRoot::new();
     let _home = IsolatedHome::new(root.path());
@@ -361,11 +360,7 @@ async fn public_history_protected_room_withholds_fragmented_answers() {
         .read_room_history(&session, &actor, first.event_id, None)
         .await
         .unwrap();
-    assert!(!read.ok);
-    assert_eq!(
-        read.payload["error"],
-        "Public history reference is unavailable"
-    );
+    assert!(!read.payload.to_string().contains("split_canary"));
     let turn = room
         .runtime
         .room_public_turn(
@@ -376,8 +371,116 @@ async fn public_history_protected_room_withholds_fragmented_answers() {
         .await
         .unwrap();
     assert!(turn.ok);
-    let events = turn.payload["events"].as_array().unwrap();
-    assert!(events.is_empty());
+    assert!(!turn.payload.to_string().contains("split_canary"));
+    assert!(
+        !turn.payload["events"].as_array().unwrap().is_empty(),
+        "public turn events stay visible"
+    );
+}
+
+#[test]
+fn room_output_after_a_vault_fill_stays_useful_and_never_carries_the_value() {
+    // MP-08 / MP-10 / MP-11 (F01/F25): the model-visible stream, persisted history
+    // and the provider-switch handoff keep the public answer and redact the value,
+    // including a value split across provider deltas.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("fill-then-public-answer");
+    let owned = &room.runtime.owned;
+    owned
+        .room_secret_observations
+        .register(&room.session_id, "fill-canary-value")
+        .unwrap();
+    let chunk = |text: &str| super::stream_output_for(&room.agent_id, text.as_bytes());
+    let mut outputs = vec![
+        chunk("Logged in with fill-can"),
+        chunk("ary-value. The page title"),
+        chunk(" is Dashboard."),
+    ];
+    owned.protect_terminal_outputs(&room.session_id, &mut outputs);
+    owned.append_history_entries(
+        &room.session_id,
+        owned.terminal_output_history_entries(&room.session_id, &outputs),
+    );
+    let records = owned.fan_out_protected_terminal_outputs(&room.session_id, Vec::new(), outputs);
+    let delivered = records
+        .iter()
+        .map(|record| String::from_utf8_lossy(&record.bytes))
+        .collect::<String>();
+    assert_eq!(
+        delivered,
+        "Logged in with [redacted]. The page title is Dashboard."
+    );
+    let history = owned
+        .operational_history_store
+        .load_session_history_entries(&room.session_id, Some(&room.agent_id))
+        .unwrap();
+    let history = history.iter().map(|e| e.text.as_str()).collect::<String>();
+    assert_eq!(
+        history,
+        "Logged in with [redacted]. The page title is Dashboard."
+    );
+}
+
+#[test]
+fn user_domain_fill_is_filtered_from_the_same_sessions_output_and_watchers() {
+    // MP-08 / MP-10 / MP-11: the local kernel-browser fill registers only in the
+    // user-domain store. The Room's stream, history, tool results and watchers
+    // consult that store for the session's owner, so the value never reaches the
+    // model while public text stays.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("user-domain-fill");
+    let owned = &room.runtime.owned;
+    let owner = owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    room.runtime
+        .register_kernel_browser_fixture_value(&owner, "user-domain-canary");
+    let chunk = |text: &str| super::stream_output_for(&room.agent_id, text.as_bytes());
+    let mut outputs = vec![
+        chunk("Pasted user-domain-"),
+        chunk("canary. Title is Dashboard."),
+    ];
+    owned.protect_terminal_outputs(&room.session_id, &mut outputs);
+    owned.append_history_entries(
+        &room.session_id,
+        owned.terminal_output_history_entries(&room.session_id, &outputs),
+    );
+    let records = owned.fan_out_protected_terminal_outputs(&room.session_id, Vec::new(), outputs);
+    let delivered = records
+        .iter()
+        .map(|record| String::from_utf8_lossy(&record.bytes))
+        .collect::<String>();
+    assert_eq!(delivered, "Pasted [redacted]. Title is Dashboard.");
+    let history = owned
+        .operational_history_store
+        .load_session_history_entries(&room.session_id, Some(&room.agent_id))
+        .unwrap();
+    assert_eq!(
+        history.iter().map(|e| e.text.as_str()).collect::<String>(),
+        "Pasted [redacted]. Title is Dashboard."
+    );
+    let scrubbed = owned
+        .room_secret_observations
+        .scrub_text_or_withhold(&room.session_id, "echo user-domain-canary ready");
+    assert_eq!(scrubbed, "echo [redacted] ready");
+    // Redaction alone: the Room is not switched into protected completion mode.
+    assert!(!owned
+        .room_secret_observations
+        .protects_bytes(&room.session_id));
+    // Another owner's session is not affected by this user's values.
+    assert_eq!(
+        owned
+            .room_secret_observations
+            .scrub_text_or_withhold("no-such-session", "user-domain-canary"),
+        "user-domain-canary"
+    );
 }
 
 // MP-08 / MP-10 / MP-11: the runtime credential tools stamp the caller's Room
@@ -425,8 +528,17 @@ async fn public_history_agent_vault_credential_keeps_room_output_visible() {
     create_room_vault_credential(&room, &root, "generated", "synthetic_generated_value").await;
     let store = &room.runtime.owned.room_secret_observations;
     assert_eq!(
-        store.protect_unframed_bytes(&room.session_id, b"later visible answer"),
+        super::protect(store, &room.session_id, b"later visible answer"),
         b"later visible answer"
+    );
+    // A stored value is still redacted if it later shows up in a provider stream.
+    assert_eq!(
+        super::protect(
+            store,
+            &room.session_id,
+            b"echo synthetic_generated_value now\n"
+        ),
+        b"echo [redacted] now\n"
     );
     let session = room
         .runtime

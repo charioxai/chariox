@@ -1,5 +1,3 @@
-mod assessment_evidence;
-pub(crate) use assessment_evidence::AssessmentEvidence;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -106,8 +104,6 @@ pub(crate) struct PromptEnvelope {
     pub(crate) steering: bool,
     #[serde(skip)]
     pub(crate) assessment_only: bool,
-    #[serde(skip)]
-    pub(crate) private_assessment_evidence: Option<AssessmentEvidence>,
 }
 
 impl PromptEnvelope {
@@ -124,7 +120,6 @@ impl PromptEnvelope {
             manifest,
             steering: false,
             assessment_only: false,
-            private_assessment_evidence: None,
         }
     }
 

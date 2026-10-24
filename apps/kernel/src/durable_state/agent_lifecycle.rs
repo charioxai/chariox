@@ -310,7 +310,7 @@ fn decode_task(
                     || e.prompt_id.is_empty()
                     || e.work_prompt_id.is_empty()
                     || e.ledger_revision == 0
-                    || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS)
+                    || !goals::check_deadline_valid(e.started_at_ms, e.deadline_ms)
             })
             || (t.state == ExecutionState::Done
                 && (c.final_answer.as_ref().is_none_or(|s| s.trim().is_empty())
@@ -339,7 +339,7 @@ fn decode_task(
                     || e.objective_revision == 0
                     || e.objective_revision > g.objective_revision
                     || e.ledger_revision == 0
-                    || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS)
+                    || !goals::check_deadline_valid(e.started_at_ms, e.deadline_ms)
             })
             || (t.state == ExecutionState::Done
                 && (g.final_answer.as_ref().is_none_or(|s| s.trim().is_empty())

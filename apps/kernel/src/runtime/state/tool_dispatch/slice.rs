@@ -15,7 +15,9 @@ mod controller_browser_runtime;
 mod controller_computer;
 mod controller_computer_observation;
 mod slice_browser;
-pub(crate) use computer_secret::{capture_computer_secret_target, run_room_secret_text_input};
+pub(crate) use computer_secret::{
+    capture_computer_secret_target, run_room_secret_text_input, FOCUSED_TARGET_UNAVAILABLE,
+};
 use slice_browser::*;
 
 const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;

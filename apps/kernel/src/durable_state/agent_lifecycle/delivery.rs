@@ -346,6 +346,29 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            // A handled match settles an already-exited process: the agent has the
+            // output, and the exit receipt cannot be delivered while the check runs.
+            if handled && e.kind == "process_output_matched" {
+                for mut t in tasks(tx)? {
+                    if t.room_id != room
+                        || t.agent_id != agent
+                        || matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                    {
+                        continue;
+                    }
+                    let mut changed = false;
+                    for o in &mut t.obligations {
+                        if o.completion_source() == Some(&e.source_id) && o.status == "settling" {
+                            o.status = "satisfied".into();
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        t.revision += 1;
+                        save(tx, &t)?;
+                    }
+                }
+            }
             Ok(Outcome::Event(e))
         }
         _ => Err(error("invalid delivery operation")),

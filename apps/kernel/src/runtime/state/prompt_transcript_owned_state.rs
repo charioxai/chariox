@@ -158,6 +158,19 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             recipient_attachment_ids,
         );
+        // The message is complete, so bytes held as a possible secret prefix are final.
+        let held = self
+            .room_secret_observations
+            .flush_streams(session_id, provider_run_id);
+        if !held.is_empty() {
+            let history = self.terminal_output_history_entries(session_id, &held);
+            self.fan_out_protected_terminal_outputs(
+                session_id,
+                recipient_attachment_ids.clone(),
+                held,
+            );
+            self.append_history_entries(session_id, history);
+        }
         self.terminal_stream.record_assistant_message_completion(
             session_id,
             provider_run_id,
@@ -186,6 +199,77 @@ impl KernelRuntimeOwnedState {
         recipient_attachment_ids: Vec<String>,
         outputs: Vec<TerminalOutputBatchAppend>,
     ) -> Vec<crate::terminal::TerminalOutputRecord> {
+        let mut outputs = outputs;
+        self.protect_terminal_outputs(session_id, &mut outputs);
+        self.fan_out_protected_terminal_outputs(session_id, recipient_attachment_ids, outputs)
+    }
+
+    /// Redacts inserted Vault values from provider output before it is persisted,
+    /// delivered or matched; public text is kept. Callers must project history
+    /// and fan-out from the protected outputs, never from the raw chunks.
+    pub(super) fn protect_terminal_outputs(
+        &self,
+        session_id: &str,
+        outputs: &mut [TerminalOutputBatchAppend],
+    ) {
+        for output in outputs {
+            // A protected completion check stays private: only the kernel-authored class
+            // reaches the receipt, so its prose never enters the public stream or history.
+            if self.collect_private_assessment(session_id, output)
+                && self.protects_completion_check(session_id, output.agent_id.as_deref())
+            {
+                output.bytes.clear();
+                continue;
+            }
+            self.room_secret_observations
+                .protect_stream(session_id, output);
+        }
+    }
+
+    pub(super) fn terminal_output_history_entries(
+        &self,
+        session_id: &str,
+        outputs: &[TerminalOutputBatchAppend],
+    ) -> Vec<SessionHistoryEntry> {
+        let mut metadata = std::collections::BTreeMap::<Option<String>, _>::new();
+        outputs
+            .iter()
+            .filter(|output| {
+                !output.bytes.is_empty()
+                    && !matches!(
+                        output.kind,
+                        crate::terminal::TerminalOutputKind::PromptEcho
+                            | crate::terminal::TerminalOutputKind::ProviderTerminal
+                    )
+            })
+            .map(|output| {
+                let prompt_metadata =
+                    metadata.entry(output.agent_id.clone()).or_insert_with(|| {
+                        self.active_prompt_transcript_metadata_for_agent(
+                            session_id,
+                            output.agent_id.as_deref(),
+                        )
+                    });
+                SessionHistoryEntry::provider_output(
+                    session_id,
+                    &output.provider_run_id,
+                    output.agent_id.as_deref(),
+                    output.kind.clone(),
+                    output.merge_key.clone(),
+                    String::from_utf8_lossy(&output.bytes).into_owned(),
+                )
+                .with_prompt_origin(prompt_metadata.prompt_origin)
+                .with_source_attachment_id(prompt_metadata.source_attachment_id.clone())
+            })
+            .collect()
+    }
+
+    pub(super) fn fan_out_protected_terminal_outputs(
+        &self,
+        session_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        outputs: Vec<TerminalOutputBatchAppend>,
+    ) -> Vec<crate::terminal::TerminalOutputRecord> {
         if outputs.is_empty() {
             return Vec::new();
         }
@@ -195,11 +279,7 @@ impl KernelRuntimeOwnedState {
         let mut prompt_metadata_cache =
             std::collections::BTreeMap::<Option<String>, ActivePromptTranscriptMetadata>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
-        for mut output in outputs {
-            self.collect_private_assessment(session_id, &output);
-            output.bytes = self
-                .room_secret_observations
-                .protect_unframed_bytes(session_id, &output.bytes);
+        for output in outputs {
             let agent_id = output.agent_id;
             let delta_bytes = terminal_output_delta_bytes(
                 session_id,
@@ -308,9 +388,16 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
-        let bytes = self
-            .room_secret_observations
-            .protect_unframed_bytes(session_id, bytes);
+        let mut output = TerminalOutputBatchAppend {
+            provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.clone(),
+            kind: kind.clone(),
+            merge_key: merge_key.clone(),
+            bytes: bytes.to_vec(),
+        };
+        self.room_secret_observations
+            .protect_stream(session_id, &mut output);
+        let bytes = output.bytes;
         let delta_bytes = terminal_output_delta_bytes(
             session_id,
             provider_run_id,

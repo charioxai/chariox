@@ -3,6 +3,7 @@
 use super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::{
     install_screen_tool, TestRoom, TestTools,
 };
+use super::agent_assessment_result::ProtectedFact;
 use crate::session::{EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentLifecycle};
 use crate::transport::room_browser_controller::RoomComputerInputAction;
 
@@ -177,10 +178,14 @@ async fn computer_input_secret_target_recovers_before_approval() {
     let mut room = TestRoom::new("computer-secret-target");
     room.enable_browser_controller(&tools).await;
     degrade(&room);
+    // An earlier successful paste must not survive a failed target lookup.
+    let facts = &room.runtime.owned.private_assessment_dispatch.protected_facts;
+    facts.record(&room.session_id, &room.agent_id, ProtectedFact::Submitted);
     let result = room
         .runtime
         .computer_secret_input_target(&room.session_id, &room.agent_id)
         .await;
+    let fact = facts.peek(&room.session_id, &room.agent_id);
     let environment = room
         .runtime
         .room_environment_snapshot(&room.session_id)
@@ -189,6 +194,8 @@ async fn computer_input_secret_target_recovers_before_approval() {
     // The fixture deliberately has no native target. Recovery must precede the
     // target lookup, while an invalid target still cannot create an approval.
     assert!(result.is_err());
+    assert_ne!(fact, Some(ProtectedFact::Submitted));
+    assert!(fact.is_some());
     assert!(environment
         .health
         .iter()
@@ -252,4 +259,38 @@ async fn human_computer_input_reconciles_degraded_room_with_desktop_authority() 
         ))
         .all(|health| health.state == EnvironmentComponentHealthState::Ready));
     assert_eq!(after.tabs[0].title, "After input");
+}
+
+#[tokio::test]
+async fn failed_second_paste_replaces_earlier_submitted_fact() {
+    let room = TestRoom::new("computer-secret-second-paste");
+    let facts = &room.runtime.owned.private_assessment_dispatch.protected_facts;
+    facts.record(&room.session_id, &room.agent_id, ProtectedFact::Submitted);
+    let result = room
+        .runtime
+        .dispatch_computer_secret_input_for_authority(
+            &room.session_id,
+            &room.agent_id,
+            serde_json::json!({}),
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        facts.peek(&room.session_id, &room.agent_id),
+        Some(ProtectedFact::Failed)
+    );
+    // A specific kernel-observed failure is not downgraded.
+    facts.record(&room.session_id, &room.agent_id, ProtectedFact::ApprovalDenied);
+    let _ = room
+        .runtime
+        .dispatch_computer_secret_input_for_authority(
+            &room.session_id,
+            &room.agent_id,
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        facts.peek(&room.session_id, &room.agent_id),
+        Some(ProtectedFact::ApprovalDenied)
+    );
 }

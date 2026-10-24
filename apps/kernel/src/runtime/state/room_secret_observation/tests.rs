@@ -277,7 +277,7 @@ fn a02_forwarded_task_answers_protect_recovered_room_history() {
         .unwrap();
     let excerpt = answer["excerpt"].as_str().unwrap();
     assert!(!excerpt.contains("synthetic-only"));
-    assert!(excerpt.contains("withheld"));
+    assert!(excerpt.contains("[redacted]"), "{excerpt:?}");
 }
 
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
@@ -510,29 +510,277 @@ fn worker_local_transcripts_share_home_room_registry_and_recovery_fence() {
         .is_err());
 }
 
+/// Runs one chunk through the Room stream filter and returns what is delivered.
+fn protect(store: &RoomSecretObservations, room: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut output = stream_output(bytes);
+    store.protect_stream(room, &mut output);
+    output.bytes
+}
+
+fn stream_output(
+    bytes: &[u8],
+) -> crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+    stream_output_for_agent(None, bytes)
+}
+
+fn stream_output_for(
+    agent: &str,
+    bytes: &[u8],
+) -> crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+    stream_output_for_agent(Some(agent.to_string()), bytes)
+}
+
+fn stream_output_for_agent(
+    agent_id: Option<String>,
+    bytes: &[u8],
+) -> crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+    crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+        provider_run_id: "run".into(),
+        agent_id,
+        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+        merge_key: None,
+        bytes: bytes.to_vec(),
+    }
+}
+
 #[test]
-fn split_terminal_chunks_are_withheld_without_human_clearance() {
+fn public_output_survives_a_vault_fill() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-    assert_eq!(store.protect_unframed_bytes("room", b"normal"), b"normal");
+    assert_eq!(protect(&store, "room", b"normal"), b"normal");
     store.register("room", "synthetic-only").unwrap();
+    assert_eq!(
+        protect(&store, "room", b"logged in, all done\n"),
+        b"logged in, all done\n"
+    );
+    let entry = crate::history::SessionHistoryEntry::provider_output(
+        "room",
+        "run",
+        None,
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "logged in, all done",
+    );
+    assert_eq!(
+        store.protect_transcript_entry(entry).text,
+        "logged in, all done"
+    );
+    let protect = super::super::agent_process_output::room_protector(store, "room".into());
+    assert_eq!(protect.scrub("ready".into()), Some("ready".into()));
+    assert_eq!(
+        protect.scrub("pw synthetic-only ok".into()),
+        Some("pw [redacted] ok".into())
+    );
+}
 
-    for bytes in [b"synthetic".as_slice(), b"-only".as_slice()] {
-        let protected = store.protect_unframed_bytes("room", bytes);
-        assert_eq!(protected, b"[sensitive Room terminal stream withheld]");
-        let entry = crate::history::SessionHistoryEntry::provider_output(
+#[test]
+fn secret_split_across_chunks_and_escapes_is_redacted_and_the_rest_kept() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    let mut delivered = Vec::new();
+    for chunk in [
+        b"user typed synth".as_slice(),
+        b"etic",
+        b"-on",
+        b"ly, then \x1b[1msynth\x1b[0metic-only\x1b[0m again; synth",
+        b"a done",
+    ] {
+        delivered.extend(protect(&store, "room", chunk));
+    }
+    let text = String::from_utf8(delivered).unwrap();
+    assert!(!text.contains("synthetic"), "{text:?}");
+    assert!(!text.contains("-only"), "{text:?}");
+    assert_eq!(
+        text,
+        "user typed [redacted], then \x1b[1m[redacted]\x1b[0m again; syntha done"
+    );
+}
+
+#[test]
+fn held_secret_prefix_is_flushed_when_the_message_ends() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    assert_eq!(protect(&store, "room", b"ends with s"), b"ends with ");
+    let held = store.flush_streams("room", "run");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].bytes, b"s");
+    assert!(store.flush_streams("room", "run").is_empty());
+    // A longer unfinished prefix is not shown: it could be most of the value.
+    assert_eq!(
+        protect(&store, "room", b"ends with synthetic-o"),
+        b"ends with "
+    );
+    assert_eq!(store.flush_streams("room", "run")[0].bytes, b"[redacted]");
+}
+
+#[test]
+fn filtered_room_history_survives_restart_but_older_registries_stay_withheld() {
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let entry = || {
+        crate::history::SessionHistoryEntry::provider_output(
             "room",
             "run",
             None,
             crate::terminal::TerminalOutputKind::ProviderOutput,
             None,
-            String::from_utf8_lossy(bytes),
-        );
+            "public answer",
+        )
+    };
+    for filtered in [true, false] {
+        let root = TestRoot::new();
+        let path = root.path().join("observations");
+        let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+        store.register("room", "synthetic-only").unwrap();
+        if !filtered {
+            // A registry written before provider streams were filtered.
+            let mut rooms = store.rooms.lock().unwrap();
+            let protection = rooms.get_mut("room").unwrap();
+            protection.filtered_streams = false;
+            store.persist_registry("room", protection).unwrap();
+        }
+        let entry = entry();
+        let mut restarted = RoomSecretObservations::new(path, BTreeSet::from(["room".to_string()]))
+            .with_identity(&key);
+        restarted.epoch = entry.timestamp_ms + 60_000;
+        let text = restarted.protect_transcript_entry(entry).text;
         assert_eq!(
-            store.protect_transcript_entry(entry).text,
-            "[sensitive Room terminal stream withheld]"
+            text,
+            if filtered {
+                "public answer"
+            } else {
+                "[recovered sensitive Room history withheld]"
+            }
         );
     }
+}
+
+#[test]
+fn retired_values_stay_filtered_after_restart_and_unknown_values_withhold() {
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let root = TestRoot::new();
+    let path = root.path().join("observations");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store.register("room", "first-secret").unwrap();
+    store.forget("room").unwrap();
+    store.register("room", "second-secret").unwrap();
+    let restarted =
+        RoomSecretObservations::new(path, BTreeSet::from(["room".to_string()])).with_identity(&key);
+    for store in [&store, &restarted] {
+        assert_eq!(
+            protect(store, "room", b"first-secret / second-secret / public\n"),
+            b"[redacted] / [redacted] / public\n"
+        );
+    }
+    // A value that could not be tracked leaves nothing to filter with: the chunk is withheld.
+    assert!(store.register("other", "").is_err());
+    assert_eq!(
+        protect(&store, "other", b"anything"),
+        b"[sensitive Room terminal stream withheld]"
+    );
+}
+
+#[test]
+fn escapes_cannot_hide_a_value_from_the_filter() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    for input in [
+        "\x1bsynthetic-only ok\n",
+        "\x1b]8;;https://x/?t=synthetic-only\x1b\\link\x1b]8;;\x1b\\ ok\n",
+        "\x1b]0;pw synthetic-only\x07 ok\n",
+        "synth\x1b[1metic-\x1b[0monly ok\n",
+    ] {
+        let delivered = String::from_utf8(protect(&store, "room", input.as_bytes())).unwrap();
+        assert!(!delivered.contains("synthetic-only"), "{delivered:?}");
+        assert!(!delivered.contains("ynthetic-only"), "{delivered:?}");
+        assert!(
+            delivered.contains("[redacted]") && delivered.ends_with(" ok\n"),
+            "{delivered:?}"
+        );
+    }
+    let process = super::super::agent_process_output::room_protector(store, "room".into());
+    assert_eq!(
+        process.scrub("a\x1bsynthetic-only".into()),
+        Some("a\x1b[redacted]".into())
+    );
+}
+
+#[test]
+fn a_value_split_across_append_only_chunks_is_redacted_on_every_channel() {
+    // MP-08 / MP-10: assistant text, reasoning and native terminal bytes are append-only,
+    // so a value split across their chunks must not reconstruct for the model.
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    for kind in [
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        crate::terminal::TerminalOutputKind::ProviderReasoning,
+        crate::terminal::TerminalOutputKind::ProviderTerminal,
+    ] {
+        let mut delivered = Vec::new();
+        for chunk in ["note synthetic-", "on", "ly done"] {
+            let mut output = stream_output(chunk.as_bytes());
+            output.kind = kind.clone();
+            store.protect_stream("room", &mut output);
+            delivered.extend(output.bytes);
+        }
+        assert_eq!(
+            String::from_utf8(delivered).unwrap(),
+            "note [redacted] done",
+            "{kind:?}"
+        );
+    }
+    assert!(store.flush_streams("room", "run").is_empty());
+}
+
+#[test]
+fn a_value_that_prefixes_another_is_not_redacted_short_while_the_longer_one_streams() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-abc").unwrap();
+    store.register("room", "synthetic-abcdef").unwrap();
+    for chunks in [
+        ["x synthetic-abcd", "ef y"],
+        ["x synthetic-abc", "def y"],
+        ["x synthetic-abc", " y"],
+    ] {
+        let mut delivered = Vec::new();
+        for chunk in chunks {
+            let mut output = stream_output(chunk.as_bytes());
+            store.protect_stream("room", &mut output);
+            delivered.extend(output.bytes);
+        }
+        let text = String::from_utf8(delivered).unwrap();
+        assert!(
+            !text.contains("def") && !text.contains("synthetic"),
+            "{chunks:?}: {text}"
+        );
+        assert!(
+            text.starts_with("x [redacted]") && text.ends_with(" y"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn snapshot_and_discrete_channels_are_redacted_in_place_without_holding() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    for kind in [
+        crate::terminal::TerminalOutputKind::ProviderTool,
+        crate::terminal::TerminalOutputKind::PromptEcho,
+        crate::terminal::TerminalOutputKind::ProviderError,
+        crate::terminal::TerminalOutputKind::ProviderStatus,
+    ] {
+        let mut output = stream_output(b"{\"out\":\"synthetic-only\"} synthetic-o");
+        output.kind = kind;
+        store.protect_stream("room", &mut output);
+        assert_eq!(output.bytes, b"{\"out\":\"[redacted]\"} synthetic-o");
+    }
+    assert!(store.flush_streams("room", "run").is_empty());
 }
 
 #[test]
@@ -652,7 +900,7 @@ async fn legacy_room_migration_is_autonomous_and_permanently_withholds_only_prio
             "fresh result"
         );
         assert_eq!(
-            store.protect_unframed_bytes(&room.session_id, b"fresh terminal"),
+            protect(store, &room.session_id, b"fresh terminal"),
             b"fresh terminal"
         );
         let policy: serde_json::Value =
@@ -702,6 +950,50 @@ async fn legacy_room_migration_is_autonomous_and_permanently_withholds_only_prio
         restarted.scrub_text_or_withhold(&room.session_id, "fresh synthetic-new-value"),
         "fresh [redacted]"
     );
+}
+
+#[tokio::test]
+async fn admin_credential_secret_for_a_room_is_filtered_from_its_output() {
+    // MP-08 / MP-10: SetCredentialSecret{session_id} registers the stored value, so process
+    // output that echoes it never reaches the model raw.
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    use crate::local::{LocalDaemonRequest, SetCredentialSecretRequest};
+    use crate::runtime::command::KernelCommand;
+    let root = TestRoot::new();
+    let room = TestRoom::new("admin-set-secret");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.user_config.credential_vault.path = root.path().join("vault").display().to_string();
+    let vault = std::path::Path::new(&config.user_config.credential_vault.path);
+    crate::secret::create_chariox_encrypted_vault_for_test(vault, "synthetic-passphrase-only")
+        .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        vault,
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    room.runtime.owned.config_projection.update(config);
+    let request = LocalDaemonRequest::SetCredentialSecret(SetCredentialSecretRequest {
+        session_id: Some(room.session_id.clone()),
+        agent_id: Some(room.agent_id.clone()),
+        key: "admin-login".into(),
+        value: "synthetic-admin-value".into(),
+    });
+    let command = KernelCommand::from_local_request("admin-set", None, None, &request);
+    crate::runtime::user_config_executor::execute_user_config_request(
+        &room.runtime.owned.config_projection,
+        &room.runtime,
+        &command,
+        request,
+    )
+    .await
+    .unwrap();
+    let mut output = stream_output_for(&room.agent_id, b"echo synthetic-admin-value ok");
+    room.runtime
+        .owned
+        .room_secret_observations
+        .protect_stream(&room.session_id, &mut output);
+    assert_eq!(output.bytes, b"echo [redacted] ok");
 }
 
 #[tokio::test]
@@ -1101,10 +1393,7 @@ fn public_history_stored_values_scrub_after_restart_without_fencing_streams() {
     let restarted = RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key);
     for store in [&store, &restarted] {
         assert!(!store.protects_bytes("room"));
-        assert_eq!(
-            store.protect_unframed_bytes("room", b"later answer"),
-            b"later answer"
-        );
+        assert_eq!(protect(store, "room", b"later answer"), b"later answer");
         assert_eq!(
             store.scrub_text_or_withhold("room", "echo synthetic-stored-value"),
             "echo [redacted]"
@@ -1735,4 +2024,35 @@ fn fresh_environment_reset_and_room_delete_recover_a_corrupt_sealed_registry() {
                 .is_empty());
         }
     }
+}
+
+#[test]
+fn owner_lookup_runs_outside_the_room_value_lock() {
+    // The owner lookup takes the session lock elsewhere, so it must not run while
+    // the Room value lock is held: a lookup that reads the store would deadlock.
+    let root = TestRoot::new();
+    let slot: Arc<std::sync::OnceLock<RoomSecretObservations>> = Default::default();
+    let lookup = slot.clone();
+    let store = RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new())
+        .with_user_domain(
+            move |room| {
+                lookup.get().unwrap().protects_bytes(room);
+                Some("owner".into())
+            },
+            |_| Vec::new(),
+        );
+    store.register("room", "room-value").unwrap();
+    slot.set(store.clone()).ok().unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut output = stream_output_for("agent", b"echo room-value");
+        store.protect_stream("room", &mut output);
+        let scrubbed = store.scrub_text_or_withhold("room", "echo room-value");
+        let _ = done.send((output.bytes, scrubbed));
+    });
+    let (streamed, scrubbed) = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("owner lookup ran under the Room value lock");
+    assert_eq!(String::from_utf8_lossy(&streamed), "echo [redacted]");
+    assert_eq!(scrubbed, "echo [redacted]");
 }

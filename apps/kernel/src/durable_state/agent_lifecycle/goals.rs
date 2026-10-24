@@ -6,7 +6,15 @@ pub(super) use adoption::adopt;
 pub(super) use controls::control;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const CHECK_BOUND_MS: u64 = 60_000;
+pub(crate) const CHECK_BOUND_MS: u64 = 300_000;
+const LEGACY_CHECK_BOUND_MS: u64 = 60_000;
+
+/// Checks persisted before the bound was raised keep their original deadline.
+pub(crate) fn check_deadline_valid(started_at_ms: u64, deadline_ms: u64) -> bool {
+    [CHECK_BOUND_MS, LEGACY_CHECK_BOUND_MS]
+        .iter()
+        .any(|bound| deadline_ms == started_at_ms.saturating_add(*bound))
+}
 pub(crate) const RESULT_LIMIT: usize = 8_192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +221,7 @@ pub(super) fn evaluate(
     task: String,
     prompt: String,
     mut result: String,
+    known_block: Option<String>,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
@@ -251,14 +260,14 @@ pub(super) fn evaluate(
     };
     let mut again = false;
     match assessment {
-        None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
+                None => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
             if t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed")) {
                 if t.correction_used {
                     blocked(&mut t, "Repeated achieved claim with unresolved obligations; owner must resume or cancel");
                 } else {
-                    again = continue_work(&mut t, "Completion was rejected: resolve every open obligation, then wait, continue or block");
+                    again = continue_work(tx, &mut t, "Completion was rejected: resolve every open obligation, then wait, continue or block", now)?;
                     t.correction_used = true;
                 }
             } else {
@@ -270,7 +279,7 @@ pub(super) fn evaluate(
             }
         }
         Some(Assessment::Continue { reason }) if !reason.trim().is_empty() => {
-            again = continue_work(&mut t, &reason);
+            again = continue_work(tx, &mut t, &reason, now)?;
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
             let interval = t.goal.as_ref().map_or(10, |g| g.check_in_minutes) as u64 * 60_000;
@@ -298,7 +307,7 @@ pub(super) fn evaluate(
                 if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
             }
         }
-        _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
+        _ => unavailable_check(tx, &mut t, known_block.as_deref(), now)?,
     }
     let receipt = if result.len() > RESULT_LIMIT {
         serde_json::json!({"invalid":true,"reason":"completion_check result exceeds 8192 bytes"})
@@ -320,21 +329,119 @@ pub(super) fn evaluate(
     })
 }
 
-fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
+/// An unusable check (empty, late, malformed) is no objection to a plain request or a Goal, but it
+/// never drops unresolved work (a Done task with open obligations is not a valid ledger state): the
+/// task keeps waiting on the sources of its open or unacknowledged obligations, so the outcome
+/// still reaches it, and a failed or unwatched obligation needs the owner.
+fn unavailable_check(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    known_block: Option<&str>,
+    now: u64,
+) -> Result<(), DaemonError> {
+    // A denial or timeout the kernel itself observed is not the checker's to override.
+    if let Some(reason) = known_block {
+        blocked(t, reason);
+        return Ok(());
+    }
+    let regs = registrations(tx, &t.task_id)?;
+    let mut ids = Vec::new();
+    for o in &t.obligations {
+        let watched = |live_only: bool| {
+            regs.iter()
+                .filter(|r| (r.live || !live_only) && r.obligation_id.as_deref() == Some(&o.id))
+                .map(|r| r.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let found = match o.status.as_str() {
+            "open" => watched(true),
+            "settling" => watched(false),
+            "failed" => vec![],
+            _ => continue,
+        };
+        if found.is_empty() {
+            blocked(
+                t,
+                "A task obligation failed or has no watched source; owner must resume or cancel",
+            );
+            return Ok(());
+        }
+        ids.extend(found);
+    }
+    if ids.is_empty() {
+        no_objection(t);
+        return Ok(());
+    }
+    let prior = t.wait.take();
+    let deadline = wakes::source_deadline(tx, t, &ids)?
+        .unwrap_or(now.saturating_add(10 * 60_000))
+        .min(prior.as_ref().map_or(u64::MAX, |w| w.deadline_ms));
+    t.wait = Some(AgentWait {
+        registration_ids: ids,
+        deadline_ms: deadline.max(now.saturating_add(1)),
+        started_at_ms: prior.as_ref().map_or(now, |w| w.started_at_ms),
+        inbox_cursor: prior.as_ref().map_or(0, |w| w.inbox_cursor),
+        long_wait_notified: prior.as_ref().is_some_and(|w| w.long_wait_notified),
+        last_checked_at_ms: now,
+    });
+    if let Some(g) = &mut t.goal {
+        g.next_check_in_ms = Some(deadline.max(now.saturating_add(1)));
+    }
+    t.state = ExecutionState::Waiting;
+    t.pending_prompt_id = None;
+    t.reason = "Waiting on open work".into();
+    Ok(())
+}
+
+/// An unusable check with no unresolved work: nothing to object to.
+fn no_objection(t: &mut AgentTaskExecution) {
+    t.state = ExecutionState::Done;
+    t.pending_prompt_id = None;
+    t.wait = None;
+    t.reason.clear();
+    let answer = "Completed; the completion check gave no usable verdict.".to_string();
+    let evidence = vec!["completion check unavailable".to_string()];
+    if let Some(g) = &mut t.goal {
+        g.final_answer = Some(answer);
+        g.evidence = evidence;
+        g.next_check_in_ms = None;
+    } else {
+        let c = t.completion_check.as_mut().unwrap();
+        c.final_answer = Some(answer);
+        c.evidence = evidence;
+    }
+}
+
+fn continue_work(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    reason: &str,
+    now: u64,
+) -> Result<bool, DaemonError> {
     if t.goal.is_none() {
         if t.correction_used {
-            blocked(t, "Plain request remains incomplete after one correction; owner must resume or cancel");
-            return false;
+            // A running or failed resource still needs the owner. A repeated verdict does not,
+            // and an unacknowledged receipt of a clean exit ("settling") keeps the task waiting
+            // for it: Done with a settling obligation is not a valid saved state.
+            if t.obligations
+                .iter()
+                .any(|o| matches!(o.status.as_str(), "open" | "failed"))
+            {
+                blocked(t, "Plain request remains incomplete after one correction; owner must resume or cancel");
+            } else {
+                unavailable_check(tx, t, None, now)?;
+            }
+            return Ok(false);
         }
         t.correction_used = true;
         t.wait = None;
         t.reason = reason.into();
         t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
-        return true;
+        return Ok(true);
     }
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
         blocked(t, "Goal repeated continuation without handled progress; owner must inspect and explicitly resume");
-        return false;
+        return Ok(false);
     }
     t.no_progress_wakes += 1;
     t.wait = None;
@@ -346,13 +453,14 @@ fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
         "goal-continue-{}-{}",
         t.task_id, g.continuation_sequence
     ));
-    true
+    Ok(true)
 }
 
 pub(super) fn timeout(
     tx: &Transaction<'_>,
     task: String,
     prompt: String,
+    known_block: Option<String>,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
@@ -368,7 +476,7 @@ pub(super) fn timeout(
         return Ok(Outcome::Saved);
     }
     clock(&mut t, now);
-    blocked(&mut t, "Goal completion check exceeded 60 seconds; inspect the exact delivery receipt and explicitly resume");
+    unavailable_check(tx, &mut t, known_block.as_deref(), now)?;
     completion::evaluation_mut(&mut t).unwrap().result = Some(serde_json::json!({
         "status":"blocked","reason":"completion_check service bound exceeded","received_at_ms":now }));
     t.revision += 1;

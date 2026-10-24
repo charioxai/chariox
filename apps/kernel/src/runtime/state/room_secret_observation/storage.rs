@@ -23,6 +23,9 @@ struct Registry {
     revision: u64,
     #[serde(default)]
     history_before_ms: u64,
+    // Set only for Rooms created while provider streams were already filtered.
+    #[serde(default)]
+    filtered_streams: bool,
 }
 impl Drop for Registry {
     fn drop(&mut self) {
@@ -66,6 +69,7 @@ impl RoomSecretObservations {
             unknown: protection.unknown,
             revision: protection.revision,
             history_before_ms: protection.history_before_ms,
+            filtered_streams: protection.filtered_streams,
         };
         let plaintext =
             Zeroizing::new(serde_json::to_vec(&registry).map_err(|_| protection_error())?);
@@ -172,9 +176,12 @@ impl RoomSecretObservations {
         {
             return Err(protection_error());
         }
-        let history_before_ms = if !registry.values.is_empty()
+        // Streams of a Room that was filtered from its start hold no raw fragments,
+        // so a restart does not hide its earlier history. Older registries still do.
+        let history_before_ms = if (!registry.values.is_empty()
             || !registry.retired_values.is_empty()
-            || registry.unknown
+            || registry.unknown)
+            && (registry.unknown || !registry.filtered_streams)
         {
             registry.history_before_ms.max(self.epoch)
         } else {
@@ -201,6 +208,7 @@ impl RoomSecretObservations {
             recovered_artifacts: true,
             history_before_ms,
             history_boundary_bytes: None,
+            filtered_streams: registry.filtered_streams,
         }))
     }
 }
@@ -377,6 +385,9 @@ impl RoomSecretObservations {
         // Keep an in-memory tombstone for already admitted late callbacks.
         let room = self.room_key(room);
         let _history_guard = self.invalidate_public_history(room)?;
+        if let Ok(mut pending) = self.pending_streams.lock() {
+            pending.retain(|(held_room, _, _), _| held_room != room);
+        }
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         rooms.insert(
             room.into(),
