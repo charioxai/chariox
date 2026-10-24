@@ -603,7 +603,7 @@
       "batchLaunchRequestCount": 1,
       "batchLaunchRunCount": 50,
       "launchMode": "LaunchProviderRuns",
-      "reconnectP95Ms": 585,
+      "reconnectP95Ms": 574,
       "hydrationP95Ms": 393,
       "maxVisiblePaneCount": 4,
       "domNodes": 2840,

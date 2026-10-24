@@ -36,9 +36,9 @@ is refused with `agent_deadline_requires_executor`. This is an ordinary local
 executor facility; it does not establish A10 leased-deadline acceptance or
 replace managed-host automatic shutdown policy (MP-09).
 
-The additive requests and response use **provisional local 585** on the
-573/181 agent-model union. This is not a landing allocation; the coordinator
-renumbers it. Relay peer 181 is inherited from that union. The deadline carries
+The additive requests and response share **allocated local 585** with outside
+event subscriptions on the agent-model union. The unused provisional 584 is
+retired. Relay peer 181 is inherited from that union. The deadline carries
 no credentials and is visible through the ordinary authorized Room/gateway
 request path. Refusals use constant remediation text; provider diagnostics are
 not copied into external errors.
