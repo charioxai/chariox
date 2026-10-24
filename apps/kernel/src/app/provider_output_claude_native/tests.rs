@@ -4128,6 +4128,48 @@ mod skill_hook_fakes {
             Ok(())
         }
     }
+    /// Counts the turns the provider accepted, which is when a pending
+    /// conversation handoff is consumed.
+    #[derive(Default)]
+    pub(super) struct CountingPolicy {
+        pub(super) accepted: std::sync::atomic::AtomicUsize,
+    }
+    impl NativePromptHandoffPolicy for CountingPolicy {
+        fn prepare_context(
+            &self,
+            session_id: &str,
+            agent_id: &str,
+            run_id: &str,
+            hidden: &str,
+            steering: bool,
+            base: String,
+        ) -> Result<String, DaemonError> {
+            PassthroughPolicy.prepare_context(session_id, agent_id, run_id, hidden, steering, base)
+        }
+        fn protect_inputs(
+            &self,
+            session_id: &str,
+            prompt: String,
+            hidden: String,
+            attachments: Vec<PromptAttachment>,
+        ) -> Result<(String, String, Vec<PromptAttachment>), DaemonError> {
+            PassthroughPolicy.protect_inputs(session_id, prompt, hidden, attachments)
+        }
+        fn rejected(
+            &self,
+            session_id: &str,
+            agent_id: &str,
+            run_id: &str,
+            prompt_id: &str,
+        ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+            PassthroughPolicy.rejected(session_id, agent_id, run_id, prompt_id)
+        }
+        fn accepted(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+            self.accepted
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
 }
 
 // MP-08 / MP-10 / MP-11: with delivery receipts the hook rebuilds its context from
@@ -4323,5 +4365,96 @@ fn claude_native_typed_skill_reaches_the_hook_context() {
     assert!(
         delivered.contains("SKILL-BODY-MARKER-77"),
         "the typed skill never reached the hook context: {delivered:?}"
+    );
+}
+
+// A typed skill redirected to its native command is delivered by a managed
+// resubmission; the provider accepting it must consume the pending handoff
+// (compaction recovery) like any other accepted native turn.
+#[test]
+fn claude_native_typed_redirect_acceptance_consumes_the_pending_handoff() {
+    use skill_hook_fakes::CountingPolicy;
+    let worktree = crate::test_support::TestWorktree::new("claude-typed-redirect-accept");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "typed-redirect-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-typed-redirect-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "typed-redirect-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "/docx inspect source",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    let context_path = context_file.display().to_string();
+    super::context_delivery::stage(
+        &context_path,
+        "typed-redirect-request",
+        run.id(),
+        prompt.id(),
+        prompt.id(),
+        true,
+        vec![crate::provider::skill_delivery::TypedSkillLoad::Chariox {
+            skill_id: "review".into(),
+            digest: "digest-review".into(),
+            reason: crate::skill::v2::SkillLoadReason::Explicit,
+        }],
+    )
+    .unwrap();
+    let policy = CountingPolicy::default();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .accept_context_delivery(
+            session.id(),
+            agent.id(),
+            run.id(),
+            &context_path,
+            &serde_json::json!({"hook_context_request_id":"typed-redirect-request"}),
+        )
+        .unwrap();
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert_eq!(
+        policy.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the accepted typed redirect left the pending handoff unconsumed"
     );
 }

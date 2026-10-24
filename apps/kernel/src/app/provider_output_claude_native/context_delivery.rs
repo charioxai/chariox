@@ -242,8 +242,13 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         if pending.managed {
             write_claude_native_marker(context_file, &format!("accepted:{}", pending.prompt_id));
             self.consume_accepted_failed_request_context(session_id, agent_id, context_file)?;
-        } else if let Some(policy) = self.prompt_handoff {
-            policy.accepted(session_id, agent_id, run_id)?;
+        }
+        // A typed native command is resubmitted as a managed turn that no
+        // dispatch consumed the handoff for, so the acceptance must.
+        if !pending.managed || !pending.typed_skills.is_empty() {
+            if let Some(policy) = self.prompt_handoff {
+                policy.accepted(session_id, agent_id, run_id)?;
+            }
         }
         let _ = fs::remove_file(format!("{context_file}.context-delivery"));
         Ok(())
