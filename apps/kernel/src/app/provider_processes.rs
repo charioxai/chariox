@@ -8,6 +8,8 @@ use crate::provider::{
     AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
 };
 
+mod claude_orphans;
+
 use super::provider_liveness::{poll_provider_run_process_exit, ProviderProcessExit};
 
 pub(crate) struct ProviderLaunchProcessRuntime<'a> {
@@ -545,17 +547,28 @@ fn owned_orphan_provider_process_ids(
         Ok(output) => output,
         Err(_) => return Vec::new(),
     };
+    let ps_output = String::from_utf8_lossy(&output.stdout);
     let mcp_url = format!(
         "http://{}:{}/mcp",
         config.runtime_mcp_host, config.runtime_mcp_port
     );
-    owned_orphan_provider_process_ids_from_ps_output(
-        &String::from_utf8_lossy(&output.stdout),
+    let mut orphans = owned_orphan_provider_process_ids_from_ps_output(
+        &ps_output,
         std::process::id(),
         tracked_pids,
         orphan_ttl_ms,
         &mcp_url,
-    )
+    );
+    orphans.extend(
+        claude_orphans::claude_runs_of_dead_kernels(
+            &ps_output,
+            std::process::id(),
+            &std::env::temp_dir(),
+        )
+        .into_iter()
+        .filter(|pid| claude_orphans::shares_scope_with_this_kernel(*pid)),
+    );
+    orphans
 }
 
 #[derive(Debug)]

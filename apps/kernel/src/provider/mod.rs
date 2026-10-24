@@ -55,6 +55,7 @@ pub(crate) use account_credential::{
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
+pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
 pub(crate) use claude::{
     claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
     fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,

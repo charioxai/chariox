@@ -10,7 +10,7 @@ use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) const CLAUDE_MCP_CONFIG_PLACEHOLDER: &str = "chariox://claude-mcp-config";
-const CLAUDE_RUNTIME_FILES_PREFIX: &str = "chariox-claude-remote-native-";
+pub(crate) const CLAUDE_RUNTIME_FILES_PREFIX: &str = "chariox-claude-remote-native-";
 const CLAUDE_MCP_CONFIG_FILE_NAME: &str = "mcp-config.json";
 /// Claude Code's per-server `timeout` for the Chariox runtime MCP server, in
 /// milliseconds. Without it Claude Code waits 60 s for the first byte of an
