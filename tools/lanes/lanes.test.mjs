@@ -144,6 +144,12 @@ for (const [lane, field] of [['amint', 'rows[0].head'], ['dictation', 'rows[0].h
   });
 }
 
+test('status lists the decisions the target agent is waiting on, and only its own', async () => {
+  const active = [{ id: 'perm-1', agent_id: 'a', kind: 'permission', title: 'Approve Claude Code Write?', message: 'secret body' }, { id: 'perm-2', agent_id: 'b', kind: 'permission', title: 'Approve Claude Code Read?' }];
+  const result = await run('status', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a' }, { execute: async (_, body) => 'RelayStatus' in JSON.parse(body) ? { RelayStatus: { status: { capabilities: ['agent_deadline_v1'] } } } : JSON.parse(body).GetSessionState ? { SessionState: { agents: [{ id: 'a', is_processing: true }], session: { active_interactions: active } } } : { AgentDeadline: { deadline: { state: 'armed' } } } });
+  assert.deepEqual(result.interactions, [{ id: 'perm-1', kind: 'permission', title: 'Approve Claude Code Write?' }]);
+});
+
 test('status waits on events for the expected turn and ignores earlier idle', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-watch-')); const previous = process.env.CHARIOX_BIN;
   try {

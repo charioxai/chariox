@@ -227,6 +227,21 @@ test('after a restart gives the service a new grant, the running lanes follow th
   assert.equal(r.calls.filter(c => c.op === 'launch').length, 2, 'the same receipts are reused; the adapter sees the idempotent launch only');
 });
 
+test('a decision raised while no inbox followed the worker is read from its status and answered once', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  const adapter = r.options.adapter;
+  const answers = [];
+  r.options.adapter = async (op, input) => op === 'status' && input.taskId === 'alpha-r1' && !answers.length
+    ? { ...await adapter(op, input), interactions: [{ id: 'perm-gap', kind: 'permission', title: 'Approve Claude Code Write?' }] }
+    : adapter(op, input);
+  r.options.respond = async input => { answers.push(input); r.idle.add('alpha-r1'); return {}; };
+  r.finished(1);
+  await serve(r.options);
+  assert.deepEqual(answers.map(a => [a.interactionId, a.choiceId]), [['perm-gap', 'allow_once']]);
+  assert.equal((await runFile(r, 'alpha')).permissions.length, 1);
+});
+
 test('round.mjs serve starts as a real process, serves the queue and stops cleanly on SIGTERM', async t => {
   const root = await mkdtemp(join(tmpdir(), 'loopd-process-')); t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, 'home'), agents = join(root, 'agents');

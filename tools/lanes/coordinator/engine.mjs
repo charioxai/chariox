@@ -221,6 +221,8 @@ export function createRound(options) {
       lane.run.statusReads++;
       let status;
       try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
+      // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
+      for (const interaction of status.interactions || []) await answer(lane, { refs: { interaction_id: interaction.id }, summary: interaction.title });
       if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
     }
     for (const lane of pending()) if (lane.run.driverError) { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }
