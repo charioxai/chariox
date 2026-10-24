@@ -427,19 +427,15 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(super) fn resume_recovered_local_steer_queues(
+    pub(super) fn resume_idle_agent_trigger_queues(
         &self,
-        recovered_steers: Vec<(String, String, String)>,
+        agents: impl IntoIterator<Item = (String, String)>,
     ) {
-        let recovered_agents = recovered_steers
-            .into_iter()
-            .map(|(session_id, agent_id, _)| (session_id, agent_id))
-            .collect::<BTreeSet<_>>();
-        for (session_id, agent_id) in recovered_agents {
+        for (session_id, agent_id) in agents.into_iter().collect::<BTreeSet<_>>() {
             if let Err(error) = self.resume_idle_agent_trigger_queue(&session_id, &agent_id) {
                 crate::logging::error_with_fields(
                     "daemon.agent_trigger",
-                    "failed to resume the queue after settling a held steer",
+                    "failed to resume an idle agent queue",
                     serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
                 );
             }
@@ -448,7 +444,11 @@ impl KernelRuntimeState {
 
     pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
         let recovered_steers = self.owned.reconcile_inactive_local_steers();
-        self.resume_recovered_local_steer_queues(recovered_steers);
+        self.resume_idle_agent_trigger_queues(
+            recovered_steers
+                .into_iter()
+                .map(|(session_id, agent_id, _)| (session_id, agent_id)),
+        );
         let dispatches = self
             .owned
             .session_store
@@ -1417,18 +1417,40 @@ pub(super) mod tests {
         );
     }
 
+    #[derive(Clone, Copy)]
+    enum HoldRecoveryPath {
+        Live,
+        Restart,
+        // The hold is removed, then the kernel stops before the next prompt
+        // is promoted: the identities that would have woken it are lost.
+        LiveThenRestart,
+        RestartThenRestart,
+    }
+
     // MP-08/MP-10/MP-11: clearing a hold must wake ordinary queued work.
     #[tokio::test]
     async fn live_hold_recovery_dispatches_remaining_user_prompt_once() {
-        hold_recovery_dispatches_remaining_user_prompt_once(false).await;
+        hold_recovery_dispatches_remaining_user_prompt_once(HoldRecoveryPath::Live).await;
     }
 
     #[tokio::test]
     async fn restart_hold_recovery_dispatches_remaining_user_prompt_once() {
-        hold_recovery_dispatches_remaining_user_prompt_once(true).await;
+        hold_recovery_dispatches_remaining_user_prompt_once(HoldRecoveryPath::Restart).await;
     }
 
-    async fn hold_recovery_dispatches_remaining_user_prompt_once(restart: bool) {
+    #[tokio::test]
+    async fn restart_after_live_hold_removal_dispatches_remaining_user_prompt_once() {
+        hold_recovery_dispatches_remaining_user_prompt_once(HoldRecoveryPath::LiveThenRestart)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn second_restart_after_hold_removal_dispatches_remaining_user_prompt_once() {
+        hold_recovery_dispatches_remaining_user_prompt_once(HoldRecoveryPath::RestartThenRestart)
+            .await;
+    }
+
+    async fn hold_recovery_dispatches_remaining_user_prompt_once(path: HoldRecoveryPath) {
         let mut config = durable_state_config("trigger-live-queue-recovery");
         config.room_agent_tools = false;
         let (_worktree, runtime, session_id, agent_id, attachment_id, _, run_id) =
@@ -1480,25 +1502,75 @@ pub(super) mod tests {
             2,
             "completion cannot cross the held queue head"
         );
-        let (runtime, _recovery) = if restart {
-            let events = runtime
-                .owned
-                .durable_state_store
-                .load_events_after(0)
-                .unwrap();
-            let (restarted, _) =
-                restart_from_log_cut(&events, events.len(), "held-user-queue-restart").await;
-            install_slow_structured_run(&restarted, &session_id, &agent_id, &run_id, "slow-ack");
-            let recovery = restarted.spawn_durable_restart_recovery();
-            (restarted, Some(recovery))
-        } else {
-            connection
-                .execute_batch("DROP TRIGGER reject_trigger_settlement;")
-                .unwrap();
-            runtime
-                .dispatch_due_agent_triggers(trigger.next_run_at_ms())
-                .await;
-            (runtime, None)
+        let (runtime, _recovery) = match path {
+            HoldRecoveryPath::Live => {
+                connection
+                    .execute_batch("DROP TRIGGER reject_trigger_settlement;")
+                    .unwrap();
+                runtime
+                    .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+                    .await;
+                (runtime, None)
+            }
+            HoldRecoveryPath::Restart => {
+                let events = runtime
+                    .owned
+                    .durable_state_store
+                    .load_events_after(0)
+                    .unwrap();
+                let (restarted, _) =
+                    restart_from_log_cut(&events, events.len(), "held-user-queue-restart").await;
+                install_slow_structured_run(
+                    &restarted,
+                    &session_id,
+                    &agent_id,
+                    &run_id,
+                    "slow-ack",
+                );
+                let recovery = restarted.spawn_durable_restart_recovery();
+                (restarted, Some(recovery))
+            }
+            HoldRecoveryPath::LiveThenRestart | HoldRecoveryPath::RestartThenRestart => {
+                let mut stopped = runtime;
+                if matches!(path, HoldRecoveryPath::RestartThenRestart) {
+                    let events = stopped
+                        .owned
+                        .durable_state_store
+                        .load_events_after(0)
+                        .unwrap();
+                    let (first, _) =
+                        restart_from_log_cut(&events, events.len(), "held-user-queue-first").await;
+                    stopped = first;
+                }
+                connection
+                    .execute_batch("DROP TRIGGER reject_trigger_settlement;")
+                    .unwrap();
+                // Hold removal is durable; the promotion behind it never ran.
+                assert_eq!(stopped.owned.reconcile_inactive_local_steers().len(), 1);
+                let session = stopped.owned.session_snapshot(&session_id).unwrap();
+                let (active, queued) = stopped
+                    .owned
+                    .prompt_state_owner
+                    .state_parts(&session, &agent_id);
+                assert!(active.is_none());
+                assert_eq!(queued.len(), 1);
+                let events = stopped
+                    .owned
+                    .durable_state_store
+                    .load_events_after(0)
+                    .unwrap();
+                let (restarted, _) =
+                    restart_from_log_cut(&events, events.len(), "held-user-queue-second").await;
+                install_slow_structured_run(
+                    &restarted,
+                    &session_id,
+                    &agent_id,
+                    &run_id,
+                    "slow-ack",
+                );
+                let recovery = restarted.spawn_durable_restart_recovery();
+                (restarted, Some(recovery))
+            }
         };
         let jobs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
