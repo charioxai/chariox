@@ -142,6 +142,12 @@ impl KernelRuntimeState {
                         clock.deadline = Instant::now() - Duration::from_millis(1);
                     }
                 }
+                // The deadline arrives by itself; nothing sweeps on its behalf.
+                "expire-soon" => {
+                    if let Some(clock) = grant.clock.as_mut() {
+                        clock.deadline = Instant::now() + Duration::from_millis(1500);
+                    }
+                }
                 "notice" => {
                     if let Some(clock) = grant.clock.as_mut() {
                         clock.notice = Instant::now() - Duration::from_millis(1);

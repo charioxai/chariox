@@ -1466,20 +1466,26 @@ async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
 #[tokio::test]
 async fn a_token_terminal_cannot_route_requests_or_event_subscriptions_to_another_kernel() {
     let mut kernel = Kernel::start().await;
-    let mut routed = frame(serde_json::json!({"GetEventSubscription":{}}));
-    routed["kernel"] = "b3".into();
-    routed["request_id"] = "routed".into();
-    kernel
-        .tcp
-        .send(Message::Text(routed.to_string().into()))
-        .await
-        .unwrap();
-    let refused = response(&mut kernel.tcp, "routed").await;
-    assert_eq!(
-        refused["error"]["code"], "kernel_not_available",
-        "{refused}"
-    );
-    assert!(refused["response"].is_null(), "{refused}");
+    // An ordinary request that names another kernel gets no answer from this one.
+    for (request_id, request) in [
+        ("routed", serde_json::json!({"GetEventSubscription":{}})),
+        ("routed-list", serde_json::json!({"ListSessions":null})),
+    ] {
+        let mut routed = frame(request);
+        routed["kernel"] = "b3".into();
+        routed["request_id"] = request_id.into();
+        kernel
+            .tcp
+            .send(Message::Text(routed.to_string().into()))
+            .await
+            .unwrap();
+        let refused = response(&mut kernel.tcp, request_id).await;
+        assert_eq!(
+            refused["error"]["code"], "kernel_not_available",
+            "{refused}"
+        );
+        assert!(refused["response"].is_null(), "{refused}");
+    }
     let subscribe = serde_json::json!({"type":"subscribe", "request_id":"routed-subscribe", "kernel":"b3",
         "session_id":SESSION, "attachment_id":"", "subscription_scope":"session"});
     kernel
@@ -1589,6 +1595,63 @@ async fn outside_unix_wait_delivers_subscription_ended_after_revoke() {
             .len(),
         1
     );
+}
+
+/// One request on the holder's socket, answered or reported as a hang.
+async fn answered_within(holder: Client, request: Value) -> (Client, Value) {
+    timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            let mut holder = holder;
+            let answer = holder.request(request);
+            (holder, answer)
+        }),
+    )
+    .await
+    .expect("the request hung after the grant expired")
+    .unwrap()
+}
+
+// MP-08 / MP-10: the grant's own deadline passes while nothing asks the kernel
+// to sweep. A wait in flight ends, and the holder's next event request of every
+// kind is refused as ended: it neither hangs nor sees an event.
+#[tokio::test]
+async fn every_event_request_is_refused_as_ended_after_a_real_grant_expiry() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let subscribed=holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}));
+    assert!(subscribed["error"].is_null(), "{subscribed}");
+    holder.send(serde_json::json!({"WaitEvents":{"timeout_ms":30000}}));
+    sleep(Duration::from_millis(200)).await;
+    kernel.control("expire-soon").await;
+    let waited = timeout(
+        Duration::from_secs(8),
+        tokio::task::spawn_blocking(move || (holder.result(), holder)),
+    )
+    .await
+    .expect("the wait hung past the grant's deadline")
+    .unwrap();
+    let (waited, mut holder) = waited;
+    assert_eq!(
+        waited["response"]["EventsListed"]["events"][0]["type"], "subscription_ended",
+        "{waited}"
+    );
+    holder.command("reconnect");
+    assert_eq!(holder.result()["reconnected"], true);
+    for request in [
+        serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}),
+        serde_json::json!({"WaitEvents":{"timeout_ms":30000}}),
+        serde_json::json!({"AckEvents":{"cursor":0}}),
+        serde_json::json!({"ListEvents":{}}),
+        serde_json::json!({"GetEventSubscription":{}}),
+        serde_json::json!({"UnsubscribeEvents":{"all":true}}),
+    ] {
+        let (back, answer) = answered_within(holder, request.clone()).await;
+        holder = back;
+        assert_eq!(answer["error"]["code"], "kernel_access_ended", "{request}: {answer}");
+        assert!(answer["response"].is_null(), "{request}: {answer}");
+    }
 }
 
 #[test]
