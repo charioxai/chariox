@@ -404,3 +404,44 @@ fn archive_agent_layout_stays_compact_after_spawn() {
 fn archive_agent_layout_stays_compact_after_delete() {
     assert_archive_agent_layout_after("delete");
 }
+
+#[test]
+fn archive_agent_focus_cycle_skips_archived_agents() {
+    let worktree = crate::test_support::TestWorktree::new("archive-cycle");
+    let h = LocalRouterTestHarness::new();
+    let LocalDaemonResponse::SessionCreated { session, agent } = h
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    let hidden = h.spawn_workflow_test_agent(session.id(), "hidden");
+    h.dispatch(archive_request(session.id(), hidden.id(), true))
+        .unwrap();
+    let LocalDaemonResponse::AgentFocusCycled { agent: focused } = h
+        .dispatch(LocalDaemonRequest::CycleAgentFocus(
+            CycleAgentFocusRequest {
+                session_id: session.id().into(),
+            },
+        ))
+        .expect("cycling one active agent must succeed")
+    else {
+        panic!("cycle")
+    };
+    assert_eq!(focused.unwrap().id(), agent.id());
+    h.dispatch(archive_request(session.id(), agent.id(), true))
+        .unwrap();
+    let LocalDaemonResponse::AgentFocusCycled { agent: focused } = h
+        .dispatch(LocalDaemonRequest::CycleAgentFocus(
+            CycleAgentFocusRequest {
+                session_id: session.id().into(),
+            },
+        ))
+        .expect("cycling an archived-only Room must succeed")
+    else {
+        panic!("cycle")
+    };
+    assert!(focused.is_none());
+}
