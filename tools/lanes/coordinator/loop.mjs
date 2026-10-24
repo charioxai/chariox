@@ -45,7 +45,7 @@ export async function coordinate(operation, args, options = {}) {
       if (!brief.trim()) throw new LaneError('empty_brief');
       const localBrief = join(home, `${lane}.brief.md`);
       await writeFile(localBrief, brief, { mode: 0o600, flag: 'wx' });
-      const input = { ...profile, kernel: config.kernel, taskId: lane, alias: lane, operationsAlias: `${lane}-operations`, worktree, provider, brief: localBrief, remoteBrief: `${laneDirectory}/ROUND_BRIEF.md`, stateFile: join(home, `${lane}.launch.json`), deadlineMs: now() + (config.deadlineSeconds || 7200) * 1000 };
+      const input = { ...profile, ...config.laneProfiles?.[lane], kernel: config.kernel, taskId: lane, alias: lane, operationsAlias: `${lane}-operations`, worktree, provider, brief: localBrief, remoteBrief: `${laneDirectory}/ROUND_BRIEF.md`, stateFile: join(home, `${lane}.launch.json`), deadlineMs: now() + (config.deadlineSeconds || 7200) * 1000 };
       record = { lane, laneDirectory, input, createdAtMs: now() }; await save(path, record);
     } else if (record.input.worktree !== worktree || record.input.provider !== provider || brief !== await readFile(record.input.brief, 'utf8')) throw new LaneError('launch_conflict');
     record.launch = await adapter('launch', record.input);

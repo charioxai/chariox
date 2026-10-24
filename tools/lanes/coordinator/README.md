@@ -26,6 +26,7 @@ Create `$CHARIOX_COORDINATOR_HOME/config.json` with this non-secret policy:
 }
 ```
 
+`laneProfiles` (optional) overrides a provider profile's model, effort or permission for one lane.
 `laneDirectories` keeps uploaded briefs, remote bundles and fetched handoffs in the lane's
 state directory outside its checkout. Omit a lane to retain the worktree-based
 layout. The launch receipt retains that location across resume; bundle commands

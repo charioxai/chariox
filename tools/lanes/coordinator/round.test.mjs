@@ -106,3 +106,12 @@ test('lanefin after stop collects without a status read of the removed worker', 
   assert.equal(result.bundle.head, head);
   assert.equal(r.calls.some(c => c.op === 'status'), false);
 });
+
+test('a lane profile overrides the provider model for that lane only', async t => {
+  const r = await rig(t);
+  const { coordinate } = await import('./loop.mjs');
+  r.options.config.laneProfiles = { alpha: { model: 'claude-opus-5-5' } };
+  for (const spec of r.spec.lanes) await coordinate('brief', [spec.lane, spec.worktree, 'claude', spec.brief], r.options);
+  const models = Object.fromEntries(r.calls.filter(c => c.op === 'launch').map(c => [c.taskId, c.input.model]));
+  assert.deepEqual(models, { alpha: 'claude-opus-5-5', beta: 'm' });
+});
