@@ -313,16 +313,17 @@ impl KernelRuntimeState {
                     let Some(dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
                         return Ok(true);
                     };
+                    let provider_run_id = prompt.durable_delivery_provider_run_id();
                     if let Err(error) = self
                         .resume_delivered_remote_prompt_cancellation_after_restart(
                             &dispatch,
-                            prompt.durable_delivery_provider_run_id(),
+                            provider_run_id,
                         )
                         .await
                     {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
-                            "restart could not reconcile a delivered remote cancellation from its worker receipt; the projection drain continues it",
+                            "restart could not reconcile a delivered remote cancellation from its worker receipt; retrying it",
                             serde_json::json!({
                                 "session_id": dispatch.session_id,
                                 "agent_id": dispatch.agent_id,
@@ -332,12 +333,12 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
-                        // The drain applies the worker's answer when it comes, or ends
-                        // the cancellation after the unanswered-worker deadline.
-                        self.spawn_remote_prompt_projection_drain(
-                            session_id.to_string(),
-                            agent_id.to_string(),
-                        );
+                        if let Some(provider_run_id) = provider_run_id {
+                            self.spawn_delivered_remote_cancellation_resume(
+                                dispatch,
+                                provider_run_id.to_string(),
+                            );
+                        }
                     }
                     return Ok(true);
                 }

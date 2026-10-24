@@ -1,9 +1,10 @@
 //! Exact worker-receipt validation, reconciliation, and durable settlement decisions.
 
+use super::remote_prompt_lifecycle_runtime::REMOTE_CANCEL_WORKER_ANSWER_DEADLINE;
 use super::remote_prompt_projection_drain_runtime::same_remote_prompt_worker_binding;
 use super::remote_prompt_worker_submission_runtime::{
     persist_remote_prompt_reconciliation_pending, query_remote_prompt_worker_receipt,
-    remote_prompt_reconciliation_pending_error,
+    remote_prompt_reconciliation_pending_error, remote_prompt_transport_retry_delay,
 };
 use super::*;
 
@@ -341,6 +342,79 @@ impl KernelRuntimeState {
                     .to_string(),
             }),
         }
+    }
+
+    /// A restarted home asks the worker's exact receipt again until its Ctrl+C is delivered
+    /// or settled, draining output in between. A worker that stays unreachable for
+    /// [`REMOTE_CANCEL_WORKER_ANSWER_DEADLINE`] gets its turn ended at home instead.
+    pub(super) fn spawn_delivered_remote_cancellation_resume(
+        &self,
+        dispatch: crate::app::KernelRemotePromptDispatch,
+        provider_run_id: String,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let mut attempt = 0_u32;
+            loop {
+                attempt = attempt.saturating_add(1);
+                tokio::time::sleep(remote_prompt_transport_retry_delay(attempt)).await;
+                if let Err(error) = state
+                    .drain_remote_prompt_projection_once(&dispatch.session_id, &dispatch.agent_id)
+                    .await
+                {
+                    crate::logging::debug_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "worker output drain failed while its cancellation is retried",
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                let error = match state
+                    .resume_delivered_remote_prompt_cancellation_after_restart(
+                        &dispatch,
+                        Some(&provider_run_id),
+                    )
+                    .await
+                {
+                    Ok(()) | Err(DaemonError::NoActivePrompt { .. }) => return,
+                    Err(error) => error,
+                };
+                if started.elapsed() >= REMOTE_CANCEL_WORKER_ANSWER_DEADLINE {
+                    if let Err(error) = state.end_remote_cancellation_the_worker_never_answered(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.remote_prompt_dispatch",
+                            "could not end a cancellation its worker never answered",
+                            serde_json::json!({
+                                "session_id": dispatch.session_id,
+                                "agent_id": dispatch.agent_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                    return;
+                }
+                if attempt % 12 == 0 {
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "worker has not answered a restarted cancellation yet; retrying",
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "attempt": attempt,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
     }
 
     pub(super) fn remote_prompt_receipt_prompt_is_current(
