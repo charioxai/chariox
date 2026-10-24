@@ -347,6 +347,29 @@ impl KernelRuntimeState {
                 log_restart_recovery_failure(&session_id, &agent_id, "queued follower", &error);
             }
         }
+        for (session_id, agent_id, prompt_id) in admissions.take_owed_successors() {
+            match self
+                .recover_queued_local_prompt_after_restart(
+                    admissions,
+                    &session_id,
+                    &agent_id,
+                    &prompt_id,
+                    false,
+                )
+                .await
+            {
+                Ok(Some(dispatches)) => {
+                    summary.queued_local_prompts_started += 1;
+                    self.spawn_workflow_prompt_dispatches(dispatches);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    admissions.owe_successor(&session_id, &agent_id, &prompt_id);
+                    summary.failed_reconciliations += 1;
+                    log_restart_recovery_failure(&session_id, &agent_id, &prompt_id, &error);
+                }
+            }
+        }
         let sessions = self.owned.session_store.list_all_sessions();
         // Publication work is autonomous and already durably admitted. Resume it before
         // transcript reconciliation for unrelated interactive sessions, which may require slow
@@ -692,12 +715,18 @@ impl KernelRuntimeState {
         let fresh_context = self
             .owned
             .workflow_prompt_requires_fresh_provider_context(session_id, agent_id, &prompt)?;
-        if let RecoveryAdmission::HeldBack(_) = self
+        match self
             .admit_restart_recovery_launch(admissions, session_id, agent_id)
             .await?
         {
+            RecoveryAdmission::Admitted => {}
+            // Startup targets come back every pass; a successor has no target of its own.
+            RecoveryAdmission::HeldBack(HeldBack::Waiting) if !require_publication => {
+                admissions.owe_successor(session_id, agent_id, expected_prompt_id);
+                return Ok(None);
+            }
             // The prompt stays queued: it starts when the person restarts the agent.
-            return Ok(None);
+            RecoveryAdmission::HeldBack(_) => return Ok(None),
         }
         let (provider_run_id, retired_provider_run_id) = self.owned.workflow_ensure_provider_run(
             session_id,
@@ -1385,6 +1414,17 @@ mod tests {
         worktree: &str,
         agent_count: usize,
     ) -> (KernelRuntimeState, String, Vec<(String, String)>) {
+        runtime_with_active_prompts(delivery_phase, worktree, agent_count, false)
+    }
+
+    /// `orphaned_workflow` ties every active prompt to a workflow run that no
+    /// longer exists, as after a restart that lost the run.
+    fn runtime_with_active_prompts(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        worktree: &str,
+        agent_count: usize,
+        orphaned_workflow: bool,
+    ) -> (KernelRuntimeState, String, Vec<(String, String)>) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
@@ -1434,6 +1474,11 @@ mod tests {
                 format!("command-restart-recovery{suffix}"),
                 format!("fingerprint-restart-recovery{suffix}"),
             );
+            let prompt = if orphaned_workflow {
+                prompt.with_workflow_context("missing-workflow-run", "missing-workflow-node")
+            } else {
+                prompt
+            };
             let outcome = app
                 .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
                 .expect("prompt should be accepted");
@@ -2032,6 +2077,197 @@ mod tests {
             active_prompt_of(&runtime, &session_id, &agent_id).is_none(),
             "the refused prompt must be settled, not left active"
         );
+    }
+
+    /// A cold Claude agent in a hooks folder whose active prompt belongs to a
+    /// lost workflow run and which has one queued successor.
+    async fn orphaned_prompt_with_queued_successor(
+        folder: &std::path::Path,
+    ) -> (KernelRuntimeState, String, String, String) {
+        use super::super::claude_cold_launch_fixture as cold;
+        let (runtime, session_id, mut agents) = runtime_with_active_prompts(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            folder.to_str().unwrap(),
+            1,
+            true,
+        );
+        let (agent_id, _orphaned_prompt_id) = agents.remove(0);
+        cold::make_cold_claude(&runtime, &session_id, &agent_id, folder, Default::default()).await;
+        let (queue_session_id, queue_agent_id) = (session_id.clone(), agent_id.clone());
+        let successor_id = runtime
+            .with_app_side_effect(move |app| {
+                let attachment = KernelSessionService::new(app).attach(AttachRequest::new(
+                    &queue_session_id,
+                    "attachment-successor",
+                    ClientCapabilityLevel::FullTerminal,
+                ))?;
+                let successor = PromptQueueItem::new(
+                    "successor-restart-recovery",
+                    attachment.id(),
+                    &queue_agent_id,
+                    "next task",
+                    PromptStatus::Queued,
+                );
+                match app.prompt_owner_submit_prepared_prompt(&queue_session_id, successor, true)? {
+                    crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+                        Ok::<_, DaemonError>(prompt.id().to_string())
+                    }
+                    crate::session::PromptSubmissionOutcome::Started { .. } => {
+                        panic!("the successor must queue behind the active prompt")
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        (runtime, session_id, agent_id, successor_id)
+    }
+
+    /// Lets the agent's Claude account launch a fixture CLI that never contacts
+    /// a provider; the credential file is synthetic.
+    fn sign_in_fixture_claude(
+        runtime: &KernelRuntimeState,
+        agent_id: &str,
+        executable_folder: &std::path::Path,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let account = runtime
+            .owned
+            .agent_store
+            .get_agent(agent_id)
+            .unwrap()
+            .provider_account_profile()
+            .to_string();
+        let config_dir = std::path::PathBuf::from(
+            runtime
+                .owned
+                .provider_account_profiles
+                .resolve_environment(crate::session::DEFAULT_LOCAL_USER_ID, "claude", &account)
+                .unwrap()["CLAUDE_CONFIG_DIR"]
+                .clone(),
+        );
+        std::fs::write(
+            config_dir.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"fixture-refresh"}}"#,
+        )
+        .unwrap();
+        let executable = executable_folder.join("claude-fixture");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("CHARIOX_CLAUDE_BIN", executable);
+    }
+
+    fn queued_prompt_ids(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Vec<String> {
+        let session = runtime.owned.session_store.get_session(session_id).unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id)
+            .1
+            .iter()
+            .map(|prompt| prompt.id().to_string())
+            .collect()
+    }
+
+    // The orphaned prompt is gone after the first pass, so the queued successor
+    // is only reachable through what the pass owes.
+    #[tokio::test]
+    async fn trusting_the_folder_starts_the_orphaned_prompts_queued_successor_once() {
+        crate::test_support::isolated_env_test!();
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, successor_id) =
+            orphaned_prompt_with_queued_successor(folder.path()).await;
+        sign_in_fixture_claude(&runtime, &agent_id, folder.path());
+        let _recovery = runtime.spawn_durable_restart_recovery();
+
+        let card = cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        assert_eq!(
+            queued_prompt_ids(&runtime, &session_id, &agent_id),
+            [successor_id.as_str()],
+            "the successor waits for the card"
+        );
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .is_none());
+        cold::answer_hooks_card(&runtime, &session_id, &card, "trust").await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let run_id = loop {
+            if let Some(run) = runtime
+                .owned
+                .provider_store
+                .get_run_for_agent(&session_id, &agent_id)
+            {
+                break Some(run.id().to_string());
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Trust folder never started the queued successor: queued {:?}",
+                queued_prompt_ids(&runtime, &session_id, &agent_id)
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        // Later retry passes must not start it again or ask again.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run_for_agent(&session_id, &agent_id)
+                .map(|run| run.id().to_string()),
+            run_id
+        );
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_interaction_for_agent(&agent_id)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_card_keeps_the_orphaned_prompts_successor_queued_without_asking_again()
+    {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, successor_id) =
+            orphaned_prompt_with_queued_successor(folder.path()).await;
+        let _recovery = runtime.spawn_durable_restart_recovery();
+
+        let card = cold::await_hooks_card(&runtime, &session_id, &agent_id).await;
+        cold::answer_hooks_card(&runtime, &session_id, &card, "cancel").await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3500);
+        while std::time::Instant::now() < deadline {
+            assert!(
+                runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .active_interaction_for_agent(&agent_id)
+                    .is_none(),
+                "Cancel reopened the hooks card"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            queued_prompt_ids(&runtime, &session_id, &agent_id),
+            [successor_id.as_str()],
+            "the refused successor stays queued for the person's restart"
+        );
+        assert!(active_prompt_of(&runtime, &session_id, &agent_id).is_none());
     }
 
     // A card waiting for one agent holds up no other agent's recovery.

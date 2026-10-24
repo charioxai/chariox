@@ -32,11 +32,14 @@ pub(crate) struct RestartLaunchAdmissions {
     /// Agents whose next queued prompt still has to start once its launch is
     /// admitted: (session id, agent id).
     owed_followers: StdMutex<BTreeSet<(String, String)>>,
+    /// Queued prompts that took an orphaned prompt's place and wait for their
+    /// agent's launch: (session id, agent id, prompt id).
+    owed_successors: StdMutex<BTreeSet<(String, String, String)>>,
 }
 
 impl RestartLaunchAdmissions {
     /// Work the recovery loop must still pass over: open cards, answers not yet
-    /// acted on, and queued followers waiting for their agent.
+    /// acted on, and queued followers and successors waiting for their agent.
     pub(super) fn unsettled(&self) -> usize {
         let decisions = self.decisions.lock().expect("admission state poisoned");
         decisions
@@ -44,6 +47,7 @@ impl RestartLaunchAdmissions {
             .filter(|decision| !matches!(decision, Decision::Refused { reported: true, .. }))
             .count()
             + self.owed_followers().len()
+            + self.owed_successors().len()
     }
 
     /// Whether a card is still open, so the answer can still arrive.
@@ -68,6 +72,26 @@ impl RestartLaunchAdmissions {
 
     fn owed_followers(&self) -> std::sync::MutexGuard<'_, BTreeSet<(String, String)>> {
         self.owed_followers
+            .lock()
+            .expect("admission state poisoned")
+    }
+
+    pub(super) fn owe_successor(&self, session_id: &str, agent_id: &str, prompt_id: &str) {
+        self.owed_successors().insert((
+            session_id.to_string(),
+            agent_id.to_string(),
+            prompt_id.to_string(),
+        ));
+    }
+
+    pub(super) fn take_owed_successors(&self) -> Vec<(String, String, String)> {
+        std::mem::take(&mut *self.owed_successors())
+            .into_iter()
+            .collect()
+    }
+
+    fn owed_successors(&self) -> std::sync::MutexGuard<'_, BTreeSet<(String, String, String)>> {
+        self.owed_successors
             .lock()
             .expect("admission state poisoned")
     }
