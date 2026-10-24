@@ -452,3 +452,19 @@ test('resumed fallback launch refuses new prompt admission after its coordinator
     assert.equal(JSON.parse(await readFile(input.stateFile)).agentId,'a');
   }finally{Date.now=originalNow;await rm(dir,{recursive:true,force:true});}
 });
+
+test('advertised kernel support must yield an armed deadline before prompt admission', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'dogfood-missing-deadline-'));
+  try {
+    const brief=join(dir,'brief.md');await writeFile(brief,'MP-11: task');
+    const input={kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'state.json'),deadlineMs:Date.now()+60_000};
+    let submitted=false;
+    const execute=async(argv,body)=>{
+      if(argv[0]==='files')return {};
+      const op=Object.keys(JSON.parse(body))[0];if(op==='SubmitPrompt')submitted=true;
+      return {RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:'t'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{AgentDeadline:{deadline:null}},GetAgentDeadline:{AgentDeadline:{deadline:null}},SubmitPrompt:{PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}}}[op];
+    };
+    await assert.rejects(run('launch',input,{execute}),{code:'agent_deadline_missing'});
+    assert.equal(submitted,false);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});

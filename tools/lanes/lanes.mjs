@@ -187,6 +187,7 @@ export async function run(operation, input, dependencies = {}) {
     if (Array.isArray(capabilities) && capabilities.includes('agent_deadline_v1')) {
       await remember('deadlineArmed', async () => { await request('SetAgentDeadline', { session_id: session(), agent_id: agent(), deadline_ms: input.deadlineMs }, 'deadline'); return true; });
       const receipt = variant(await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-read', false), 'AgentDeadline').deadline;
+      if (!receipt) fail('agent_deadline_missing', 'The executing kernel did not retain its lane deadline; inspect GetAgentDeadline before admitting work.');
       state.deadline = { ...receipt, mode: 'kernel' };
     } else {
       state.deadline = coordinatorDeadline(input.deadlineMs);
@@ -256,7 +257,8 @@ export async function run(operation, input, dependencies = {}) {
     const capabilities = variant(await request('RelayStatus', null, 'deadline-capability', false), 'RelayStatus').status.capabilities;
     let deadline;
     if (Array.isArray(capabilities) && capabilities.includes('agent_deadline_v1')) {
-      deadline = { ...variant(await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-status', false), 'AgentDeadline').deadline, mode: 'kernel' };
+      const receipt = variant(await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-status', false), 'AgentDeadline').deadline;
+      deadline = receipt ? { ...receipt, mode: 'kernel' } : { mode: 'kernel', state: 'unset', deadline_ms: null };
     } else {
       let deadlineMs = input.deadlineMs;
       if (input.stateFile) {
