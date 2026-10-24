@@ -1140,6 +1140,7 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
         "not currently visible on relay",
         "did not appear on relay",
         "connection reset",
+        "connection abort",
         "connection refused",
         "connection closed",
         "relay closed temporary peer connection",
