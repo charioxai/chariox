@@ -70,6 +70,19 @@ async fn mp10_resume_reaches_peer_while_three_other_viewers_hold_reads() {
             .to_owned();
         let viewer = runtime.owned.config_projection.snapshot().relay_public_key;
         let caller = KernelCaller::default();
+        // A fresh App pump has a startup wake. Settle that unrelated work so
+        // this regression actually exercises the idle transport interval.
+        runtime
+            .app_control()
+            .event_pump()
+            .try_begin()
+            .unwrap()
+            .finish(None, None, None, false);
+        assert_eq!(
+            runtime.transport_runtime_pump_interval_ms(500, 5000, crate::session::unix_epoch_ms()),
+            5000,
+            "MP-08/MP-09: fixture must be idle before a display opens"
+        );
         let binding = RoomDisplayBinding {
             generation: 1,
             subscription_id: "resume-admission".into(),
@@ -111,6 +124,8 @@ async fn mp10_resume_reaches_peer_while_three_other_viewers_hold_reads() {
             BTreeMap::from([(room.session_id.clone(), slice.clone())]),
             "audience refresh uses live immutable scopes without waiting for frames or reviving stale rooms"
         );
+        assert!(runtime.transport_runtime_pump_interval_ms(500, 5000, crate::session::unix_epoch_ms()) <= 500,
+            "MP-08/MP-09: live displays renew the three-second owner grant before the idle pump sleeps");
         drop(held_frame);
         let mut readers = Vec::new();
         for _ in 0..3 {

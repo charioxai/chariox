@@ -260,6 +260,8 @@ impl KernelRuntimeState {
             return Err(error());
         }
         leases.insert(id, HomeLease::new(lease));
+        drop(leases);
+        self.owned.runtime_projection_changes.record_change();
         Ok(endpoint)
     }
     fn home_display_lease(&self, id: &str) -> Result<Arc<Mutex<RoomDisplayLease>>, DaemonError> {

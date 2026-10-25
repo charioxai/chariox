@@ -407,6 +407,7 @@ impl KernelRuntimeState {
         now_ms: u64,
     ) -> u64 {
         let next_runtime_due_at_ms = [
+            self.room_display_audience_due_at_ms(now_ms),
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
             self.owned.provider_launch_failure_retries.next_due_at_ms(),

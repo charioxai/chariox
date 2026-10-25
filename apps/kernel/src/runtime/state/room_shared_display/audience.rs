@@ -148,6 +148,12 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    pub(crate) fn room_display_audience_due_at_ms(&self, now_ms: u64) -> Option<u64> {
+        // Owner grants last three seconds. Live display leases keep the pump
+        // renewing at its active cadence even while every provider is idle.
+        (!self.room_display_scopes().is_empty()).then(|| now_ms.saturating_add(500))
+    }
+
     pub(crate) fn room_display_audience_epoch(&self, room: &str) -> u64 {
         *self
             .owned
