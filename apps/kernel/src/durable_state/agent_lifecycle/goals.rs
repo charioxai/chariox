@@ -238,6 +238,9 @@ pub(crate) fn is_completion_check_prompt_id(prompt_id: &str) -> bool {
     prompt_id.starts_with(COMPLETION_CHECK_PROMPT_PREFIX)
 }
 pub(super) const CORRECTION_PROMPT_PREFIX: &str = "task-correction-";
+/// A turn ended twice with no final answer text (empty, or only tool calls).
+pub(super) const EMPTY_FINAL_ANSWER_REASON: &str =
+    "Agent ended its turn twice without a final answer; owner must resume or cancel";
 /// The kernel's single correction instruction is internal protocol text; the
 /// agent's answer to it stays visible, the instruction itself does not.
 pub(crate) fn is_correction_prompt_id(prompt_id: &str) -> bool {
