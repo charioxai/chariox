@@ -356,3 +356,43 @@ fn required_native_checkpoint_accepts_provider_appends_but_rejects_changed_histo
         );
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn review_native_checkpoint_service_plans_before_contacting_managed_endpoint() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = Scratch::new();
+    std::env::set_var("CHARIOX_CODEX_BIN", "/bin/true");
+    let request = LaunchProviderRequest::new("session", "codex", "codex", "profile", "gpt-6-luna")
+        .with_variant(Some("low".into()))
+        .with_working_directory(root.0.clone())
+        .with_provider_account_env(std::collections::BTreeMap::from([(
+            "CODEX_HOME".into(),
+            root.0.display().to_string(),
+        )]))
+        .with_native_checkpoint(checkpoint());
+    let mut service = crate::provider::ProviderProcessService::new();
+    let result = service.start_run_provider_only(request);
+    std::env::remove_var("CHARIOX_CODEX_BIN");
+    let run = result
+        .expect("planning a checkpoint launch must not probe its unstarted app-server")
+        .into_run();
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+    assert!(
+        service.mark_run_running(run.id()).is_err(),
+        "unimported checkpoint cannot admit prompts"
+    );
+    assert_eq!(run.resume_state().codex_thread_id(), Some(SESSION));
+    assert!(run.resume_state().required_native_session().is_some());
+    assert!(
+        !root.0.join(ARTIFACT).exists(),
+        "import waits for provider readiness"
+    );
+    assert!(!serde_json::to_string(&run)
+        .unwrap()
+        .contains("private native session bytes"));
+    assert!(!serde_json::to_string(&run)
+        .unwrap()
+        .contains("native_checkpoint"));
+}

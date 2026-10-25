@@ -13,6 +13,13 @@ impl ProviderProcessService {
         &mut self,
         mut request: LaunchProviderRequest,
     ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        if let Some(checkpoint) = request.native_checkpoint.as_ref() {
+            request.resume_state = Some(
+                checkpoint
+                    .prepare_resume_state(&request)
+                    .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?,
+            );
+        }
         if let Some(required) = request
             .resume_state
             .as_ref()
@@ -40,23 +47,6 @@ impl ProviderProcessService {
 
         let run_id = self.next_run_id();
         let launch_result = adapter.connect(&request)?;
-        if let Some(checkpoint) = request.native_checkpoint.take() {
-            if request
-                .resume_state
-                .as_ref()
-                .and_then(|state| state.provider_session_id(&request.adapter_key))
-                .is_some_and(|id| id != checkpoint.provider_session_id())
-            {
-                return Err(
-                    super::super::NativeCheckpointFailure::SessionChanged.into_daemon_error()
-                );
-            }
-            request.resume_state = Some(
-                checkpoint
-                    .import(&request, &launch_result)
-                    .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?,
-            );
-        }
 
         crate::logging::info_with_fields(
             "daemon.provider",
@@ -257,6 +247,9 @@ impl ProviderProcessService {
                 state: run.state(),
                 operation: "finish launch",
             });
+        }
+        if run.native_checkpoint().is_some() {
+            return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error());
         }
         run.mark_running();
         Ok(run.clone())

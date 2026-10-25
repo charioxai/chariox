@@ -133,9 +133,28 @@ fn live_codex_native_checkpoint_driver() {
             );
             let checkpoint: ProviderNativeCheckpoint =
                 serde_json::from_reader(file).expect("decode private checkpoint artifact");
-            let state = checkpoint
-                .import(&request, &launch)
-                .expect("stage and resume real native checkpoint");
+            let request = request
+                .with_provider_account_env(launch.pty_env)
+                .with_native_checkpoint(checkpoint.clone());
+            let mut service = crate::provider::ProviderProcessService::new();
+            let mut pty = crate::pty::PtyManager::new();
+            let run = service
+                .start_run_provider_only(request)
+                .expect("plan service launch with checkpoint before endpoint startup")
+                .into_run();
+            assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+            assert!(run.resume_state().required_native_session().is_some());
+            pty.spawn_for_run(&run)
+                .expect("start official managed Codex app-server");
+            let initialized = service
+                .initialize_runtime(&run)
+                .and_then(|()| service.mark_run_running(run.id()));
+            let state = run.resume_state().clone();
+            service
+                .terminate_run_provider_only(run.session_id(), run.id())
+                .unwrap();
+            pty.remove_process(run.id()).unwrap();
+            initialized.expect("service startup stages and resumes the real native checkpoint");
             assert_eq!(
                 state.codex_thread_id(),
                 Some(checkpoint.provider_session_id())
@@ -162,7 +181,7 @@ fn live_codex_native_checkpoint_driver() {
             };
             save(
                 &input.output,
-                &json!({"imported":true,"same_native_session":true,"required_resume":true,"payload_printed":false,
+                &json!({"imported":true,"service_launch_with_checkpoint":true,"managed_endpoint_started_before_import":true,"same_native_session":true,"required_resume":true,"payload_printed":false,
                     "artifact_before_bytes":checkpoint.contents.len(),"artifact_after_bytes":after.len(),
                     "artifact_before_sha256":checkpoint.sha256(),"artifact_after_sha256":super::digest(&after),
                     "unchanged_prefix":unchanged_prefix,"appended_record_types":appended_record_types}),

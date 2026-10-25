@@ -119,8 +119,8 @@ try{
  await adapter('delete',source,endedSource,profile);
  summary.sourceNativeSessionRemoved=true;
  const binding=exported.binding;
+ summary.targetImport=await adapter('import',target,{...endedSource,session_id:session.session.id,agent_instance_id:session.agent.id,account_profile:linked.profile_id,working_directory:target.dir+'/workspace'},targetHome);await save();
  const launched=await launch(target,{session_id:session.session.id,agent_id:session.agent.id,adapter_key:'codex',provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',variant:'low',provider_session_id:sourceRun.provider_session_id,native_tui:false,native_checkpoint_binding:binding});
- summary.targetImport=await adapter('import',target,launched.provider_run,targetHome);await save();
  summary.steps.push({sourceStopped:true,checkpointExported:true,checkpointImported:true,sourceAndTargetProfilesDiffer:profile!==targetHome});await save();
  const targetTui=await openTui({tree:target.dir+'/workspace',env:target.env,url:'ws://127.0.0.1:'+target.env.CHARIOX_KERNEL_PORT+'/kernel',profile:linked.profile_id,session:session.session.id,root:target.dir,provider:'codex',model:'gpt-6-luna',binary:tuiBinary});targetTui.child.charioxStart=processes().find(p=>p.pid===targetTui.child.pid)?.start;tuis.push(targetTui);
  const targetPrompt='Use a shell command to print your working directory, then repeat the marker from our earlier conversation. Do not use any other tools.';
@@ -134,9 +134,9 @@ try{
  if(!positive.sameNativeId||!positive.contextRecalled||!positive.relocatedWorkspaceExecuted||positive.state==='Error')throw Error('Native continuity or relocated workspace failed');
  const endedTarget=await terminate(target,targetRun);
  const returnCheckpoint=await adapter('export',target,endedTarget,targetHome);
- const returned=await launch(source,{session_id:homeBefore.id,agent_id:homeBefore.focusedAgentId,adapter_key:'codex',provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',variant:'low',provider_session_id:sourceRun.provider_session_id,native_tui:false,native_checkpoint_binding:returnCheckpoint.binding});
  summary.sourceNativeSessionRemoved=false;
- summary.returnImport=await adapter('import',source,returned.provider_run,profile);await save();
+ summary.returnImport=await adapter('import',source,{...endedTarget,session_id:homeBefore.id,agent_instance_id:homeBefore.focusedAgentId,account_profile:linked.profile_id,working_directory:source.dir+'/workspace'},profile);await save();
+ const returned=await launch(source,{session_id:homeBefore.id,agent_id:homeBefore.focusedAgentId,adapter_key:'codex',provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',variant:'low',provider_session_id:sourceRun.provider_session_id,native_tui:false,native_checkpoint_binding:returnCheckpoint.binding});
  const back=await turn(sourceTui,'Use a shell command to print your working directory, then repeat the marker and the working directory you printed in the previous task. Do not use any other tools.');
  back.snapshot=await expandTools(sourceTui,back);
  const backRun=await run(source,sourceTui),backEntries=entries(back.snapshot);

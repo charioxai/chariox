@@ -9,10 +9,7 @@ use super::{
     digest, profile_root, NativeCheckpointBinding, NativeCheckpointFailure as Failure,
     ProviderNativeCheckpoint,
 };
-use crate::provider::{
-    CodexClient, LaunchProviderRequest, ProviderAuthStatus, ProviderLaunchResult,
-    ProviderResumeState, RuntimeProviderRun,
-};
+use crate::provider::{CodexClient, ProviderAuthStatus, ProviderResumeState, RuntimeProviderRun};
 
 #[derive(Deserialize)]
 struct MetadataResponse {
@@ -171,30 +168,26 @@ pub(super) fn export(run: &RuntimeProviderRun) -> Result<ProviderNativeCheckpoin
 #[cfg(unix)]
 pub(super) fn import(
     checkpoint: &ProviderNativeCheckpoint,
-    request: &LaunchProviderRequest,
-    launch: &ProviderLaunchResult,
+    run: &RuntimeProviderRun,
 ) -> Result<ProviderResumeState, Failure> {
-    if request.provider != "codex"
-        || model(&request.model) != checkpoint.binding.model
-        || variant(request.variant.as_deref()) != checkpoint.binding.variant.as_deref()
+    if run.provider() != "codex"
+        || model(run.model()) != checkpoint.binding.model
+        || variant(run.variant()) != checkpoint.binding.variant.as_deref()
     {
         return Err(Failure::ConfigurationMismatch);
     }
-    let root = profile_root(&launch.pty_env)?;
-    let cwd = launch
-        .working_directory
-        .as_deref()
+    let root = profile_root(run.pty_env())?;
+    let cwd = run
+        .working_directory()
+        .map(PathBuf::as_path)
         .filter(|path| path.is_absolute() && path.is_dir())
         .ok_or(Failure::ConfigurationMismatch)?;
     let client = CodexClient::new(
         "native-checkpoint-import",
-        launch
-            .structured_endpoint
-            .as_deref()
-            .ok_or(Failure::ResumeFailed)?,
+        run.structured_endpoint().ok_or(Failure::ResumeFailed)?,
     )
     .map_err(|_| Failure::ResumeFailed)?;
-    let auth = auth(&client, &request.account_profile)?;
+    let auth = auth(&client, run.account_profile())?;
     if account_digest(&auth)? != checkpoint.binding.account_sha256 {
         return Err(Failure::AccountMismatch);
     }
@@ -225,10 +218,10 @@ pub(super) fn import(
     }
     directory.publish(&checkpoint.relative_path, &checkpoint.contents)?;
     let client = client
-        .with_mcp_servers(&request.mcp_servers)
-        .with_provider_config_overrides(&request.provider_config_overrides);
-    let client = if let Some(binding) = &request.runtime_mcp_binding {
-        client.with_runtime_mcp_binding(Some(&binding.server_url), Some(&binding.auth_token))
+        .with_mcp_servers(run.mcp_servers())
+        .with_provider_config_overrides(run.provider_config_overrides());
+    let client = if let Some(server_url) = run.runtime_mcp_server_url() {
+        client.with_runtime_mcp_binding(Some(server_url), run.runtime_mcp_auth_token())
     } else {
         client
     };
@@ -241,10 +234,10 @@ pub(super) fn import(
             &mut 1,
             id,
             Some(&cwd.to_string_lossy()),
-            Some(model(&request.model)),
-            request.write_access_mode,
-            request.execution_mode.unwrap_or_default(),
-            request.permission_level.unwrap_or_default(),
+            Some(model(run.model())),
+            run.write_access_mode(),
+            run.execution_mode(),
+            run.permission_level(),
             None,
             &mut Vec::new(),
         )
@@ -271,8 +264,7 @@ pub(super) fn export(_: &RuntimeProviderRun) -> Result<ProviderNativeCheckpoint,
 #[cfg(not(unix))]
 pub(super) fn import(
     _: &ProviderNativeCheckpoint,
-    _: &LaunchProviderRequest,
-    _: &ProviderLaunchResult,
+    _: &RuntimeProviderRun,
 ) -> Result<ProviderResumeState, Failure> {
     Err(Failure::UnsupportedPlatform)
 }

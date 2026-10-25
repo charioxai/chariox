@@ -110,20 +110,41 @@ impl ProviderNativeCheckpoint {
         codex::export(run)
     }
 
-    /// Stage and verify the private native file without submitting user work.
-    /// The caller supplies a target launch planned by the ordinary adapter, so
-    /// profile resolution and provider startup retain their existing authority.
-    pub(crate) fn import(
+    pub(crate) fn prepare_resume_state(
         &self,
         request: &super::LaunchProviderRequest,
-        launch: &super::ProviderLaunchResult,
     ) -> Result<super::ProviderResumeState, NativeCheckpointFailure> {
-        supported_interface(&request.adapter_key, request.client_interface)?;
-        if launch.endpoint_mode != super::AgentEndpointMode::Managed {
+        self.validate()?;
+        if request
+            .resume_state
+            .as_ref()
+            .and_then(|state| state.provider_session_id(&request.adapter_key))
+            .is_some_and(|id| id != self.provider_session_id())
+        {
+            return Err(NativeCheckpointFailure::SessionChanged);
+        }
+        Ok(
+            super::ProviderResumeState::from_codex_thread_id(self.provider_session_id())
+                .requiring_native_session(
+                    "codex",
+                    self.provider_session_id(),
+                    Some(self.binding.clone()),
+                ),
+        )
+    }
+
+    /// The managed endpoint must be ready before official account and native
+    /// session probes. The durable requirement is already installed at planning.
+    pub(crate) fn import(
+        &self,
+        run: &RuntimeProviderRun,
+    ) -> Result<super::ProviderResumeState, NativeCheckpointFailure> {
+        supported_interface(run.adapter_key(), run.client_interface())?;
+        if run.endpoint_mode() != super::AgentEndpointMode::Managed {
             return Err(NativeCheckpointFailure::UnsupportedInterface);
         }
         self.validate()?;
-        codex::import(self, request, launch)
+        codex::import(self, run)
     }
 
     pub fn provider_session_id(&self) -> &str {
