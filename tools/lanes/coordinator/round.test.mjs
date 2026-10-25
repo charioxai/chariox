@@ -399,11 +399,13 @@ test('round: a prompt that reaches the worker after it was read idle defers the 
   assert.ok(reads >= 3, 'the worker was read again after the deferral');
 });
 
-test('round: a direct note whose reply was lost is replayed from the inbox fallback under its saved command id, not steered again', async t => {
+for (const format of ['legacy', 'by-identity']) test(`round: a ${format} lost direct note is replayed from the inbox under its saved command id`, async t => {
   const r = await rig(t, ['alpha']);
   const note = '## 11:00Z coordinator\nplease also do Y\n';
   const digest = createHash('sha256').update(note.trim()).digest('hex');
-  await writeFile(join(r.home, 'alpha.direct.json'), JSON.stringify({ sections: [], pending: { sha256: digest, operation: 'prompt', id: `direct-${digest}`, parts: [digest], prompt: note } }));
+  const pending = { sha256: digest, operation: 'prompt', id: `direct-${digest}`, parts: [digest], prompt: note };
+  const ledger = { sections: [{ sha256: 'another-note', mode: 'steered' }], ...(format === 'legacy' ? { pending } : { pendingDeliveries: { [digest]: pending } }) };
+  await writeFile(join(r.home, 'alpha.direct.json'), JSON.stringify(ledger));
   r.waits.push({});
   r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
   const before = r.options.cli; let wakes = 0;
