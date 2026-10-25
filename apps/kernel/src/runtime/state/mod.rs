@@ -1376,6 +1376,7 @@ mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_goal_context;
 mod agent_goal_migration;
+mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
 mod agent_inbox_leased_steer;

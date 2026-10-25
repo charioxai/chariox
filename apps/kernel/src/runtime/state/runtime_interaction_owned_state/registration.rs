@@ -287,7 +287,8 @@ impl KernelRuntimeOwnedState {
             &interaction,
             crate::session::unix_epoch_ms(),
         )?;
-        let pending = super::super::PendingInteraction {
+        let mut pending = super::super::PendingInteraction {
+            goal_approval: None,
             kernel_wide_interaction: None,
             agent_lifetime,
             session_id: session_id.into(),
@@ -323,6 +324,13 @@ impl KernelRuntimeOwnedState {
                 });
             }
             return Ok(());
+        }
+        if pending.terminal_credential_owner.is_none() && pending.kernel_operation_owner.is_none() {
+            pending.goal_approval = self.begin_goal_native_approval(
+                session_id,
+                &interaction,
+                pending.agent_lifetime.as_ref(),
+            )?;
         }
         session.add_active_interaction(interaction.clone());
         let identity = pending.responder.clone();

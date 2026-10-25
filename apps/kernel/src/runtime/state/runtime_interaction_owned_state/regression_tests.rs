@@ -241,6 +241,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
         pending.write().insert(
             id.into(),
             super::super::PendingInteraction {
+                goal_approval: None,
                 kernel_wide_interaction: None,
                 agent_lifetime: None,
                 session_id: "same-session".into(),
@@ -1023,5 +1024,156 @@ async fn computer_task_decision_leaves_release_accessible_until_human_releases()
         f.active_ids().len(),
         1,
         "genuine decisions remain available after Release"
+    );
+}
+
+// MP-08/MP-09/MP-10/MP-11 A12-S04: the native decision owns the goal wait.
+#[tokio::test]
+async fn a12_native_approval_blocks_goal_and_answer_resumes_same_turn() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    use crate::session::DEFAULT_LOCAL_USER_ID;
+    let fixture = Fixture::with_room_tools();
+    let state = &fixture.state;
+    let session = fixture.session.clone();
+    let agent = state
+        .owned
+        .agent_store
+        .create_agent_for_session(
+            crate::agent::CreateAgentRequest::new(&session, "codex"),
+            &state.owned.session_store.get_session(&session).unwrap(),
+        )
+        .unwrap()
+        .id()
+        .to_string();
+    let permission = |id: &str| {
+        RuntimeInteraction::new(
+            id,
+            &agent,
+            crate::session::RuntimeInteractionKind::Permission,
+            crate::session::RuntimeInteractionLevel::Warning,
+            Some("Command approval required".into()),
+            "Run the harmless approval probe",
+            vec![
+                RuntimeInteractionChoice::new("allow", "Allow once", "allow", None),
+                RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+            ],
+            None,
+            Some(600),
+            Some("deny".into()),
+        )
+    };
+    let store = &state.owned.durable_state_store;
+    let task_id = format!("native-goal-{session}");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: session.clone(),
+            agent: agent.clone(),
+            prompt: task_id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::StartGoal {
+            task: task_id.clone(),
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            objective: "Run the harmless approval probe".into(),
+            minutes: 1,
+            now: 2,
+        })
+        .unwrap();
+    let read_task = || {
+        store
+            .agent_tasks(Some(&session), Some(&agent))
+            .unwrap()
+            .remove(0)
+    };
+    let original = read_task();
+    let id = format!("native-goal-approval-{session}");
+    let mut receiver = state
+        .create_runtime_interaction(&session, permission(&id))
+        .await
+        .unwrap();
+    let blocked = read_task();
+    assert_eq!(
+        blocked.state,
+        ExecutionState::Blocked,
+        "unanswered native approval requires owner action"
+    );
+    assert_eq!(
+        blocked.goal.as_ref().unwrap().id,
+        original.goal.as_ref().unwrap().id
+    );
+    // A settings edit advances the task revision without answering or replacing the decision.
+    store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: task_id.clone(),
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            revision: blocked.revision,
+            action: "interval".into(),
+            value: Some("2".into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    assert_eq!(read_task().state, ExecutionState::Blocked);
+    state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1,
+        "the native approval is the only owner decision; do not add a generic Resume card"
+    );
+    state
+        .resolve_runtime_interaction(&session, &id, "allow", None)
+        .await
+        .unwrap();
+    assert_eq!(receiver.try_recv().unwrap().status, "answered");
+    let resumed = read_task();
+    assert_eq!(resumed.state, ExecutionState::Working);
+    assert_eq!(
+        resumed.prompt_id, original.prompt_id,
+        "continue the pending provider turn, never launch another"
+    );
+    assert_eq!(resumed.pending_prompt_id, original.pending_prompt_id);
+    assert_eq!(
+        resumed.goal.as_ref().unwrap().id,
+        original.goal.as_ref().unwrap().id
+    );
+    assert!(resumed.revision > blocked.revision);
+    // A later lifecycle change must win over an answer to this approval.
+    let second_id = format!("native-goal-second-{session}");
+    let _second = state
+        .create_runtime_interaction(&session, permission(&second_id))
+        .await
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: task_id.clone(),
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            revision: read_task().revision,
+            action: "pause".into(),
+            value: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    state
+        .resolve_runtime_interaction(&session, &second_id, "allow", None)
+        .await
+        .unwrap();
+    let later = read_task();
+    assert_eq!(later.state, ExecutionState::Blocked);
+    assert!(later.goal.as_ref().unwrap().paused);
+    assert_eq!(
+        later.reason,
+        "Goal paused by owner; obligations remain supervised"
     );
 }

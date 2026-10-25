@@ -514,6 +514,7 @@ impl KernelRuntimeOwnedState {
                 .remove(interaction_id)
                 .ok_or_else(|| interaction_error("interaction is no longer pending"))
         };
+        self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         let pending = consume()?;
         // MP-08/MP-10/MP-11: pin time at the winning fresh decision, before
         // waking its consumer. Scheduler delays cannot bank elevation time.
