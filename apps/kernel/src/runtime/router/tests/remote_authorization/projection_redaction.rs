@@ -422,10 +422,13 @@ async fn full_attach_run_visibility() {
         });
         let command = super::historical_workflows::terminal_command(&request, Some(user));
         let result = router.dispatch(command, request).await;
-        assert_eq!(
-            result.is_ok(),
-            expected.is_some(),
-            "provider run read authority is unchanged"
-        );
+        if expected.is_some() {
+            assert!(
+                result.is_ok(),
+                "owner retains provider run read authority: {result:?}"
+            );
+        } else {
+            assert_ownership_denied(result.unwrap_err(), user, run.owner_user_id());
+        }
     }
 }
