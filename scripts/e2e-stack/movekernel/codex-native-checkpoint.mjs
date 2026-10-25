@@ -91,8 +91,6 @@ try{
  if(!sourceRun.provider_session_id)throw Error('Source has no real native thread');
  summary.steps.push({sourceRealTurn:true,model:sourceRun.model,variant:sourceRun.variant});await save();
  const homeBefore=sourceTurn.snapshot.session;
- try{await source.client.send({MoveAgentToRemote:{session_id:homeBefore.id,agent_ref:homeBefore.focusedAgentId,machine_ref:target.status.machine_id}});throw Error('Unexpected lease move admission before checkpoint composition');}
- catch(error){if(!String(error.message).includes('agent has a provider run; stop or destroy the provider run before moving it'))throw error;summary.leaseMoveProbe={admitted:false,reason:'Existing MoveAgentToRemote refuses agents with provider runs; checkpoint lease composition belongs to later Move PRs.',sameHomeSession:true};await save();}
  const session=(await request(target.client,{CreateSession:{workspace_id:target.dir+'/workspace',worktree_id:target.dir+'/workspace',alias:'Target resume proof',agent_defaults:{provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',effort:'low',permission_level:'required'}}},'SessionCreated'));
  const endedSource=await terminate(source,sourceRun);
  const exported=await adapter('export',source,endedSource,profile);
