@@ -216,7 +216,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .optional_agent(request.agent_id.as_deref())
         }
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => {
-            LocalRequestMetadata::new("provider_account.copy", Interactive)
+            LocalRequestMetadata::new("provider_account.copy", Normal)
         }
         LocalDaemonRequest::SetProviderAccountCredential(request) => {
             LocalRequestMetadata::new("provider_account.credential.set", Interactive)
