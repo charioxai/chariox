@@ -103,7 +103,7 @@ test("actionability accepts a hit inside the target's own shadow tree", () => {
   const inner = { getRootNode: () => shadowRoot };
   const target = {
     isConnected: true,
-    scrollIntoView: () => {},
+    scrollIntoView: options => { assert.equal(options.block,"nearest");assert.equal(options.inline,"nearest"); },
     getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 30 }),
     matches: () => false,
     closest: () => null,

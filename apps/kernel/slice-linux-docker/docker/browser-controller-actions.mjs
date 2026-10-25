@@ -260,7 +260,7 @@ async function inspectActionability(connection, sessionId, objectId) {
 
 export function actionabilityFunction() {
   if (!this.isConnected) return { state: "detached" };
-  this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  this.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
   const ownerDocument = this.ownerDocument;
   const ownerWindow = ownerDocument.defaultView;
   const style = ownerWindow.getComputedStyle(this);
