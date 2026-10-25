@@ -217,3 +217,11 @@ test('MP-08/MP-10/MP-11 loss of previously measured field coverage withholds an 
  const raw=f.raw(1,f.now());f.source.offer({raw},0,raw.captured_ms);
  assert.equal(f.published.length,0);assert.equal(f.released(),1);
 });
+
+test('MP-08/MP-10/MP-11 startup verification failure closes its producer',async()=>{
+ const f=fixture();let closes=0;
+ f.source.startNative=async()=>{};f.source.verify=async()=>{throw Error('verification failed')};
+ f.source.close=async()=>{f.source.closed=true;closes++};
+ await assert.rejects(f.source.start(),/protected desktop source unavailable/);
+ assert(closes>0);assert(f.source.closed);
+});
