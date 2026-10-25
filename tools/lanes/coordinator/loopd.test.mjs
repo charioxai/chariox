@@ -27,7 +27,7 @@ async function rig(t) {
     git: async argv => { calls.push({ git: argv }); return sha + '\n'; },
     adapter: async (op, input) => {
       calls.push({ op, taskId: input.taskId, input });
-      if (op === 'launch') { launches.set(input.taskId, true); return { kernel: 'executor', taskId: input.taskId, sessionId: `room-${input.taskId}`, operationsSessionId: `ops-${input.taskId}`, agentId: `agent-${input.taskId}`, attachmentId: `att-${input.taskId}` }; }
+      if (op === 'launch') { launches.set(input.taskId, true); await writeFile(input.stateFile, JSON.stringify({ promptId: `prompt-${input.taskId}` })); return { kernel: 'executor', taskId: input.taskId, sessionId: `room-${input.taskId}`, operationsSessionId: `ops-${input.taskId}`, agentId: `agent-${input.taskId}`, attachmentId: `att-${input.taskId}` }; }
       if (op === 'status') return { state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, deadline: { mode: 'kernel', state: 'armed' } };
       if (op === 'fetch') return { 'ACCEPTANCE_UPDATE.json': { missing: true, reason: 'file_not_found' } };
       if (op === 'bundle') return { base: sha, head: 'b'.repeat(40), sha256: 'c'.repeat(64), path: `/bundles/${input.taskId}.bundle` };
@@ -267,6 +267,40 @@ test('a restored round whose resume fails keeps its lane: the queued round waits
   };
   await serve(r.options);
   assert.deepEqual(order, ['launch_error:alpha-r9', 'picked_up:alpha-r9', 'finished:alpha-r9', 'picked_up:alpha-r10', 'finished:alpha-r10']);
+});
+
+test('a restored round keeps its run, queue entry and lane after every retry fails; the queued round starts only after it ends', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r9');
+  r.script.push(async () => { r.controller.abort(); return []; });
+  await serve(r.options);
+  await r.drop('alpha', 'r10');
+  const again = new AbortController(); r.options.signal = again.signal;
+  const adapter = r.options.adapter;
+  let outage = true;
+  r.options.adapter = async (op, input) => { if (op === 'launch' && input.taskId === 'alpha-r9' && outage) throw Object.assign(new Error('kernel down'), { code: 'kernel_unreachable' }); return adapter(op, input); };
+  const order = [];
+  let failures = 0;
+  r.options.log = (kind, detail) => {
+    r.logs.push({ kind, ...detail });
+    if (['picked_up', 'finished', 'launch_failed'].includes(kind)) order.push(`${kind}:${detail.key}`);
+    // The outage outlasts the five retries and ends a few attempts later.
+    if (kind === 'launch_error' && ++failures === 8) outage = false;
+    if (kind === 'picked_up') { r.idle.add(detail.key); r.script.push(async () => [r.ev(detail.key, { type: 'agent', value: { state: 'idle' } })]); }
+    if (kind === 'finished' && detail.key === 'alpha-r10') again.abort();
+  };
+  r.options.sleep = async ms => {
+    r.clock.ms += ms;
+    if (failures === 6 && outage) {
+      const run = await runFile(r, 'alpha');
+      assert.equal(run.round, 'r9'); assert.equal(run.finishReason, undefined, 'the running round is not ended');
+      assert.equal(run.driverError.code, 'kernel_unreachable', 'the lane shows the loop as down, with the reason');
+      assert.deepEqual((await readdir(join(r.layout.queue, 'done'))), [], 'no entry leaves the queue');
+    }
+  };
+  await serve(r.options);
+  assert.deepEqual(order, ['picked_up:alpha-r9', 'finished:alpha-r9', 'picked_up:alpha-r10', 'finished:alpha-r10']);
+  assert.equal((await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r9.json'), 'utf8').then(JSON.parse)).finishReason, 'finished');
 });
 
 test('an entry that cannot launch is retried, then ends as launch_failed with its reason', async t => {

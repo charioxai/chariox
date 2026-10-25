@@ -128,6 +128,22 @@ export async function serve(options) {
     log('launch_failed', { key: entry.key, code: error.code });
   };
 
+  // The launch receipt shows a prompt (submitted, or sent and not yet confirmed) only once the worker has work to do.
+  const workerStarted = async entry => {
+    const receipt = await read(join(home, `${entry.key}.launch.json`)).catch(error => { if (error.code === 'ENOENT') return {}; throw error; });
+    return Boolean(receipt.promptId || receipt.pendingPrompt);
+  };
+
+  // A round whose worker may be running is never abandoned: its run, queue entry and lane stay as they are, the
+  // lane shows the loop as down with the reason, and the launch replay keeps going until the kernel answers. The kernel's
+  // armed deadline still stops the worker if that never happens.
+  const flag_down = async (entry, error) => {
+    const path = join(layout.agents, entry.lane, 'LOOP_RUN.json');
+    const run = await read(path);
+    run.driverError = { code: error.code || 'resume_failed', message: String(error.message).slice(0, 300), at_ms: now() };
+    await save(path, run);
+  };
+
   // A round that was launched and has not finished is still running, whichever service started it.
   const unfinished = async entry => {
     const run = await read(join(layout.agents, entry.lane, 'LOOP_RUN.json')).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
@@ -159,9 +175,11 @@ export async function serve(options) {
       } catch (error) {
         const count = (attempts.get(key)?.count ?? 0) + 1;
         attempts.set(key, { count, nextAtMs: now() + retryMs });
-        if (resumable.has(key)) held.add(entry.lane);
         log('launch_error', { key, count, code: error.code, message: error.message });
-        if (count >= LAUNCH_ATTEMPTS) await give_up(entry, error);
+        if (await workerStarted(entry)) {
+          held.add(entry.lane);
+          if (count >= LAUNCH_ATTEMPTS) await flag_down(entry, error);
+        } else if (count >= LAUNCH_ATTEMPTS) await give_up(entry, error);
       }
     }
   };
