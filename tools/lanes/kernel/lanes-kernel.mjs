@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // MP-08 / MP-09 / MP-10 / MP-11: the lasting dev lanes kernel (executor) and its access kernel (coordinator).
-// Usage: lanes-kernel.mjs setup|start|stop|status|grant|exec|env  (see docs/LANES_KERNEL.md)
+// Usage: lanes-kernel.mjs setup|start|stop|status|grant|exec|env|set-claude-credential  (see docs/LANES_KERNEL.md)
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer, connect } from 'node:net';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkSync, chmodSync, unlinkSync, copyFileSync, rmSync, renameSync, readdirSync } from 'node:fs';
@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { syncWorkerAgents } from './worker-agents.mjs';
+import { probeClaudeToken, readToken, replaceClaudeCredential } from './claude-account.mjs';
 
 const STATE = process.env.LANES_KERNEL_STATE || '/root/.chariox/dev/lanes-kernel';
 const config = JSON.parse(readFileSync(join(STATE, 'config.json'), 'utf8'));
@@ -177,7 +178,7 @@ async function ensureClaudeProfile() {
   const authStatus = async () => (await rpc('executor', { GetProviderAuthStatus: { provider: 'claude', account_profile: profile.profile_id } }));
   let auth = JSON.stringify(await authStatus());
   if (!/authenticated/.test(auth) || /unauthenticated/.test(auth)) {
-    await rpc('executor', { SetProviderAccountCredential: { provider: 'claude', account_profile: profile.profile_id, value: readText(config.claudeToken), overwrite: true } });
+    await replaceClaudeCredential({ rpc: request => rpc('executor', request), profileId: profile.profile_id, token: readToken(config.claudeToken) });
     auth = JSON.stringify(await authStatus());
   }
   writeFileSync(file('executor', 'claude-profile.id'), profile.profile_id);
@@ -185,6 +186,18 @@ async function ensureClaudeProfile() {
   const profileConfig = file('executor', `chariox/state/provider-accounts/local/claude/${profile.profile_id}/claude`);
   const agents = existsSync(profileConfig) ? syncWorkerAgents({ source: config.agentDefinitions || '/root/.claude/agents', target: profileConfig, names: config.workerAgents }) : { reason: 'profile config directory not found' };
   return { claudeProfile: profile.profile_id, agents, auth: (auth.match(/"(?:auth_)?(?:state|status)":"[a-z_]+"/g) || []).slice(0, 2) };
+}
+
+// Re-stores the running executor's lanes-claude credential in place (no kernel restart, no worker stopped). A Claude process takes the
+// credential when it is launched, so a worker already running keeps the one it started with until its process is relaunched.
+async function setClaudeCredential(fromFile) {
+  const profileFile = file('executor', 'claude-profile.id');
+  if (!existsSync(profileFile)) throw new Error('no lanes-claude profile yet: run start first');
+  if (!kernelPid('executor')) throw new Error('the executor kernel is not running; start it first');
+  const token = readToken(fromFile ?? config.claudeToken);
+  const auth = await replaceClaudeCredential({ rpc: request => rpc('executor', request), profileId: readText(profileFile), token });
+  const probe = await probeClaudeToken(token);
+  return { claudeProfile: readText(profileFile), auth, org: probe.org, probe: probe.usable ? 'usable' : probe.reason };
 }
 
 // Codex lanes run on the account the lanes already use. The product links that provider home in place
@@ -436,6 +449,10 @@ try {
     else if (action === 'stop') out(await stopLoopd());
     else { console.error('usage: lanes-kernel.mjs loopd install|start|stop'); process.exitCode = 2; }
   }
+  else if (command === 'set-claude-credential') {
+    if (rest.length && !(rest[0] === '--from' && rest[1] && rest.length === 2)) { console.error('usage: lanes-kernel.mjs set-claude-credential [--from <token-file>]'); process.exitCode = 2; }
+    else out(await setClaudeCredential(rest[1]));
+  }
   else if (command === 'grant') out(await grantAccess(rest[0]));
   else if (command === 'exec') {
     const seat = rest[0] === '--seat' ? (rest.shift(), rest.shift()) : undefined;
@@ -450,7 +467,7 @@ try {
     const env = roleEnv('coordinator');
     for (const key of ['CHARIOX_HOME', 'CHARIOX_DAEMON_SOCKET']) console.log(`${key}=${env[key]}`);
     console.log(`CHARIOX_BIN=${join(STATE, 'bin/chariox')}`, `CHARIOX_COORDINATOR_HOME=${join(STATE, 'loop')}`);
-  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant [seat]|loopd|exec [--seat coordinator]|env'); process.exitCode = 2; }
+  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant [seat]|loopd|exec [--seat coordinator]|env|set-claude-credential [--from file]'); process.exitCode = 2; }
 } catch (error) {
   console.error(JSON.stringify({ error: String(error.message).replace(/(?:Bearer\s+|token[=:]\s*)\S+/gi, '[redacted]').slice(0, 300) }));
   process.exitCode = 1;
