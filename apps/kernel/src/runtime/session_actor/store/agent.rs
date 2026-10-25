@@ -229,7 +229,10 @@ impl SessionRuntimeStore {
                 .provider
                 .unwrap_or_else(|| defaults.provider.clone()),
         )
-        .with_owner_user_id(caller_user_id);
+        .with_owner_user_id(
+            self.state
+                .room_member_user_id(&request.session_id, &caller_user_id),
+        );
         let create_request = match caller_metaagent_id.as_deref() {
             Some(metaagent_id) if !request.metaagent => create_request
                 .with_spawned_by_agent_id(metaagent_id)
@@ -388,6 +391,10 @@ impl SessionRuntimeStore {
                 }))
                 .await;
         }
+        // New agents belong to the room member the caller is.
+        let member_user_id = self
+            .state
+            .room_member_user_id(&request.session_id, &caller_user_id);
         if request.agents.is_empty() {
             let projection_action = self
                 .state
@@ -505,7 +512,7 @@ impl SessionRuntimeStore {
                 &request.session_id,
                 item.provider.unwrap_or_else(|| default_provider.clone()),
             )
-            .with_owner_user_id(caller_user_id.clone());
+            .with_owner_user_id(member_user_id.clone());
             if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
                 create_request = create_request
                     .with_spawned_by_agent_id(metaagent_id)

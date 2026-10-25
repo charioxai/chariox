@@ -84,6 +84,33 @@ async fn f4_legacy_agents_inner() {
             );
         }
 
+        if owner {
+            let spawn = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+                session_id: id.clone(),
+                alias: Some("spawned-by-owner".into()),
+                provider: Some("dev-stub".into()),
+                account_profile: None,
+                model: None,
+                effort: None,
+                execution_mode: None,
+                permission_level: None,
+                worktree_id: None,
+                kernel_ref: None,
+                slice_ref: None,
+                worktree_placement: None,
+                metaagent: false,
+            });
+            let Ok(LocalDaemonResponse::AgentSpawned { agent, .. }) = router
+                .dispatch(terminal_command(&spawn, Some(user)), spawn)
+                .await
+            else {
+                panic!("spawn as {user}");
+            };
+            // The room's own member owns what the owner makes there, so it is shown to the
+            // owner like the rest of the room's agents.
+            assert_eq!(agent.owner_user_id(), DEFAULT_LOCAL_USER_ID);
+        }
+
         for agent_id in &agent_ids {
             let requests = [
                 (
