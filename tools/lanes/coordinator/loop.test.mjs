@@ -482,7 +482,7 @@ test('steer waits for a collection in progress, then refuses a lane whose round 
   const waiting = coordinate('steer', ['lane', file], r.options);
   await new Promise(resolve => setTimeout(resolve, 400));
   assert.equal(r.calls.some(c => c.op === 'prompt' || c.op === 'steer'), false, 'nothing is admitted while the lane is being collected');
-  await coordinate('stop', ['lane'], r.options);
+  await coordinate('stop', ['lane'], { ...r.options, admissionLockHeld: true });
   await releaseLaneLock(lock);
   await assert.rejects(waiting, { code: 'lane_not_running' });
   assert.equal(r.calls.some(c => c.op === 'prompt' || c.op === 'steer'), false);

@@ -29,7 +29,7 @@ export function createRound(options) {
   const now = options.now || Date.now;
   const respond = options.respond || ((input) => execute([new URL('../lane-respond.mjs', import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const cli = options.cli || defaultCli;
-  const coordinator = (operation, args) => coordinate(operation, args, options);
+  const coordinator = (operation, args, admissionLockHeld = false) => coordinate(operation, args, admissionLockHeld ? { ...options, admissionLockHeld } : options);
   const adapter = options.adapter || (async (op, input) => execute([new URL(`../lane-${op}.mjs`, import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const home = options.home;
   const reconcileMs = options.reconcileMs ?? 5 * 60_000;
@@ -255,7 +255,7 @@ export function createRound(options) {
   // The worker is gone once its stop succeeds; a removal event that never arrives does not undo that or the collection.
   const stopLane = async lane => {
     try {
-      lane.run.stop = await coordinator('stop', [lane.entry.lane]);
+      lane.run.stop = await coordinator('stop', [lane.entry.lane], true);
       if (!lane.run.stop?.stopped) throw new LaneError('stop_not_confirmed', 'The kernel did not confirm the worker stopped; retain its lane.');
       // Stopping waits on the shared inbox; other lanes' events in those batches are handled here.
       await archived(lane.run.stop?.removal?.archives);

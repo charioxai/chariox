@@ -86,10 +86,10 @@ export async function coordinate(operation, args, options = {}) {
   const common = ids(record);
   // Delivery and launch share the lane lock. Reload before saving so another process's
   // renewed attachment or latest prompt cannot be replaced with an older receipt.
-  const reload = async () => {
+  const reload = async (running = true) => {
     record = await load();
     Object.assign(common, ids(record));
-    if (record.stopped) throw new LaneError('lane_not_running', `${lane} has been stopped; its round is over.`);
+    if (running && record.stopped) throw new LaneError('lane_not_running', `${lane} has been stopped; its round is over.`);
   };
   let attachmentRecovered = false;
   const renewedCommand = (id, attachment) => `reattach-${createHash('sha256').update(id).update(attachment).digest('hex')}`;
@@ -287,18 +287,23 @@ export async function coordinate(operation, args, options = {}) {
     await save(join(home, `${lane}.finish.json`), result); return result;
   }
   if (operation === 'stop') {
-    if (!record.stopped) {
-      // The room session target still reports the removal; only the agent-level one dies with the agent.
-      try { await dropAgentTarget(cli, record.launch); } catch (error) { record.targetCleanupError = error.code || 'unsubscribe_failed'; }
-    }
-    const result = record.stopped ? record.stop : await adapter('stop', common);
-    record.stopped = result.stopped === true; record.stop = result; await save(path, record);
-    if (!record.stopped || result.removal || result.workerLost) return result;
-    await openInbox(home, cli, options.settleMs);
-    await confirmRemoval({ home, cli, now, target: common, confirmed: async removal => {
-      record.stop = { ...result, removal }; await save(path, record);
-    } });
-    return record.stop;
+    const stop = async () => {
+      await reload(false);
+      if (!record.stopped) {
+        // The room session target still reports the removal; only the agent-level one dies with the agent.
+        try { await dropAgentTarget(cli, record.launch); } catch (error) { record.targetCleanupError = error.code || 'unsubscribe_failed'; }
+      }
+      const result = record.stopped ? record.stop : await adapter('stop', common);
+      record.stopped = result.stopped === true; record.stop = result; await save(path, record);
+      if (!record.stopped || result.removal || result.workerLost) return result;
+      await openInbox(home, cli, options.settleMs);
+      await confirmRemoval({ home, cli, now, target: common, confirmed: async removal => {
+        record.stop = { ...result, removal }; await save(path, record);
+      } });
+      return record.stop;
+    };
+    // The round engine already holds admission while collecting; CLI stops acquire it here.
+    return options.admissionLockHeld ? stop() : withLaneLock(home, lane, 'stop', stop);
   }
   throw new LaneError('unknown_operation');
 }
