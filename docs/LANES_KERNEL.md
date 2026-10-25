@@ -129,7 +129,7 @@ or one of those with `_collect_failed` (then `collectError` names the code; the 
 Handoff files the worker did not write are listed as `missing` and do not stop the collection of its commits.
 
 **What it does each wake** (15 s): waits on the one inbox; answers Claude permission decisions
-(`allow_once`, because Claude as root cannot run `yolo`; Codex runs `yolo`); delivers each new `## ` section of
+(`allow_session` when the kernel offers it for that call, i.e. from `c76466e0be`; else `allow_once`; Claude as root cannot run `yolo`, Codex does; critical, passkey and credential decisions stay with the owner); delivers each new `## ` section of
 `REVIEW_INBOX.md` once (a steer whose event the kernel could not record counts as delivered, never resent);
 reads a lane's status on its events, in its first minute, and every 5 minutes anyway (events can be missed);
 collects a lane that went idle (handoffs, verified bundle, extra bundles, final message, then the stop);

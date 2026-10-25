@@ -310,3 +310,20 @@ test('round: events consumed while another lane stops are handled even when its 
   assert.equal(r.calls.filter(c => c.op === 'respond' && c.input.interactionId === 'claude-permission-9').length, 1, 'the permission consumed during the stop is answered');
   assert.equal(beta.finishReason, 'finished', 'beta is read at once, not at its hard stop');
 });
+
+test('round: a routine permission is answered for the session when the kernel offers it, else once', async t => {
+  const r = await rig(t, ['alpha']);
+  const adapter = r.options.adapter;
+  const offered = { 'claude-permission-1': ['allow_once', 'allow_session', 'deny'], 'claude-permission-2': ['allow_once', 'deny'] };
+  r.options.adapter = async (op, input) => {
+    const status = await adapter(op, input);
+    return op === 'status' ? { ...status, interactions: Object.entries(offered).map(([id, choices]) => ({ id, kind: 'permission', title: 'Approve Claude Code Read?', choices })) } : status;
+  };
+  const pending = id => r.ev('alpha', { type: 'interaction', refs: { interaction_id: id }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } });
+  r.waits.push({ events: [pending('claude-permission-1'), pending('claude-permission-2')] });
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  r.idle.add('alpha');
+  const [run] = await runRound(r.spec, r.options);
+  assert.deepEqual(r.calls.filter(c => c.op === 'respond').map(c => [c.input.interactionId, c.input.choiceId]), [['claude-permission-1', 'allow_session'], ['claude-permission-2', 'allow_once']]);
+  assert.deepEqual(run.permissions.map(p => p.choice), ['allow_session', 'allow_once']);
+});

@@ -71,17 +71,26 @@ export function createRound(options) {
     return lane;
   };
 
+  // Routine permissions are answered for the session when the kernel offers that choice, so the worker is not asked again
+  // for the same kind of call. Events do not list the choices, so the lane's status is read for them.
+  const choiceFor = async (lane, id, offered) => {
+    try { offered ??= (await coordinator('lanehealth', [lane.entry.lane])).interactions?.find(item => item.id === id)?.choices; }
+    catch { /* the status is only a hint: a plain allow still resolves the decision */ }
+    return offered?.includes('allow_session') ? 'allow_session' : 'allow_once';
+  };
+
   // A reply that failed stays unresolved: the next read of the lane's status lists the decision again and it is retried.
-  const answer = async (lane, event) => {
+  const answer = async (lane, event, offered) => {
     const id = event.refs?.interaction_id;
     if (!id || lane.run.permissions.some(p => p.interactionId === id && p.choice)) return;
     if (!/^Approve Claude Code /.test(event.summary || '')) { if (!lane.run.unanswered.some(p => p.interactionId === id)) lane.run.unanswered.push({ interactionId: id, summary: event.summary }); return; }
     let entry = lane.run.permissions.find(p => p.interactionId === id);
     if (!entry) lane.run.permissions.push(entry = { interactionId: id, summary: event.summary, at_ms: now() });
     entry.attempts = (entry.attempts ?? 0) + 1;
+    const choiceId = await choiceFor(lane, id, offered);
     try {
-      await respond({ kernel: lane.run.launch.kernel, taskId: lane.entry.lane, sessionId: lane.run.launch.sessionId, interactionId: id, choiceId: 'allow_once' });
-      entry.choice = 'allow_once'; delete entry.error;
+      await respond({ kernel: lane.run.launch.kernel, taskId: lane.entry.lane, sessionId: lane.run.launch.sessionId, interactionId: id, choiceId });
+      entry.choice = choiceId; delete entry.error;
     } catch (error) {
       entry.error = error.code || 'respond_failed';
       lane.needsRead = true;
@@ -242,7 +251,7 @@ export function createRound(options) {
       let status;
       try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
-      for (const interaction of status.interactions || []) await answer(lane, { refs: { interaction_id: interaction.id }, summary: interaction.title });
+      for (const interaction of status.interactions || []) await answer(lane, { refs: { interaction_id: interaction.id }, summary: interaction.title }, interaction.choices ?? []);
       if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
     }
     for (const lane of pending()) if (lane.run.driverError) { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }

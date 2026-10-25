@@ -294,7 +294,7 @@ export async function run(operation, input, dependencies = {}) {
       deadline = coordinatorDeadline(deadlineMs);
     }
     const active = state.session.active_prompt;
-    return { agentId: agent(), state: activity?.status || (selected.is_processing ? 'working' : 'idle'), currentPrompt: activity?.active_turn?.prompt_id || (active?.target_agent_id === agent() ? active.id : null), lastActivityMs: selected.last_activity_at_ms, interactions: (state.session.active_interactions || []).filter(value => value.agent_id === agent()).map(value => ({ id: value.id, kind: value.kind, title: value.title })), deadline, capabilities: Array.isArray(capabilities) ? capabilities : [] };
+    return { agentId: agent(), state: activity?.status || (selected.is_processing ? 'working' : 'idle'), currentPrompt: activity?.active_turn?.prompt_id || (active?.target_agent_id === agent() ? active.id : null), lastActivityMs: selected.last_activity_at_ms, interactions: (state.session.active_interactions || []).filter(value => value.agent_id === agent()).map(value => ({ id: value.id, kind: value.kind, title: value.title, choices: (value.choices || []).map(choice => choice.id) })), deadline, capabilities: Array.isArray(capabilities) ? capabilities : [] };
   }
   if (operation === 'fetch') {
     const directory = resolve(text(input.directory, 'directory')); await mkdir(directory, { recursive: true });
