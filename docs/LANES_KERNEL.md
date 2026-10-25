@@ -121,7 +121,7 @@ The coordinator (a Claude or Codex session on the Mac, reaching b3 over one mult
 own holder, so its inbox is independent of loopd's. The Mac scripts in `tools/lanes/coordinator/mac/` wrap these:
 
 ```sh
-lanewait.sh [--minutes N] [--json] [--replay N]   # blocks; one line per event: HH:MM:SSZ lane round kind summary; exit 0 lines printed, 3 none
+lanewait.sh [MINUTES] [--json] | --replay N        # blocks; one line per event: HH:MM:SSZ lane round kind summary; exit 0 lines printed, 3 none
 deliver.sh <lane> <file|->                        # steers the running worker (or queues the next prompt), prints the kernel's answer, then appends to REVIEW_INBOX.md
 laneanswer.sh <lane> <decision-id> <choice>       # answers a decision lanewait listed
 ```
