@@ -140,3 +140,71 @@ async fn f4_legacy_agents_inner() {
         }
     }
 }
+
+// A decision bound to the room's `local` owner (an agent's blocked task) or to the enrolled
+// owner's Cloud identity is answered by the enrolled owner, and by nobody else.
+#[test]
+fn mp11_f4_enrolled_owner_answers_decisions_of_its_pre_enrollment_room() {
+    run_remote_authorization_large_stack_test("f4-legacy-decisions", f4_legacy_decisions_inner);
+}
+
+async fn f4_legacy_decisions_inner() {
+    let root = crate::test_support::TestWorktree::new("f4-legacy-decisions");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let id = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap()
+        .id()
+        .to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    for (decision_owner, user) in [
+        (DEFAULT_LOCAL_USER_ID, "stranger"),
+        (DEFAULT_LOCAL_USER_ID, "kernel-owner"),
+        ("kernel-owner", "stranger"),
+        ("kernel-owner", "kernel-owner"),
+    ] {
+        let answered_by_owner = user == "kernel-owner";
+        let interaction_id = format!("decision-{decision_owner}-{user}");
+        let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+            &interaction_id,
+            &interaction_id,
+            "Agent needs your action",
+            "blocked",
+            vec![
+                crate::session::RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                crate::session::RuntimeInteractionChoice::new("resume", "Resume", "resume", None),
+            ],
+        )
+        .with_timeout_sec(900);
+        let _pending = router
+            .runtime_state
+            .create_kernel_operation_interaction(&id, decision_owner, interaction)
+            .await
+            .unwrap();
+        let answer =
+            LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+                session_id: id.clone(),
+                interaction_id: interaction_id.clone(),
+                choice_id: "cancel".into(),
+                custom_reply: None,
+                passkey: None,
+                passkey_remember_minutes: None,
+            });
+        let mut command = terminal_command(&answer, Some(user));
+        command.command_id = interaction_id.clone();
+        let result = router.dispatch(command, answer).await;
+        assert_eq!(
+            result.is_ok(),
+            answered_by_owner,
+            "{user} answers a decision bound to {decision_owner}: {result:?}"
+        );
+    }
+}

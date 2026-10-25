@@ -84,7 +84,7 @@ impl KernelRuntimeOwnedState {
         match (interaction.agent_id(), kernel_operation_owner) {
             (Some(_), None) => {}
             (None, Some(owner)) if interaction.kernel_operation_id().is_some() => {
-                if !session.has_member(owner)
+                if !self.is_room_member(&session, owner)
                     || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
                     || interaction.default_on_timeout().is_some()
                     || interaction.custom_choice().is_some()
