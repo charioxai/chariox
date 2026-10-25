@@ -253,11 +253,12 @@ fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
         "45a04352534d9b7b4be90c5b523969d1af69784b156e8bf944f9756979425511"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        fixture["peer_protocol"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
+    assert_eq!(fixture["local_protocol"], 567);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 567);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 175)
+    };
+    assert_eq!(fixture["peer_protocol"], 175);
     for name in ["reset_header", "inherited_delta", "cleared_delta"] {
         let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
@@ -274,11 +275,12 @@ fn browser_mirror2_font_absent_567_shape_is_pinned() {
         "248665ac7b28d3058af24cd71301af88c0dfbf4516aada7cf49761dce11cd33e"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        fixture["peer_protocol"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
+    assert_eq!(fixture["local_protocol"], 567);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 567);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 175)
+    };
+    assert_eq!(fixture["peer_protocol"], 175);
     let subscribe: LocalDaemonRequest =
         serde_json::from_value(fixture["subscribe"].clone()).unwrap();
     assert_eq!(
@@ -301,11 +303,12 @@ fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
         "2ae7c2c3ecc71e30f77fcb2f710b307c175c48bd2701f01f0d3ed998e6d3d466"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        fixture["peer_protocol"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
+    assert_eq!(fixture["local_protocol"], 567);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 567);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 175)
+    };
+    assert_eq!(fixture["peer_protocol"], 175);
     let subscribe: LocalDaemonRequest =
         serde_json::from_value(fixture["subscribe"].clone()).unwrap();
     assert_eq!(

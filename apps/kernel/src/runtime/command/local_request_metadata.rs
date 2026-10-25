@@ -85,6 +85,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
             )
         }
+        LocalDaemonRequest::GetAgentUsageSnapshot(request) => {
+            LocalRequestMetadata::new("agent.usage_snapshot.get", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::BeginAppInstall(request) => {
             LocalRequestMetadata::new("app.install.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
@@ -774,6 +779,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
         LocalDaemonRequest::GetClientCatalogRevisions(_) => "client.catalog_revisions.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
+        LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
+        LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
         LocalDaemonRequest::ListProviderAccountProfiles(_) => "provider_account.list",
         LocalDaemonRequest::GetProviderAccountProfile(_) => "provider_account.get",
         LocalDaemonRequest::CreateProviderAccountProfile(_) => "provider_account.create",

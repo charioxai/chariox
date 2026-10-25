@@ -110,3 +110,4 @@ mod ssh_machine;
 mod waiting_room_workspace;
 
 mod room_pin;
+mod usage_snapshot;

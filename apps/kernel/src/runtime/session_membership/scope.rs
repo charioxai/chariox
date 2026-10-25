@@ -184,6 +184,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetAgentUsageSnapshot(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -683,6 +686,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetClientCatalogSnapshot(_)
         | LocalDaemonRequest::GetClientCatalogRevisions(_)
         | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+        | LocalDaemonRequest::GetProviderUsageSnapshot(_)
         | LocalDaemonRequest::ListProviderAccountProfiles(_)
         | LocalDaemonRequest::GetProviderAccountProfile(_)
         | LocalDaemonRequest::CreateProviderAccountProfile(_)

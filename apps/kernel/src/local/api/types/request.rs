@@ -148,6 +148,8 @@ pub enum LocalDaemonRequest {
     GetDaemonHealth(GetDaemonHealthRequest),
     GetKernelResourceTelemetry(GetKernelResourceTelemetryRequest),
     ExportDebugBundle(ExportDebugBundleRequest),
+    GetProviderUsageSnapshot(GetProviderUsageSnapshotRequest),
+    GetAgentUsageSnapshot(GetAgentUsageSnapshotRequest),
     GetProviderRun(GetProviderRunRequest),
     UpdateProviderRunSelection(UpdateProviderRunSelectionRequest),
     GetProviderCatalog(GetProviderCatalogRequest),

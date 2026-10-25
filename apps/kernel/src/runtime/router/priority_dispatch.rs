@@ -223,6 +223,11 @@ impl CommandRouter {
             LocalDaemonRequest::ExportDebugBundle(request) => {
                 boxed_handler(|| async move { execute_export_debug_bundle_request(request) })
             }
+            LocalDaemonRequest::GetAgentUsageSnapshot(request) => boxed_handler(|| async move {
+                let (_, kernels) = self.remote_relay_inventory_projection.snapshot();
+                self.runtime_state
+                    .agent_usage_snapshot_response(request, &kernels)
+            }),
             request @ (LocalDaemonRequest::GetProviderRun(_)
             | LocalDaemonRequest::UpdateProviderRunSelection(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
@@ -586,7 +591,8 @@ impl CommandRouter {
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
-            request @ (LocalDaemonRequest::ListProviderAccountProfiles(_)
+            request @ (LocalDaemonRequest::GetProviderUsageSnapshot(_)
+            | LocalDaemonRequest::ListProviderAccountProfiles(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::CreateProviderAccountProfile(_)
             | LocalDaemonRequest::LinkProviderAccountProfile(_)
