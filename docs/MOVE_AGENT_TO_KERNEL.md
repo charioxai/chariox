@@ -10,7 +10,7 @@ neither the feature nor an MP item is accepted by this document.
 The agent keeps its home kernel, Room, identity and history. Between turns, its
 provider execution moves to an authorized kernel or slice through the existing
 execution lease. The Prompt bar identifies both execution and home after the
-move commits; the route wording discrepancy below needs an explicit UI decision.
+move commits, in the prototype's existing `<execution> via <home>` order.
 Moving back uses the same operation, with the home kernel as destination.
 There is one agent and one prompt queue throughout; no copied conversation,
 replacement Room or archived original.
@@ -34,63 +34,98 @@ exact-blob review of unrelated source. Read with the [agent model plan](AGENT_MO
 
 The read-only UI specification is `webterm/os-prototype-spec` at
 `a697679c7a3189f83bc68161646b96c29c6440f8`, under
-`apps/web/prototypes/os-shell/` in the prototype checkout. Any missing menu
-action, picker contents or status copy described here is a **proposal**, not
-permission to change the prototype or ship UI. See the lane's `PROPOSALS.md`
-and PNG mock evidence. Reuse its existing controls and layout. Proposal files
-are outside git at
-`/root/.chariox/dev/browser-resume-20260930/agents/movekernel/PROPOSALS.md`;
-PNGs are under
-`/root/.codex/evidence/browser-resume-20260930/movekernel/r1/`
-(`01-move-entry.png`, `02-move-destination.png`,
-`03-move-route-prototype-order.png`, `04-move-route-brief-order.png`).
-These are a rendered copy of the prototype, not product acceptance evidence.
+`apps/web/prototypes/os-shell/` in the prototype checkout. Changed picker
+content or status meaning is a **proposal**, not permission to ship UI.
+The r1 Move dropdown is superseded: it invented a component. The r2 proposal
+changes only sample labels/status and destination rows in the existing Prompt kernel
+route picker. It adds no Move button, provider-menu or details-flyout action,
+custom popover or confirmation dialog. Selection requests a move of the focused
+agent, preserving home; it must not inherit the prototype's sample Room-kernel
+mutation.
 
-1. Open the agent's existing provider/options menu (its provider glyph, not
-   a new overflow button) and choose **Move to kernel…** (proposed action).
-   Also place the same row beside Archive/Delete in the existing agent details
-   flyout, so an expanded header does not hide the action. The pane stays in
-   its current Room and desk. The same operation is available through the real TUI's existing agent action surface; both clients
-   submit to the home kernel.
-2. In the proposed picker, choose a reachable, authorized kernel, or one of its
-   existing slices. Include the home kernel so moving back is discoverable.
-   Reuse existing kernel/slice rows and selection controls. Show the actual
-   kernel and slice labels, workspace destination, selected provider account,
-   and any missing requirement. Do not call kernels “local” and “remote”.
+The full menu inventory with files/selectors, capture index and proposal live
+outside git in `/root/.chariox/dev/browser-resume-20260930/agents/movekernel/`
+(`MENU_INVENTORY.md`, `PROPOSALS.md`). Evidence is under
+`/root/.codex/evidence/browser-resume-20260930/movekernel/r2/`:
+`01-move-entry.png`, `02-move-destination.png`, `03-move-route.png`, their
+`baseline-*` counterparts and `side-by-side-*` comparisons. Each scene is
+1440×900 at DPR1; comparisons place two scenes beside each other at native
+resolution. `content-only.diff`, `style-diff.txt` and `source-hashes.json`
+prove no CSS, class names, row markup, positioning code or component styles
+changed. These are design evidence from copies, not product acceptance.
+
+### MP-08 / MP-10 — component choice
+
+The route picker already draws three kernel choices using
+`openPromptConfigurationChoices` in `app.js`, selector
+`.provider-menu.agent-option-submenu.prompt-option-submenu`, with
+`.agent-option-choices > button.agent-option-choice > span` rows. Reuse this
+function and its exact rows, selection treatment, status glyph, automatic size
+and placement. Proposed slice labels name both slice and owning kernel in the
+same text span, for example `Review intake · b3`. The mock's green glyph is
+sample content, not proof of readiness; use actual destination status and kernel
+preflight in implementation.
+
+This adds the least because the route control exists, its list already contains
+kernels, and its committed display expresses execution via home. Pane provider
+menus configure providers; the Kernel App picker launches Apps. New Room's 15
+setup rows only show `Configure …` toasts and have no destination subpicker.
+The inventory also covers pane inline/collapsed menus, Prompt worktree/settings,
+sidebar nested flyouts, Room card ⋮ and footer settings, workflow/schema/endpoint
+pickers, System bar selectors and native file inputs.
+
+1. Focus the agent, then open the existing **Kernel** route control in the
+   Prompt bar (mock 01). It stays beside Worktree when provider settings
+   collapse. The pane stays in its Room and desk. The real TUI's existing agent
+   action surface submits the same home-kernel operation; its detailed key flow
+   remains an implementation acceptance requirement.
+2. Choose a reachable, authorized kernel or existing slice from that exact
+   picker (mock 02). Include home for returning and select only the committed
+   destination. Selecting a different row requests the move; selecting the
+   current row does nothing. Slice labels include their owning kernel as plain
+   text. No metadata column, badge, destination card or new dialog is proposed.
 3. Preflight checks the peer version, provider and native resume support,
    account identity, workspace destination, Project setup and granted MCP/skill
    packages. If the same authenticated account is absent, offer the existing
    account-transfer flow. A label match is insufficient. Transfer uses the
    product's Vault/profile path; the person and model never handle raw exports.
    A different account is a separate context handoff, not a successful move.
-4. Confirm the destination. If the agent is running, the existing bottom
-   status stripe shows proposed copy “Move to b3 after this turn” and a Cancel
-   action using the prototype's existing control. The current turn finishes
-   normally. Do not steer, interrupt, compact or restart it to accelerate a move.
+   Workspace/account details stay in existing configuration surfaces. Failures
+   use existing notice/history parts with a precise remedy; richer preflight UI
+   needs a separate proposal, not a wider route row.
+4. If the agent is running, record the pending operation at home and let the
+   current turn finish normally. Do not steer, interrupt, compact or restart it
+   to accelerate a move. Progress/cancellation content is **PROPOSAL: new
+   element**: mock 04 reuses the existing toast and route-choice row, with a
+   `Cancel move to b3` row while pending. The toast is a transition notice;
+   durable phases/outcomes stay in home-owned History and reappear on reconnect.
+   The Cancel row inherits the kernel row's green status glyph in this mock;
+   that semantic tradeoff is part of the approval, not a new icon design.
+   This content/meaning needs approval before implementation.
    New prompts and wakes remain ordered on home, behind the move boundary.
-5. At the boundary, the stripe shows preparation/progress using that same
+5. At the boundary, the proposed notice reports preparation using that same
    surface. The transcript remains readable. The Prompt bar continues to name
    the **committed** execution target until commit; progress never masquerades
    as the active route. The source provider is stopped and checkpointed, then
    the target verifies the worktree and native resume state before admission.
 6. Commit replaces the execution binding atomically. Keep the same pane,
    transcript, agent label, selection and Room. The recommended unchanged
-   prototype order is `b3 via Mac` (or `<slice> via Mac`), where Mac is home.
+   prototype order is `b3 via Mac` (or `Review intake · b3 via Mac`), where Mac is home.
    A home execution has no `via` suffix. One normal home-owned history event records the move and safe outcome; no
    synthetic user prompt is added. The next queued turn resumes the session on
    the target through the official provider adapter.
-7. To return, choose **Move to kernel…**, then the home kernel. Transfer the
+7. To return, open the same Prompt route picker and choose home. Transfer the
    current execution worktree and session state back; do not resume a stale
    pre-move checkpoint. If files at home changed independently, choose another
    destination directory or resolve that divergence before retrying. Successful
    return removes `via`; the Room and history never moved.
 
-**Route discrepancy:** the brief says “via <target>”, but the prototype
+**Route order:** the original feature brief says “via <target>”, but the prototype
 `focusedPromptConfiguration`/`promptConfigurationValue` and c#451
 `executionRouteView` use `<execution target> via <home>`. The recommendation
-is to preserve that existing order. A literal `Mac via b3` is an alternative
-proposal in the PNGs and question 1, not a silent renderer reversal. In either
-order, the same home and execution facts come from the committed kernel binding.
+is to preserve that order, as mock 03 shows. The r1 reversed-order alternative
+is withdrawn. Home/execution facts come from the committed kernel binding;
+the control never reverses the renderer's meaning.
 
 Cancel before commit releases only this move's staging and queue barrier. It
 restores source dispatch once source ownership is certain. Explicit account
@@ -339,7 +374,7 @@ only when the round is complete, per coordinator policy.
 | 2 | Reuse existing dirty/index/untracked/non-Git workspace transfer and atomic staging; add only proven missing move requirements and target divergence checks. Reuse existing Project setup. Independent of provider artifacts. | MK02: through real transfer/import, compare exact HEAD/index/files including binary, modes and relevant LFS/submodules on target and return. Base loses or rejects required content; after preserves it. Divergent destination and changing source refuse without mutation. |
 | 3 | Add quiescence/retirement guarantees missing from existing leases and persist the home move operation, queue barrier and restart reconciliation. Depends on the guarantees identified in PR1; no client orchestration. | MK03: request during real provider work, queue another prompt, partition source, replay old receipts and restart home at every boundary. Base cannot request the move or violates the new boundary; after there is exactly one executable generation, one next prompt and no stale completion. |
 | 4 | Compose staged native checkpoint/workspace import with existing account, MCP/skill and environment transfer. Add typed readiness and commit receipts. Depends on 1–3. | MK04: real account transfer plus granted tool/skill execution after move; base lacks session migration. After: same authenticated account, selected packages and native session work on target; changed grants, missing package, locked Vault, invalid archive and old peer reject before activation with no leaks/overwrites. |
-| 5 | Wire the approved prototype action/picker/status and existing route projection; implement equivalent real TUI action through the same API. Depends on approved proposal and 4. | MK05: record normal menu/key flow on real web and TUI, including running-turn wait, Cancel, disconnect/reconnect and return. Base has no move flow; after shows one pane/history and correct committed `via` on every client. |
+| 5 | Wire move semantics to the approved existing Prompt route picker and route projection; add only approved notice/cancellation content and equivalent real TUI action through the same API. Depends on approved proposal and 4. | MK05: record normal menu/key flow on real web and TUI, including running-turn wait, Cancel, disconnect/reconnect and return. Base has no move flow; after shows one pane/history and correct committed `via` on every client. |
 | 6 | Complete live failure, managed parity and lifecycle drills on the integrated head; fix any uncovered behavior in its owning module. Depends on 1–5; no new deployment/runtime path. | MK06–MK12 below: paired ordinary/managed outcomes, every shutdown trigger, realistic failures, security-anchor review and cleanup. No aggregate PASS from focused checks alone. |
 
 ### MP-10 — live acceptance cells
@@ -392,15 +427,14 @@ the plan, not live acceptance results.
 
 ## MP-08 / MP-10 — questions for Miguel
 
-1. **Entry and picker:** approve the proposed Move action in the existing
-   provider/options
-   menu, destination rows and bottom-stripe status, and confirm route order?
-   Recommendation: reuse those surfaces and the existing `b3 via Mac` order.
-   The brief's literal `Mac via b3` alternative is mocked separately; approve
-   the proposal before any visible implementation.
-2. **Workspace destination on return:** should a diverged old worktree be merged
-   automatically? Recommendation: preserve it and offer a fresh directory or
-   explicit resolution; snapshot each move and never sync in the background.
+1. **Route selection means move:** approve choosing another destination directly
+   in the existing Prompt Kernel picker, including slice rows with owning-kernel
+   text, without another Move action or confirmation dialog? Recommendation:
+   yes, preserve exact prototype rows and `b3 via Mac` order (r2 mocks 01–03).
+2. **Pending move content:** approve the separately labelled **PROPOSAL: new
+   element** in mock 04: existing toast for transitions, existing History for
+   durable phases and a plain `Cancel move to b3` route row? Recommendation:
+   reuse these parts; no custom progress popover or stripe is authorized.
 3. **Provider release scope:** if an official provider cannot relocate its native
    session, ship proven provider/interface pairs first? Recommendation: yes,
    with an explicit unsupported reason for the others and separate acceptance
