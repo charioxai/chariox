@@ -18,12 +18,14 @@ async function waitFor(check, timeout = 12000) {
 async function fixture(prefix) {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
   await mkdir(path.join(root, "bin"));
-  for (const name of ["slice-screen.sh", "browser-lifecycle.py", "browser-upload-store.py"]) {
+  for (const name of ["slice-screen.sh", "browser-lifecycle.py", "browser-upload-store.py", "room-desktop-environment.py"]) {
     await copyFile(new URL(`./${name}`, import.meta.url), path.join(root, name));
   }
-  const env = { ...process.env, PATH: `${root}/bin:${process.env.PATH}`, CHARIOX_SLICE_ROOT: root,
+  await mkdir(path.join(root, "private"));
+  await writeFile(path.join(root, "private/desktop-session-address"), `unix:path=${root}/bus`, { mode: 0o600 });
+  const env = { ...process.env, CHARIOX_SLICE_PRIVATE_ROOT: "", PATH: `${root}/bin:${process.env.PATH}`, CHARIOX_SLICE_ROOT: root,
     CHARIOX_SLICE_CHROME_PROFILE: `${root}/profile`, HOME: root, TMPDIR: root,
-    CHARIOX_BROWSER_LIFECYCLE_ROOT: `${root}/lifetimes`, PYTHONDONTWRITEBYTECODE: "1", NODE_BINARY: process.execPath };
+    CHARIOX_BROWSER_LIFECYCLE_ROOT: `${root}/lifetimes`, PYTHONDONTWRITEBYTECODE: "1", NODE_BINARY: process.execPath, CHARIOX_KERNEL_BROWSER_EXECUTABLE: `${root}/bin/chromium` };
   return { root, env };
 }
 
@@ -174,6 +176,33 @@ test("desktop stop completes teardown but keeps profile locks when browser retir
   } finally {
     unowned.kill("SIGKILL");
     await unownedExit;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("slice startup and URL forwarding use the configured kernel browser", { timeout: 15000 }, async () => {
+  const { root, env } = await fixture("slice-browser-executable-");
+  await fakeChromium(root, recordingBrowser);
+  const executable = path.join(root, "bin/chrome");
+  await writeFile(executable, `#!/usr/bin/env bash\nif [[ -f \"$CHARIOX_SLICE_ROOT/selected\" ]]; then exit 0; fi\nprintf 'pinned\\n' >> "$CHARIOX_SLICE_ROOT/selected"\nexec -a "$0" bash "$CHARIOX_SLICE_ROOT/fake-browser.sh" "$@"\n`, { mode: 0o755 });
+  await writeFile(path.join(root, "bin/pgrep"), `#!/bin/sh
+case "$*" in *Xvfb*) printf '123 Xvfb fixture\\n'; exit 0;; esac
+exec /usr/bin/pgrep "$@"
+`, { mode: 0o755 });
+  await writeFile(path.join(root, "bin/xdpyinfo"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await writeFile(path.join(root, "bin/timeout"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  env.CHARIOX_KERNEL_BROWSER_EXECUTABLE = executable;
+  const supervisor = spawn("bash", [path.join(root, "slice-screen.sh"), "supervise-browser"], { env, stdio: "ignore" });
+  const exited = once(supervisor, "exit");
+  try {
+    await waitFor(async () => { try { return (await readFile(path.join(root, "selected"), "utf8")).includes("pinned"); } catch { return false; } }, 3000);
+    const forwarded = spawnSync("bash", [path.join(root, "slice-screen.sh"), "open-url", "https://example.org/"], { env, timeout: 3000 });
+    assert.equal(forwarded.status, 0, "the running Chrome is recognized without starting another lifetime");
+    supervisor.kill("SIGTERM");
+    assert.equal((await exited)[0], 0);
+  } finally {
+    if (supervisor.exitCode === null) { supervisor.kill("SIGTERM"); await exited; }
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -17,6 +17,12 @@ NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
 VIEWER_BACKEND="${CHARIOX_SLICE_VIEWER_BACKEND:-selkies}"
 CHROME_URL="${CHARIOX_SLICE_CHROME_URL:-about:blank}"
 CHROME_PROFILE="${CHARIOX_SLICE_CHROME_PROFILE:-$HOME/.chariox/browser/chromium}"
+# The image installs the same verified browser as the host kernel. Dev runtimes
+# without that installation may still use their system Chromium.
+CHROME_EXECUTABLE="${CHARIOX_KERNEL_BROWSER_EXECUTABLE:-/usr/lib/chariox/browser/chrome}"
+if [[ ! -x "$CHROME_EXECUTABLE" && -z "${CHARIOX_KERNEL_BROWSER_EXECUTABLE:-}" ]]; then
+  CHROME_EXECUTABLE=chromium
+fi
 
 export DISPLAY="$DISPLAY_ID"
 
@@ -84,7 +90,7 @@ process_running() {
 chromium_running() {
   # The lifetime supervisor carries Chromium's argv after the browser exits.
   # Match the browser executable, never that retiring Python owner.
-  process_running "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE"
+  process_running "^(/[^[:space:]]*/)?(chromium|chrome)[[:space:]].*--user-data-dir=$CHROME_PROFILE"
 }
 
 stop_process_pattern() {
@@ -232,9 +238,9 @@ run_chromium() {
   local launch_mode="$1"
   shift
   local -a chrome_startup_target_args=()
-  local -a chrome_launcher=(nohup chromium)
+  local -a chrome_launcher=(nohup "$CHROME_EXECUTABLE")
   if [[ "$launch_mode" == owned ]]; then
-    chrome_launcher=(python3 "$ROOT/browser-lifecycle.py" start "$CHROME_PROFILE" "$LOGS/chromium-gui.log" chromium)
+    chrome_launcher=(python3 "$ROOT/browser-lifecycle.py" start "$CHROME_PROFILE" "$LOGS/chromium-gui.log" "$CHROME_EXECUTABLE")
     # Wait for the previous owned child tree to retire before replacing it.
     # Start refuses a profile whose previous lifetime is not proven retired.
     python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >>"$LOGS/chromium-gui.log" 2>&1 \
@@ -461,7 +467,7 @@ PYTHON
     require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
     require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
   fi
-  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?(chromium|chrome)[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   # MP-08 / MP-11: Xorg/desktop clients may install Mode_switch on code8.
   # Prepare one inert text slot after startup, before publishing readiness.
   CHARIOX_OWNED_VIRTUAL_DISPLAY=1 /usr/bin/python3 "$ROOT/slice-keyboard.py" prepare-owned-keymap
@@ -548,7 +554,7 @@ screenshot() {
 
 focus_chromium() {
   local window
-  window="$(run_xdotool search --onlyvisible --class chromium 2>/dev/null | tail -n 1 || true)"
+  window="$(run_xdotool search --onlyvisible --class "(chromium|google-chrome|chrome)" 2>/dev/null | tail -n 1 || true)"
   if [[ -n "$window" ]]; then
     run_xdotool windowactivate --sync "$window" >/dev/null 2>&1 || true
     run_xdotool windowfocus --sync "$window" >/dev/null 2>&1 || true
@@ -934,7 +940,7 @@ open_url() {
   fi
   launch_chromium "$1"
   sleep 2
-  require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  require_process "^(/[^[:space:]]*/)?(chromium|chrome)[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   focus_chromium
 }
 

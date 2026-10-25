@@ -172,6 +172,14 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
+# Use the product browser pin for the Room startup window too, so the kernel
+# never adopts the older Debian browser over CDP on amd64.
+ARG TARGETARCH
+COPY deploy/local-linux/kernel-browser-chromium.lock.json /opt/chariox-browser.lock.json
+COPY apps/kernel/slice-linux-docker/docker/install-pinned-browser.py /opt/chariox-install-browser.py
+RUN if [ "$TARGETARCH" = amd64 ]; then python3 /opt/chariox-install-browser.py /opt/chariox-browser.lock.json /usr/lib/chariox/browser; fi \
+  && rm /opt/chariox-install-browser.py /opt/chariox-browser.lock.json
+
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
 # before the provider starts. Slice launches select the supported Bubblewrap
