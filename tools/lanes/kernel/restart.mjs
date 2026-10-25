@@ -1,6 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11: preserve every admitted round across the coordinator's planned restart.
 import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 
 export async function runningRounds(agents) {
@@ -20,6 +20,12 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
   const account = await preflight();
   await stopLoopd();
   const before = await runningRounds(agents);
+  const workers = new Map();
+  for (const run of before) {
+    const worker = await inspect(run);
+    if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${run.key} has no healthy worker or permission level`);
+    workers.set(run.key, worker);
+  }
   await writeFile(join(state, 'restart-rounds.json'), JSON.stringify(before.map(({ path, key, round, launch, launchedAtMs }) => ({ path, key, round, launch, launchedAtMs }))), { mode: 0o600 });
   await writeFile(join(state, 'kernel-environment.json'), JSON.stringify({ IS_SANDBOX: '1' }) + '\n', { mode: 0o600 });
   const logPath = join(state, 'loopd.log');
@@ -32,13 +38,18 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
     const lines = (await readFile(logPath, 'utf8')).slice(previousLog.length).trim().split('\n');
     const pickedUp = new Set(lines.flatMap(line => { try { const e = JSON.parse(line); return e.kind === 'picked_up' ? [e.key] : []; } catch { return []; } }));
     for (const [key, old] of pending) {
-      const run = await read(old.path);
+      let run = await read(old.path);
+      if (run.key !== key || run.round !== old.round) {
+        run = await read(join(dirname(old.path), `LOOP_RUN.${old.round}.json`)).catch(() => { throw new Error(`round identity changed: ${key}; its archive is missing`); });
+      }
       if (run.key !== key || run.round !== old.round || run.launchedAtMs !== old.launchedAtMs || JSON.stringify(run.launch) !== JSON.stringify(old.launch)) throw new Error(`round identity changed: ${key}; inspect restart-rounds.json`);
       if (run.driverError) throw new Error(`round ${key} failed to resume: ${run.driverError.code}`);
       if (!pickedUp.has(key)) continue;
-      const worker = await inspect(run);
+      if (run.finishedAtMs && run.finishReason !== 'finished') throw new Error(`round ${key} ended during restart: ${run.finishReason}`);
+      const worker = run.finishedAtMs ? workers.get(key) : await inspect(run);
       if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${key} has no healthy worker or permission level`);
-      report(`${key} provider=${worker.provider} permission=${worker.permission} account=${worker.provider === 'claude' ? account : 'n/a'} resumed=true`);
+      if (worker.provider !== workers.get(key).provider || worker.permission !== workers.get(key).permission) throw new Error(`worker launch selection changed: ${key}`);
+      report(`${key} provider=${worker.provider} permission=${worker.permission} account=${worker.provider === 'claude' ? account : 'n/a'} resumed=true${run.finishedAtMs ? ' completed=true' : ''}`);
       pending.delete(key);
     }
     if (pending.size) await sleep(500);

@@ -53,3 +53,18 @@ test('a replacement agent or a missing permission level fails verification', asy
     await assert.rejects(restartWithSandbox(r.options), /identity changed|no healthy worker|restore_failed/);
   }
 });
+
+test('a carried round that finishes before verification is confirmed from its archive', async t => {
+  const r = await rig(t); const start = r.options.start;
+  r.options.start = async () => {
+    await start();
+    await writeFile(join(r.options.agents, 'alpha', 'LOOP_RUN.r1.json'), JSON.stringify({ ...r.run, finishReason: 'finished', finishedAtMs: 456 }));
+    await writeFile(r.path, JSON.stringify({ ...r.run, key: 'alpha-r2', round: 'r2', launchedAtMs: 789 }));
+  };
+  r.options.inspect = async run => {
+    if (run.finishedAtMs) throw new Error('the completed worker has already been removed');
+    return { provider: 'claude', permission: 'required', state: 'working' };
+  };
+  assert.deepEqual((await restartWithSandbox(r.options)).resumed, ['alpha-r1']);
+  assert.match(r.lines[0], /completed=true/);
+});
