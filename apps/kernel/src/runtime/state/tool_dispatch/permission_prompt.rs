@@ -17,7 +17,9 @@ use crate::session::{
 use crate::transport::runtime_tools::{PermissionPromptArgs, RuntimeToolResult};
 use std::path::PathBuf;
 
-use super::super::claude_permission_rules::{allow_for_session, session_grant, SessionGrant};
+use super::super::claude_permission_rules::{
+    allow_for_session, session_grant, GrantScope, SessionGrant,
+};
 
 const OPERATION: &str = "runtime_tool_permission_prompt";
 const PERMISSION_PROMPT_TIMEOUT_SEC: u64 = 300;
@@ -60,6 +62,32 @@ impl KernelRuntimeState {
                 })?;
         let working_directory = provider_run.working_directory().map(PathBuf::as_path);
         let grant = session_grant(&args.tool_name, &args.input, working_directory);
+        let scope = GrantScope {
+            working_directory: provider_run.working_directory().cloned(),
+            permission_level: provider_run.permission_level(),
+            execution_mode: provider_run.execution_mode(),
+        };
+        // A new Claude process (after a cancel, a restart or a change of model) has none of the
+        // rules the person granted earlier in this agent's session. A call they already cover is
+        // allowed at once and the process gets the rules again.
+        if let Some(standing) = grant.as_ref().and_then(|wanted| {
+            self.claude_session_grants
+                .covering(agent_id, &scope, wanted)
+        }) {
+            crate::logging::info_with_fields(
+                "runtime.permission_prompt",
+                "Claude permission prompt covered by the session grant",
+                serde_json::json!({
+                    "provider_run_id": provider_run.id(),
+                    "tool_name": args.tool_name,
+                    "rules": standing.allow_rules(),
+                }),
+            );
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: allow_for_session(args.input.clone(), &standing),
+            });
+        }
         let interaction = claude_permission_prompt_interaction(
             provider_run.id(),
             agent_id,
@@ -80,7 +108,14 @@ impl KernelRuntimeState {
             )
             .await;
         let payload = match resolution {
-            Ok(resolution) => claude_permission_prompt_decision(&resolution, &args, grant.as_ref()),
+            Ok(resolution) => {
+                if let (Some("allow_session"), Some(grant)) =
+                    (resolution.choice_id.as_deref(), grant.as_ref())
+                {
+                    self.claude_session_grants.remember(agent_id, scope, grant);
+                }
+                claude_permission_prompt_decision(&resolution, &args, grant.as_ref())
+            }
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "runtime.permission_prompt",

@@ -895,3 +895,138 @@ async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rul
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn an_allow_for_session_grant_outlives_the_claude_process() {
+    let (router, session, root) = claude_print_fixture();
+    let call_now = |id: &'static str, tool: &'static str, input: Value| {
+        let router = router.clone();
+        let session_id = session.id().to_string();
+        async move {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                rpc(
+                    &router,
+                    CLAUDE_TOKEN,
+                    "tools/call",
+                    serde_json::json!({
+                        "name": "chariox.permission_prompt",
+                        "arguments": {"tool_name": tool, "input": input, "tool_use_id": id}
+                    }),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{id} should be answered without a prompt: {:?}",
+                    active_interactions(&router, &session_id)
+                        .iter()
+                        .map(|interaction| interaction.id().to_string())
+                        .collect::<Vec<_>>()
+                )
+            });
+            decision(&response)
+        }
+    };
+
+    // Turn 1 of the first Claude process: the person grants `cargo test` and the work directory.
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_first",
+        "Bash",
+        serde_json::json!({"command": "cd /work/app && cargo test 2>&1 | tail -5"}),
+    )
+    .await;
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+        .await
+        .expect("allow_session should resolve");
+    decision(&call.await.expect("first prompt should join"));
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_first_write",
+        "Write",
+        serde_json::json!({"file_path": "/work/app/a.rs", "content": "x"}),
+    )
+    .await;
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+        .await
+        .expect("allow_session should resolve");
+    decision(&call.await.expect("first write should join"));
+
+    // Claude was cancelled, restarted or replaced: the new process asks about the same kind of
+    // call. The kernel answers at once and gives the new process every rule again.
+    let again = call_now(
+        "toolu_second",
+        "Bash",
+        serde_json::json!({"command": "cd /work/app/src && cargo test -p other"}),
+    )
+    .await;
+    assert_eq!(again["behavior"], "allow");
+    let additions = again["updatedPermissions"].as_array().expect("additions");
+    let rules: Vec<&Value> = additions
+        .iter()
+        .filter(|addition| addition["behavior"] == "allow")
+        .flat_map(|addition| addition["rules"].as_array().expect("rules"))
+        .collect();
+    assert_eq!(
+        rules,
+        [
+            &serde_json::json!({"toolName": "Bash", "ruleContent": "cargo test:*"}),
+            &serde_json::json!({"toolName": "Edit", "ruleContent": "//work/app/**"}),
+        ]
+    );
+    assert!(additions
+        .iter()
+        .all(|addition| addition["destination"] == "session"));
+    assert_eq!(
+        call_now(
+            "toolu_second_write",
+            "Edit",
+            serde_json::json!({"file_path": "/work/app/src/b.rs", "old_string": "a", "new_string": "b"}),
+        )
+        .await["behavior"],
+        "allow"
+    );
+    assert!(active_interactions(&router, session.id()).is_empty());
+
+    // What the person did not grant still asks: another command, a credential file.
+    for (id, tool, input) in [
+        (
+            "toolu_push",
+            "Bash",
+            serde_json::json!({"command": "cargo test && git push"}),
+        ),
+        (
+            "toolu_check",
+            "Bash",
+            serde_json::json!({"command": "cargo check"}),
+        ),
+        (
+            "toolu_env",
+            "Write",
+            serde_json::json!({"file_path": "/work/app/.env", "content": "x"}),
+        ),
+    ] {
+        let (call, interaction) =
+            start_tool_prompt(&router, CLAUDE_TOKEN, session.id(), id, tool, input).await;
+        router
+            .runtime_state()
+            .resolve_runtime_interaction(session.id(), interaction.id(), "deny", None)
+            .await
+            .expect("deny should resolve");
+        assert_eq!(
+            decision(&call.await.expect("prompt joins"))["behavior"],
+            "deny",
+            "{id}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}

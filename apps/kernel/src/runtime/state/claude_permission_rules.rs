@@ -3,12 +3,15 @@
 //! Claude's `--permission-prompt-tool` input carries no suggestions, so the kernel states the
 //! rules itself, as narrow as the call allows, and shows the person the exact rule text on the
 //! button. The answer carries those rules with the `session` destination, so Claude writes no
-//! settings file and keeps them for its own process only. When no safe rule can be stated the
-//! prompt offers no session choice.
+//! settings file; the kernel keeps them for the agent (see `standing`) and hands them to each new
+//! Claude process. When no safe rule can be stated the prompt offers no session choice.
 
 mod bash;
 mod edit;
 mod shell;
+mod standing;
+
+pub(crate) use standing::{GrantScope, StandingGrants};
 
 use std::path::Path;
 
@@ -35,6 +38,10 @@ impl SessionGrant {
             .and_then(|(tool, rest)| Some((tool, rest.strip_suffix(')')?)))
             .expect("a grant rule is written as Tool(content)");
         json!({ "toolName": tool, "ruleContent": content })
+    }
+
+    pub(crate) fn allow_rules(&self) -> &[String] {
+        &self.allow
     }
 
     /// The button text: the exact allow rules. A terminal strip does not wrap a button, so a list
@@ -117,7 +124,7 @@ pub(crate) fn session_grant(
     }
 }
 
-/// The allow answer that also remembers `grant` for this Claude run only.
+/// The allow answer that also gives the Claude process `grant` as session rules.
 pub(crate) fn allow_for_session(input: Value, grant: &SessionGrant) -> Value {
     json!({
         "behavior": "allow",
