@@ -68,3 +68,22 @@ test('a carried round that finishes before verification is confirmed from its ar
   assert.deepEqual((await restartWithSandbox(r.options)).resumed, ['alpha-r1']);
   assert.match(r.lines[0], /completed=true/);
 });
+
+for (const failure of ['inspection', 'snapshot']) test(`failed ${failure} restores the running loopd before any kernel stop`, async t => {
+  const r = await rig(t);
+  r.options.stopLoopd = async () => { r.calls.push('stopLoopd'); return { stopped: true }; };
+  r.options.startLoopd = async () => r.calls.push('startLoopd');
+  if (failure === 'inspection') r.options.inspect = async () => { throw new Error('inspection failed'); };
+  else await mkdir(join(r.state, 'restart-rounds.json'));
+  await assert.rejects(restartWithSandbox(r.options), /inspection failed|EISDIR/);
+  assert.deepEqual(r.calls, ['stopLoopd', 'startLoopd']);
+});
+
+test('a failed precheck leaves an already stopped loopd stopped', async t => {
+  const r = await rig(t);
+  r.options.stopLoopd = async () => ({ stopped: false });
+  r.options.startLoopd = async () => r.calls.push('startLoopd');
+  r.options.inspect = async () => { throw new Error('inspection failed'); };
+  await assert.rejects(restartWithSandbox(r.options), /inspection failed/);
+  assert.deepEqual(r.calls, []);
+});

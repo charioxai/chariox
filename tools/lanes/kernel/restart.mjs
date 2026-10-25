@@ -14,13 +14,16 @@ export async function runningRounds(agents) {
   return rounds;
 }
 
-export async function restartWithSandbox({ state, agents, preflight, stopLoopd, stop, start, inspect, report = console.log,
+export async function restartWithSandbox({ state, agents, preflight, stopLoopd, startLoopd, stop, start, inspect, report = console.log,
   now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 120_000 }) {
   // Resolve prerequisites before interrupting any service. stopLoopd finishes its current step before the snapshot.
   const account = await preflight();
-  await stopLoopd();
-  const before = await runningRounds(agents);
+  const loopd = await stopLoopd();
+  let before, previousLog;
   const workers = new Map();
+  const logPath = join(state, 'loopd.log');
+  try {
+  before = await runningRounds(agents);
   for (const run of before) {
     const worker = await inspect(run);
     if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${run.key} has no healthy worker or permission level`);
@@ -28,8 +31,15 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
   }
   await writeFile(join(state, 'restart-rounds.json'), JSON.stringify(before.map(({ path, key, round, launch, launchedAtMs }) => ({ path, key, round, launch, launchedAtMs }))), { mode: 0o600 });
   await writeFile(join(state, 'kernel-environment.json'), JSON.stringify({ IS_SANDBOX: '1' }) + '\n', { mode: 0o600 });
-  const logPath = join(state, 'loopd.log');
-  const previousLog = await readFile(logPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+  previousLog = await readFile(logPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+  } catch (error) {
+    if (loopd?.stopped) {
+      try { await startLoopd(); } catch (restore) {
+        throw new Error(`restart precheck failed: ${error.message}; loopd restore failed: ${restore.message}`, { cause: error });
+      }
+    }
+    throw new Error(`restart precheck failed: ${error.message}; kernels were not restarted; loopd ${loopd?.stopped ? "restored" : "left as it was"}`, { cause: error });
+  }
   await stop();
   await start();
   const deadline = now() + timeoutMs;

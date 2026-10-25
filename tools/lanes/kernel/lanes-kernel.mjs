@@ -473,7 +473,7 @@ try {
         if (!named) throw new Error('active Claude account name could not be resolved; no restart performed');
         return `${named.split(' ')[0].replace('oauth-token.', '')}(org=…${org})`;
       },
-      stopLoopd, stop: stopLanes, start: startLanes,
+      stopLoopd, startLoopd, stop: stopLanes, start: startLanes,
       inspect: async run => {
         const response = await rpc('executor', { GetSessionState: { session_id: run.launch.sessionId } });
         const session = response.SessionState.session;
