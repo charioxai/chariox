@@ -219,6 +219,12 @@ pub struct ListProjectsRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetRoomPinnedRequest {
+    pub session_id: String,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetProjectPinnedRequest {
     pub project_id: String,
     pub pinned: bool,

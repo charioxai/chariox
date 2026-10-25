@@ -19,6 +19,9 @@ pub(super) async fn resolve_session_lane_key(
         | LocalDaemonRequest::ArchiveProject(_)
         | LocalDaemonRequest::DeleteProject(_)
         | LocalDaemonRequest::RestoreProject(_) => Ok(SESSION_CREATE_LANE_ID.to_string()),
+        LocalDaemonRequest::SetRoomPinned(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::AttachToSession(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

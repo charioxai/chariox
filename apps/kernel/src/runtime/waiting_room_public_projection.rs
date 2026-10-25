@@ -902,6 +902,7 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 .or_insert_with(|| cached_worktree_label(&worktree_id, &workspace_id))
                 .clone();
             WaitingRoomPublicSessionSummary {
+                pinned: session.pinned(),
                 repository_state: Some(workspace_repository_state(&workspace_id)),
                 id: session.id().to_string(),
                 project_id: session.project_id().to_string(),

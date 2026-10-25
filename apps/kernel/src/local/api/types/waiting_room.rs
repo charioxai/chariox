@@ -88,6 +88,8 @@ pub struct WaitingRoomPublicSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomPublicSessionSummary {
+    #[serde(default)]
+    pub pinned: bool,
     pub id: String,
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

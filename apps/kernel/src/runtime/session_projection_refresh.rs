@@ -129,7 +129,8 @@ impl SessionProjectionRefresh {
 
 pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjectionRefresh {
     match request {
-        LocalDaemonRequest::AttachToSession(_)
+        LocalDaemonRequest::SetRoomPinned(_)
+        | LocalDaemonRequest::AttachToSession(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::FocusAgent(_)
         | LocalDaemonRequest::AcknowledgeAgentOutputSeen(_)
@@ -237,7 +238,8 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
     match response {
         LocalDaemonResponse::ProjectArchived { sessions, .. }
         | LocalDaemonResponse::ProjectRestored { sessions, .. } => sessions.clone(),
-        LocalDaemonResponse::SessionCreated { session, .. }
+        LocalDaemonResponse::RoomPinned { session }
+        | LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session, .. }
         | LocalDaemonResponse::InteractionResponded { session, .. }

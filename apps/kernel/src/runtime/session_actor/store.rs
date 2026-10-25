@@ -628,6 +628,29 @@ impl SessionRuntimeStore {
         (Ok(LocalDaemonResponse::ProjectsListed { projects }), None)
     }
 
+    pub(super) async fn set_room_pinned(
+        &self,
+        request: crate::local::SetRoomPinnedRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        match self
+            .state
+            .set_room_pinned(&request.session_id, request.pinned, &caller_user_id)
+            .await
+        {
+            Ok(session) => (
+                Ok(LocalDaemonResponse::RoomPinned {
+                    session: session.clone(),
+                }),
+                Some(SessionProjectionAction::Update(session)),
+            ),
+            Err(error) => (Err(error), None),
+        }
+    }
+
     pub(super) async fn set_project_pinned(
         &self,
         request: crate::local::SetProjectPinnedRequest,

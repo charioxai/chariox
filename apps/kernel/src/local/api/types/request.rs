@@ -94,6 +94,7 @@ pub enum LocalDaemonRequest {
     GetProjectEnvironmentManifest(GetProjectEnvironmentManifestRequest),
     AdjustProjectEnvironment(AdjustProjectEnvironmentRequest),
     SetProjectPinned(SetProjectPinnedRequest),
+    SetRoomPinned(SetRoomPinnedRequest),
     RenameProject(RenameProjectRequest),
     UpdateProjectWorkspaces(UpdateProjectWorkspacesRequest),
     ArchiveProject(ArchiveProjectRequest),
