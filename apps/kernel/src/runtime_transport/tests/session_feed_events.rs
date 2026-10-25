@@ -45,7 +45,7 @@ impl Watched {
                 crate::attachment::ClientCapabilityLevel::MessageTransport,
             ))
             .unwrap();
-        let agent_id = crate::app::KernelSessionReadService::new(&mut app)
+        let agent_id = crate::app::KernelSessionReadService::new(&app)
             .session_snapshot(session.id())
             .unwrap()
             .agents()[0]
