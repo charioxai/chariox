@@ -85,6 +85,28 @@ test("concurrent reads share fully initialized target sessions", async () => {
   assert.equal(connection.calls.filter(call => call.method === "Page.enable").length, 1);
 });
 
+test("MP-08/MP-10/MP-11 concurrent cold page reads retain the same document", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const firstFocus = Promise.withResolvers(), secondFocus = Promise.withResolvers();
+  let reads = 0;
+  browser.readFocus = async () => { await (++reads === 1 ? firstFocus.promise : secondFocus.promise); return true; };
+  await browser.ensureConnection();
+  const first = browser.inspectPage(connection, { targetId: "target-a", attached: false }, {});
+  const second = browser.inspectPage(connection, { targetId: "target-a", attached: true }, {});
+  // Attach rejection observers immediately: the second cold read used to be
+  // retired when the first read populated the very same document's cache.
+  const results = Promise.allSettled([first, second]);
+  try {
+    for (let n = 0; n < 20; n++) await new Promise(setImmediate);
+    firstFocus.resolve(); await first;
+    secondFocus.resolve();
+    const completed = await results;
+    assert.deepEqual(completed.map(result => result.status), ["fulfilled", "fulfilled"]);
+    assert.equal(completed[0].value.document_id, completed[1].value.document_id);
+  } finally { firstFocus.resolve(); secondFocus.resolve(); await results; await browser.close(); }
+});
+
 test("persistent browser connection returns page identities, focus, and applied viewport", async () => {
   const connection = new FakeConnection();
   let connectionCount = 0;

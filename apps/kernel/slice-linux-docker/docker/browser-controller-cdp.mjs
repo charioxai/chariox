@@ -128,6 +128,7 @@ export class BrowserCdpClient {
     this.downloadDiskCheckRequested = false;
     this.documentIdsByTarget = new Map();
     this.pageFramesByTarget = new Map();
+    this.pageInspections = new Map();
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.protectedValues = new Set();
@@ -466,7 +467,21 @@ export class BrowserCdpClient {
   }
 
 
-  async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
+  inspectPage(connection, target, metrics, options = {}) {
+    // Independent readers of a cold page must share its observation. Otherwise
+    // one reader installs the same document and retires the other reader's fence.
+    const key = JSON.stringify([target.targetId, target.url, target.title, target.openerId, metrics, options.visibleTargetId]);
+    const current = this.pageInspections.get(key);
+    if (current?.connection === connection) return current.promise;
+    const inspection = { connection, promise: null };
+    inspection.promise = this.inspectPageOnce(connection, target, metrics, options).finally(() => {
+      if (this.pageInspections.get(key) === inspection) this.pageInspections.delete(key);
+    });
+    this.pageInspections.set(key, inspection);
+    return inspection.promise;
+  }
+
+  async inspectPageOnce(connection, target, metrics, {visibleTargetId} = {}) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
     // Metrics differ per target (App pages lay out beside their panel).
     // Reapply only when this target's metrics changed.
