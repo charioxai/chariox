@@ -476,6 +476,10 @@ impl KernelRuntimeState {
         if sender.id() == target.id() {
             return Err(ledger::error("self-trigger message denied"));
         }
+        // Refuse here, while the sender can still react: a message the peer's account cannot
+        // start would otherwise stay durable and pending behind the sender's goal.
+        self.owned
+            .require_agent_account_authenticated(&target, None, "send agent message")?;
         // Room admission precedes resource lookup; no cross-room discovery.
         let id = args
             .idempotency_key
