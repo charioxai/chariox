@@ -228,7 +228,7 @@ impl RequiredNativeSession {
         }
         if let Some(binding) = &self.checkpoint {
             self.validate_configuration(run.model(), run.variant(), binding)?;
-            codex::verify_required_account(client, run.account_profile(), binding)?;
+            codex::verify_required_checkpoint(client, run, binding)?;
         }
         Ok(())
     }
@@ -242,6 +242,11 @@ impl RequiredNativeSession {
         if binding.provider != self.provider || binding.session_id != self.session_id {
             return Err(NativeCheckpointFailure::InvalidArtifact);
         }
+        for hash in [&binding.account_sha256, &binding.artifact_sha256] {
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(NativeCheckpointFailure::InvalidArtifact);
+            }
+        }
         codex::supported_version(&binding.cli_version)?;
         supported_os(&binding.source_os)?;
         let model = model.strip_prefix("codex/").unwrap_or(model);
@@ -249,6 +254,17 @@ impl RequiredNativeSession {
             .map(str::trim)
             .filter(|value| !value.is_empty() && *value != "default");
         if model != binding.model || variant != binding.variant.as_deref() {
+            return Err(NativeCheckpointFailure::ConfigurationMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn confirm_model(&self, model: &str) -> Result<(), NativeCheckpointFailure> {
+        if self
+            .checkpoint
+            .as_ref()
+            .is_some_and(|binding| binding.model != model)
+        {
             return Err(NativeCheckpointFailure::ConfigurationMismatch);
         }
         Ok(())
@@ -275,8 +291,8 @@ impl NativeCheckpointBinding {
     }
 }
 
-impl From<NativeCheckpointFailure> for crate::DaemonError {
-    fn from(reason: NativeCheckpointFailure) -> Self {
-        Self::NativeProviderCheckpoint { reason }
+impl NativeCheckpointFailure {
+    pub(crate) fn into_daemon_error(self) -> crate::DaemonError {
+        crate::DaemonError::NativeProviderCheckpoint { reason: self }
     }
 }

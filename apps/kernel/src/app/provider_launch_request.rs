@@ -214,7 +214,8 @@ impl DaemonApp {
                                     .provider_session_id(&request.adapter_key)
                         })
                 {
-                    return Err(crate::provider::NativeCheckpointFailure::SessionChanged.into());
+                    return Err(crate::provider::NativeCheckpointFailure::SessionChanged
+                        .into_daemon_error());
                 }
 
                 let resume_state = sanitize_resume_state_for_launch(&request, agent);

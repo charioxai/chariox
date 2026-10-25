@@ -851,7 +851,8 @@ impl KernelRuntimeState {
                         return Err(error);
                     }
                     Ok(crate::agent::ProviderResumeClearOutcome::Required) => {
-                        return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into())
+                        return Err(crate::provider::NativeCheckpointFailure::ResumeFailed
+                            .into_daemon_error())
                     }
                     Err(clear_error) => return Err(clear_error),
                 }

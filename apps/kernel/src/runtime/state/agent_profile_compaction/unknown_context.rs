@@ -91,7 +91,7 @@ impl KernelRuntimeState {
                 "unknown_window_downshift_context",
             )?;
         if matches!(outcome, crate::agent::ProviderResumeClearOutcome::Required) {
-            return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into());
+            return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error());
         }
         if matches!(
             outcome,

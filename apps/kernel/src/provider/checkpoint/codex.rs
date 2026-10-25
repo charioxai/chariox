@@ -123,11 +123,16 @@ pub(super) fn export(run: &RuntimeProviderRun) -> Result<ProviderNativeCheckpoin
         .provider_session_id()
         .or_else(|| run.resume_state().codex_thread_id())
         .ok_or(Failure::MissingSession)?;
-    let client = CodexClient::new(
-        run.id(),
-        run.structured_endpoint().ok_or(Failure::MissingSession)?,
+    // The conversation process has stopped. Read its durable metadata through
+    // the ordinary profile-scoped official utility server, without resuming it.
+    let root = profile_root(run.pty_env())?;
+    let endpoint = crate::provider::ensure_codex_account_endpoint(
+        run.owner_user_id(),
+        run.account_profile(),
+        std::collections::BTreeMap::from([("CODEX_HOME".to_string(), root.display().to_string())]),
     )
-    .map_err(|_| Failure::ResumeFailed)?;
+    .map_err(|_| Failure::AccountUnavailable)?;
+    let client = CodexClient::new(run.id(), endpoint).map_err(|_| Failure::ResumeFailed)?;
     let auth = auth(&client, run.account_profile())?;
     let metadata = metadata(&client, id).map_err(|_| Failure::MissingSession)?;
     idle(&metadata, id)?;
@@ -270,14 +275,32 @@ pub(super) fn import(
     Err(Failure::UnsupportedPlatform)
 }
 
-pub(super) fn verify_required_account(
+pub(super) fn verify_required_checkpoint(
     client: &CodexClient,
-    profile: &str,
+    run: &RuntimeProviderRun,
     binding: &NativeCheckpointBinding,
 ) -> Result<(), Failure> {
-    let auth = auth(client, profile)?;
+    let auth = auth(client, run.account_profile())?;
     if account_digest(&auth)? != binding.account_sha256 {
         return Err(Failure::AccountMismatch);
+    }
+    #[cfg(unix)]
+    {
+        let metadata = metadata(client, &binding.session_id).map_err(|_| Failure::ResumeFailed)?;
+        idle(&metadata, &binding.session_id)?;
+        let root = profile_root(run.pty_env())?;
+        let relative = metadata
+            .path
+            .as_deref()
+            .and_then(|path| path.strip_prefix(root).ok())
+            .and_then(Path::to_str)
+            .ok_or(Failure::TargetConflict)?;
+        if !valid_relative_path(relative, &binding.session_id)
+            || digest(&super::files::Directory::open(root)?.read(relative)?)
+                != binding.artifact_sha256
+        {
+            return Err(Failure::TargetConflict);
+        }
     }
     Ok(())
 }

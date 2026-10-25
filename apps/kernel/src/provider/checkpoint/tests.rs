@@ -275,7 +275,7 @@ fn required_native_session_blocks_durable_clearing_until_a_real_resume_ack() {
     assert!(confirmed.required_native_session().is_none());
     assert_eq!(confirmed.codex_thread_id(), Some(SESSION));
     agents
-        .set_agent_provider_resume_state_durably(&durable, "agent", confirmed, "run", "confirmed")
+        .set_agent_provider_resume_state_durably(&durable, "agent", confirmed, "run")
         .unwrap();
     assert!(matches!(
         agents

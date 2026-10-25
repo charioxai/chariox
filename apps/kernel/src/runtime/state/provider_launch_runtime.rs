@@ -449,7 +449,8 @@ impl KernelRuntimeState {
                 } else {
                     crate::provider::ProviderClientInterface::Chariox
                 },
-            )?;
+            )
+            .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
         }
         Ok(())
     }

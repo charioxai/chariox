@@ -45,9 +45,17 @@ fn save(path: &std::path::Path, value: &impl serde::Serialize) {
     file.sync_all().unwrap();
 }
 
+struct UtilityCleanup;
+impl Drop for UtilityCleanup {
+    fn drop(&mut self) {
+        crate::provider::shutdown_codex_account_endpoints();
+    }
+}
+
 #[test]
 #[ignore = "requires two real disposable kernels and an explicit private drill manifest"]
 fn live_codex_native_checkpoint_driver() {
+    let _utilities = UtilityCleanup;
     let input_path =
         std::env::var_os("CHARIOX_NATIVE_CHECKPOINT_DRILL").expect("explicit drill manifest");
     let input: Input =
@@ -127,6 +135,34 @@ fn live_codex_native_checkpoint_driver() {
             save(
                 &input.output,
                 &json!({"imported":true,"same_native_session":true,"required_resume":true,"payload_printed":false}),
+            );
+        }
+        "delete" => {
+            let endpoint = crate::provider::ensure_codex_account_endpoint(
+                "local",
+                &request.account_profile,
+                BTreeMap::from([(
+                    "CODEX_HOME".to_string(),
+                    input.codex_home.display().to_string(),
+                )]),
+            )
+            .expect("open owned native cleanup utility");
+            let client =
+                crate::provider::CodexClient::new("native-checkpoint-cleanup", endpoint).unwrap();
+            let mut socket = client
+                .connect_initialized()
+                .expect("connect cleanup utility");
+            let _: Value = client
+                .send_request(
+                    &mut socket,
+                    &mut 1,
+                    "thread/delete",
+                    json!({"threadId": field(public, "provider_session_id")}),
+                )
+                .expect("delete only the drill's native session");
+            save(
+                &input.output,
+                &json!({"native_session_removed":true,"payload_printed":false}),
             );
         }
         _ => panic!("unsupported drill operation"),

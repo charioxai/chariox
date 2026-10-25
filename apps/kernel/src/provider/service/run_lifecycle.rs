@@ -18,7 +18,9 @@ impl ProviderProcessService {
             .as_ref()
             .and_then(|state| state.required_native_session())
         {
-            required.validate_request(&request)?;
+            required
+                .validate_request(&request)
+                .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
         }
         let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
             DaemonError::ProviderAdapterNotFound {
@@ -45,9 +47,15 @@ impl ProviderProcessService {
                 .and_then(|state| state.provider_session_id(&request.adapter_key))
                 .is_some_and(|id| id != checkpoint.provider_session_id())
             {
-                return Err(super::super::NativeCheckpointFailure::SessionChanged.into());
+                return Err(
+                    super::super::NativeCheckpointFailure::SessionChanged.into_daemon_error()
+                );
             }
-            request.resume_state = Some(checkpoint.import(&request, &launch_result)?);
+            request.resume_state = Some(
+                checkpoint
+                    .import(&request, &launch_result)
+                    .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?,
+            );
         }
 
         crate::logging::info_with_fields(
