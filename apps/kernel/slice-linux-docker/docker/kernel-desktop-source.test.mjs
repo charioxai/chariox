@@ -225,3 +225,11 @@ test('MP-08/MP-10/MP-11 startup verification failure closes its producer',async(
  await assert.rejects(f.source.start(),/protected desktop source unavailable/);
  assert(closes>0);assert(f.source.closed);
 });
+
+test('MP-08/MP-10/MP-11 an owner frame starts independently of pending browser coverage',async()=>{
+ const f=fixture();f.source.startNative=async()=>{};f.source.verify=async()=>{};f.source.heartbeat=async()=>{};
+ f.source.owner={sample:()=>({serial:1}),close(){}};f.source.close=async()=>{f.source.closed=true};
+ try{await Promise.race([f.source.start(),delay(100).then(()=>{throw Error('owner waited for protected coverage')})]);}
+ finally{f.source.closed=true;}
+ assert.equal(f.source.sample(),null,'no unverified guest frame is published');
+});
