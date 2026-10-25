@@ -228,6 +228,14 @@ impl KernelRuntimeState {
             .map(|target| (target, UNIDENTIFIED_PROMPT_REASON));
         for ((session_id, agent_id, prompt_id), reason) in unrecoverable.chain(unidentified) {
             let cancelled = async {
+                // An owner can block after the last failed dispatch was collected.
+                // The recovery deadline never overrides that newer disposition.
+                if self
+                    .restore_blocked_prompt_owner_decision(&session_id, &agent_id, &prompt_id)
+                    .await?
+                {
+                    return Ok(false);
+                }
                 let session = self.owned.session_store.get_session(&session_id)?;
                 let Some(prompt) = self
                     .owned
@@ -554,7 +562,7 @@ impl KernelRuntimeState {
                 // interrupted prompt until that disposition changes; replaying it would both
                 // bypass the owner and repeat work that may already have reached the provider.
                 match self
-                    .restore_blocked_prompt_owner_decision(session.id(), agent_id, &prompt)
+                    .restore_blocked_prompt_owner_decision(session.id(), agent_id, prompt.id())
                     .await
                 {
                     Ok(true) => {

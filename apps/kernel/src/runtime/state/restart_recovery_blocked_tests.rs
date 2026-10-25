@@ -363,3 +363,66 @@ async fn restart_recovery_released_human_control_wait_has_no_stale_executor() {
     assert_ne!(next.state, ExecutionState::Cancelled);
     assert_ne!(next.prompt_id, prompt);
 }
+
+#[tokio::test]
+async fn restart_recovery_deadline_preserves_a_block_after_its_last_failure() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (runtime, room, agent, prompt) = runtime_with_active_prompt_config(
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        std::env::current_dir().unwrap().to_str().unwrap(),
+        config,
+    );
+    let Outcome::Task(task) = runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("task should begin")
+    };
+    let mut summary = DurableRestartRecoverySummary {
+        failed_reconciliations: 1,
+        failed_local_prompts: vec![(room.clone(), agent.clone(), prompt.clone())],
+        ..Default::default()
+    };
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Block {
+            task: task.task_id,
+            prompt: prompt.clone(),
+            reason: "Owner must approve this failed recovery".into(),
+        })
+        .unwrap();
+    runtime
+        .cancel_unrecoverable_local_prompts_after_restart(&mut summary)
+        .await;
+    assert_eq!(summary.unrecoverable_local_prompts_cancelled, 0);
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    assert_eq!(task.state, ExecutionState::Blocked);
+    assert_eq!(task.reason, "Owner must approve this failed recovery");
+    let session = runtime.owned.session_store.get_session(&room).unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent)
+            .unwrap()
+            .id(),
+        prompt
+    );
+}

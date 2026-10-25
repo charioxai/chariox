@@ -19,14 +19,14 @@ impl KernelRuntimeState {
         &self,
         room: &str,
         agent: &str,
-        prompt: &crate::session::PromptQueueItem,
+        prompt_id: &str,
     ) -> Result<bool, DaemonError> {
         let task = self
             .owned
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))?
             .into_iter()
-            .find(|task| task.prompt_id == prompt.id() && task.state == ExecutionState::Blocked);
+            .find(|task| task.prompt_id == prompt_id && task.state == ExecutionState::Blocked);
         let Some(task) = task else { return Ok(false) };
         self.ensure_task_owner_interaction(task).await?;
         Ok(true)
