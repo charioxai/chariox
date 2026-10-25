@@ -218,6 +218,13 @@ impl CommandRouter {
                 "submit /sudo individually so each entry has its own popup",
             ));
         }
+        // From here on the command acts as the room member it was admitted as.
+        // An interaction answer keeps the authenticated identity: it is the owner's decision.
+        let command = if matches!(&request, LocalDaemonRequest::RespondToInteraction(_)) {
+            command
+        } else {
+            command.acting_as(&caller_user_id)
+        };
         // MD-4: keep transport callers independent of unrelated pre-lane futures.
         match Box::pin(self.dispatch_pre_lane(&command, &request, &caller_user_id)).await {
             Ok(Some(response)) => {

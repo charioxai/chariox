@@ -123,11 +123,21 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
-    pub(in crate::runtime) fn is_legacy_local_terminal_owner(
+    /// The one rule for who a user is inside a room: the enrolled owner is the `local` member
+    /// of the rooms that predate enrollment; every other identity stays itself.
+    pub(in crate::runtime) fn room_member_user_id(
         &self,
         session_id: &str,
         user_id: &str,
-    ) -> bool {
+    ) -> String {
+        if self.is_legacy_local_terminal_owner(session_id, user_id) {
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string()
+        } else {
+            user_id.to_string()
+        }
+    }
+
+    fn is_legacy_local_terminal_owner(&self, session_id: &str, user_id: &str) -> bool {
         // Cheap alias test first: this runs for every command of a terminal.
         self.owned
             .owner_context_review_owner(crate::session::DEFAULT_LOCAL_USER_ID)
@@ -141,20 +151,19 @@ impl KernelRuntimeState {
                 })
     }
 
-    /// A provider run carries no session scope of its own; it is the enrolled
-    /// terminal's as long as its session is.
-    pub(in crate::runtime) fn is_legacy_local_terminal_run_owner(
+    /// A provider run carries no session scope of its own; it belongs to the room it ran in.
+    pub(in crate::runtime) fn provider_run_session_id(
         &self,
         provider_run_id: &str,
-        user_id: &str,
-    ) -> bool {
-        let session_id = match self.owned.provider_run_projection.get(provider_run_id) {
-            Some(run) => run.session_id().to_owned(),
-            None => match self.owned.provider_store.get_run(provider_run_id) {
-                Ok(run) => run.session_id().to_owned(),
-                Err(_) => return false,
-            },
-        };
-        self.is_legacy_local_terminal_owner(&session_id, user_id)
+    ) -> Option<String> {
+        match self.owned.provider_run_projection.get(provider_run_id) {
+            Some(run) => Some(run.session_id().to_owned()),
+            None => self
+                .owned
+                .provider_store
+                .get_run(provider_run_id)
+                .ok()
+                .map(|run| run.session_id().to_owned()),
+        }
     }
 }

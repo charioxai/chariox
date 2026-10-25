@@ -99,15 +99,7 @@ pub(crate) async fn execute_create_session_invite_request(
         .expires_in_ms
         .map(|expires_in_ms| now_ms.saturating_add(expires_in_ms));
     let invite_id = random_hex_id();
-    let caller_user_id = command_caller_user_id(command);
-    // MP-08/MP-11: the enrolled terminal is a member of its pre-enrollment room as `local`.
-    let created_by_user_id = if command.is_terminal_caller()
-        && runtime_state.is_legacy_local_terminal_owner(&request.session_id, &caller_user_id)
-    {
-        crate::session::DEFAULT_LOCAL_USER_ID.to_string()
-    } else {
-        caller_user_id
-    };
+    let created_by_user_id = command_caller_user_id(command);
     let (session, invite) = runtime_state.create_session_invite(
         &request.session_id,
         invite_id,

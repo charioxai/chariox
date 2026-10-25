@@ -165,6 +165,19 @@ pub(crate) fn command_caller_user_id(command: &KernelCommand) -> String {
 }
 
 impl KernelCommand {
+    /// Continue as the room member identity session admission resolved for this caller.
+    pub(crate) fn acting_as(mut self, member_user_id: &str) -> Self {
+        if self
+            .caller
+            .user_id
+            .as_deref()
+            .is_some_and(|user_id| user_id != member_user_id)
+        {
+            self.caller.user_id = Some(member_user_id.to_string());
+        }
+        self
+    }
+
     /// This identity was supplied by the local transport or authenticated relay
     /// admission. It is never read from an interaction's response payload.
     pub(crate) fn is_terminal_caller(&self) -> bool {

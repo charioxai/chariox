@@ -519,6 +519,114 @@ async fn f4_legacy_local_room_inner() {
     assert!(workflow_runs.is_empty(), "another user sees none of it");
 }
 
+// MP-08 / MP-10 / MP-11 F4: the enrolled owner is the `local` member its pre-enrollment room
+// kept: attach, prompt, run a workflow and subscribe all admit it, and nobody else.
+#[test]
+fn mp11_f4_enrolled_owner_is_a_member_of_its_pre_enrollment_room() {
+    run_remote_authorization_large_stack_test("f4-legacy-local-member", f4_legacy_member_inner);
+}
+
+async fn f4_legacy_member_inner() {
+    let root = crate::test_support::TestWorktree::new("f4-legacy-local-member");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let id = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap()
+        .id()
+        .to_string();
+    let agent = spawn_test_agent(&mut app, &id, "legacy-agent", "dev-stub");
+    let agent_id = agent.id().to_string();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&id, Some("legacy-flow".into()))
+        .unwrap();
+    let workflow_id = workflow.id().to_string();
+    let node = app
+        .sessions_mut()
+        .add_workflow_node_owned(
+            &id,
+            &workflow_id,
+            &agent_id,
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            agent_id.clone(),
+        )
+        .unwrap();
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(&id, &workflow_id, node.id(), Some("entry".into()))
+        .unwrap();
+    app.sessions_mut()
+        .set_workflow_endpoint_owner(
+            &id,
+            &workflow_id,
+            endpoint.id(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    for user in ["kernel-owner", "stranger"] {
+        let owner = user == "kernel-owner";
+        let attach = LocalDaemonRequest::AttachToSession(crate::local::AttachToSessionRequest {
+            session_id: id.clone(),
+            client_id: format!("client-{user}"),
+            capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+        });
+        let attached = router
+            .dispatch(terminal_command(&attach, Some(user)), attach)
+            .await;
+        assert_eq!(attached.is_ok(), owner, "attach as {user}: {attached:?}");
+        let attachment_id =
+            if let Ok(LocalDaemonResponse::SessionAttached { attachment }) = attached {
+                attachment.id().to_string()
+            } else {
+                "unattached".to_string()
+            };
+
+        let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: id.clone(),
+            attachment_id: attachment_id.clone(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "Reply with the single word ok.".into(),
+            attachments: Vec::new(),
+        });
+        let submitted = router
+            .dispatch(terminal_command(&submit, Some(user)), submit)
+            .await;
+        assert_eq!(submitted.is_ok(), owner, "prompt as {user}: {submitted:?}");
+
+        let invoke = LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
+            session_id: id.clone(),
+            workflow_ref: workflow_id.clone(),
+            endpoint_ref: endpoint.id().to_string(),
+            prompt: Some("go".into()),
+            queue_ref: None,
+            publication_invocation: None,
+        });
+        let invoked = router
+            .dispatch(terminal_command(&invoke, Some(user)), invoke)
+            .await;
+        assert_eq!(invoked.is_ok(), owner, "run as {user}: {invoked:?}");
+
+        let subscribed = router
+            .ensure_relay_subscription_attachment_for_user(&id, &attachment_id, user)
+            .await;
+        assert_eq!(
+            subscribed.is_ok(),
+            owner,
+            "subscribe as {user}: {subscribed:?}"
+        );
+    }
+}
+
 // MP-08 / MP-10 / MP-11: completed history is pruned from hot state but remains readable.
 #[test]
 fn mp11_amfix_historical_archive_resume_reports_read_only() {

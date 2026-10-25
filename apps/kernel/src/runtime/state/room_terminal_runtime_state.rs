@@ -310,12 +310,7 @@ impl KernelRuntimeState {
             .as_deref()
             .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
         let session = self.owned.session_store.get_session(&request.session_id)?;
-        // The enrolled terminal still owns the OS-local Rooms made before
-        // enrollment; it keeps its authenticated identity as the actor.
-        let owns_room = session.owner_user_id() == user_id
-            || (caller.is_terminal_caller()
-                && self.is_legacy_local_terminal_owner(&request.session_id, user_id));
-        if !owns_room {
+        if session.owner_user_id() != user_id {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: user_id.to_string(),
                 owner_user_id: session.owner_user_id().to_string(),

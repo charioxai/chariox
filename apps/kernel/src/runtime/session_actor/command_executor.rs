@@ -94,13 +94,6 @@ impl SessionRuntimeCommandExecutor {
         if let Some(actor) = caller_metaagent_id.as_deref() {
             self.store.authorize_room_agent_request(actor, &request)?;
         }
-        // An owner decision stays with the authenticated enrolled identity.
-        let interaction_user_id = caller_user_id.clone();
-        let caller_user_id = if terminal_caller {
-            self.store.session_user_id(&self.session_id, caller_user_id)
-        } else {
-            caller_user_id
-        };
         let (result, projection_action) = if let Some(result) = projected_runtime_notices_response(
             &self.session_projection,
             &self.terminal_stream,
@@ -156,7 +149,6 @@ impl SessionRuntimeCommandExecutor {
             self.execute_store_request(
                 request,
                 caller_user_id,
-                interaction_user_id,
                 caller_metaagent_id,
                 terminal_caller,
                 connection_class,
@@ -203,7 +195,6 @@ impl SessionRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
-        interaction_user_id: String,
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
@@ -375,7 +366,7 @@ impl SessionRuntimeCommandExecutor {
                 self.store
                     .respond_to_interaction(
                         request,
-                        owner_caller.then_some(interaction_user_id),
+                        owner_caller.then_some(caller_user_id),
                         connection_class,
                     )
                     .await

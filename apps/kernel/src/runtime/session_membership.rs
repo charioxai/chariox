@@ -57,12 +57,17 @@ pub(crate) async fn authorize_session_membership(
 
     // MP-08/MP-11: attaching to its OS-local session reads that session's run.
     if let LocalDaemonRequest::GetProviderRun(run_request) = request {
-        if let Some(user_id) = command_session_user_id(command) {
-            if command.is_terminal_caller()
-                && runtime_state
-                    .is_legacy_local_terminal_run_owner(&run_request.provider_run_id, &user_id)
+        if let (Some(user_id), true) = (
+            command_session_user_id(command),
+            command.is_terminal_caller(),
+        ) {
+            if let Some(session_id) =
+                runtime_state.provider_run_session_id(&run_request.provider_run_id)
             {
-                return Ok(DEFAULT_LOCAL_USER_ID.to_string());
+                let member = runtime_state.room_member_user_id(&session_id, &user_id);
+                if member != user_id {
+                    return Ok(member);
+                }
             }
         }
     }
@@ -77,13 +82,12 @@ pub(crate) async fn authorize_session_membership(
         }
     })?;
 
-    // MP-08/MP-11: the enrolled terminal still owns its OS-local session.
-    // Use the local identity for membership and session projection only; the
-    // command retains the authenticated enrolled ID for interaction authority.
+    // MP-08/MP-11: the enrolled terminal is the `local` member of its pre-enrollment rooms.
     if command.is_terminal_caller() {
         if let SessionMembershipScope::SessionId(session_id) = &scope {
-            if runtime_state.is_legacy_local_terminal_owner(session_id, &user_id) {
-                return Ok(DEFAULT_LOCAL_USER_ID.to_string());
+            let member = runtime_state.room_member_user_id(session_id, &user_id);
+            if member != user_id {
+                return Ok(member);
             }
         }
     }

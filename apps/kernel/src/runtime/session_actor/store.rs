@@ -28,19 +28,6 @@ pub(crate) struct SessionRuntimeStore {
 }
 
 impl SessionRuntimeStore {
-    /// MP-08/MP-11: the enrolled terminal acts in its pre-enrollment room as the `local` owner
-    /// that room and its agents belong to.
-    pub(super) fn session_user_id(&self, session_id: &str, terminal_user_id: String) -> String {
-        if self
-            .state
-            .is_legacy_local_terminal_owner(session_id, &terminal_user_id)
-        {
-            crate::session::DEFAULT_LOCAL_USER_ID.to_string()
-        } else {
-            terminal_user_id
-        }
-    }
-
     /// The submitting turn of a sudo command, captured when it is enqueued.
     pub(super) fn sudo_binding(
         &self,

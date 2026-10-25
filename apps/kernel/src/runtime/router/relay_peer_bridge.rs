@@ -218,7 +218,7 @@ impl CommandRouter {
             .runtime_state
             .attachment_owner_user_id(attachment_id)
             .await?;
-        if owner_user_id == user_id {
+        if owner_user_id == self.runtime_state.room_member_user_id(session_id, user_id) {
             return Ok(());
         }
         Err(DaemonError::SessionAccessDenied {
