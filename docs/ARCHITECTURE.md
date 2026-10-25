@@ -1042,6 +1042,28 @@ This section captures current implementation choices for v1 so engineering work 
 
 - Rust (required for v1 daemon implementation baseline)
 
+### 10.3.1 Provider work across a kernel restart
+
+MP-08 / MP-09 / MP-10 / MP-11: a durable Blocked task remains blocked after
+restart. Its owner decision is registered again with a live response channel;
+provider recovery must not replay the interrupted turn or cancel it on the
+provider recovery deadline. An explicit Resume starts a durable continuation
+and retires the interrupted invocation if it no longer has an executor.
+
+On Linux, provider launches and their descendants inherit
+`CHARIOX_PROVIDER_OWNER_PID`. Before recovery resumes work, the kernel stops
+processes whose owner kernel is dead in the same user, PID and mount namespace.
+`setsid`, `nohup` and shell backgrounding do not transfer that ownership. This
+cleanup prevents an old command and its recovered replacement from both running.
+
+Work deliberately intended to survive a kernel restart needs an independent
+service lifetime. A system-manager `systemd-run --slice=lanes.slice` unit starts
+outside the provider tree and normally receives the manager's environment.
+Keep the provider owner variable out of that unit's environment; explicitly
+forwarding it opts the unit's processes into dead-kernel cleanup. The caller
+must track the unit and stop it when its work ends. This does not make a
+kernel-owned process watcher restartable: those still report process loss.
+
 ### 10.4 Backend Stack
 
 - Fastify
