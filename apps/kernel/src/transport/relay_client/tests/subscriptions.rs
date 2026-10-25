@@ -32,6 +32,7 @@ async fn review971c_relay_subscription_keeps_mixed_task_changes() {
             user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
             connection_class: crate::local::KernelConnectionClass::Terminal,
             caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+            heartbeat_interval: std::time::Duration::from_secs(5),
         },
     ));
     let result = tokio::time::timeout(Duration::from_secs(5), async {
@@ -308,6 +309,7 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
             client_public_key: subscription_public_key,
             subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()),
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -359,6 +361,7 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
             client_public_key: reloaded_subscription_public_key,
             subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()),
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -537,6 +540,7 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
             client_public_key: subscription_public_key.clone(),
             subscription_scope: None,
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -592,6 +596,7 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
             client_public_key: second_subscription_public_key,
             subscription_scope: None,
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -741,6 +746,7 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
             client_public_key: subscription_public_key.clone(),
             subscription_scope: None,
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -784,6 +790,7 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
             client_public_key: subscription_public_key,
             subscription_scope: None,
             resume_from_event_id: Some(first_event.0),
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -1084,6 +1091,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
             caller: crate::runtime::command::KernelCaller::for_relay_request(None),
             user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
             connection_class: crate::local::KernelConnectionClass::Terminal,
+            heartbeat_interval: std::time::Duration::from_secs(5),
         },
     ));
     // Protocol 403: a terminal's subscription starts with its passkey prompts.
@@ -1226,6 +1234,7 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
             client_public_key: subscription_public_key.clone(),
             subscription_scope: None,
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -1302,6 +1311,7 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
             client_public_key: subscription_public_key,
             subscription_scope: None,
             resume_from_event_id: Some(first_event.0),
+            heartbeat_interval_ms: None,
         },
     )
     .await;
@@ -1378,4 +1388,166 @@ fn assert_client_catalog_event(event: &serde_json::Value) {
             "event": "client_catalog_changed", "revision": event["revision"],
         })
     );
+}
+
+// MP-08 / MP-10 / MP-11: a relayed subscription that asks for a heartbeat interval gets it.
+#[tokio::test]
+async fn relay_subscription_heartbeats_follow_the_requested_interval() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "heartbeat-subscriber",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+    let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(64);
+    let private_key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+    let task = tokio::spawn(run_relay_subscription_loop(
+        router.clone(),
+        outgoing_tx,
+        "heartbeat-subscription".into(),
+        public_key,
+        session_id,
+        attachment_id,
+        None,
+        Arc::new(RelayEventRuntime::for_tests(64)),
+        false,
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+            heartbeat_interval: Duration::from_millis(500),
+        },
+    ));
+    let mut arrivals = Vec::new();
+    let waited = tokio::time::timeout(Duration::from_secs(8), async {
+        while arrivals.len() < 5 {
+            let (_, event) = decrypt_relay_event_from_channel(&mut event_rx, &private_key).await;
+            if event["event"] == "heartbeat" {
+                arrivals.push(std::time::Instant::now());
+            }
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    waited.expect("five heartbeats within 8 s");
+    for pair in arrivals.windows(2) {
+        let gap = pair[1] - pair[0];
+        assert!(
+            gap >= Duration::from_millis(450) && gap <= Duration::from_millis(800),
+            "heartbeat gap {gap:?}"
+        );
+    }
+}
+
+// MP-08 / MP-10 / MP-11: exercise the encrypted relay loop, including the real history reader.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relay_slow_turn_history_reads_keep_subscription_heartbeats_running() {
+    let mut config = DaemonConfig::for_tests();
+    config.operational_history_read_delay_ms = 1_600;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "slow-history",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let agent_id = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(&session_id)
+        .unwrap()
+        .agents()[0]
+        .id()
+        .to_string();
+    let history = app.operational_history_store();
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+    let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(64);
+    let private_key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+    let task = tokio::spawn(run_relay_subscription_loop(
+        router.clone(),
+        outgoing_tx,
+        "slow-history-subscription".into(),
+        public_key,
+        session_id.clone(),
+        attachment_id.clone(),
+        None,
+        Arc::new(RelayEventRuntime::for_tests(64)),
+        false,
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+            heartbeat_interval: Duration::from_millis(500),
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (_, event) = decrypt_relay_event_from_channel(&mut event_rx, &private_key).await;
+            if event["event"] == "session_snapshot" {
+                break;
+            }
+        }
+        history
+            .append_many(&[crate::history::HistoryEvent::transcript(
+                history.reserve_sequence(),
+                &crate::history::SessionHistoryEntry::user_prompt(
+                    &session_id,
+                    &attachment_id,
+                    &agent_id,
+                    "read this turn",
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(session_id.clone()),
+                    agent_id: Some(agent_id.clone()),
+                    turn_id: Some("slow-turn".into()),
+                    prompt_id: Some("slow-turn".into()),
+                    ..Default::default()
+                },
+            )])
+            .unwrap();
+        app.lock().await.terminal_mut().fan_out_output(
+            &session_id,
+            "run-1",
+            Some(&agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("wake".into()),
+            vec![attachment_id.clone()],
+            b"wake",
+        );
+        loop {
+            let (_, event) = decrypt_relay_event_from_channel(&mut event_rx, &private_key).await;
+            if event["event"] == "terminal_output" {
+                break;
+            }
+        }
+        let mut last = std::time::Instant::now();
+        loop {
+            let (_, event) = decrypt_relay_event_from_channel(&mut event_rx, &private_key).await;
+            if event["event"] != "heartbeat" && event["event"] != "agent_turn_changed" {
+                continue;
+            }
+            let gap = last.elapsed();
+            assert!(
+                gap <= Duration::from_millis(850),
+                "history read starved relay heartbeats for {gap:?}"
+            );
+            if event["event"] == "agent_turn_changed" {
+                break;
+            }
+            last = std::time::Instant::now();
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    result.expect("slow history never reached the relay client");
 }

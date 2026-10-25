@@ -225,6 +225,7 @@ pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
             client_public_key,
             subscription_scope,
             resume_from_event_id,
+            heartbeat_interval_ms,
         } => {
             let Some((realm_id, connected_daemon_key)) =
                 connected_client_binding(registry, peer_addr).await
@@ -481,6 +482,7 @@ pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
                     client_public_key,
                     subscription_scope,
                     resume_from_event_id,
+                    heartbeat_interval_ms,
                 },
             )
             .is_err()

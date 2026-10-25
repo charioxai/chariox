@@ -142,6 +142,7 @@ fn token_rollover_preserves_waiting_room_during_large_peer_request() {
                 client_public_key: public_key,
                 subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.into()),
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             },
         )
         .await;
