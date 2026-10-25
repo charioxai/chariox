@@ -13,17 +13,6 @@ pub(super) struct InstalledAccountCopy {
 }
 
 impl ProviderAccountProfileRegistry {
-    pub(crate) fn has_account_copy_receipt(
-        &self,
-        binding: &ProviderAccountCopyBinding,
-    ) -> Result<bool, DaemonError> {
-        Ok(self
-            .read_document()?
-            .account_copies
-            .iter()
-            .any(|copy| copy.binding == *binding))
-    }
-
     pub(crate) fn install_account_copy(
         &self,
         config: &crate::config::DaemonConfig,

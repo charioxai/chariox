@@ -211,24 +211,6 @@ impl KernelRuntimeState {
         }
         let owner = self.provider_account_authority_owner_user_id(&profile.user_id);
         let profiles = self.provider_account_profile_registry().clone();
-        if binding.replace
-            && !profiles
-                .has_account_copy_receipt(&binding)
-                .map_err(|_| failure("provider_account_copy_install_failed"))?
-            && profiles
-                .find(&owner, &binding.provider, &binding.target_profile_id())
-                .map_err(|_| failure("provider_account_copy_install_failed"))?
-                .is_some()
-        {
-            crate::runtime::provider_account_control::ensure_profile_idle(
-                self,
-                &profiles,
-                &owner,
-                &binding.provider,
-                &binding.target_profile_id(),
-            )
-            .map_err(|_| failure("provider_account_copy_conflict"))?;
-        }
         let unlock = vault_unlock_request_lock(&expand_vault_path(
             &config.user_config.credential_vault.path,
         ))
