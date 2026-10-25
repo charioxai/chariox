@@ -13,3 +13,11 @@ test('boot service starts and stops the exact state in lanes.slice at multi-user
   for (const expected of ['Slice=lanes.slice', 'WantedBy=multi-user.target', 'Type=oneshot', 'RemainAfterExit=yes', 'Restart=on-failure', 'LANES_KERNEL_STATE=/own/state', 'lanes-kernel.mjs" start', 'lanes-kernel.mjs" stop']) assert.ok(unit.includes(expected), expected);
   assert.throws(() => serviceUnit({ node: '/usr/bin/node', script: '/unsafe\npath', state: '/own/state' }), /path/);
 });
+
+test('the boot unit is shipped as an inspectable template in tools/lanes', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const template = await readFile(new URL('./chariox-lanes.service', import.meta.url), 'utf8');
+  assert.match(template, /Slice=lanes\.slice/);
+  assert.match(template, /WantedBy=multi-user\.target/);
+  assert.match(template, /ExecStart="@NODE@" "@SCRIPT@" start/);
+});
