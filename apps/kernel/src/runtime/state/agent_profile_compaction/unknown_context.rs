@@ -90,6 +90,9 @@ impl KernelRuntimeState {
                 run.map_or("cold-claude-downshift", RuntimeProviderRun::id),
                 "unknown_window_downshift_context",
             )?;
+        if matches!(outcome, crate::agent::ProviderResumeClearOutcome::Required) {
+            return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into());
+        }
         if matches!(
             outcome,
             crate::agent::ProviderResumeClearOutcome::Superseded { .. }

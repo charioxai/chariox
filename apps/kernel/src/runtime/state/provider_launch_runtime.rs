@@ -441,6 +441,16 @@ impl KernelRuntimeState {
                 &crate::local::LocalDaemonRequest::LaunchProviderRun(request.clone()),
             )?;
         }
+        if request.native_checkpoint_binding.is_some() {
+            crate::provider::native_checkpoint_support(
+                crate::provider::adapter_key_for_provider(&request.adapter_key),
+                if request.native_tui {
+                    crate::provider::ProviderClientInterface::NativeTui
+                } else {
+                    crate::provider::ProviderClientInterface::Chariox
+                },
+            )?;
+        }
         Ok(())
     }
 

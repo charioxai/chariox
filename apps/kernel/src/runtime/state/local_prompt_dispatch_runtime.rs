@@ -850,6 +850,9 @@ impl KernelRuntimeState {
                         )?;
                         return Err(error);
                     }
+                    Ok(crate::agent::ProviderResumeClearOutcome::Required) => {
+                        return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into())
+                    }
                     Err(clear_error) => return Err(clear_error),
                 }
                 _delivery_settlement_claim = Some(settlement_claim);

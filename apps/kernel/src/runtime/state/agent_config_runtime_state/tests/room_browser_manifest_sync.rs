@@ -1306,6 +1306,7 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: true,
+        native_checkpoint_binding: None,
     };
     let remote_execution = stale_agent
         .remote_execution()

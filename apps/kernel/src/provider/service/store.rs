@@ -180,6 +180,23 @@ impl ProviderProcessServiceStore {
         service.mark_run_running(expected.id())
     }
 
+    pub fn export_native_checkpoint(
+        &self,
+        run_id: &str,
+    ) -> Result<crate::provider::ProviderNativeCheckpoint, DaemonError> {
+        let run = {
+            let service = self.read();
+            let run = service.get_run(run_id)?;
+            if service.structured_prompt_io_in_flight(run_id)
+                || service.structured_runtime_state_bound(run_id)
+            {
+                return Err(crate::provider::NativeCheckpointFailure::NotQuiescent.into());
+            }
+            run
+        };
+        crate::provider::ProviderNativeCheckpoint::export(&run).map_err(Into::into)
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.read().get_run(run_id)
     }

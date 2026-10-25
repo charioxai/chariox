@@ -132,6 +132,8 @@ pub struct ProviderResumeState {
     codex_thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    required_native_session: Option<super::RequiredNativeSession>,
 }
 
 impl ProviderResumeState {
@@ -139,6 +141,52 @@ impl ProviderResumeState {
         self.opencode_session_id.is_none()
             && self.codex_thread_id.is_none()
             && self.claude_session_id.is_none()
+            && self.required_native_session.is_none()
+    }
+
+    pub fn required_native_session(&self) -> Option<&super::RequiredNativeSession> {
+        self.required_native_session.as_ref()
+    }
+
+    pub fn requiring_native_session(
+        mut self,
+        provider: &str,
+        session_id: &str,
+        checkpoint: Option<super::NativeCheckpointBinding>,
+    ) -> Self {
+        self.required_native_session = Some(super::RequiredNativeSession {
+            provider: provider.to_string(),
+            session_id: session_id.to_string(),
+            checkpoint,
+        });
+        self
+    }
+
+    pub(crate) fn record_native_resume_accepted(&mut self, provider: &str, session_id: &str) {
+        if self
+            .required_native_session
+            .as_ref()
+            .is_some_and(|required| {
+                required.provider == provider && required.session_id == session_id
+            })
+        {
+            self.required_native_session = None;
+        }
+    }
+
+    pub(crate) fn without_checkpoint_binding(&self) -> Self {
+        let mut state = self.clone();
+        if let Some(required) = state.required_native_session.as_mut() {
+            required.checkpoint = None;
+        }
+        state
+    }
+
+    fn required_without_provider(&self, provider: &str) -> Option<super::RequiredNativeSession> {
+        self.required_native_session
+            .as_ref()
+            .filter(|required| required.provider != provider)
+            .cloned()
     }
 
     pub fn from_opencode_session_id(session_id: impl Into<String>) -> Self {
@@ -212,6 +260,7 @@ impl ProviderResumeState {
             opencode_session_id: None,
             codex_thread_id: self.codex_thread_id.clone(),
             claude_session_id: self.claude_session_id.clone(),
+            required_native_session: self.required_without_provider("opencode"),
         }
     }
 
@@ -220,6 +269,7 @@ impl ProviderResumeState {
             opencode_session_id: self.opencode_session_id.clone(),
             codex_thread_id: None,
             claude_session_id: self.claude_session_id.clone(),
+            required_native_session: self.required_without_provider("codex"),
         }
     }
 
@@ -228,6 +278,7 @@ impl ProviderResumeState {
             opencode_session_id: self.opencode_session_id.clone(),
             codex_thread_id: self.codex_thread_id.clone(),
             claude_session_id: None,
+            required_native_session: self.required_without_provider("claude"),
         }
     }
 
@@ -270,6 +321,9 @@ impl ProviderResumeState {
         operation: &str,
     ) -> Option<Self> {
         self.provider_session_id(provider)?;
+        if self.required_native_session.is_some() {
+            return None;
+        }
         match (
             provider.trim().to_ascii_lowercase().as_str(),
             operation.trim(),
@@ -290,6 +344,7 @@ impl ProviderResumeState {
     pub fn with_opencode_resume_state(&self, opencode_resume_state: &Self) -> Self {
         Self {
             opencode_session_id: opencode_resume_state.opencode_session_id.clone(),
+            required_native_session: self.required_native_session.clone(),
             codex_thread_id: self.codex_thread_id.clone(),
             claude_session_id: self.claude_session_id.clone(),
         }
@@ -524,6 +579,8 @@ pub struct LaunchProviderRequest {
     pub permission_level: Option<AgentPermissionLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_state: Option<ProviderResumeState>,
+    #[serde(skip)]
+    pub(crate) native_checkpoint: Option<super::ProviderNativeCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "ProviderClientInterface::is_chariox")]
@@ -684,6 +741,7 @@ impl LaunchProviderRequest {
             execution_mode: None,
             permission_level: None,
             resume_state: None,
+            native_checkpoint: None,
             structured_endpoint: None,
             client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
@@ -822,6 +880,21 @@ impl LaunchProviderRequest {
 
     pub fn uses_workspace_live_sync(&self) -> bool {
         self.write_access_mode.uses_workspace_live_sync()
+    }
+
+    pub fn with_native_checkpoint(mut self, checkpoint: super::ProviderNativeCheckpoint) -> Self {
+        self.native_checkpoint = Some(checkpoint);
+        self
+    }
+
+    pub fn with_native_checkpoint_binding(
+        mut self,
+        binding: super::NativeCheckpointBinding,
+    ) -> Self {
+        let mut state = self.resume_state.take().unwrap_or_default();
+        state.required_native_session = Some(binding.requirement());
+        self.resume_state = Some(state);
+        self
     }
 
     pub fn with_resume_state(mut self, resume_state: ProviderResumeState) -> Self {

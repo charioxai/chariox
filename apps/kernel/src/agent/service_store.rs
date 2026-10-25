@@ -22,6 +22,7 @@ pub struct AgentServiceStore {
 pub(crate) enum ProviderResumeClearOutcome {
     Cleared,
     AlreadyAbsent,
+    Required,
     Superseded { current_provider_session_id: String },
 }
 
@@ -352,6 +353,13 @@ impl AgentServiceStore {
                 });
             }
             Some(_) => {}
+        }
+        if previous
+            .provider_resume_state()
+            .required_native_session()
+            .is_some()
+        {
+            return Ok(ProviderResumeClearOutcome::Required);
         }
         let replacement_resume_state = previous
             .provider_resume_state()

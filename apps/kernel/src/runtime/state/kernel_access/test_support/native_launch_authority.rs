@@ -243,6 +243,7 @@ async fn revoked_native_launch(connected: bool) {
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: true,
+        native_checkpoint_binding: None,
     };
     let pending = tokio::spawn({
         let state = state.clone();

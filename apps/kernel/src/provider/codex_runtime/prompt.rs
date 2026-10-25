@@ -60,6 +60,13 @@ pub fn submit_codex_prompt(
         model.as_deref(),
         hidden_context_for_provider(&envelope.hidden_system_context),
     ) {
+        if run.resume_state().required_native_session().is_some() {
+            let error = match error {
+                DaemonError::NativeProviderCheckpoint { .. } => error,
+                _ => crate::provider::NativeCheckpointFailure::ResumeFailed.into(),
+            };
+            return Err(error.steer_not_submitted(envelope.steering));
+        }
         if envelope.steering {
             return Err(error.steer_not_submitted(true));
         }
@@ -181,7 +188,16 @@ fn ensure_codex_thread_ready(
     developer_instructions: Option<&str>,
 ) -> Result<(), DaemonError> {
     if state.thread_ready() {
+        if let Some(required) = run.resume_state().required_native_session() {
+            required.confirm_session(state.thread_id())?;
+        }
         return Ok(());
+    }
+    if let Some(required) = run.resume_state().required_native_session() {
+        required.verify_run(run, client)?;
+        if state.pending_thread_id() != Some(required.session_id.as_str()) {
+            return Err(crate::provider::NativeCheckpointFailure::MissingSession.into());
+        }
     }
     let deadline = Instant::now() + CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT;
     loop {
@@ -216,6 +232,9 @@ fn ensure_codex_thread_ready(
         };
         match result {
             Ok(thread) => {
+                if let Some(required) = run.resume_state().required_native_session() {
+                    required.confirm_session(&thread.thread.id)?;
+                }
                 state.mark_thread_ready(thread.thread.id);
                 return Ok(());
             }

@@ -364,7 +364,8 @@ impl DaemonApp {
         )? {
             crate::agent::ProviderResumeClearOutcome::Cleared => {}
             crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => return Ok(true),
-            crate::agent::ProviderResumeClearOutcome::Superseded { .. } => return Ok(false),
+            crate::agent::ProviderResumeClearOutcome::Superseded { .. }
+            | crate::agent::ProviderResumeClearOutcome::Required => return Ok(false),
         }
         self.record_notice(
             started.run.session_id(),

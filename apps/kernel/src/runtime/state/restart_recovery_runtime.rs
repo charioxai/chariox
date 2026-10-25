@@ -792,6 +792,9 @@ impl KernelRuntimeState {
                 failed_provider_run_id,
                 "unresponsive_provider_resume_state_cleared_after_restart",
             )? {
+                crate::agent::ProviderResumeClearOutcome::Required => {
+                    return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into())
+                }
                 crate::agent::ProviderResumeClearOutcome::Cleared
                 | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {}
                 crate::agent::ProviderResumeClearOutcome::Superseded {

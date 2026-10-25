@@ -66,6 +66,9 @@ pub(crate) fn sanitize_resume_state_for_launch(
         return resume_state;
     }
 
+    if resume_state.required_native_session().is_some() {
+        return resume_state.without_checkpoint_binding();
+    }
     resume_state.without_provider_session_id(&request.adapter_key)
 }
 
@@ -274,18 +277,26 @@ mod tests {
         let state = serde_json::from_value(serde_json::json!({
             "codex_thread_id": "native-thread",
             "required_native_session": {"provider": "codex", "session_id": "native-thread"}
-        })).expect("decode durable required-resume state");
+        }))
+        .expect("decode durable required-resume state");
         run.set_resume_state(state);
         let error = DaemonError::ProviderProtocol {
             provider_run_id: run.id().to_string(),
             operation: "thread/resume",
             message: "no rollout found for thread".to_string(),
         };
-        assert!(failed_provider_resume_state_replacement(&run, &error).is_none(),
-            "a required native resume must preserve the checkpoint instead of clearing it");
-        assert!(failed_provider_resume_state_replacement_from_message(
-            &run, &format!("Provider prompt dispatch failed: {error}"),
-        ).is_none(), "asynchronous provider errors must retain the same requirement");
+        assert!(
+            failed_provider_resume_state_replacement(&run, &error).is_none(),
+            "a required native resume must preserve the checkpoint instead of clearing it"
+        );
+        assert!(
+            failed_provider_resume_state_replacement_from_message(
+                &run,
+                &format!("Provider prompt dispatch failed: {error}"),
+            )
+            .is_none(),
+            "asynchronous provider errors must retain the same requirement"
+        );
     }
 
     fn opencode_run_with_resume_state() -> RuntimeProviderRun {

@@ -1203,6 +1203,7 @@ fn local_request_api_rejects_invalid_provider_adapter_inner() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ))
         .expect_err("unknown adapters should be rejected");
