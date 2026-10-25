@@ -210,6 +210,38 @@ fn a12_immediate_no_progress_guard_survives_restart() {
 }
 
 #[test]
+fn a10_outdated_goal_revision_keeps_current_work_unchanged() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    let original = f.task();
+    f.apply(Operation::ControlGoal {
+        task: original.task_id.clone(),
+        owner: "owner".into(),
+        revision: original.revision,
+        action: "interval".into(),
+        value: Some("20".into()),
+        now: 2,
+    });
+    let current = f.task();
+    let refused = f
+        .store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: original.task_id,
+            owner: "owner".into(),
+            revision: original.revision,
+            action: "edit".into(),
+            value: Some("outdated request must not replace the objective".into()),
+            now: 3,
+        })
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("no longer current"),
+        "{refused}"
+    );
+    assert_eq!(f.task(), current);
+}
+
+#[test]
 fn a12_owner_revision_pause_edit_and_cancel_fence_late_checks() {
     let f = Fixture::new();
     goal(&f, 10);

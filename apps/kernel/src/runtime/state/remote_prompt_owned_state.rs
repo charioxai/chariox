@@ -2130,6 +2130,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a10_outdated_run_and_lease_references_stop_before_tool_dispatch() {
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let prompt = mp11_submit(&runtime, &session, &agent, &attachment, "current work");
+        let admitted = runtime.with_relay_peer_authority(
+            crate::runtime::relay_peer_authority::test_peer_authority("worker-kernel-1"),
+        );
+        let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+            home_kernel_id: runtime.owned.config_projection.snapshot().daemon_id,
+            home_session_id: session.clone(),
+            home_agent_id: agent.clone(),
+            home_prompt_id: Some(prompt.id().into()),
+            leased_agent_id: binding.leased_agent_id.clone(),
+            worker_kernel_id: binding.worker_kernel_id.clone(),
+            worker_machine_id: binding.worker_machine_id.clone(),
+            worker_provider_run_id: "worker-run-1".into(),
+            worker_worktree_path: "fixture".into(),
+            worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
+        };
+        let request = |context| RelayPeerRequest::ForwardMetaRuntimeTool {
+            context,
+            tool_name: "chariox_kernel_request".into(),
+            arguments: serde_json::json!({"request":{"AliasSession":{
+                "session_id":session,"alias":"must-not-run"
+            }}}),
+        };
+        let before = runtime.owned.session_store.get_session(&session).unwrap();
+        for field in [
+            "home_prompt_id",
+            "worker_provider_run_id",
+            "leased_agent_id",
+            "worker_kernel_id",
+            "worker_machine_id",
+            "home_kernel_id",
+        ] {
+            let mut submitted = serde_json::to_value(&context).unwrap();
+            submitted[field] = "no-longer-current".into();
+            let submitted = serde_json::from_value(submitted).unwrap();
+            let refusal = admitted
+                .prepare_forwarded_peer_request(&request(submitted))
+                .await
+                .err()
+                .expect("an outdated reference reached tool dispatch");
+            assert!(
+                refusal.to_string().contains("no longer current"),
+                "{field}: {refusal}"
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .session_store
+                    .get_session(&session)
+                    .unwrap()
+                    .alias(),
+                before.alias()
+            );
+        }
+        assert!(
+            admitted
+                .prepare_forwarded_peer_request(&request(context))
+                .await
+                .is_ok(),
+            "current work must remain admissible after refused requests"
+        );
+    }
+
+    #[tokio::test]
     async fn mp11_immediate_steer_wrong_run_preserves_queue() {
         let (runtime, session, agent, attachment, _) =
             mp11_fixture(crate::DaemonConfig::for_tests()).await;

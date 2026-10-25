@@ -1213,7 +1213,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .unwrap();
     // Check the sibling's own current lease and turn over the real relay,
     // then the elevated agent's binding as a positive control.
-    let forward = |context| {
+    let forward = |context, arguments| {
         send_peer_request_via_temporary_connection(
             &worker.state.config,
             ClientTarget {
@@ -1223,11 +1223,11 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
             RelayPeerRequest::ForwardMetaRuntimeTool {
                 context,
                 tool_name: "chariox_kernel_request".into(),
-                arguments: request.clone(),
+                arguments,
             },
         )
     };
-    let sibling_at_home = forward(sibling_context).await;
+    let sibling_at_home = forward(sibling_context, request.clone()).await;
     let elevated_context = worker
         .router
         .runtime_state
@@ -1235,7 +1235,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .await
         .unwrap()
         .unwrap();
-    let elevated_at_home = forward(elevated_context.clone()).await;
+    let elevated_at_home = forward(elevated_context.clone(), request.clone()).await;
     // Each current causal binding is required independently. A mismatched
     // prompt, provider run or execution lease must deny at home even while
     // this agent's sudo window is live; a valid request still works afterward.
@@ -1245,10 +1245,32 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     stale_run.worker_provider_run_id = "a10-previous-worker-run".into();
     let mut stale_lease = elevated_context.clone();
     stale_lease.leased_agent_id = "a10-previous-leased-agent".into();
-    let stale_prompt_result = forward(stale_prompt).await;
-    let stale_run_result = forward(stale_run).await;
-    let stale_lease_result = forward(stale_lease).await;
-    let valid_after_denials = forward(elevated_context.clone()).await;
+    let alias_before = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&room)
+        .unwrap()
+        .alias()
+        .map(str::to_owned);
+    let forbidden =
+        json!({"request":{"AliasSession":{"session_id":room,"alias":"outdated-request-ran"}}});
+    let stale_prompt_result = forward(stale_prompt, forbidden.clone()).await;
+    let stale_run_result = forward(stale_run, forbidden.clone()).await;
+    let stale_lease_result = forward(stale_lease, forbidden).await;
+    let alias_after = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&room)
+        .unwrap()
+        .alias()
+        .map(str::to_owned);
+    let valid_after_denials = forward(elevated_context.clone(), request.clone()).await;
     // Expiry: both ends refuse once the home deadline passes.
     tokio::time::sleep(
         window_length.saturating_sub(verified.elapsed()) + Duration::from_millis(500),
@@ -1261,7 +1283,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .router
         .dispatch_authenticated_runtime_tool_call(&token, "chariox_kernel_request", request.clone())
         .await;
-    let expired_at_home = forward(elevated_context).await;
+    let expired_at_home = forward(elevated_context, request.clone()).await;
     worker.stop().await;
     fixture.stop().await;
     assert!(
@@ -1298,12 +1320,23 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         matches!(&elevated_at_home, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
         "control: the same path admits the elevated turn: {elevated_at_home:?}"
     );
-    assert!(stale_prompt_result.is_err(), "stale prompt must deny");
-    assert!(stale_run_result.is_err(), "stale provider run must deny");
-    assert!(
-        stale_lease_result.is_err(),
-        "stale leased binding must deny"
+    assert_eq!(
+        alias_after, alias_before,
+        "a refused reference changed the real home session"
     );
+    for (reference, result) in [
+        ("prompt", &stale_prompt_result),
+        ("provider run", &stale_run_result),
+        ("lease", &stale_lease_result),
+    ] {
+        let refusal = result
+            .as_ref()
+            .expect_err("outdated reference reached home dispatch");
+        assert!(
+            refusal.to_string().contains("no longer current"),
+            "{reference}: {refusal}"
+        );
+    }
     assert!(
         matches!(&valid_after_denials, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
         "valid binding remains usable after the denials: {valid_after_denials:?}"
