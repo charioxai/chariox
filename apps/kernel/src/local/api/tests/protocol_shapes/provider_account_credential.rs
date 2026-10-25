@@ -58,7 +58,7 @@ fn local_daemon_protocol_provider_account_credential_shape_is_versioned() {
 }
 
 #[test]
-fn account_copy_public_and_encrypted_peer_requests_are_admitted() {
+fn account_copy_public_source_request_is_admitted() {
     let source = serde_json::json!({"CopyProviderAccountToKernel": {
         "provider":"claude", "account_profile":"work-exact", "operation_id":"op-1",
         "target_kernel_id":"target", "target_key_thumbprint":"a".repeat(64), "replace":false
@@ -126,8 +126,18 @@ fn account_copy_protocol_609_peer_215_snapshot_and_hash() {
         target_kernel_id: "target".into(),
         account_profile: "copy-target".into(),
     };
+    let peer: crate::transport::relay_peer::RelayPeerRequest =
+        serde_json::from_value(serde_json::json!({
+            "kind":"install_provider_account_copy", "binding":{
+                "operation_id":"op-1", "provider":"claude", "source_profile_id":"work",
+                "source_kernel_id":"source", "source_key_thumbprint":"b".repeat(64),
+                "target_kernel_id":"target", "target_key_thumbprint":"a".repeat(64),"replace":false
+            },"credential":"opaque-test-credential"
+        }))
+        .unwrap();
     let snapshot = serde_json::json!([
         request,
+        peer,
         LocalDaemonResponse::ProviderAccountCopied {
             receipt: receipt.clone()
         },
@@ -142,6 +152,6 @@ fn account_copy_protocol_609_peer_215_snapshot_and_hash() {
     );
     assert_eq!(
         hash,
-        "d92c0ee16c13a2c607d978b1dc4d41bb3dc151d3538ecd6ba76fa24492a5def7"
+        "43899af76c00f35b24dfde276a44f7345e6d8794197eeb761f9844c99f83555d"
     );
 }

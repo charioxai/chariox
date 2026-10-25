@@ -602,3 +602,70 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
     });
 }
+
+#[test]
+fn account_copy_encrypted_target_entry_point_requires_same_owner() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("account-copy-peer-entry", || async {
+        let _relay = relay_client_test_guard().await;
+        let _home = RelayTestHome::new();
+        let root = PathBuf::from(std::env::var_os("CHARIOX_HOME").unwrap());
+        let _restore = Environment(vec![("HOME", std::env::var_os("HOME"))]);
+        std::env::set_var("HOME", root.join("native-home"));
+        let source = config(&root, "source");
+        let target = config(&root, "target");
+        let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(Mutex::new(DaemonApp::bootstrap(target.clone()).unwrap())),
+            16,
+        ));
+        let canary = "synthetic-encrypted-account-copy-canary";
+        let request = serde_json::json!({"kind":"install_provider_account_copy","binding":{
+            "operation_id":"wrong-owner", "provider":"claude", "source_profile_id":"work-exact",
+            "source_kernel_id":source.daemon_id,"target_kernel_id":target.daemon_id,
+            "source_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
+            "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),"replace":false
+        },"credential":canary});
+        let encrypted = relay_crypto::encrypt_payload_for_peer(
+            &source.relay_private_key,
+            &target.relay_public_key,
+            &serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        let identity = chariox_relay::protocol::RelayCallerIdentity {
+            realm_id: "copy-realm".into(),
+            subject: source.daemon_id.clone(),
+            subject_kind: RelaySubjectKind::Kernel,
+            expires_at_ms: crate::session::unix_epoch_ms() + 60000,
+            token_id: Some("fixture".into()),
+            user_id: Some("another-owner".into()),
+            public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
+                &source.relay_public_key,
+            )),
+        };
+        let (outgoing, _priority, _events) = RelayOutgoingSender::channel(8);
+        let result = crate::transport::relay_client::peer_requests::handle_daemon_peer_request(
+            &router,
+            &Arc::new(RwLock::new(RelayClientState::default())),
+            &outgoing,
+            &source.daemon_id,
+            Some(identity),
+            encrypted,
+        )
+        .await;
+        let public = if let Some(error) = result.error {
+            serde_json::to_value(error).unwrap()
+        } else {
+            let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                &source.relay_private_key,
+                &result.encrypted_response.unwrap(),
+            )
+            .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&decrypted.plaintext).unwrap()
+        };
+        assert!(!public.to_string().contains(canary));
+        assert_eq!(
+            public["code"], "provider_account_copy_unauthorized",
+            "MP-11 account copy must reach its same-owner encrypted admission boundary"
+        );
+    });
+}
