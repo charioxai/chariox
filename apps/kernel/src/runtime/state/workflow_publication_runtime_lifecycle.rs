@@ -809,17 +809,6 @@ async fn start_publication_runtime_claimed(
         .unwrap_or(DEFAULT_PUBLICATION_RUNTIME_HOST)
         .to_string();
     let no_ingress = !publication_has_ingress(&publication);
-    let _port_search = match (request.port, no_ingress) {
-        (None, false) => Some(
-            runtime_state
-                .owned
-                .workflow_publication_runtimes
-                .hold_port_search()
-                .await,
-        ),
-        _ => None,
-    };
-    let port = publication_runtime_port(&host, request.port, no_ingress)?;
     if let Some(existing) = runtime_state
         .owned
         .workflow_publication_runtimes
@@ -859,6 +848,17 @@ async fn start_publication_runtime_claimed(
         });
     }
 
+    let _port_search = match (request.port, no_ingress) {
+        (None, false) => Some(
+            runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .hold_port_search()
+                .await,
+        ),
+        _ => None,
+    };
+    let port = publication_runtime_port(&host, request.port, no_ingress)?;
     let kernel_url = publication_runtime_kernel_url(runtime_state, request.kernel_url.as_deref());
     let package_kernel_url = publication_runtime_package_kernel_url(
         &kernel_url,
