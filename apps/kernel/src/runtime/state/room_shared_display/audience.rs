@@ -273,7 +273,6 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::runtime::state::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 
