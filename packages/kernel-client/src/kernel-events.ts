@@ -29,6 +29,13 @@ export type KernelEvent =
     completed_at_ms: number
   }
   | {
+    event: "agent_turn_changed"
+    session_id: string
+    agent_id: string
+    history_revision: number
+    turn: import("./kernel-types.js").SessionHistoryOutlineTurn
+  }
+  | {
     event: "session_snapshot"
     room_workflows?: import("./kernel-types.js").RoomWorkflowInventory
     session: Record<string, unknown>

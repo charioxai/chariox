@@ -101,6 +101,14 @@ pub(crate) enum KernelEvent {
         message_id: String,
         completed_at_ms: u64,
     },
+    /// Protocol 596: the agent's latest turn changed. `turn` is what
+    /// `GetSessionHistoryOutline` answers for that turn at `history_revision`.
+    AgentTurnChanged {
+        session_id: String,
+        agent_id: String,
+        history_revision: u64,
+        turn: Box<crate::local::SessionHistoryOutlineTurn>,
+    },
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
     },
@@ -288,6 +296,20 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "provider_run_id": provider_run.as_ref().as_ref().map(|run| run.id()),
             "agent_activity": agent_activity,
             "agent_activity_revision": agent_activity_revision,
+        }),
+        KernelEvent::AgentTurnChanged {
+            session_id,
+            agent_id,
+            history_revision,
+            turn,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "agent_turn_changed",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "history_revision": history_revision,
+            "turn_id": turn.turn_id,
+            "lifecycle": turn.lifecycle,
         }),
         KernelEvent::AgentTaskUpdated { session_id, task } => serde_json::json!({
             "event_id": event_id, "event": "agent_task_updated", "session_id": session_id,
@@ -751,6 +773,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::TerminalOutput { .. } => "terminal_output",
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
+        KernelEvent::AgentTurnChanged { .. } => "agent_turn_changed",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
@@ -785,6 +808,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
             notices.first().map(|notice| notice.session_id.as_str())
         }
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::AgentTurnChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
@@ -849,7 +873,8 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         } => recipient_attachment_ids
             .iter()
             .any(|id| id == attachment_id),
-        KernelEvent::RoomWorkflowsChanged { .. }
+        KernelEvent::AgentTurnChanged { .. }
+        | KernelEvent::RoomWorkflowsChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }

@@ -1,5 +1,6 @@
 use super::*;
 
+mod agent_turn_changed;
 #[cfg(unix)]
 mod kernel_browser_terminals;
 mod task_subscriptions;

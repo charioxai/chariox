@@ -5,6 +5,7 @@ use std::future::Future;
 use super::request_errors::map_relay_error;
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
+use crate::transport::agent_turn_feed::AgentTurnFeed;
 use crate::transport::kernel_protocol::WaitingRoomInventoryEventProjection;
 use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 use chariox_relay::protocol::RelayCallerIdentity;
@@ -444,6 +445,7 @@ pub(super) async fn run_relay_subscription_loop(
     let mut next_snapshot_reconciliation_at = Instant::now();
     let mut next_attachment_heartbeat_at = Instant::now();
     let mut next_heartbeat_at = Instant::now();
+    let mut agent_turns = AgentTurnFeed::default();
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
@@ -551,6 +553,7 @@ pub(super) async fn run_relay_subscription_loop(
                             previous_snapshot.as_ref(),
                             !workflow_run_updates.is_empty(),
                         );
+                        agent_turns.observe_snapshot(&snapshot);
                         previous_snapshot = Some(snapshot);
                         events
                     })
@@ -570,6 +573,12 @@ pub(super) async fn run_relay_subscription_loop(
                     {
                         return;
                     }
+                }
+                for agent_id in records
+                    .iter()
+                    .filter_map(|record| record.agent_id.as_deref())
+                {
+                    agent_turns.mark_changed(agent_id);
                 }
                 if !records.is_empty() {
                     let mut terminal_output_failed = false;
@@ -610,6 +619,9 @@ pub(super) async fn run_relay_subscription_loop(
                     break;
                 }
                 for completion in completions {
+                    if let Some(agent_id) = completion.agent_id.as_deref() {
+                        agent_turns.mark_changed(agent_id);
+                    }
                     if emit_relay_event(
                         &router,
                         &outgoing_tx,
@@ -671,6 +683,27 @@ pub(super) async fn run_relay_subscription_loop(
                         break;
                     }
                 }
+                let mut turn_event_failed = false;
+                for event in agent_turns.flush(&router, &session_id).await {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        event,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        turn_event_failed = true;
+                        break;
+                    }
+                }
+                if turn_event_failed {
+                    break;
+                }
 
                 if Instant::now() >= next_heartbeat_at {
                     if emit_relay_event(
@@ -716,7 +749,11 @@ pub(super) async fn run_relay_subscription_loop(
         let _ = timeout(
             next_relay_subscription_wait_duration(
                 next_heartbeat_at,
-                next_snapshot_reconciliation_at,
+                agent_turns
+                    .next_due()
+                    .map_or(next_snapshot_reconciliation_at, |due| {
+                        due.min(next_snapshot_reconciliation_at)
+                    }),
             ),
             async {
                 tokio::select! {

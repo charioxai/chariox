@@ -172,6 +172,8 @@ macro_rules! public_events {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
                 KernelEvent::PasskeyPromptsChanged { .. } => {},
+                // Transcript turns are for the session's own clients, not external streams.
+                KernelEvent::AgentTurnChanged { .. } => {},
                 // MP-11: browser display frames stay off external streams.
                 KernelEvent::KernelBrowserFrame { .. } => {},
             }
