@@ -3,6 +3,10 @@ use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
+        Operation::AdvanceDeadlineClock { now } => {
+            super::deadline_clock::advance(tx, now, super::deadline_clock::instance_id(), false)?;
+            Ok(Outcome::Saved)
+        }
         Operation::SetDeadline {
             room,
             agent,

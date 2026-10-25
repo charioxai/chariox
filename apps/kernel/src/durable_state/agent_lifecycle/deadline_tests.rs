@@ -79,3 +79,25 @@ fn lane_deadline_cannot_be_extended_or_fired_early() {
     assert_eq!(value.deadline_ms, 90);
     assert_eq!(value.state, AgentDeadlineState::Armed);
 }
+
+#[test]
+fn armed_deadline_reads_advance_through_the_durable_writer() {
+    let fixture = tests::Fixture::new();
+    fixture.apply(Operation::SetDeadline {
+        room: "room".into(),
+        agent: "parent".into(),
+        deadline: crate::session::unix_epoch_ms() + 60_000,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    assert_eq!(
+        fixture
+            .store
+            .agent_deadline("room", "parent")
+            .unwrap()
+            .unwrap()
+            .state,
+        AgentDeadlineState::Armed
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    assert_eq!(fixture.store.agent_deadlines().unwrap().len(), 1);
+}
