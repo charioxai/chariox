@@ -29,7 +29,6 @@ pub(crate) struct GrantScope {
 struct Standing {
     scope: GrantScope,
     allow: BTreeSet<String>,
-    ask: BTreeSet<String>,
 }
 
 /// Grants by agent id. The kernel's memory only: a kernel restart ends them.
@@ -50,17 +49,14 @@ impl StandingGrants {
             .or_insert_with(|| Standing {
                 scope: scope.clone(),
                 allow: BTreeSet::new(),
-                ask: BTreeSet::new(),
             });
         if standing.scope != scope {
             *standing = Standing {
                 scope,
                 allow: BTreeSet::new(),
-                ask: BTreeSet::new(),
             };
         }
         standing.allow.extend(grant.allow.iter().cloned());
-        standing.ask.extend(grant.ask.iter().cloned());
     }
 
     /// Ends this agent's grant: its scope changed, even if it later changes back.
@@ -90,8 +86,6 @@ impl StandingGrants {
             .all(|rule| standing.allow.contains(rule))
             .then(|| SessionGrant {
                 allow: standing.allow.iter().cloned().collect(),
-                ask: standing.ask.iter().cloned().collect(),
-                ask_names: Vec::new(),
             })
     }
 }
@@ -111,8 +105,6 @@ mod tests {
     fn grant(allow: &[&str]) -> SessionGrant {
         SessionGrant {
             allow: allow.iter().map(|rule| rule.to_string()).collect(),
-            ask: Vec::new(),
-            ask_names: Vec::new(),
         }
     }
 

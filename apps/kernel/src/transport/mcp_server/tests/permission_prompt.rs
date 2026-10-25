@@ -865,7 +865,7 @@ async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rul
         })
     );
 
-    // A file write grants the session's working directory and keeps credential names asking.
+    // A file write grants the session's working directory without filename exceptions.
     let (call, interaction) = start_tool_prompt(
         &router,
         CLAUDE_TOKEN,
@@ -888,35 +888,10 @@ async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rul
         additions[0]["rules"],
         serde_json::json!([{"toolName": "Edit", "ruleContent": "//work/app/**"}])
     );
-    assert_eq!(additions[1]["behavior"], "ask");
+    assert_eq!(additions.len(), 1);
     assert!(additions
         .iter()
         .all(|addition| addition["destination"] == "session"));
-
-    // A credential file is granted by itself, so the directory's credential asks stay as they are.
-    let (call, interaction) = start_tool_prompt(
-        &router,
-        CLAUDE_TOKEN,
-        session.id(),
-        "toolu_env",
-        "Write",
-        serde_json::json!({"file_path": "/work/app/.env"}),
-    )
-    .await;
-    assert_eq!(
-        interaction.choices()[1].label(),
-        "Allow for this session: Edit(//work/app/.env)"
-    );
-    choose(interaction, "allow_session")
-        .await
-        .expect("allow_session should resolve");
-    let granted = answer(call).await;
-    let additions = granted["updatedPermissions"].as_array().expect("additions");
-    assert_eq!(additions.len(), 1);
-    assert_eq!(
-        additions[0]["rules"],
-        serde_json::json!([{"toolName": "Edit", "ruleContent": "//work/app/.env"}])
-    );
 
     // No rule is stated for a command outside the prefixes or a file outside the working
     // directory: two buttons, and the third cannot be chosen.
@@ -1049,12 +1024,15 @@ async fn an_allow_for_session_grant_outlives_the_claude_process() {
         .await["behavior"],
         "allow"
     );
-    // Files whose names only look like credentials are ordinary files in the granted directory.
+    // Every file in the authorized directory is covered, including credential-like names.
     for round in 0..2 {
         for (id, file) in [
             ("credentials_rs", "/work/app/src/credentials.rs"),
             ("env_example", "/work/app/.env.example"),
             ("secrets_rs", "/work/app/src/secrets.rs"),
+            ("env", "/work/app/.env"),
+            ("pem", "/work/app/server.pem"),
+            ("aws", "/work/app/.aws/credentials"),
         ] {
             assert_eq!(
                 call_now(
@@ -1070,7 +1048,7 @@ async fn an_allow_for_session_grant_outlives_the_claude_process() {
     }
     assert!(active_interactions(&router, session.id()).is_empty());
 
-    // What the person did not grant still asks: another command, a credential file.
+    // Commands outside the approved prefix still ask.
     for (id, tool, input) in [
         (
             "toolu_push",
@@ -1081,11 +1059,6 @@ async fn an_allow_for_session_grant_outlives_the_claude_process() {
             "toolu_check",
             "Bash",
             serde_json::json!({"command": "cargo check"}),
-        ),
-        (
-            "toolu_env",
-            "Write",
-            serde_json::json!({"file_path": "/work/app/.env", "content": "x"}),
         ),
     ] {
         let (call, interaction) =
@@ -1512,5 +1485,58 @@ async fn an_allow_for_session_grant_ends_when_the_working_directory_changes_back
     );
     next_turn(&app, session.id(), &agent_id, 1).await;
     assert!(!cargo_test_is_covered(&router, session.id(), "toolu_after_directory_change").await);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: filenames do not change a directory grant.
+#[tokio::test]
+async fn directory_grant_covers_all_authorized_file_names_without_another_prompt() {
+    let (router, session, root) = claude_print_fixture();
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_directory",
+        "Write",
+        serde_json::json!({"file_path":"/work/app/main.rs","content":"fixture"}),
+    )
+    .await;
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+        .await
+        .unwrap();
+    decision(&call.await.unwrap());
+    for (index, file) in [
+        ".env",
+        ".env.customer",
+        "server.pem",
+        "tls.key",
+        ".aws/credentials",
+        ".ssh/id_ed25519",
+        ".config/gh/hosts.yml",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for repeat in 0..2 {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                rpc(
+                    &router,
+                    CLAUDE_TOKEN,
+                    "tools/call",
+                    serde_json::json!({"name":"chariox.permission_prompt","arguments":{
+                        "tool_name":"Write","tool_use_id":format!("toolu_name_{index}_{repeat}"),
+                        "input":{"file_path":format!("/work/app/{file}"),"content":"fixture"}
+                    }}),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("directory approval must already cover {file}"));
+            assert_eq!(decision(&response)["behavior"], "allow");
+            assert!(active_interactions(&router, session.id()).is_empty());
+        }
+    }
     let _ = std::fs::remove_dir_all(root);
 }

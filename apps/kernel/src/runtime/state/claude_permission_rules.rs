@@ -25,10 +25,6 @@ const LABEL_LIMIT: usize = 64;
 pub(crate) struct SessionGrant {
     /// Rules that allow, as Claude writes them: `Bash(cargo test:*)`.
     pub(super) allow: Vec<String>,
-    /// Rules that keep asking inside what the allow rules cover.
-    pub(super) ask: Vec<String>,
-    /// The names behind the ask rules, for the prompt text.
-    pub(super) ask_names: Vec<String>,
 }
 
 impl SessionGrant {
@@ -65,31 +61,17 @@ impl SessionGrant {
 
     /// The part of the prompt text that lists everything the choice grants.
     pub(crate) fn description(&self) -> String {
-        let mut text = format!("Allow for this session grants: {}", self.allow.join(", "));
-        if !self.ask_names.is_empty() {
-            text.push_str(&format!(
-                "\nThese names still ask, even then: {}",
-                self.ask_names.join(", ")
-            ));
-        }
-        text
+        format!("Allow for this session grants: {}", self.allow.join(", "))
     }
 
-    /// Claude's `updatedPermissions`: session-only rule additions.
+    /// Claude's session-only allow rules.
     fn updated_permissions(&self) -> Value {
-        let additions = [("allow", &self.allow), ("ask", &self.ask)]
-            .into_iter()
-            .filter(|(_, rules)| !rules.is_empty())
-            .map(|(behavior, rules)| {
-                json!({
-                    "type": "addRules",
-                    "behavior": behavior,
-                    "destination": "session",
-                    "rules": rules.iter().map(|rule| Self::rule(rule)).collect::<Vec<_>>(),
-                })
-            })
-            .collect::<Vec<_>>();
-        Value::Array(additions)
+        json!([{
+            "type": "addRules",
+            "behavior": "allow",
+            "destination": "session",
+            "rules": self.allow.iter().map(|rule| Self::rule(rule)).collect::<Vec<_>>(),
+        }])
     }
 }
 
@@ -104,20 +86,12 @@ pub(crate) fn session_grant(
             let rules = bash::prefix_rules(input.get("command")?.as_str()?, working_directory?)?;
             Some(SessionGrant {
                 allow: rules.iter().map(|rule| format!("Bash({rule})")).collect(),
-                ask: Vec::new(),
-                ask_names: Vec::new(),
             })
         }
         "Write" | "Edit" | "MultiEdit" => {
-            let granted = edit::edit_grant(input.get("file_path")?.as_str()?, working_directory?)?;
+            let rule = edit::edit_rule(input.get("file_path")?.as_str()?, working_directory?)?;
             Some(SessionGrant {
-                allow: vec![format!("Edit({})", granted.allow)],
-                ask: granted
-                    .ask
-                    .iter()
-                    .map(|rule| format!("Edit({rule})"))
-                    .collect(),
-                ask_names: granted.ask_names,
+                allow: vec![format!("Edit({rule})")],
             })
         }
         _ => None,
@@ -171,50 +145,34 @@ mod tests {
     }
 
     #[test]
-    fn file_tools_grant_the_working_directory_and_keep_credential_names_asking() {
+    fn file_tools_grant_the_directory_without_filename_exceptions() {
         for tool in ["Write", "Edit", "MultiEdit"] {
-            let granted = grant(tool, json!({"file_path": "/root/work/app/src/c.txt"}))
-                .unwrap_or_else(|| panic!("{tool} should get a grant"));
-            assert_eq!(granted.allow, ["Edit(//root/work/app/**)"], "{tool}");
-            assert!(
-                granted
-                    .ask
-                    .contains(&"Edit(//root/work/app/**/.env)".to_string()),
-                "{tool}"
-            );
+            for file in [
+                "src/c.txt",
+                ".env",
+                ".env.customer",
+                "server.pem",
+                "tls.key",
+                ".aws/credentials",
+                ".ssh/id_ed25519",
+            ] {
+                let granted = grant(tool, json!({"file_path": format!("/root/work/app/{file}")}))
+                    .expect("directory grant");
+                assert_eq!(granted.allow, ["Edit(//root/work/app/**)"]);
+                assert_eq!(
+                    granted.description(),
+                    "Allow for this session grants: Edit(//root/work/app/**)"
+                );
+                let answer = allow_for_session(json!({}), &granted);
+                assert_eq!(
+                    answer["updatedPermissions"],
+                    json!([{
+                        "type":"addRules", "behavior":"allow", "destination":"session",
+                        "rules":[{"toolName":"Edit","ruleContent":"//root/work/app/**"}],
+                    }])
+                );
+            }
         }
-        let granted = grant("Write", json!({"file_path": "/root/work/app/c.txt"})).expect("grant");
-        let text = granted.description();
-        assert!(
-            text.starts_with("Allow for this session grants: Edit(//root/work/app/**)\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains(".env, .env.*") && text.contains(".ssh") && text.contains(".config/gh"),
-            "{text}"
-        );
-        assert!(text.len() < 400, "{text}");
-        let answer = allow_for_session(json!({}), &granted);
-        let additions = answer["updatedPermissions"].as_array().expect("additions");
-        assert_eq!(additions.len(), 2);
-        assert_eq!(additions[0]["behavior"], "allow");
-        assert_eq!(additions[1]["behavior"], "ask");
-        assert_eq!(
-            additions[0]["rules"],
-            json!([{"toolName": "Edit", "ruleContent": "//root/work/app/**"}])
-        );
-    }
-
-    #[test]
-    fn a_credential_file_gets_only_its_own_rule() {
-        let granted =
-            grant("Write", json!({"file_path": "/root/work/app/.env"})).expect("exact grant");
-        assert_eq!(granted.allow, ["Edit(//root/work/app/.env)"]);
-        assert!(granted.ask.is_empty());
-        assert_eq!(
-            granted.label(),
-            "Allow for this session: Edit(//root/work/app/.env)"
-        );
     }
 
     #[test]
