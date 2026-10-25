@@ -78,6 +78,20 @@ fn claim(config: &DaemonConfig) -> RelayTokenClaims {
         entitlements_version: None,
     }
 }
+async fn wait_for_copy_peer(registry: Arc<RwLock<chariox_relay::server::RelayRegistry>>, id: &str) {
+    for _ in 0..200 {
+        if registry
+            .read()
+            .await
+            .daemon_in_realm("copy-realm", id)
+            .is_some()
+        {
+            return;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    panic!("account-copy peer did not register in its enrolled realm");
+}
 async fn source_request(
     router: &CommandRouter,
     request: serde_json::Value,
@@ -256,8 +270,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             url,
             target.relay_token.clone().unwrap(),
         ));
-        wait_for_daemon_registration(registry.clone(), &source.daemon_id).await;
-        wait_for_daemon_registration(registry, &target.daemon_id).await;
+        wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
+        wait_for_copy_peer(registry, &target.daemon_id).await;
         let source_vault = PathBuf::from(&source.user_config.credential_vault.path);
         let target_vault = PathBuf::from(&target.user_config.credential_vault.path);
         crate::secret::unlock_chariox_encrypted_vault(
@@ -582,7 +596,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             .await
             .unwrap()
             .unwrap();
-        let mut unavailable = good;
+        let unavailable = good;
 
         assert_code(
             source_request(&source_router, unavailable).await,
