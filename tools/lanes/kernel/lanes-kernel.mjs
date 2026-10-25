@@ -12,6 +12,7 @@ import { inspectWorker } from './worker-recovery.mjs';
 import { restartWithSandbox } from './restart.mjs';
 import { syncWorkerAgents, setWorkerProfileDefault } from './worker-agents.mjs';
 import { probeClaudeToken, readToken, replaceClaudeCredential } from './claude-account.mjs';
+import { parseCredentialArgs, storeClaudeProfile } from './claude-profile.mjs';
 
 const STATE = process.env.LANES_KERNEL_STATE || '/root/.chariox/dev/lanes-kernel';
 // Put the launcher, both kernels, holders and loopd into the shared lane cgroup together.
@@ -218,11 +219,23 @@ async function ensureClaudeProfile() {
 
 // Re-stores the running executor's lanes-claude credential in place (no kernel restart, no worker stopped). A Claude process takes the
 // credential when it is launched, so a worker already running keeps the one it started with until its process is relaunched.
-async function setClaudeCredential(fromFile) {
+// With a label, another Claude account lives in its own profile of that label (created when missing) and only queue entries that
+// name it (`account`) launch on it; lanes-claude and the kernel default stay as they are.
+async function setClaudeCredential({ from, profile: label }) {
+  if (!kernelPid('executor')) throw new Error('the executor kernel is not running; start it first');
+  if (label) {
+    const token = readToken(from);
+    const stored = await storeClaudeProfile({
+      rpc: request => rpc('executor', request), label, token,
+      configDirectory: id => { const directory = file('executor', `chariox/state/provider-accounts/local/claude/${id}/claude`); return existsSync(directory) ? directory : undefined; },
+      agentSource: config.agentDefinitions || '/root/.claude/agents', agentNames: config.workerAgents,
+    });
+    const probe = await probeClaudeToken(token);
+    return { label, ...stored, org: probe.org, probe: probe.usable ? 'usable' : probe.reason };
+  }
   const profileFile = file('executor', 'claude-profile.id');
   if (!existsSync(profileFile)) throw new Error('no lanes-claude profile yet: run start first');
-  if (!kernelPid('executor')) throw new Error('the executor kernel is not running; start it first');
-  const token = readToken(fromFile ?? config.claudeToken);
+  const token = readToken(from ?? config.claudeToken);
   const auth = await replaceClaudeCredential({ rpc: request => rpc('executor', request), profileId: readText(profileFile), token });
   const probe = await probeClaudeToken(token);
   return { claudeProfile: readText(profileFile), auth, org: probe.org, probe: probe.usable ? 'usable' : probe.reason };
@@ -521,8 +534,9 @@ try {
     else { console.error('usage: lanes-kernel.mjs loopd install|start|stop'); process.exitCode = 2; }
   }
   else if (command === 'set-claude-credential') {
-    if (rest.length && !(rest[0] === '--from' && rest[1] && rest.length === 2)) { console.error('usage: lanes-kernel.mjs set-claude-credential [--from <token-file>]'); process.exitCode = 2; }
-    else out(await setClaudeCredential(rest[1]));
+    const options = parseCredentialArgs(rest);
+    if (options.error) { console.error(`${options.error}\nusage: lanes-kernel.mjs set-claude-credential [--profile <label> --from <token-file> | --from <token-file>]`); process.exitCode = 2; }
+    else out(await setClaudeCredential(options));
   }
   else if (command === 'grant') out(await grantAccess(rest[0]));
   else if (command === 'exec') {
@@ -538,7 +552,7 @@ try {
     const env = roleEnv('coordinator');
     for (const key of ['CHARIOX_HOME', 'CHARIOX_DAEMON_SOCKET']) console.log(`${key}=${env[key]}`);
     console.log(`CHARIOX_BIN=${join(STATE, 'bin/chariox')}`, `CHARIOX_COORDINATOR_HOME=${join(STATE, 'loop')}`);
-  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant [seat]|loopd|exec [--seat coordinator]|env|set-claude-credential [--from file]'); process.exitCode = 2; }
+  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant [seat]|loopd|exec [--seat coordinator]|env|set-claude-credential [--profile label] [--from file]'); process.exitCode = 2; }
 } catch (error) {
   console.error(JSON.stringify({ error: String(error.message).replace(/(?:Bearer\s+|token[=:]\s*)\S+/gi, '[redacted]').slice(0, 300) }));
   process.exitCode = 1;

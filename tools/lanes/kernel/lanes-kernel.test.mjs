@@ -93,3 +93,14 @@ test('only IS_SANDBOX=1 in the launch environment reaches worker processes', asy
     assert.equal(result.stdout, value === '1' ? '1' : 'unset');
   }
 });
+
+test('set-claude-credential refuses --profile without --from before touching any kernel', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'lanes-kernel-')); t.after(() => rm(state, { recursive: true, force: true }));
+  await writeFile(join(state, 'config.json'), JSON.stringify({ toolchain: state }));
+  const run = (...args) => spawnSync(process.execPath, [script, 'set-claude-credential', ...args], { env: { PATH: process.env.PATH, HOME: state, LANES_KERNEL_STATE: state }, encoding: 'utf8' });
+  const result = run('--profile', 'lanes-claude-old');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--profile needs --from <token-file>/);
+  assert.match(run('--profile', '../x', '--from', '/t').stderr, /is not a profile label/);
+  assert.match(run('--from', '/t').stderr, /executor kernel is not running/, 'the unchanged form still goes to the kernel check');
+});
