@@ -428,3 +428,67 @@ test('round.mjs serve starts as a real process, serves the queue and stops clean
   assert.equal(code, 0);
   assert.match(output, /"kind":"stopped"/);
 });
+
+test('a stop request targets the current loopd round, collects it, and releases only that lane', async t => {
+  const { requestRoundStop } = await import('./round-stop.mjs');
+  const r = await rig(t);
+  await mkdir(join(r.layout.agents, 'alpha'), { recursive: true });
+  await mkdir(join(r.layout.agents, 'beta'), { recursive: true });
+  await r.drop('alpha', 'r25'); await r.drop('beta', 'r1');
+  await mkdir(r.layout.home, { recursive: true });
+  // The old classic record must never be selected by a loopd stop.
+  await writeFile(join(r.layout.home, 'alpha.json'), JSON.stringify({ stopped: true, launch: { agentId: 'stale-classic-worker' } }));
+  const log = r.options.log;
+  r.options.log = (kind, detail) => { log(kind, detail); if (['driver_error', 'service_error'].includes(kind)) { r.controller.abort(); assert.fail(JSON.stringify(detail)); } };
+  let requested = false;
+  r.script.push(async () => {
+    const request = await requestRoundStop('alpha', r.options);
+    assert.equal(request.key, 'alpha-r25');
+    assert.equal(request.launch.agentId, 'agent-alpha-r25');
+    requested = true;
+    await r.drop('alpha', 'r26');
+    return [];
+  });
+  r.script.push(async () => {
+    assert.equal((await runFile(r, 'alpha')).finishReason, 'stopped');
+    return [];
+  });
+  r.script.push(async () => {
+    assert.equal(r.launches.has('alpha-r26'), true, 'the successor takes the released lane');
+    assert.equal(r.calls.some(c => c.op === 'stop' && c.taskId === 'beta-r1'), false);
+    assert.equal(r.calls.some(c => c.op === 'stop' && c.input.agentId === 'stale-classic-worker'), false);
+    r.controller.abort();
+    return [];
+  });
+  await serve(r.options);
+  assert.equal(requested, true);
+  const stopped = JSON.parse(await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r25.json'), 'utf8'));
+  assert.equal(stopped.finishReason, 'stopped');
+  assert.ok(r.calls.findIndex(c => c.op === 'stop' && c.taskId === 'alpha-r25') < r.calls.findIndex(c => c.op === 'fetch' && c.taskId === 'alpha-r25'));
+  assert.ok((await readdir(join(r.layout.queue, 'done'))).includes('alpha-r25.json'));
+});
+
+test('an unconfirmed requested stop retains its lane until physical cleanup succeeds', async t => {
+  const { requestRoundStop } = await import('./round-stop.mjs');
+  const r = await rig(t);
+  for (const lane of ['alpha', 'beta']) await mkdir(join(r.layout.agents, lane), { recursive: true });
+  await r.drop('alpha', 'r25'); await r.drop('beta', 'r1');
+  const adapter = r.options.adapter;
+  let stopped = false;
+  r.options.adapter = (op, input) => op === 'stop' && input.taskId === 'alpha-r25' && !stopped ? Promise.resolve({ stopped: false }) : adapter(op, input);
+  r.script.push(async () => { await requestRoundStop('alpha', r.options); await r.drop('alpha', 'r26'); return []; });
+  r.script.push(async () => {
+    const run = await runFile(r, 'alpha');
+    assert.equal(run.stopPending, true); assert.equal(run.finishReason, undefined);
+    assert.equal(r.launches.has('alpha-r26'), false);
+    stopped = true; return [];
+  });
+  r.script.push(async () => []);
+  r.script.push(async () => { assert.equal(r.launches.has('alpha-r26'), true); r.controller.abort(); return []; });
+  const log = r.options.log;
+  r.options.log = (kind, detail) => { log(kind, detail); if (['driver_error', 'service_error'].includes(kind)) { r.controller.abort(); assert.fail(JSON.stringify(detail)); } };
+  await serve(r.options);
+  const archived = JSON.parse(await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r25.json'), 'utf8'));
+  assert.equal(archived.finishReason, 'stopped');
+  assert.equal(r.calls.some(c => c.op === 'stop' && c.taskId === 'beta-r1'), false);
+});

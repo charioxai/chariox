@@ -7,6 +7,7 @@ import { followLaunch } from './events.mjs';
 import { classifyDecision } from './decisions.mjs';
 import { execute, acceptanceIssues, LaneError } from '../lanes.mjs';
 import { newSections } from './sections.mjs';
+import { stopRequestPath, matchesStop } from './round-stop.mjs';
 import { tryLaneLock, releaseLaneLock } from './lane-lock.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -89,7 +90,7 @@ export function createRound(options) {
 
   // A reply that failed stays unresolved: the next read of the lane's status lists the decision again and it is retried.
   const answer = async (lane, id, summary, known) => {
-    if (!id || lane.run.permissions.some(p => p.interactionId === id && p.choice)) return;
+    if (lane.stopping || !id || lane.run.permissions.some(p => p.interactionId === id && p.choice)) return;
     const interaction = known ?? await detailsFor(lane, id);
     const verdict = classifyDecision(interaction);
     if (!verdict.routine) {
@@ -135,6 +136,7 @@ export function createRound(options) {
   // A section that could not be delivered stays pending: the next wake sends the same content, which resumes the
   // same steer receipt. Only a worker that has settled, or ten failures in a row, ends the attempts.
   const deliverNotes = async lane => {
+    if (lane.stopping) return new Set();
     const text = await readFile(lane.entry.inbox, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
     const sections = newSections(text, lane.run.inboxOffset);
     const touched = new Set();
@@ -198,6 +200,7 @@ export function createRound(options) {
   // invalid file gets them as its next prompt instead of being collected. At most ACCEPTANCE_NUDGES per round; after that the
   // problems are reported with the collection as before.
   const nudgeAcceptance = async lane => {
+    if (lane.stopping) return false;
     const path = join(dirname(lane.entry.runFile), 'ACCEPTANCE_UPDATE.json');
     let text; try { text = await readFile(path, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
     let issues; try { issues = acceptanceIssues(JSON.parse(text)); } catch { issues = [{ field: 'file', problem: 'is not valid JSON' }]; }
@@ -268,7 +271,7 @@ export function createRound(options) {
   const collect = async (lane, reason) => {
     await saveLastMessage(lane);
     try {
-      if (reason === 'hard_stop') await stopLane(lane);
+      if (['hard_stop', 'stopped'].includes(reason)) await stopLane(lane);
       const finished = await coordinator('lanefin', [lane.entry.lane, ...(reason === 'worker_lost' ? ['worker_lost'] : [])]);
       lane.run.head = finished.bundle?.head;
       lane.run.bundle = finished.bundle?.path;
@@ -276,7 +279,7 @@ export function createRound(options) {
       lane.run.files = Object.keys(finished.files || {});
       if (finished.acceptanceIssues) lane.run.acceptanceIssues = finished.acceptanceIssues;
       lane.run.extraBundles = await bundleExtras(lane);
-      if (reason !== 'hard_stop') await stopLane(lane);
+      if (!['hard_stop', 'stopped'].includes(reason)) await stopLane(lane);
       lane.run.finishReason = reason;
     } catch (error) {
       // New work reached the worker after it was read idle (a direct prompt): it is not a failed collection and must not be stopped.
@@ -320,6 +323,14 @@ export function createRound(options) {
   let rereadAll = false;
   // One wake: wait on the shared inbox, answer, deliver notes, detect finishes and hard stops.
   const step = async wakeMinutes => {
+    for (const lane of pending()) {
+      const request = await read(stopRequestPath(home, lane.entry.lane, lane.run.launchedAtMs)).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+      if (!request) continue;
+      if (!matchesStop(request, lane.run)) throw new LaneError('round_stop_mismatch', `Stop request does not match ${lane.entry.lane}; inspect its saved round identity.`);
+      lane.stopping = true;
+      await collectUnderLock(lane, 'stopped');
+    }
+    if (!pending().length) return;
     let batch;
     try { batch = await coordinator('watch', [String(wakeMinutes)]); }
     catch (error) {
@@ -340,6 +351,7 @@ export function createRound(options) {
     for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
     for (const lane of pending()) {
       lane.run.lastKernelSeenAtMs = now();
+      if (lane.stopping) continue;
       if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000 + (lane.run.pausedMs ?? 0)) { await collectUnderLock(lane, 'hard_stop'); continue; }
       // A change seen in a lane's first minute is read at the next wake, not lost.
       // Events can be missed (a worker that finishes before the inbox sees it), so every lane is also read once in its

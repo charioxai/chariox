@@ -15,7 +15,8 @@ export async function runRound(spec, options = {}) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
-    if (process.argv[2] === 'serve') await (await import('./loopd.mjs')).main();
+    if (process.argv[2] === 'stop') console.log(JSON.stringify(await (await import('./round-stop.mjs')).stopRound(process.argv[3], { expectedRound: process.argv[4] })));
+    else if (process.argv[2] === 'serve') await (await import('./loopd.mjs')).main();
     else {
       const spec = await read(process.argv[2]);
       spec.home ??= process.env.CHARIOX_COORDINATOR_HOME;
