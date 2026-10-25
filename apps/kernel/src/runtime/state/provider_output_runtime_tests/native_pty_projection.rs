@@ -35,7 +35,7 @@ async fn exited_pty_is_drained_before_liveness_settlement() {
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec![
                 "-lc".to_string(),
-                "printf '%s\\n' 'Error: --dangerously-skip-permissions cannot be used with root/sudo privileges'; exit 1".to_string(),
+                "printf '%s\\n' '--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons'; exit 1".to_string(),
             ],
             pty_env: std::collections::BTreeMap::new(),
             pty_env_remove: Vec::new(),
@@ -95,8 +95,7 @@ async fn exited_pty_is_drained_before_liveness_settlement() {
     let diagnostic = run
         .terminal_diagnostic()
         .expect("provider terminal diagnostic should be recorded");
-    assert!(diagnostic.contains("terminal permission error"));
-    assert!(diagnostic.contains("--dangerously-skip-permissions"));
+    assert_eq!(diagnostic, "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.");
 }
 
 #[tokio::test]

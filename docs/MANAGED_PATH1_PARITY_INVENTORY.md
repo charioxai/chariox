@@ -1,5 +1,23 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 root Claude YOLO compatibility (2026-10-25)
+
+Ordinary root kernels now apply the same Claude compatibility marker already
+used inside managed bubblewrap: `IS_SANDBOX=1`. The ordinary override is scoped
+to effective UID 0 and YOLO Claude agents, including permission changes that
+restart a running provider. Required mode removes the shim from that run's
+explicit environment; inherited operator settings remain the operator's choice.
+Non-root launches and other adapters receive no override. The managed namespace
+policy remains unchanged.
+
+The shared provider failure classifier maps Claude's recorded root refusal to
+an actionable error through the existing failure pane. There is no protocol
+shape or shutdown-policy change. See [the self-hosting guide and offline
+version-bump drill](RUNNING_LOCAL.md#claude-yolo-when-self-hosting-as-root).
+The drill and focused real root-kernel comparison establish this compatibility
+case; they do not close the full ordinary/managed MP-10 matrix or replace
+independent review of this MP-11 provider-launch change.
+
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
 The real WHATWG navigation timed out repeatedly creating a world that Chromium
