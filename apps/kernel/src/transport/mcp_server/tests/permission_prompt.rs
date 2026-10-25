@@ -1207,6 +1207,173 @@ fn end_turns(app: &DaemonApp) {
     }
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: defaults never implicitly cancel inherited work.
+#[tokio::test]
+async fn session_defaults_change_preserves_active_inherited_claude_turn() {
+    use crate::local::{LocalDaemonRequest, UpdateSessionConfigRequest};
+    for (key, value) in [("agents.mode", "plan"), ("agents.permissions", "yolo")] {
+        let (router, session, agent_id, root, app) = claude_print_fixture_with_app();
+        let attachment = crate::app::KernelSessionService::new(&mut *app.lock().await)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "active-defaults",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        {
+            let mut guard = app.lock().await;
+            end_turns(&guard);
+            let admitted = guard
+                .prompt_owner_submit_prepared_prompt(
+                    session.id(),
+                    crate::session::PromptQueueItem::new(
+                        "fixture-print-turn",
+                        attachment.id(),
+                        &agent_id,
+                        "keep doing the active work",
+                        crate::session::PromptStatus::Queued,
+                    ),
+                    false,
+                )
+                .unwrap();
+            assert!(matches!(
+                admitted,
+                crate::session::PromptSubmissionOutcome::Started { .. }
+            ));
+            guard
+                .active_turn_store()
+                .start(crate::app::ActiveTurnState::new(
+                    session.id().into(),
+                    agent_id.clone(),
+                    "fixture-print-turn".into(),
+                    "provider-run-claude-print".into(),
+                ));
+        }
+        grant_cargo_test(&router, session.id(), "toolu_grant").await;
+        let before = app
+            .lock()
+            .await
+            .sessions()
+            .get_session(session.id())
+            .unwrap();
+        let request = LocalDaemonRequest::UpdateSessionConfig(UpdateSessionConfigRequest {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            values: std::collections::BTreeMap::from([(key.into(), value.into())]),
+            requires_idle: false,
+        });
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "active-defaults",
+            None,
+            None,
+            &request,
+        );
+        let result = router.dispatch(command, request).await;
+        assert!(matches!(result, Err(crate::DaemonError::ConfigChangeRejectedWhilePromptRunning { .. })),
+            "an affected active turn must refuse before defaults or provider state change: {result:?}");
+        let guard = app.lock().await;
+        assert_eq!(
+            guard
+                .sessions()
+                .get_session(session.id())
+                .unwrap()
+                .config_state(),
+            before.config_state()
+        );
+        assert_eq!(
+            guard
+                .providers()
+                .get_run_for_agent(session.id(), &agent_id)
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert_eq!(guard.active_turn_store().snapshot().len(), 1);
+        drop(guard);
+        assert!(
+            cargo_test_is_covered(&router, session.id(), "toolu_after_refusal").await,
+            "a refused defaults change must keep the current standing grant"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[tokio::test]
+async fn session_defaults_change_allows_unaffected_active_claude_turn() {
+    let (router, session, agent_id, root, app) = claude_print_fixture_with_app();
+    let attachment = crate::app::KernelSessionService::new(&mut *app.lock().await)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "unaffected-defaults",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    {
+        let mut guard = app.lock().await;
+        end_turns(&guard);
+        let admitted = guard
+            .prompt_owner_submit_prepared_prompt(
+                session.id(),
+                crate::session::PromptQueueItem::new(
+                    "fixture-print-turn",
+                    attachment.id(),
+                    &agent_id,
+                    "keep doing the active work",
+                    crate::session::PromptStatus::Queued,
+                ),
+                false,
+            )
+            .unwrap();
+        assert!(matches!(
+            admitted,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+        guard
+            .active_turn_store()
+            .start(crate::app::ActiveTurnState::new(
+                session.id().into(),
+                agent_id.clone(),
+                "fixture-print-turn".into(),
+                "provider-run-claude-print".into(),
+            ));
+    }
+    app.lock()
+        .await
+        .agents_mut()
+        .update_agent_config(
+            &agent_id,
+            Some(Some(crate::provider::AgentExecutionMode::Build)),
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    for values in [
+        std::collections::BTreeMap::from([("theme".into(), "compact".into())]),
+        std::collections::BTreeMap::from([("agents.mode".into(), "build".into())]),
+        std::collections::BTreeMap::from([
+            ("agents.mode".into(), "plan".into()),
+            ("agents.permissions".into(), "yolo".into()),
+        ]),
+    ] {
+        router
+            .runtime_state()
+            .update_session_config(session.id(), attachment.id(), values, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.lock()
+                .await
+                .providers()
+                .get_run_for_agent(session.id(), &agent_id)
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// A person who changes what the agent may do has ended what they granted, even when they change
 /// it back: Plan and Yolo runs never ask Claude about a tool, so only the change itself shows it.
 #[tokio::test]
