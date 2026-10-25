@@ -4839,6 +4839,8 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   `resume_from_event_id`; a relay or kernel that does not know it ignores it and the default stays, so a
   client keeps its liveness check while heartbeats arrive slower than it asked. `AttachSessionView` does not
   take the field: the subscription that follows it does.
+  Repeating a client subscription applies the new interval; omitting it restores the default. A relay
+  client retires the old binding before replacing it when the interval changes, keeping the event cursor.
 Older kernels send neither event; clients feature-detect 596 and keep the read-after-event path below it.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and

@@ -482,8 +482,11 @@ export class LocalIpcClient {
     const previous = this.activeKernelSubscription
     if (this.isRelayMode() && previous?.scope === "session"
       && previous.sessionId === sessionId && previous.attachmentId === attachmentId) {
-      await this.sendRelaySubscribe(previous, this.lastReceivedEventId)
-      return
+      if (previous.heartbeatIntervalMs === options.heartbeatIntervalMs) {
+        await this.sendRelaySubscribe(previous, this.lastReceivedEventId)
+        return
+      }
+      await this.retireRelaySubscription(previous)
     }
     const start = createKernelSessionSubscriptionStart({
       previous: this.activeKernelSubscription,
@@ -520,8 +523,11 @@ export class LocalIpcClient {
     }
     const previous = this.activeKernelSubscription
     if (this.isRelayMode() && previous?.scope === "waiting_room_inventory") {
-      await this.sendRelaySubscribe(previous, null)
-      return
+      if (previous.heartbeatIntervalMs === options.heartbeatIntervalMs) {
+        await this.sendRelaySubscribe(previous, null)
+        return
+      }
+      await this.retireRelaySubscription(previous)
     }
     const start = createWaitingRoomInventorySubscriptionStart({
       previous: this.activeKernelSubscription,
@@ -839,6 +845,14 @@ export class LocalIpcClient {
     })
     this.pendingRelaySubscribes.set(subscription, attempt)
     return attempt
+  }
+
+  private async retireRelaySubscription(subscription: KernelSubscriptionState): Promise<void> {
+    // Finish an in-flight bind before retiring it, so the kernel cannot install it afterwards.
+    await this.pendingRelaySubscribes.get(subscription)
+    if (subscription.relaySubscriptionId && subscription.relayPublicKey && subscription.relayDecryptEvent) {
+      await this.sendRelayUnsubscribe(subscription.relaySubscriptionId, subscription.relayPublicKey, subscription.relayDecryptEvent)
+    }
   }
 
   private async sendRelaySubscribeOnce(
