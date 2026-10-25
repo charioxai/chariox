@@ -451,3 +451,43 @@ Account switching reports partial changes honestly, including marker failures.
 The coordinator's planned restart and the sandbox-gated Claude YOLO launch setting are
 documented in [LANES_KERNEL.md](LANES_KERNEL.md#planned-claude-yolo-restart-dogfood-r15).
 Running agents retain their permission mode until their next round.
+
+## dogfood r16: restart and reboot recovery
+
+MP-08 / MP-10 / MP-11. The restart helper now rolls back loopd interruption on
+failed prechecks and distinguishes receipt attachment from actual provider
+recovery. Provider proof uses the public `Running` state and fresh activity or
+successful completion; replayed permission events are deliberately excluded.
+
+The new-grant inbox repairs session **and agent** subscriptions. A missing
+agent is verified from kernel session state and ends its round as `worker_lost`.
+A restored idle agent is given the runtime recovery window and cannot be
+collected as successful without a matching successful completed turn. The
+09:34:13Z amint removal was loopd's own `amint-r23:destroy` after its idle
+collection read, not an unsolicited kernel removal (kernel log command ids
+establish this). A new executor-start timestamp pauses the loopd hard-stop
+budget across downtime; the runtime's separate absolute deadline remains an
+explicit dependency for long outages.
+
+Lane admission now uses a portable Node loopback listener owned by the process.
+Death releases it and an old handle cannot release its successor. Hash
+collisions conservatively report busy. On Linux, an existing legacy flock inode
+is also locked while pre-upgrade frozen collectors can still be running;
+macOS and fresh installations need no flock utility. Account token replacement
+uses Node's portable atomic rename instead of GNU `mv -T`.
+
+`start` enters `lanes.slice` automatically. `install-service` enables the
+boot-time `chariox-lanes.service` without restarting existing workers; see
+[the boot instructions](LANES_KERNEL.md#boot-recovery-and-planned-restarts-dogfood-r16).
+Sub-agent dispatches use the verified lanes Claude default, independently of
+the parent's explicit profile.
+
+A disposable hosted drill hard-stopped both kernels, holders and real Haiku
+provider trees with permission prompts pending. Plain `start` recovered the
+same workers, repaired the inbox, answered permissions and collected fresh
+successful turns and committed work. Earlier attempts where the provider
+backgrounded a tool and ended before committing were rejected by the drill's
+final-worktree check; they are not acceptance passes. The real parent/child
+profile drill also spawned, messaged and deleted a Haiku child. Detailed
+exact-head results and remaining runtime/Mac checks live in the external lane
+evidence, not in this repository.

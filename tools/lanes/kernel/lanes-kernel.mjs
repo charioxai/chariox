@@ -8,6 +8,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { serviceUnit, sliceInvocation } from './service.mjs';
+import { inspectWorker } from './worker-recovery.mjs';
 import { restartWithSandbox } from './restart.mjs';
 import { syncWorkerAgents, setWorkerProfileDefault } from './worker-agents.mjs';
 import { probeClaudeToken, readToken, replaceClaudeCredential } from './claude-account.mjs';
@@ -508,22 +509,7 @@ try {
         return startLoopd();
       },
       stop: stopLanes, start: startLanes,
-      inspect: async run => {
-        const response = await rpc('executor', { GetSessionState: { session_id: run.launch.sessionId } });
-        const session = response.SessionState.session;
-        const agent = (response.SessionState.agents || session.agents || []).find(agent => agent.id === run.launch.agentId);
-        if (!agent) throw new Error(`worker missing after restart: ${run.key}`);
-        const activity = (response.SessionState.agent_activity || session.agent_activity)?.[agent.id];
-        const runId = activity?.active_turn?.provider_run_id;
-        const providerRun = runId ? (await rpc('executor', { GetProviderRun: { provider_run_id: runId } })).ProviderRun.provider_run : undefined;
-        const completed = activity?.last_completed_turn;
-        return { provider: agent.provider, permission: agent.permission_level_override || session.permission_level,
-          state: activity?.status,
-          providerActivityAtMs: providerRun?.state === 'running' ? providerRun.last_activity_at_ms : undefined,
-          completedAtMs: completed?.completed_at_ms,
-          completedSuccessfully: completed?.settlement_status === 'completed' && !completed?.provider_termination };
-
-      },
+      inspect: run => inspectWorker(request => rpc('executor', request), run),
     });
     out(check);
   } else if (command === 'status') out(await status());

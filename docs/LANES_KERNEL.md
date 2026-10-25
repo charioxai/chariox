@@ -262,3 +262,50 @@ call and resumes the existing Claude conversation, as with other af52049173 rest
 `switch-claude-account.sh chariox --probe` is a read-only usability check. A failed
 classic-file copy, rename or switch-marker update after kernel success returns nonzero
 and explicitly reports that the kernel credential has already changed.
+
+## Boot recovery and planned restarts (dogfood r16)
+
+MP-08 / MP-10 / MP-11. `start` automatically enters `lanes.slice` with
+`systemd-run --slice=lanes.slice --scope` when the slice is installed. A caller
+already inside the slice stays there. Both kernels, holders, provider children
+and loopd inherit that cgroup. This does not move existing processes.
+
+To enable boot startup, the coordinator runs this once from the reviewed
+checkout (it writes `/etc/systemd/system/chariox-lanes.service`, reloads systemd
+and enables the unit; it does **not** restart existing workers):
+
+```sh
+LANES_KERNEL_STATE=/root/.chariox/dev/lanes-kernel \
+  node tools/lanes/kernel/lanes-kernel.mjs install-service
+systemctl is-enabled chariox-lanes.service
+```
+
+The generated unit uses `WantedBy=multi-user.target`, `Slice=lanes.slice`, the
+same `start` and `stop` commands, and retries failed startup. Keep the configured
+hosted stack available at boot. State, Vault unlock and grants use the existing
+product paths; the unit contains only paths, never credentials. Installing it
+was not part of the live lane drill.
+
+`restart-yolo` restores a previously running loopd if inspection or restart-file
+writes fail before the kernels are stopped. A stop timeout waits for the exact
+old driver to finish before restoring it. Failures return nonzero and identify
+whether loopd restoration itself failed. `picked_up` is only receipt replay:
+verification waits for fresh activity of a kernel-owned `Running` provider run,
+or a fresh successful completed turn. Replayed pending decisions do not prove
+provider recovery. Verification allows the runtime's 300-second restore window
+plus one minute and retains the original round/session/agent identities.
+
+A new grant reattaches both session targets and the worker's agent target.
+Removed workers are collected as `worker_lost`, with their worktree artifacts
+retained; a restored idle worker needs successful completion proof before it
+can be reported as `finished`. Routine permissions raised during recovery are
+answered through the usual kernel interaction path. Startup also selects the
+verified `lanes-claude` profile as the kernel's default for child dispatches
+that omit an account profile.
+
+Loopd persists the last healthy kernel observation and excludes the gap to the
+new executor startup from its hard-stop budget. The pinned `af52049173` runtime
+still has an independent absolute executor deadline which refuses extension.
+An outage longer than that deadline's grace needs a runtime change before
+unconditional downtime acceptance can pass; loopd's timer test does not close
+that separate seam.
