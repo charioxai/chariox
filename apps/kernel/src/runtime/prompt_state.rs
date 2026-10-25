@@ -1064,7 +1064,7 @@ impl PromptStateOwner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id)) {
+        if owner.agent_move_pending(&PromptStateKey::new(session.id(), agent_id)) {
             return None;
         }
         owner
@@ -3026,11 +3026,13 @@ impl PromptStateOwner {
     }
 }
 impl PromptStateOwnerState {
+    fn agent_move_pending(&self, key: &PromptStateKey) -> bool {
+        self.agent_move_admission
+            .as_ref()
+            .is_some_and(|store| store.dispatch_fenced(&key.session_id, &key.agent_id))
+    }
+
     fn execution_transition_pending(&self, key: &PromptStateKey) -> bool {
-        self.profile_transitions.contains_key(key)
-            || self
-                .agent_move_admission
-                .as_ref()
-                .is_some_and(|store| store.dispatch_fenced(&key.session_id, &key.agent_id))
+        self.profile_transitions.contains_key(key) || self.agent_move_pending(key)
     }
 }

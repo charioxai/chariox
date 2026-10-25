@@ -3350,7 +3350,8 @@ impl DaemonApp {
         reference: &str,
     ) -> Result<(RelayKernelPresence, Option<DaemonConfig>), DaemonError> {
         let (_, projected) = self.remote_relay_inventory_projection_store().snapshot();
-        if slice_recovery::recorded_slice_worker_id(&self.slices, reference)?.is_some()
+        if reference.starts_with("kernel-")
+            || slice_recovery::recorded_slice_worker_id(&self.slices, reference)?.is_some()
             || projected
                 .iter()
                 .any(|kernel| kernel_presence_matches_ref(kernel, reference))
