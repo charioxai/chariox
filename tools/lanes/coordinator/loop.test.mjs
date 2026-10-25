@@ -512,26 +512,37 @@ test('steer: a prompt the kernel accepted but whose reply was lost is replayed u
   assert.equal(ledger.sections.length, 1);
 });
 
-test('steer: unresolved A survives B and a new driver invocation replays A exactly once', async t => {
+test('steer: unresolved A survives B and a new driver process replays A exactly once', async t => {
   const r = await launched(t);
-  const adapter = r.options.adapter;
-  const accepted = new Map(); let lose = true;
-  r.options.adapter = async (op, input) => {
-    if (op === 'status') return { state: accepted.size ? 'working' : 'idle', currentPrompt: accepted.size ? 'A-prompt' : null };
-    if (op === 'prompt' || op === 'steer') {
-      const id = input.commandId ?? input.steerId;
-      if (!accepted.has(id)) accepted.set(id, input.prompt);
-      if (lose) { lose = false; throw new LaneError('local_transport_error', 'A reply lost'); }
-      return op === 'prompt' ? { PromptSubmitted: { outcome: { Started: { prompt: { id: 'A-prompt' } } } } } : { ActivePromptSteered: { prompt: { id: 'B-steer' } } };
-    }
-    return adapter(op, input);
-  };
+  const world = join(r.home, 'world.json'); await writeFile(world, JSON.stringify({ accepted: {}, lose: true }));
+  const script = `
+    import { coordinate } from ${JSON.stringify(new URL('./loop.mjs', import.meta.url).href)};
+    import { LaneError } from ${JSON.stringify(new URL('../lanes.mjs', import.meta.url).href)};
+    import { readFile, writeFile } from 'node:fs/promises';
+    const path = ${JSON.stringify(world)};
+    const state = JSON.parse(await readFile(path, 'utf8'));
+    try {
+      const result = await coordinate('steer', ['lane', process.argv[1]], {
+        home: ${JSON.stringify(r.home)}, config: ${JSON.stringify(r.options.config)},
+        adapter: async (op, input) => {
+          if (op === 'status') return { state: Object.keys(state.accepted).length ? 'working' : 'idle', currentPrompt: Object.keys(state.accepted).length ? 'A-prompt' : null };
+          if (op !== 'prompt' && op !== 'steer') throw new Error('unexpected ' + op);
+          state.accepted[input.commandId ?? input.steerId] = input.prompt;
+          const lose = state.lose; state.lose = false;
+          await writeFile(path, JSON.stringify(state));
+          if (lose) throw new LaneError('local_transport_error', 'A reply lost');
+          return op === 'prompt' ? { PromptSubmitted: { outcome: { Started: { prompt: { id: 'A-prompt' } } } } } : { ActivePromptSteered: { prompt: { id: 'B-steer' } } };
+        }
+      });
+      console.log(JSON.stringify(result));
+    } catch (error) { console.error(JSON.stringify({ error: { code: error.code } })); process.exitCode = 1; }
+  `;
   const a = join(r.home, 'A.md'), b = join(r.home, 'B.md');
   await writeFile(a, '## A\nDo A\n'); await writeFile(b, '## B\nDo B\n');
-  await assert.rejects(coordinate('steer', ['lane', a], r.options), { code: 'local_transport_error' });
-  await coordinate('steer', ['lane', b], r.options);
-  // coordinate loads its state from disk on every invocation, as after a driver restart.
-  await coordinate('steer', ['lane', a], { ...r.options });
-  assert.deepEqual([...accepted.values()].sort(), ['## A\nDo A\n', '## B\nDo B\n']);
-  assert.equal(accepted.size, 2, 'A never acquires a fresh steer identity');
+  const invoke = path => execute(['--input-type=module', '-e', script, path], undefined, process.execPath);
+  await assert.rejects(invoke(a), { code: 'local_transport_error' });
+  await invoke(b); await invoke(a);
+  const { accepted } = JSON.parse(await readFile(world, 'utf8'));
+  assert.deepEqual(Object.values(accepted).sort(), ['## A\nDo A\n', '## B\nDo B\n']);
+  assert.equal(Object.keys(accepted).length, 2, 'A never acquires a fresh steer identity across process restarts');
 });
