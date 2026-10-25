@@ -185,6 +185,34 @@ test('a restart resumes the running round before it admits a queued one for the 
   assert.equal((await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r9.json'), 'utf8').then(JSON.parse)).finishReason, 'finished', 'the archived r9 file is its finished run');
 });
 
+test('the next round of a lane does not inherit the previous round handoff files, and a resume keeps its own', async t => {
+  const r = await rig(t);
+  const handoff = ['PUSH_READY.md', 'LANE_STATUS.md', 'ACCEPTANCE_UPDATE.json'];
+  const laneDirectory = join(r.layout.agents, 'alpha');
+  const present = () => Promise.all(handoff.map(name => readFile(join(laneDirectory, name), 'utf8').then(() => true, () => false)));
+  const adapter = r.options.adapter, seen = [];
+  r.options.adapter = async (op, input) => { if (op === 'fetch') seen.push([input.taskId, await present()]); return adapter(op, input); };
+  await r.drop('alpha', 'r1');
+  r.idle.add('alpha-r1');
+  r.script.push(async () => { for (const name of handoff) await writeFile(join(laneDirectory, name), `round r1 ${name}`); return [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]; });
+  r.finished(1);
+  await serve(r.options);
+  await r.drop('alpha', 'r2');
+  // r2 starts, its worker writes a note, the service restarts, and r2 is hard-stopped without an acceptance file.
+  const first = new AbortController(); r.options.signal = first.signal;
+  r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'picked_up') r.script.push(async () => { await writeFile(join(laneDirectory, 'PUSH_READY.md'), 'round r2'); first.abort(); return []; }); };
+  await serve(r.options);
+  assert.equal(await readFile(join(laneDirectory, 'PUSH_READY.md'), 'utf8'), 'round r2');
+  for (const name of handoff) assert.equal(await readFile(join(laneDirectory, name.replace(/(\.[a-z]+)$/, '.r1$1')), 'utf8'), `round r1 ${name}`);
+  const again = new AbortController(); r.options.signal = again.signal;
+  r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'finished') again.abort(); };
+  r.script.push(async () => { r.clock.ms += 61 * 60_000; return []; });
+  await serve(r.options);
+  assert.equal(await readFile(join(laneDirectory, 'PUSH_READY.md'), 'utf8'), 'round r2', 'a resumed round keeps its own handoff');
+  assert.deepEqual(seen.find(([task]) => task === 'alpha-r2')[1], [true, false, false], 'only r2 own file is visible to its collection');
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'hard_stop');
+});
+
 test('an entry that cannot launch is retried, then ends as launch_failed with its reason', async t => {
   const r = await rig(t);
   await r.drop('alpha', 'r1');

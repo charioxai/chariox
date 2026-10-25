@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: the standing round service. One long-lived driver picks up the queue
 // entries the coordinator drops and runs every lane through the one shared round engine and inbox.
-import { readdir, readFile, rename, mkdir, copyFile, writeFile } from 'node:fs/promises';
-import { join, basename } from 'node:path';
+import { readdir, readFile, rename, mkdir, copyFile, writeFile, access } from 'node:fs/promises';
+import { join, basename, extname } from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { LaneError, save, execute } from '../lanes.mjs';
 import { createRound } from './engine.mjs';
@@ -11,6 +11,9 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}$/;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/;
 const LAUNCH_ATTEMPTS = 5;
+// What a worker leaves for the coordinator in agents/<lane>/; each round starts with none of them.
+const HANDOFF_FILES = ['PUSH_READY.md', 'LANE_STATUS.md', 'ACCEPTANCE_UPDATE.json'];
+const exists = path => access(path).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const absolute = value => typeof value === 'string' && value.startsWith('/') && !value.includes('\0');
 const invalid = (field, problem) => { throw new LaneError('invalid_queue_entry', `${field}: ${problem}`); };
@@ -53,11 +56,25 @@ export async function serve(options) {
   config.repository ??= join(home, 'imported.git');
   config.laneProfiles ??= {}; config.laneDirectories ??= {}; config.bases ??= {};
 
+  // The previous round's handoff files are set aside once, when the new round is first admitted (before its worker
+  // exists), so a resume never moves the files the running round has written.
+  const archiveHandoff = async (entry, laneDirectory) => {
+    const previous = await read(join(laneDirectory, 'LOOP_RUN.json')).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    const label = previous ? previous.round ?? `legacy-${previous.launchedAtMs}` : `before-${entry.round}`;
+    for (const name of HANDOFF_FILES) {
+      if (!await exists(join(laneDirectory, name))) continue;
+      const extension = extname(name);
+      await rename(join(laneDirectory, name), join(laneDirectory, `${basename(name, extension)}.${label}${extension}`));
+    }
+  };
+
   // Bases are fixed at the first sighting of an entry, so a restarted service bundles the same round.
   const prepare = async entry => {
     const specPath = join(home, 'rounds', `${entry.key}.spec.json`);
+    const laneDirectory = join(layout.agents, entry.lane);
     let spec; try { spec = await read(specPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (!spec) {
+      await archiveHandoff(entry, laneDirectory);
       await git(['init', '--bare', '-q', config.repository]);
       const bases = [];
       for (const [index, worktree] of entry.worktrees.entries()) {
@@ -69,7 +86,6 @@ export async function serve(options) {
       spec = { bases };
       await save(specPath, spec);
     }
-    const laneDirectory = join(layout.agents, entry.lane);
     // A file left by another round (or by a driver that predates round ids) stays next to the new one.
     const previous = await read(join(laneDirectory, 'LOOP_RUN.json')).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
     if (previous && previous.round !== entry.round) await copyFile(join(laneDirectory, 'LOOP_RUN.json'), join(laneDirectory, `LOOP_RUN.${previous.round ?? `legacy-${previous.launchedAtMs}`}.json`));
