@@ -44,6 +44,9 @@ impl KernelRuntimeState {
         &self,
         task: AgentTaskExecution,
     ) -> Result<(), DaemonError> {
+        if self.owned.goal_has_native_approval(&task) {
+            return Ok(());
+        }
         if self.defer_task_for_human_control(&task).await {
             return Ok(());
         }

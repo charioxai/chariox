@@ -60,6 +60,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             lease,
             now,
         } => super::goals::retry_check(tx, task, prompt, lease, now),
+        Operation::BeginGoalApproval { task, prompt, now } => {
+            super::goals::native_approval::begin(tx, task, prompt, now)
+        }
+        Operation::AnswerGoalApproval {
+            task,
+            prompt,
+            revision,
+            now,
+        } => super::goals::native_approval::answer(tx, task, prompt, revision, now),
         Operation::BeginOwnerWait { task, prompt, now } => {
             super::goals::begin_owner_wait(tx, task, prompt, now)
         }

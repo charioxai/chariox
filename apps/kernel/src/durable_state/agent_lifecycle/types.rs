@@ -219,6 +219,17 @@ pub(crate) enum Operation {
         lease: super::goals::CheckLease,
         now: u64,
     },
+    BeginGoalApproval {
+        task: String,
+        prompt: String,
+        now: u64,
+    },
+    AnswerGoalApproval {
+        task: String,
+        prompt: String,
+        revision: u64,
+        now: u64,
+    },
     BeginOwnerWait {
         task: String,
         prompt: String,

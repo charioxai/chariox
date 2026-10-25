@@ -301,7 +301,8 @@ impl KernelRuntimeOwnedState {
             &interaction,
             crate::session::unix_epoch_ms(),
         )?;
-        let pending = super::super::PendingInteraction {
+        let mut pending = super::super::PendingInteraction {
+            goal_approval: None,
             kernel_wide_interaction: None,
             agent_lifetime,
             session_id: session_id.into(),
@@ -338,12 +339,22 @@ impl KernelRuntimeOwnedState {
             }
             return Ok(());
         }
-        self.publish_outside_interaction(
+        if pending.terminal_credential_owner.is_none() && pending.kernel_operation_owner.is_none() {
+            pending.goal_approval = self.begin_goal_native_approval(
+                session_id,
+                &interaction,
+                pending.agent_lifetime.as_ref(),
+            )?;
+        }
+        if let Err(error) = self.publish_outside_interaction(
             session_id,
             &interaction,
             crate::local::EventInteractionState::Pending,
             passkey_prompt.as_deref(),
-        )?;
+        ) {
+            self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
+            return Err(error);
+        }
         session.add_active_interaction(interaction.clone());
         let identity = pending.responder.clone();
         if passkey_prompt.is_some() {

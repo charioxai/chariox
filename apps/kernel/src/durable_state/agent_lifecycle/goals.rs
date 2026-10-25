@@ -2,6 +2,7 @@
 use super::*;
 mod adoption;
 mod controls;
+pub(super) mod native_approval;
 pub(super) use adoption::adopt;
 pub(super) use controls::control;
 use serde::{Deserialize, Serialize};

@@ -74,6 +74,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             interaction.id().into(),
             super::super::PendingInteraction {
+                goal_approval: None,
                 session_id: scope.into(),
                 session_store_identity: self.session_store.weak_identity(),
                 agent_lifetime: None,

@@ -491,6 +491,7 @@ impl KernelRuntimeOwnedState {
                 None,
             )?;
         }
+        self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         let pending = self
             .pending_interactions
             .write()

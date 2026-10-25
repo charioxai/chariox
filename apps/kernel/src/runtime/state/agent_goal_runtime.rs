@@ -478,6 +478,11 @@ impl KernelRuntimeState {
             .into_iter()
             .find(|t| t.goal.as_ref().is_some_and(|g| g.id == id))
             .ok_or_else(|| ledger::error("goal unavailable in this room"))?;
+        if action == "resume" && self.owned.goal_has_native_approval(&task) {
+            return Err(ledger::error(
+                "answer the pending native approval before resuming this goal",
+            ));
+        }
         if action == "resume"
             && goal_resume_has_unsettled_turn(
                 &task,
