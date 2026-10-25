@@ -187,3 +187,33 @@ test('MP-08/MP-10/MP-11 Computer coalesces transient retries until capture resto
   f.advance(200);finish();await held;f.advance(2);await delay(10);assert.equal(wakes,1);assert.equal(f.published.length,0);
  }finally{await f.source.close()}
 });
+
+for (const tracked of ['policy', 'controller']) {
+ test(`MP-08/MP-10/MP-11 a lost gate with a ${tracked} Vault target withholds frames until coverage recovers`, async () => {
+  const f=fixture(),target={kind:'browser',value_hash:'registered-fingerprint'};
+  if(tracked==='policy')f.source.policy.targets.push(target);
+  else f.source.binding={...binding,browser:()=>({fillTargets:new Map([['field',target]])})};
+  f.source.owner={publish(){},close(){}};
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,0,'serial zero has no browser field mask and cannot release a Vault frame');
+  f.source.gate={protectionSerial:1};f.source.current={...f.source.current,serial:1};
+  f.source.next=f.raw(3,f.now()+2);await f.source.protect();
+  f.source.next=f.raw(4,f.now()+2);await f.source.protect();
+  f.source.verifiedStep={serial:1,started:f.now()+3};f.source.settle();
+  assert.equal(f.published.length,1,'a recovered field mask resumes the existing producer');
+ });
+}
+test('MP-08/MP-10/MP-11 protected startup measures before awaiting its first frame',async()=>{
+ const f=fixture();let measured=false;
+ f.source.startNative=async()=>{};
+ f.source.verify=async()=>{measured=true;f.source.latest={};};
+ f.source.heartbeat=async()=>{};
+ await f.source.start();assert(measured);
+});
+
+test('MP-08/MP-10/MP-11 loss of previously measured field coverage withholds an old readback',()=>{
+ const f=fixture();f.source.coveredBrowser=true;
+ const raw=f.raw(1,f.now());f.source.offer({raw},0,raw.captured_ms);
+ assert.equal(f.published.length,0);assert.equal(f.released(),1);
+});

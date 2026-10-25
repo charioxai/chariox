@@ -80,10 +80,10 @@ export class DesktopSource {
   async start() {
     try { await this.binding.browser?.()?.connection?.presentationFence?.recoverFailed?.(); if(this.native)await this.startNative();else await this.startHelper(); }
     catch(error) { await this.close(); throw error; }
+    void this.verify();
     // The first native frame waits for the oracle's start and two snapshots.
     for(let n=0;n<500&&!this.latest&&!this.closed;n++)await delay(10);
     if(!this.latest||this.closed){await this.close();throw Error('MP-08: protected desktop source unavailable');}
-    void this.verify();
     if(this.worker)void this.heartbeat();
     return this;
   }
@@ -206,7 +206,12 @@ export class DesktopSource {
     if(presentation&&!presentation.stable(start,end)){
       this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();resumeAfterCapturePresentation(this,presentation,()=>this.wake());return;
     }
-    // Serial 0 withholds every kernel-browser window: publish at once.
+    // Serial 0 has no measured browser regions. The field-only oracle cannot
+    // cover a Vault target until the gate recovers; keep the last safe frame.
+    // The independent owner feed remains available during that recovery.
+    if(serial===0&&(this.coveredBrowser||this.policy.targets.some(target=>target.kind==='browser'&&typeof target.value_hash==='string')||this.binding.browser?.()?.fillTargets?.size)){
+      this.timing('desktop_unadopted_vault_frame_dropped',start);sample.raw.release?.();return;
+    }
     if(serial===0)this.publish(sample);
     else if(serial===this.gate.protectionSerial){this.pending.push({sample,serial,captured});this.settle();}
     else sample.raw.release?.();
@@ -239,7 +244,9 @@ export class DesktopSource {
       // still desktop (no readbacks): re-measure calmly until it binds.
       if(!this.pending.length&&!this.next&&!this.inflight&&!this.withheld&&this.gate.protectionSerial!==0){await delay(4);continue;}
       this.stepStarted=Date.now();
+      this.coveredBrowser ||= this.gate.protection?.pages?.some(page=>page.regions?.length>0);
       const {started,verified,changed}=await this.gate.step();
+      if(this.gate.protectionSerial>0)this.coveredBrowser=this.gate.protection?.pages?.some(page=>page.regions?.length>0)??false;
       this.stepStarted=null;this.verifiedStep=verified===null?null:{started,serial:verified};
       const published=this.latest;this.settle();
       this.timing(this.latest!==published?'desktop_gate_verified':'desktop_gate_step',started);

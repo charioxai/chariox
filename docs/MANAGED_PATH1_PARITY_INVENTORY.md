@@ -1,5 +1,15 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 unadopted desktop coverage (2026-10-25)
+
+The field-only native oracle has no browser rectangles while its CDP gate is
+unadopted. The protected producer now retains its last safe frame during that
+interval if a Vault browser target is tracked or previously measured. Gate
+recovery resumes delivery, and startup begins measurement before awaiting the
+first protected frame. The owner feed continues independently. Unregistered
+fields add no masks or scan scope. Focused red/green checks supplement the
+required real hosted DPR1/DPR2 refill and performance acceptance.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 streamed Show/Hide coverage (2026-10-25)
 
 The protected desktop producer keeps the exact Vault-filled browser field's
