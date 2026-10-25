@@ -655,6 +655,8 @@ impl KernelRuntimeOwnedState {
             crate::local::EventInteractionState::Resolved,
             None,
         )?;
+        // The provider continues its turn with the timeout reply, so the goal leaves the wait.
+        self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         consume();
         sessions.restore_session(session);
         activity_mutation.record();
