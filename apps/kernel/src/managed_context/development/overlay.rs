@@ -424,7 +424,7 @@ fn is_portable_git_admin_component(component: &str) -> bool {
     })
 }
 
-fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
+pub(super) fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
     // Keep strict validation of the optional expert file at the import/export boundary.
     read_expert_context_ignore_patterns(worktree)?;
     Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree))
@@ -521,36 +521,18 @@ fn normalize_ignore_pattern(line: &str) -> Option<String> {
     Some(pattern)
 }
 
-pub(super) fn user_ignore_pattern_matches_any(patterns: &[String], path: &str) -> bool {
-    patterns.iter().any(|pattern| {
-        if pattern.contains('/') {
-            wildcard_match(pattern, path)
-                || path
-                    .strip_prefix(pattern.trim_end_matches("/**"))
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-        } else {
-            path.split('/').any(|part| wildcard_match(pattern, part))
+// An excluded directory is traversed only when an explicit inclusion can
+// select something below it. Excluded files never enter the plain snapshot.
+pub(super) fn may_include_descendant(patterns: &[String], path: &str) -> bool {
+    patterns.iter().filter_map(|rule| rule.strip_prefix('!')).any(|rule| {
+        if !rule.contains('/') {
+            return true;
         }
+        let prefix = rule.split('*').next().unwrap_or_default().trim_end_matches('/');
+        prefix == path
+            || prefix.starts_with(&format!("{path}/"))
+            || path.starts_with(&format!("{prefix}/"))
     })
-}
-
-fn wildcard_match(pattern: &str, value: &str) -> bool {
-    let value = value.chars().collect::<Vec<_>>();
-    let mut matches = vec![false; value.len() + 1];
-    matches[0] = true;
-    for character in pattern.chars() {
-        if character == '*' {
-            for index in 1..=value.len() {
-                matches[index] = matches[index] || matches[index - 1];
-            }
-        } else {
-            for index in (1..=value.len()).rev() {
-                matches[index] = matches[index - 1] && value[index - 1] == character;
-            }
-            matches[0] = false;
-        }
-    }
-    matches[value.len()]
 }
 
 #[cfg(all(test, unix))]

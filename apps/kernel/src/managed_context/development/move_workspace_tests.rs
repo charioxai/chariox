@@ -204,3 +204,60 @@ fn git_state(root: &Path) -> Vec<Vec<u8>> {
     .collect()
 }
 
+#[test]
+fn mk02_directory_uses_project_private_file_choices() {
+    use crate::project_environment::*;
+    let root = test_root("move-directory-selection");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let directory = root.join("notes");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join(".gitignore"), "private.txt\nselected.txt\nprivate/\nunselected/\n").unwrap();
+    fs::write(directory.join("private.txt"), "do not bring\n").unwrap();
+    fs::write(directory.join("selected.txt"), "selected content\n").unwrap();
+    fs::create_dir(directory.join("private")).unwrap();
+    fs::create_dir_all(directory.join("unselected/empty")).unwrap();
+    fs::write(directory.join("private/needed.bin"), b"selected\0bytes\n").unwrap();
+    fs::write(directory.join("private/stays.txt"), "stay home\n").unwrap();
+    let mut manifest = ProjectEnvironmentManifest {
+        schema_version: 1,
+        project_id: "move-project".into(),
+        evidence_digest: "fixture".into(),
+        entries: vec![],
+        private_files: vec![],
+        toolchain_hints: vec![],
+        package_hints: vec![],
+        service_hints: vec![],
+    };
+    let workspace = directory.to_string_lossy().into_owned();
+    for path in ["selected.txt", "private/needed.bin"] {
+    manifest.private_files.push(ProjectPrivateFileDecision {
+        workspace_id: workspace.clone(),
+        path: path.into(),
+        bring: true,
+        secret_looking: false,
+        reason: "explicitly selected".into(),
+    });
+    }
+    register_project_file_rules(&manifest, &BTreeMap::from([(workspace, directory.clone())]));
+    let result = export_development_context(DevelopmentContextExportRequest {
+        project_id: "move-project".into(),
+        repositories: vec![selection(&directory, true)],
+        archive_path: root.join("selected.tar.gz"),
+    });
+    forget_project_file_rules(&manifest);
+    let exported = result.unwrap();
+    let paths: Vec<_> = exported.manifest.repositories[0]
+        .overlay
+        .iter()
+        .map(|e| e.path.as_str())
+        .collect();
+    assert!(paths.contains(&"selected.txt"));
+    assert!(paths.contains(&"private/needed.bin"));
+    assert!(!paths.contains(&"private/stays.txt"));
+    assert!(!exported.manifest.repositories[0].directories.iter().any(|p| p.starts_with("unselected")));
+    assert!(
+        !paths.contains(&"private.txt"),
+        "unselected ignored files must stay home"
+    );
+}
+

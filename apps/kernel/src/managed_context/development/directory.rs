@@ -101,13 +101,7 @@ pub(super) fn snapshot(
     budget: &mut ManifestMemoryBudget,
     vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<SnapshotOverlay, DaemonError> {
-    let patterns = match open_relative(root, Path::new(".charioxignore")) {
-        Ok(file) => {
-            overlay::parse_context_ignore_patterns(read_bounded(file, MAX_CONTEXT_IGNORE_BYTES)?.0)?
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(context_io_error("open directory ignore rules", error)),
-    };
+    let patterns = overlay::read_context_ignore_patterns(worktree)?;
     let mut pending = vec![PathBuf::new()];
     let mut directories = BTreeSet::new();
     let mut files = BTreeSet::new();
@@ -134,8 +128,16 @@ pub(super) fn snapshot(
                     && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(
                         &path_text,
                     ))
-                || overlay::user_ignore_pattern_matches_any(&patterns, &path_text)
             {
+                continue;
+            }
+            let file_type = entry.file_type()
+                .map_err(|error| context_io_error("inspect directory workspace entry", error))?;
+            let rule_path = if file_type.is_dir() { format!("{path_text}/") } else { path_text.clone() };
+            let excluded = crate::workspace_live_sync_ignore::user_rules_exclude_path(
+                &rule_path, &patterns,
+            );
+            if excluded && (!file_type.is_dir() || !overlay::may_include_descendant(&patterns, &path_text)) {
                 continue;
             }
             // Resolve every component under the retained root, without following
@@ -147,7 +149,9 @@ pub(super) fn snapshot(
                 .map_err(|error| context_io_error("inspect directory workspace entry", error))?;
             budget.consume(path_text.len() + 256)?;
             if metadata.is_dir() {
-                directories.insert(path_text);
+                if !excluded {
+                    directories.insert(path_text);
+                }
                 pending.push(path);
             } else if metadata.is_file() {
                 files.insert(path_text);
