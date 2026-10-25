@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkS
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { syncWorkerAgents } from './worker-agents.mjs';
 
 const STATE = process.env.LANES_KERNEL_STATE || '/root/.chariox/dev/lanes-kernel';
 const config = JSON.parse(readFileSync(join(STATE, 'config.json'), 'utf8'));
@@ -180,7 +181,10 @@ async function ensureClaudeProfile() {
     auth = JSON.stringify(await authStatus());
   }
   writeFileSync(file('executor', 'claude-profile.id'), profile.profile_id);
-  return { claudeProfile: profile.profile_id, auth: (auth.match(/"(?:auth_)?(?:state|status)":"[a-z_]+"/g) || []).slice(0, 2) };
+  // Workers use the profile's config directory as their HOME for Claude: the shared subagent definitions go there.
+  const profileConfig = file('executor', `chariox/state/provider-accounts/local/claude/${profile.profile_id}/claude`);
+  const agents = existsSync(profileConfig) ? syncWorkerAgents({ source: config.agentDefinitions || '/root/.claude/agents', target: profileConfig, names: config.workerAgents }) : { reason: 'profile config directory not found' };
+  return { claudeProfile: profile.profile_id, agents, auth: (auth.match(/"(?:auth_)?(?:state|status)":"[a-z_]+"/g) || []).slice(0, 2) };
 }
 
 // Codex lanes run on the account the lanes already use. The product links that provider home in place
