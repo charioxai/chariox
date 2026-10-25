@@ -84,9 +84,24 @@ test('loopbrief reports a rejected entry with loopd reason, and a loopd that nev
   assert.match(silent.stderr, /loopd has not picked up quiet-r1/);
 });
 
+test('loopbrief puts ACCT into the queue entry as the account label, and leaves it out without ACCT', async t => {
+  const r = await rig(t);
+  const { done } = r.run(['acct', '/work/acct', 'claude'], { ACCT: 'lanes-claude-old' });
+  const entry = JSON.parse(await r.waitFor(join(r.agents, '_loop/queue/acct-r1.json')));
+  assert.equal(entry.account, 'lanes-claude-old');
+  await writeFile(join(r.agents, 'acct/LOOP_RUN.json'), JSON.stringify({ round: 'r1', launchedAtMs: 1 }));
+  const result = await done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /picked up by loopd as acct-r1 \(claude-sonnet-5-5 high, hard stop 240 min, account lanes-claude-old\)/);
+  const plain = r.run(['plain', '/work/plain', 'claude']);
+  assert.ok(!('account' in JSON.parse(await r.waitFor(join(r.agents, '_loop/queue/plain-r1.json')))));
+  await writeFile(join(r.agents, 'plain/LOOP_RUN.json'), JSON.stringify({ round: 'r1', launchedAtMs: 1 }));
+  assert.doesNotMatch((await plain.done).stdout, /account/);
+});
+
 test('loopbrief refuses bad input before touching b3', async t => {
   const r = await rig(t);
-  for (const [args, env] of [[['../x', '/w', 'claude'], {}], [['ok', 'relative', 'claude'], {}], [['ok', '/w', 'gemini'], {}], [['ok', '/w', 'claude'], { HARD_STOP_MIN: '0' }]]) {
+  for (const [args, env] of [[['../x', '/w', 'claude'], {}], [['ok', 'relative', 'claude'], {}], [['ok', '/w', 'gemini'], {}], [['ok', '/w', 'claude'], { HARD_STOP_MIN: '0' }], [['ok', '/w', 'claude'], { ACCT: '../old' }], [['ok', '/w', 'codex'], { ACCT: 'lanes-claude-old' }]]) {
     const result = await r.run(args, env).done;
     assert.equal(result.code, 2, JSON.stringify(args));
   }
