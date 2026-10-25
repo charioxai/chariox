@@ -13,24 +13,36 @@ rebuilding a rig. Everything lives under `/root/.chariox/dev/lanes-kernel/` (out
 | **holder** | A long-lived process the `until-exit` access grant binds to. Loop commands run beneath it with `exec`. |
 | **hosted stack** | `pr1080-dogfoodr6` (own Cloud web + own relay, WSS). Kept running (`KEEP` file is empty). |
 
-Both kernels are the exact OSS #1080 build `e46dcc0ce6` (upgraded from `f2220d9387` between rounds; the previous
-binaries stay in `bin.prev/`); hashes and worktree are in `PROVENANCE.json`. The Rust binaries were built through `agents/cargo-slot.sh` and
+Both kernels are the exact OSS #1080 build `b53e3f4704` (upgraded from `e46dcc0ce6` on 2026-10-25 with five coordinator rounds
+running; the previous binaries stay in `bin.prev/`); hashes and worktree are in `PROVENANCE.json`. The Rust binaries were built through `agents/cargo-slot.sh` and
 copied out of the slot into `bin/`.
 
 ## Upgrading the runtime
 
-Only when no coordinator round is running (`status` shows `loopd.queued: 0`, or the queue holds only entries that
-are waiting): a kernel restart ends the `until-exit` grant of the old holder and any decision nobody answers
-within 300 s is denied. The binaries can be built at any time, because the running kernels use copies in `bin/`.
+A kernel restart ends the `until-exit` grant of the old holder, kills the workers' Claude processes and any decision nobody
+answers within 300 s is denied. From `b53e3f4704` the restored kernel starts a new `claude --resume` for every running worker
+(same Room session, same agent, same prompt), so rounds can be carried across **one** restart; the in-flight tool call of each
+worker is lost (its process is orphaned, the worker reruns the command). **A worker can be restored only once**: a second
+restart strands it (agent `working`, no provider process, steers refused with `no_active_provider_run`; found in r12,
+reported to extagent). Restart the lanes kernel only for an upgrade, and treat a worker that has been through one restart as
+due to finish before the next one. The binaries can be built at any time, because the running kernels use copies in `bin/`.
 
 1. In `/root/work/agent-dogfood/lanes-kernel` (detached checkout of the new head): `touch` the sources, then
    `agents/cargo-slot.sh cargo build -p chariox-kernel --bin chariox-kernel --bin chariox-cli -p chariox-relay` (dev profile, `CARGO_BUILD_JOBS=4`,
    `TMPDIR` under the state dir). Copy `chariox-kernel`, `chariox-cli` (installed as `chariox`) and `chariox-relay` out of the slot's `target/debug`
    into `bin.next/`, check with `strings` that they embed that worktree, and write their sha256 to `PROVENANCE.json`.
-2. `lanes-kernel.mjs stop`, then `mv bin bin.prev && mv bin.next bin`, then `lanes-kernel.mjs start` (about 15 s).
-3. Check `status`, `chariox access status` through `exec`, and that loopd resumed every lane it listed in `stopped.stillRunning`.
+2. Prove it on a **drill pair** first: `LANES_KERNEL_STATE=/root/.chariox/dev/lanes-kernel-drill<N>` with its own `config.json` (copy the
+   real one, change `ports` and set `agents` to a directory of its own: the holder passes it to loopd as `LOOPD_AGENTS`, so the drill loopd
+   reads its own queue and never the coordinator's), a copy of the current `bin/`, `loopd install`, `start`. Run a long drill round, swap the
+   drill's `bin` for the new binaries with `stop`, `mv`, `start` in the middle of a turn, and check that the same session and agent keep committing.
+3. Real kernels: `lanes-kernel.mjs stop`, then `mv bin bin.prev && mv bin.next bin`, then `lanes-kernel.mjs start` (about 25 s). loopd stops with
+   `stillRunning` naming every lane, and the new loopd logs `picked_up` for each one within seconds.
+4. Check `status`, `chariox access status` through `exec`, that every lane in `stopped.stillRunning` is `picked_up` again with the same
+   session and agent ids and `launchedAtMs` in its `LOOP_RUN.json`, and that new events and permission answers keep arriving.
 
-From `c76466e0be` the kernel offers Claude `allow_session` on routine permissions; the loop picks it by itself.
+From `c76466e0be` the kernel offers Claude `allow_session` on a routine permission when it can name the exact command (single-line Bash,
+an exact file path); the loop answers it by itself and records what was offered with each answer (`permissions[].offered`). The rule holds
+for that Claude run only and matches only the same command again, so it removes repeats, not the stream of new commands.
 
 ## State layout
 
@@ -130,7 +142,7 @@ brief to `agents/<lane>/BRIEF-<round>.md` over the `b3.sh` helper, writes the en
 queue file and `LOOP_RUN.json` path once loopd has picked it up. An invalid entry moves to `queue/rejected/`
 with `<name>.reason.txt` naming the exact field. One round per lane runs at a time; a second entry for the
 same lane waits in the queue; after a loopd restart the lane's unfinished round is resumed first, whatever the file
-order, and the waiting entry starts only when it has finished. A launch that fails 5 times (30 s apart) ends as `finishReason: launch_failed`.
+order, and the waiting entry starts only when it has finished. A *new* launch that fails 5 times (30 s apart) ends as `finishReason: launch_failed`. A round whose launch receipt shows a submitted prompt (a worker that may be running) is never abandoned: after the fifth failure loopd sets `driverError` in its `LOOP_RUN.json` (the Mac shows LOOP-DOWN with the reason), keeps its queue entry and lane, and keeps replaying every 30 s until the kernel answers; the next round of the lane waits. The kernel's armed deadline still stops the worker. loopd also starts while the kernel is down (`inbox_unavailable` in its log) and serves once it answers.
 
 **Per lane** loopd writes `agents/<lane>/LOOP_RUN.json` (`launchedAtMs`, `events`, `permissions`, `notes`, `head`,
 `bundle`, `bundleSha256`, `files`, `finishReason`, `finishedAtMs`, `driverError`, `lastMessage`), and
