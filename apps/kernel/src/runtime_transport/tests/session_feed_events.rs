@@ -33,7 +33,11 @@ impl Watched {
     }
 
     async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        Self::start_with_config(heartbeat_interval, DaemonConfig::for_tests()).await
+    }
+
+    async fn start_with_config(heartbeat_interval: Duration, config: DaemonConfig) -> Self {
+        let mut app = DaemonApp::bootstrap(config).unwrap();
         let session = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .unwrap()
@@ -382,6 +386,110 @@ async fn turn_events_are_coalesced_to_one_per_window() {
 }
 
 #[tokio::test]
+async fn audit_overflow_signals_one_reread_for_both_receive_paths() {
+    let watched = Watched::start().await;
+    let mut waiting = crate::transport::home_audit_feed::HomeAuditFeed::new(&watched.router);
+    let mut draining = crate::transport::home_audit_feed::HomeAuditFeed::new(&watched.router);
+    let agents = [watched.agent_id.clone()].into_iter().collect();
+    let store = watched.app.lock().await.durable_state_store();
+    let mut appended = Vec::new();
+    // Neither subscriber reads while the 1,024-row broadcast backlog overflows.
+    for index in 0..1_100 {
+        appended.push(
+            store
+                .append_event(
+                    "home_extension.grant.created",
+                    Some(watched.agent_id.clone()),
+                    serde_json::json!({ "name": format!("overflow-{index}") }),
+                )
+                .unwrap(),
+        );
+    }
+    waiting.changed().await;
+    for feed in [&mut waiting, &mut draining] {
+        let events = feed
+            .next_events(
+                &watched.router,
+                &watched.session_id,
+                &watched.attachment_id,
+                Some(&agents),
+            )
+            .await;
+        let wire: Vec<_> = events
+            .iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect();
+        assert_eq!(
+            wire.len(),
+            1,
+            "a gap replaces the surviving partial batch with one reset"
+        );
+        assert_eq!(wire[0]["event"], "home_extension_audit_lagged");
+        assert_eq!(wire[0]["session_id"], watched.session_id);
+        // The reset's one list read gives the same authoritative rows as any fresh reader.
+        let request = LocalDaemonRequest::ListHomeExtensionAudit(
+            crate::local::ListHomeExtensionAuditRequest {
+                agent_ref: watched.agent_id.clone(),
+                limit: Some(25),
+            },
+        );
+        let command = || {
+            KernelCommand::from_local_request_with_caller(
+                "audit-overflow-oracle",
+                KernelCommandSource::LocalCli,
+                KernelCaller::for_source(&KernelCommandSource::LocalCli)
+                    .with_connection_class(KernelConnectionClass::Terminal),
+                None,
+                None,
+                &request,
+            )
+        };
+        let LocalDaemonResponse::HomeExtensionAuditListed { mut events } = watched
+            .router
+            .dispatch(command(), request.clone())
+            .await
+            .unwrap()
+        else {
+            panic!("expected an audit list after the reset");
+        };
+        events.sort_by_key(|event| event.sequence);
+        assert_eq!(events, appended[appended.len() - 25..]);
+        assert!(feed
+            .next_events(
+                &watched.router,
+                &watched.session_id,
+                &watched.attachment_id,
+                Some(&agents)
+            )
+            .await
+            .is_empty());
+    }
+    let after_reset = store
+        .append_event(
+            "home_extension.grant.created",
+            Some(watched.agent_id.clone()),
+            serde_json::json!({ "name": "after-reset" }),
+        )
+        .unwrap();
+    for feed in [&mut waiting, &mut draining] {
+        let events = feed
+            .next_events(
+                &watched.router,
+                &watched.session_id,
+                &watched.attachment_id,
+                Some(&agents),
+            )
+            .await;
+        assert_eq!(events.len(), 1);
+        let KernelEvent::HomeExtensionAuditAppended { audit_event, .. } = &events[0] else {
+            panic!("a recovered feed must resume ordinary appends");
+        };
+        assert_eq!(audit_event.as_ref(), &after_reset);
+    }
+    watched.stop().await;
+}
+
+#[tokio::test]
 async fn audit_rows_arrive_as_the_list_returns_them() {
     let mut watched = Watched::start().await;
     let store = watched.app.lock().await.durable_state_store();
@@ -473,6 +581,46 @@ async fn a_subscription_that_asks_gets_heartbeats_at_its_interval() {
             *gap >= Duration::from_millis(450) && *gap <= Duration::from_millis(800),
             "heartbeat gaps {gaps:?}"
         );
+    }
+    watched.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_turn_history_reads_keep_subscription_heartbeats_running() {
+    let mut config = DaemonConfig::for_tests();
+    config.operational_history_read_delay_ms = 1_600;
+    let mut watched = Watched::start_with_config(Duration::from_millis(500), config).await;
+    watched
+        .append(vec![watched.prompt("slow-turn", "read this turn")])
+        .await;
+    watched
+        .next_event(|event| matches!(event, KernelEvent::TerminalOutput { .. }))
+        .await;
+    let mut last = std::time::Instant::now();
+    let deadline = last + Duration::from_secs(30);
+    // The slow revision read and outline read both have to finish while heartbeats continue.
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slow turn never arrived"
+        );
+        let event = watched
+            .next_event(|event| {
+                matches!(
+                    event,
+                    KernelEvent::Heartbeat { .. } | KernelEvent::AgentTurnChanged { .. }
+                )
+            })
+            .await;
+        let gap = last.elapsed();
+        assert!(
+            gap <= Duration::from_millis(850),
+            "history read starved the subscription for {gap:?}"
+        );
+        if matches!(event, KernelEvent::AgentTurnChanged { .. }) {
+            break;
+        }
+        last = std::time::Instant::now();
     }
     watched.stop().await;
 }

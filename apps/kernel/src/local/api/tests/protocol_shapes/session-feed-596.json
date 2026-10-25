@@ -59,7 +59,7 @@
       }
     }
   },
-  "allocation": "599/205 union (feature predecessor 596/202): agent_turn_changed, home_extension_audit_appended, heartbeat_interval_ms",
+  "allocation": "599/205 union (feature predecessor 596/202): agent_turn_changed, home_extension_audit_appended, home_extension_audit_lagged, heartbeat_interval_ms",
   "home_extension_audit_appended": {
     "agent_id": "agent-1",
     "audit_event": {
@@ -73,6 +73,10 @@
       "timestamp_ms": 50
     },
     "event": "home_extension_audit_appended",
+    "session_id": "session-1"
+  },
+  "home_extension_audit_lagged": {
+    "event": "home_extension_audit_lagged",
     "session_id": "session-1"
   },
   "items": [

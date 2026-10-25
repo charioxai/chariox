@@ -4843,8 +4843,12 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   extension audit. `audit_event` is the row `ListHomeExtensionAudit` returns (`sequence`, `event_id`, `kind`,
   `subject_id`, `timestamp_ms`, `payload`). It is named `audit_event` because `event` is the tag of every
   kernel event. Only the caller's own audit rows arrive (same authority as the list) and only those of the
-  session's agents. The kernel logs a warning when a slow subscriber missed rows; a client then reads the
-  list once more.
+  session's agents.
+- `home_extension_audit_lagged { session_id }`: the subscription's audit broadcast backlog overflowed.
+  The surviving partial batch is discarded and one signal replaces it. A client re-reads
+  `ListHomeExtensionAudit` once for each watched agent, replacing its cached list, then resumes applying
+  appended rows (deduplicated by audit `event_id` or `sequence`). Unrelated durable-state events share
+  the backlog, so their sequences cannot detect gaps in this audit feed.
 - `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
   subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
   is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
@@ -4852,6 +4856,10 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   `resume_from_event_id`; a relay or kernel that does not know it ignores it and the default stays, so a
   client keeps its liveness check while heartbeats arrive slower than it asked. `AttachSessionView` does not
   take the field: the subscription that follows it does.
+  Repeating a client subscription applies the new interval; omitting it restores the default. A relay
+  client retires the old binding before replacing it when the interval changes, keeping the event cursor.
+  Direct and relay subscriptions continue emitting heartbeats while turn revisions, history outlines,
+  and audit feed rows are read; a slow history writer or database query does not suspend the schedule.
 Older kernels send neither event; clients feature-detect 596 and keep the read-after-event path below it.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and

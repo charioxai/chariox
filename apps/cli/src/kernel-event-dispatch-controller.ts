@@ -130,6 +130,11 @@ export function createKernelEventDispatchController(
           void deps.refreshAssistantMessageHistory(event.agent_id)
         }
         return
+      // These feed events serve live turn/audit views; this TUI reads those on demand.
+      case "agent_turn_changed":
+      case "home_extension_audit_appended":
+      case "home_extension_audit_lagged":
+        return
       case "session_snapshot":
         await applySessionSnapshot(event)
         return
