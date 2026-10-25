@@ -608,6 +608,10 @@ async fn disconnect_relay(
         );
         super::connection_state::set_disconnected(state).await;
     }
+    router
+        .runtime_state()
+        .fail_closed_room_display_audience()
+        .await;
 }
 
 async fn run_daemon_relay_connector_inner(
@@ -757,11 +761,19 @@ async fn run_daemon_relay_connector_inner(
                                         }),
                                     );
                                     super::connection_state::set_disconnected(&state).await;
+                                    router
+                                        .runtime_state()
+                                        .fail_closed_room_display_audience()
+                                        .await;
                                 }
                             }
                             missing_relay_config_reported = true;
                         } else {
                             super::connection_state::set_disconnected(&state).await;
+                            router
+                                .runtime_state()
+                                .fail_closed_room_display_audience()
+                                .await;
                         }
                         let wait = sleep(Duration::from_secs(1));
                         tokio::pin!(wait);

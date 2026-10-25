@@ -446,6 +446,38 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::SetRoomSharedDisplayMask {
+            session_id,
+            slice_id,
+            mask,
+            revision,
+        } => {
+            match router
+                .runtime_state()
+                .execute_bound_room_shared_display_mask(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    mask,
+                    revision,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomSharedDisplay {
+                    session_id,
+                    slice_id,
+                    result,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::OpenRoomSharedDisplay {
             session_id,
             slice_id,

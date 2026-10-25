@@ -180,3 +180,40 @@ test('MP-08/MP-10/MP-11 desktop sparse video uses only the negotiated shared str
   await display.close();
  }
 });
+
+test('MP-11 owner raw feed is opt-in and cannot modify the protected capture',async()=>{
+ const binding={width:32,height:16};
+ const policy={unknown:false,values:[],targets:[]};
+ const ordinary=new DesktopSource(binding,policy,{native:null});
+ assert.throws(()=>ordinary.ownerFeed(),/not enabled/);
+ const source=new DesktopSource(binding,policy,{native:null,ownerFeed:true});
+ const raw={width:32,height:16,serial:1,signature:'unmasked',pixels:Buffer.alloc(2048,255),captured_ms:0,retain(){},release(){}};
+ try{
+  source.ownerFrame(raw);
+  source.bind(raw,[[0,0,2,1]],0,0);
+  assert.equal(source.ownerFeed().sample().raw.pixels[0],255);
+  assert.equal(source.sample().raw.pixels[0],0);
+  assert.equal(source.sample().raw.pixels.at(-4),255);
+  assert.equal(raw.pixels[0],255,'protected masking cannot mutate the owner raster');
+ }finally{await source.close();await ordinary.close()}
+});
+test('MP-08 Room shared audience switches every producer together on the warm source',async()=>{
+ const {host}=fixture();let captures=0,closed=0;
+ const masked={sample:()=>null,valid:()=>true,close:async()=>closed++};
+ const owner={sample:()=>null,valid:()=>true};masked.ownerFeed=()=>owner;
+ const feeds=[];
+ const display=new DesktopDisplay(host,{createSource:async()=>{captures++;return masked},createProducer:feed=>{
+  feeds.push(feed);return {feedback(){},invalidate(){},close:async()=>{},waitReady:async()=>{},take:()=>null};
+ }});
+ const bindings=[];host.audienceMask=false;host.audienceEpoch={};
+ try{
+  for(const scope of ['owner-tab-1','owner-tab-2'])bindings.push([await display.subscribe(command,scope),scope]);
+  const pump=async()=>{for(const [binding,scope]of bindings)await display.request({op:'screenshot',subscription_id:binding.subscription_id,generation:1,after_sequence:0},scope)};
+  await pump();assert.deepEqual(feeds,[owner,owner]);
+  host.audienceMask=true;host.audienceEpoch={};await display.retireAudience();
+  await pump();assert.deepEqual(feeds,[owner,owner,masked,masked]);
+  host.audienceMask=false;host.audienceEpoch={};await display.retireAudience();
+  await pump();assert.deepEqual(feeds,[owner,owner,masked,masked,owner,owner]);
+  assert.equal(captures,1);assert.equal(closed,0,'the protection oracle stays warm across audience changes');
+ }finally{await display.close()}
+});

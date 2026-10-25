@@ -13,8 +13,9 @@ after the complete capture fence passes. No echo scanning is added.
 
 The changed capture and placement anchors require current MP-11 semantic review.
 Focused regressions are supplementary, not hosted real-provider acceptance.
-The owner-unmasked/other-viewer-masked Room stream split still requires an
-authenticated audience contract; no viewer-supplied flag may grant it.
+The shared Room display audience now uses the authenticated home control in
+protocol 600/206: the owner alone sees the raw feed, and every viewer sees the
+protected feed while a guest is attached. No viewer-supplied flag may grant it.
 Internal helper changes add no LocalDaemon/relay shape; protocol remains 553/161.
 
 ## MP-08 / MP-10 / MP-11 native extension recipient admission (2026-10-19)

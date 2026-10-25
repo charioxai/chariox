@@ -2,6 +2,7 @@
 Private binary pipe. Caller proves display ownership; owned desktop mode masks
 before pixels cross the pipe or enter hashing, damage, or codec state.
 """
+import hashlib
 import ctypes as c
 import ctypes.util
 import json
@@ -100,6 +101,8 @@ try:
     if not query_damage(d,c.byref(event_base),c.byref(error_base)):raise ValueError('XDamage unavailable')
     stage='window'
     desktop=config.get('desktop') is True
+    owner_feed=desktop and config.get('owner_feed') is True
+    owner_serial=0
     if desktop:
         spec=importlib.util.spec_from_file_location('native_accessibility',Path(__file__).with_name('native-accessibility.py'))
         accessibility=importlib.util.module_from_spec(spec);spec.loader.exec_module(accessibility)
@@ -194,6 +197,13 @@ try:
         image_ready_ms=time.time()*1000
         # XShm avoids Xlib pixel IPC. One bounded copy crosses the helper pipe.
         raw=c.string_at(shm.shmaddr,size);readback_ms=time.time()*1000
+        # A private raw feed exists only for the home-authorized shared owner
+        # audience. Other consumers retain the default masked-only pipe.
+        if owner_feed:
+            owner_serial+=1
+            owner_header=json.dumps(dict(owner=True,width=width,height=height,length=len(raw),serial=owner_serial,
+                signature=hashlib.blake2b(raw,digest_size=16).hexdigest(),captured_ms=at,capture_ms=time.time()*1000-at)).encode()
+            sys.stdout.buffer.write(struct.pack('!I',len(owner_header))+owner_header+raw);sys.stdout.buffer.flush()
         protected_regions=[]
         if desktop:
             after=accessibility.capture_snapshot(config.get('processes',[]),config.get('browser_processes',[]),config.get('browser_protection'),config.get('values',[]))

@@ -7,7 +7,7 @@ import { NativeRefiner } from './kernel-browser-refiner.mjs';
 import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 export class DesktopDisplay {
-  constructor(host,{createSource=async(binding,policy)=>new DesktopSource(binding,policy,{timing:host.timing}).start(),createProducer=(...args)=>new MotionEncoder(...args)}={}) {
+  constructor(host,{ownerFeed=false,createSource=async(binding,policy)=>new DesktopSource(binding,policy,{timing:host.timing,ownerFeed}).start(),createProducer=(...args)=>new MotionEncoder(...args)}={}) {
     this.host=host;this.createSource=createSource;this.createProducer=createProducer;this.source=null;this.sourcePending=null;this.sourceEpoch=0;
   }
   streams(){return [...this.host.displays.values()].filter(stream=>stream.source_kind==='desktop');}
@@ -54,9 +54,10 @@ export class DesktopDisplay {
     stream.expires=Date.now()+60000;this.host.armDisplayExpiry(stream);
     if(command.op==='display_attach')return {generation:this.host.generation,attached:true};
     if(command.op!=='screenshot'||!stream.acceptsCredit(command.after_sequence))throw new UserDomainRefusal('stale_reference');
-    const policy=this.host.protection,source=await this.ensureSource();
-    const lifetimeValid=()=>this.host.protection===policy&&source.valid()&&this.host.displays.get(stream.subscription_id)===stream&&this.host.chromium.desktop?.binding()===binding;
-    if(!stream.producer){stream.producer=this.createProducer(source,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,stripes:stream.stripes,bootstrapExact:stream.pngBootstrap,valid:lifetimeValid,timing:this.host.timing});}
+    const policy=this.host.protection,audience=this.host.audienceEpoch,source=await this.ensureSource();
+    const feed=this.host.audienceMask===false?source.ownerFeed():source;
+    const lifetimeValid=()=>this.host.protection===policy&&this.host.audienceEpoch===audience&&feed.valid()&&this.host.displays.get(stream.subscription_id)===stream&&this.host.chromium.desktop?.binding()===binding;
+    if(!stream.producer){stream.producer=this.createProducer(feed,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,stripes:stream.stripes,bootstrapExact:stream.pngBootstrap,valid:lifetimeValid,timing:this.host.timing});}
     const valid=()=>!signal?.aborted&&lifetimeValid();
     // MP-08/MP-10: a protocol 475 push credit may ask for a key and waits
     // briefly for the next frame (the kernel pump paces the stream).
@@ -66,10 +67,10 @@ export class DesktopDisplay {
     await stream.producer.waitReady(command.push?100:20,signal);
     this.host.timing.event?.('desktop_producer_wait',{at:waiting,viewer:stream.timingViewer??0,delivery:stream.timingDelivery??0});
     if(!valid())throw new UserDomainRefusal('not_granted');
-    const encoded=stream.producer.take(),sample=encoded??this.refine(stream,source,policy,lifetimeValid);
+    const encoded=stream.producer.take(),sample=encoded??this.refine(stream,feed,policy,lifetimeValid);
     if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
     // A newer published sample abandons a link-paced repair batch (motion first).
-    const published=source.sample(),current=encoded?valid:()=>valid()&&source.sample()===published;
+    const published=feed.sample(),current=encoded?valid:()=>valid()&&feed.sample()===published;
     // MP-08/MP-10: the shared kernel ACK pump bounds pushed bytes. Legacy
     // display credits keep the stream's byte pacing, as Browser does.
     const building=timestamp();
@@ -98,6 +99,11 @@ export class DesktopDisplay {
   async remove(stream) {
     this.host.displays.delete(stream.subscription_id);await stream.close();
     if(!this.streams().length){const source=this.source;this.source=null;await source?.close();}
+  }
+  async retireAudience() {
+    for(const stream of this.streams()){
+      const producer=stream.producer;stream.producer=null;stream.invalidate();await producer?.close();
+    }
   }
   async retireSource() {
     this.sourceEpoch++;

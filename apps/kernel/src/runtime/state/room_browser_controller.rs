@@ -45,6 +45,7 @@ impl KernelRuntimeState {
             | RelayPeerRequest::CaptureRoomScreenshot { slice_id, .. }
             | RelayPeerRequest::ReadRoomScreenshotChunk { slice_id, .. }
             | RelayPeerRequest::OpenRoomDisplay { slice_id, .. }
+            | RelayPeerRequest::SetRoomSharedDisplayMask { slice_id, .. }
             | RelayPeerRequest::OpenRoomSharedDisplay { slice_id, .. }
             | RelayPeerRequest::RoomSharedDisplay { slice_id, .. } => Some(slice_id),
             _ => None,

@@ -4388,3 +4388,27 @@ the same crop afresh for a live opted-in mirror of that observer/document/policy
 the kernel requires exact issued geometry, active owned window, density and
 pre/post-capture fences. A frame-size hint never supplies capture coordinates or
 observation authority. This composes unreleased mirror539 with union 540/148.
+
+### MP-08 / MP-10 / MP-11: shared Room display audience (600 / 206)
+
+The home kernel derives one shared audience from its authenticated attachment
+records across sessions. Local and configured Cloud identities of the kernel
+owner denote the same person; another person's attachment requires masking.
+The home masks active Room displays before admitting a guest, and refreshes the
+computed audience after detach, replacement and stale-attachment cleanup.
+
+`SetRoomSharedDisplayMask { session_id, slice_id, mask, revision }` uses the
+existing encrypted home-to-worker peer path. Only the exact provisioner-bound
+home key and Room/slice scope are admitted. Increasing revisions reject late
+unmask controls. Viewer opens, offers, credits and resume commands carry no
+unmask authority. One shared source and the usual codecs serve every viewer;
+all switch to the protected feed together while any guest is attached.
+
+No flag means masked. The home renews at most every 500 ms while leases live.
+An unmask grant expires after 3 seconds without renewal, immediately invalidating
+old frames; worker relay disconnect also revokes it. Audience changes retire
+queued encoder packets and late home replies. The owner-only raw feed remains
+private to display delivery. Agent screenshot/OCR and structured observations
+retain their existing Vault protection regardless of display audience. Only
+exact Vault-filled plain fields contribute pixel masks; person-typed fields
+and echoes add none.

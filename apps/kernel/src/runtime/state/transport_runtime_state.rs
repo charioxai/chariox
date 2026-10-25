@@ -46,6 +46,7 @@ impl KernelRuntimeState {
         self.owned.announce_durable_writer_condition();
         self.refresh_user_domain_grants();
         self.schedule_room_browser_health();
+        self.schedule_room_display_audience();
         self.app_control().schedule_maintenance();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
@@ -186,7 +187,7 @@ impl KernelRuntimeState {
             .attachment_store
             .stale_terminal_attachment_ids(now_ms, STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS);
         for attachment_id in stale_attachment_ids {
-            match self.owned.detach(&attachment_id) {
+            match self.detach(&attachment_id).await {
                 Ok(attachment) => {
                     crate::logging::warn_with_fields(
                         "daemon.session",

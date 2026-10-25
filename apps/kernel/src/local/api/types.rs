@@ -335,4 +335,5 @@ pub use workspace::*;
 /// parked behind a busy renderer); the viewer holds its preview handover until it is admitted.
 /// MP-08/MP-10/MP-11: allocated 553 adds the relay `client_connect_display_resume` envelope (initial
 /// Room display resume composed with client admission).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 553;
+/// MP-08/MP-10/MP-11: allocated 600/206 adds home-owned Room audience masking.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 600;

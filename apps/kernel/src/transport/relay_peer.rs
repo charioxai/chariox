@@ -125,7 +125,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 158 carries the local 550 mirror v2 wire contract.
 /// Allocated 160 carries the local 552 `parked_input` reply field.
 /// Allocated 161 carries the local 553 combined relay connect with the initial Room display resume.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 161;
+/// Allocated 206 carries local 600 home-owned Room audience masking.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 206;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -682,6 +683,12 @@ pub enum RelayPeerRequest {
         session_id: String,
         slice_id: String,
         command: super::room_browser_controller::RoomBrowserControllerCommand,
+    },
+    SetRoomSharedDisplayMask {
+        session_id: String,
+        slice_id: String,
+        mask: bool,
+        revision: u64,
     },
     OpenRoomSharedDisplay {
         session_id: String,

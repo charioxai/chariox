@@ -1,6 +1,7 @@
 //! MP-08/MP-10/MP-11: home owns leases; worker owns the exact Room producer.
 #[cfg(test)]
 mod admission_tests;
+mod audience;
 pub(super) mod timing;
 mod worker;
 use super::*;
@@ -14,6 +15,7 @@ use crate::transport::room_shared_display::{
 };
 #[derive(Clone, Default)]
 pub(super) struct RoomDisplayLeases {
+    audience: Arc<audience::Audience>,
     home: Arc<std::sync::Mutex<BTreeMap<String, Arc<Mutex<RoomDisplayLease>>>>>,
     worker: Arc<std::sync::Mutex<BTreeMap<String, Arc<Mutex<WorkerLease>>>>>,
 }
@@ -57,6 +59,7 @@ impl KernelRuntimeState {
         caller: &KernelCaller,
         request: crate::local::GetSliceDisplayEndpointRequest,
     ) -> Result<SliceDisplayEndpoint, DaemonError> {
+        let _audience = self.room_display_audience_guard().await;
         let session = request.session_id.as_deref().ok_or_else(error)?;
         let attachment = request.attachment_id.as_deref().ok_or_else(error)?;
         let viewer = request.viewer_public_key.as_deref().ok_or_else(error)?;
@@ -189,6 +192,8 @@ impl KernelRuntimeState {
             }
             _ => return Err(error()),
         };
+        self.send_room_display_audience(&slice, session, self.room_display_requires_mask(), true)
+            .await?;
         let response = self
             .room_display_peer(
                 &slice,
@@ -257,7 +262,8 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
     ) -> Result<RoomDisplayResult, DaemonError> {
         let expected_session = match &request {
-            RelayPeerRequest::OpenRoomSharedDisplay { session_id, .. }
+            RelayPeerRequest::SetRoomSharedDisplayMask { session_id, .. }
+            | RelayPeerRequest::OpenRoomSharedDisplay { session_id, .. }
             | RelayPeerRequest::RoomSharedDisplay { session_id, .. } => session_id.clone(),
             _ => return Err(error()),
         };
@@ -464,6 +470,7 @@ impl KernelRuntimeState {
                 None,
             )
             .await?;
+        let audience_epoch = self.room_display_audience_epoch(&lease.session_id);
         let result = self
             .room_display_peer(
                 &slice,
@@ -483,6 +490,9 @@ impl KernelRuntimeState {
             return Err(error());
         };
         lease.used = Instant::now();
+        if self.room_display_audience_epoch(&lease.session_id) != audience_epoch {
+            return Ok(None);
+        }
         Ok(frame)
     }
 }

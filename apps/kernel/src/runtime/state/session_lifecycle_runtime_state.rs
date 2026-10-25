@@ -418,7 +418,17 @@ impl KernelRuntimeState {
         request: crate::attachment::AttachRequest,
         terminal_caller: bool,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        let _audience = self.room_display_audience_guard().await;
+        if !self.room_display_owner(&request.owner_user_id) {
+            self.sync_room_display_audience(true, true).await?;
+        }
         let attachment = self.owned.attach(request)?;
+        if let Err(error) = self
+            .sync_room_display_audience(self.room_display_requires_mask(), true)
+            .await
+        {
+            tracing::warn!(%error, "MP-08/MP-10/MP-11: Room audience changed; worker expires masked");
+        }
         if terminal_caller {
             if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
                 self.owned.kernel_browser_host.set_focus(
@@ -455,7 +465,15 @@ impl KernelRuntimeState {
         &self,
         attachment_id: &str,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        self.owned.detach(attachment_id)
+        let _audience = self.room_display_audience_guard().await;
+        let attachment = self.owned.detach(attachment_id)?;
+        if let Err(error) = self
+            .sync_room_display_audience(self.room_display_requires_mask(), true)
+            .await
+        {
+            tracing::warn!(%error, "MP-08/MP-10/MP-11: Room audience changed; worker expires masked");
+        }
+        Ok(attachment)
     }
 
     pub(crate) async fn focus_agent(

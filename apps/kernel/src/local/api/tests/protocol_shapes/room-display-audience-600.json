@@ -1,0 +1,20 @@
+{
+  "local_protocol": 600,
+  "peer_protocol": 206,
+  "requests": [
+    {
+      "kind": "set_room_shared_display_mask",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "mask": true,
+      "revision": 10
+    },
+    {
+      "kind": "set_room_shared_display_mask",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "mask": false,
+      "revision": 11
+    }
+  ]
+}

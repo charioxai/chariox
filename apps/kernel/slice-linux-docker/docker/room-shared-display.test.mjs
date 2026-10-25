@@ -125,3 +125,67 @@ test('MP-08/MP-10 one viewer idle producer wait never delays another viewer or i
   await Promise.all([waitingA,waitingB]);
  }finally{await f.display.close()}
 });
+
+// MP-08/MP-10/MP-11: only the authenticated home control may change the shared
+// source's audience policy. A viewer offer never supplies this authority.
+test('MP-11 Room audience defaults masked and ignores viewer mask flags',async()=>{
+ const f=fixture(),protectedPolicy={unknown:false,values:['vault-canary'],targets:[{kind:'native',value_hash:'vault-hash'}]};
+ try{
+  await f.display.request({...offer,policy:protectedPolicy,mask:false});
+  assert.deepEqual(f.display.protection,protectedPolicy);
+  assert.equal(f.display.audienceMask,true);
+ }finally{await f.display.close()}
+});
+test('MP-08 Room home audience control retires shared pixels before revealing or masking',async()=>{
+ const f=fixture(),protectedPolicy={unknown:false,values:['vault-canary'],targets:[{kind:'native',value_hash:'vault-hash'}]};
+ try{
+  await f.display.request({...offer,policy:protectedPolicy});
+  const stale=f.display.protection;
+  const result=await f.display.request({op:'display_mask',mask:false,policy:protectedPolicy});
+  assert.equal(result.mask,false);
+  assert.equal(f.display.audienceMask,false);
+  assert.deepEqual(f.display.protection,protectedPolicy);
+  assert.equal(f.display.protection,stale);
+  assert.equal(f.counts().closes,0,'keep the already warm masked capture source');
+  assert.equal(f.display.display.source,f.source);
+  await f.display.request({op:'display_mask',mask:true,policy:protectedPolicy});
+  assert.equal(f.display.audienceMask,true);
+  assert.deepEqual(f.display.protection,protectedPolicy);
+  await assert.rejects(f.display.request({op:'display_mask',mask:'false',policy:protectedPolicy}));
+ }finally{await f.display.close()}
+});
+test('MP-11 Room audience changes invalidate an in-flight frame before retirement waits',async()=>{
+ const f=fixture(),protectedPolicy={unknown:false,values:['vault-canary'],targets:[{kind:'native',value_hash:'vault-hash'}]};
+ let unblock,closing;
+ try{
+  await f.display.request({...offer,policy:protectedPolicy});
+  const previous=f.display.audienceEpoch;
+  const stream=[...f.display.displays.values()][0];
+  closing=new Promise(resolve=>unblock=resolve);
+  stream.producer={close:async()=>{assert.notEqual(f.display.audienceEpoch,previous);await closing},invalidate(){}};
+  const update=f.display.request({op:'display_mask',mask:false,policy:protectedPolicy});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.notEqual(f.display.audienceEpoch,previous,'queued old frames must lose validity synchronously');
+  unblock();await update;
+ }finally{unblock?.();await f.display.close()}
+});
+
+test('MP-11 Room unmask grant expires masked when the home link stops renewing',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture();
+ try{
+  await f.display.request({op:'display_mask',mask:false,policy});
+  const epoch=f.display.audienceEpoch;
+  t.mock.timers.tick(2999);assert.equal(f.display.audienceMask,false);
+  await f.display.request({op:'display_mask',mask:false,policy});
+  assert.equal(f.display.audienceEpoch,epoch,'renewal must preserve the encoder and its references');
+  t.mock.timers.tick(2);assert.equal(f.display.audienceMask,false);
+  t.mock.timers.tick(2998);assert.equal(f.display.audienceMask,true,'link expiry revokes frame validity immediately');
+  assert.notEqual(f.display.audienceEpoch,epoch);
+  await f.display.pending;
+  assert.equal(f.display.audienceApplied,true);
+  await f.display.request({op:'display_mask',mask:true,policy:{unknown:true,targets:[],values:[]}});
+  assert.equal(f.display.protection.unknown,true,'unknown policy must still allow fail-closed revocation');
+  await assert.rejects(f.display.request({op:'display_mask',mask:false,policy:{unknown:true,targets:[],values:[]}}));
+ }finally{await f.display.close()}
+});

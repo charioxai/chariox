@@ -32,9 +32,22 @@ async function settle(child) {
   for (let n = 0; n < 50 && child.exitCode === null && child.signalCode === null; n++) await delay(20);
   if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await new Promise(resolve => child.once('exit', resolve)); }
 }
+class OwnerFeed {
+  constructor(source) { this.source=source;this.listeners=new Set();this.latest=null;this.changedAt=0; }
+  get closed() { return this.source.closed; }
+  valid() { return this.source.valid(); }
+  subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
+  sample() { return this.source.closed?null:this.latest; }
+  publish(sample) {
+    this.latest?.raw.release?.();sample.raw.retain?.();sample.published_ms=Date.now();
+    this.latest=sample;this.changedAt=performance.now();
+    for(const listener of this.listeners)listener(sample);
+  }
+  close() { this.latest?.raw.release?.();this.latest=null;this.listeners.clear(); }
+}
 export class DesktopSource {
-  constructor(binding, policy, { native = nativeDesktopWorker(), timing = () => {} } = {}) {
-    this.binding=binding;this.policy=policy;this.native=native;this.timing=timing;this.listeners=new Set();this.closed=false;this.latest=null;this.pending=[];this.stepStarted=null;this.verifiedStep=null;
+  constructor(binding, policy, { native = nativeDesktopWorker(), timing = () => {}, ownerFeed = false } = {}) {
+    this.binding=binding;this.policy=policy;this.native=native;this.timing=timing;this.listeners=new Set();this.closed=false;this.latest=null;this.pending=[];this.stepStarted=null;this.verifiedStep=null;this.owner=ownerFeed?new OwnerFeed(this):null;
     // MP-08/MP-11: kernel-browser windows are revealed only under a stable,
     // presented CDP measurement that is re-verified after each frame's capture.
     this.gate=new ProtectionGate(async()=>{
@@ -49,6 +62,13 @@ export class DesktopSource {
   valid() { return !this.closed && this.binding.isCurrent?.() !== false; }
   subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
   sample() { return this.closed?null:this.latest; }
+  ownerFeed() { if(!this.owner)throw Error('MP-11: owner feed is not enabled');return this.owner; }
+  ownerFrame(raw) {
+    if(!this.owner)return;
+    const presentation=this.binding.browser?.()?.connection?.presentationFence;
+    if(presentation&&!presentation.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0)))return;
+    this.owner.publish({raw,serial:raw.serial,captured_ms:raw.captured_ms,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature});
+  }
   async scope() {
     const at=Date.now();
     // MP-08/MP-10/MP-11: one conservative observation traversal; input
@@ -72,17 +92,18 @@ export class DesktopSource {
     const child=spawn(python(),['-u',helper('./kernel-browser-xshm.py')],{env:this.binding.environment,stdio:['pipe','pipe','ignore']});this.child=child;
     const fail=()=>{void this.close().catch(()=>{});};child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
     safeChildPid(child);
-    const raster=new NativeRaster();
+    const raster=new NativeRaster(),ownerRaster=this.owner?new NativeRaster():null;
     const pipe=new NativePipe(header=>{
-      if(header.width!==this.binding.width||header.height!==this.binding.height||!validMasks(header.protected_regions,header.width,header.height))throw Error('MP-11: desktop raster protection/geometry');
+      if(header.width!==this.binding.width||header.height!==this.binding.height||!(header.owner===true?Boolean(this.owner):validMasks(header.protected_regions,header.width,header.height)))throw Error('MP-11: desktop raster protection/geometry');
     },(header,pixels)=>{
       if(this.closed)return;
+      if(header.owner===true){const raw=ownerRaster.apply(header,pixels);raw.format='bgr0';this.ownerFrame(raw);raw.release?.();return;}
       const raw=raster.apply(header,pixels);raw.format='bgr0';raw[displayMaskRegions]=header.protected_regions.map(([x,y,width,height])=>({x,y,width,height}));
       this.offer({raw,serial:raw.serial,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature},header.protection_serial);
     });
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     const scope=await this.scope();
-    child.stdin.write(JSON.stringify({desktop:true,pid:process.pid,width:this.binding.width,height:this.binding.height,browser_protection:null,protection_serial:0,
+    child.stdin.write(JSON.stringify({desktop:true,owner_feed:Boolean(this.owner),pid:process.pid,width:this.binding.width,height:this.binding.height,browser_protection:null,protection_serial:0,
       mask:scope.mask,values:scope.values,processes:scope.processes,browser_processes:scope.browser_processes})+'\n');
   }
   // MP-08/MP-10/MP-11: the native worker reads the owned desktop root into
@@ -111,7 +132,7 @@ export class DesktopSource {
       raw.nativeDelivered=(encoder,revision)=>this.worker.delivered(encoder,revision);
       raw.nativeCommit=(encoder,admit)=>this.worker.commit(encoder,raw.serial,admit);
       if(this.closed){raw.release();return;}
-      this.next?.release();this.next=raw;void this.protect();
+      this.ownerFrame(raw);this.next?.release();this.next=raw;void this.protect();
     });
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     child.stdin.write(JSON.stringify({pid:process.pid,width,height,pool:this.poolRoot,desktop:true})+'\n');
@@ -257,7 +278,7 @@ export class DesktopSource {
     if(this.closed&&!this.child&&!this.oracle)return;
     this.closed=true;this.presentationResume?.();this.presentationResume=null;
     for(const raw of [this.latest?.raw,...this.pending.map(item=>item.sample.raw),this.next])raw?.release?.();
-    this.latest=null;this.pending=[];this.next=null;this.listeners.clear();
+    this.latest=null;this.pending=[];this.next=null;this.listeners.clear();this.owner?.close();
     const child=this.child,oracle=this.oracle,poolRoot=this.poolRoot;this.child=null;this.oracle=null;this.poolRoot=null;
     this.worker?.close();
     await Promise.all([settle(child),settle(oracle)]);

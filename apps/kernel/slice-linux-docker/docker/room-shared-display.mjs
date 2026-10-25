@@ -10,9 +10,9 @@ import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 const streamJoin=id=>Number(createHash('sha256').update(id).digest().readBigUInt64BE(0)>>12n);
 export class RoomSharedDisplay {
  constructor(desktop,{desktop:options,sessions,timing=()=>{}}={}) {
-  this.desktop=desktop;this.generation=1;this.displays=new Map();this.timers=new Map();this.timing=timing;this.pending=Promise.resolve();this.nextViewer=1;
+  this.desktop=desktop;this.generation=1;this.displays=new Map();this.timers=new Map();this.timing=timing;this.pending=Promise.resolve();this.nextViewer=1;this.audienceMask=true;this.audienceApplied=true;this.audienceEpoch={};
   this.chromium={desktop:{binding:()=>this.surface}};
-  this.display=new DesktopDisplay(this,options);this.sessions=new DisplaySessions(this,sessions);
+  this.display=new DesktopDisplay(this,{...options,ownerFeed:true});this.sessions=new DisplaySessions(this,sessions);
  }
  armDisplayExpiry(stream) {
   clearTimeout(this.timers.get(stream));
@@ -34,15 +34,34 @@ export class RoomSharedDisplay {
   });this.pending=held;return result;
  }
  async run(command,{signal}={},release=()=>{}) {
+  // This operation is constructed only by the worker after authenticating its
+  // bound home kernel. Offers and per-viewer credits cannot change the flag.
+  if(command?.op==='display_mask'){
+   if(typeof command.mask!=='boolean'||typeof command.policy?.unknown!=='boolean'||(!command.mask&&command.policy.unknown)||!Array.isArray(command.policy.targets)||!Array.isArray(command.policy.values))throw new UserDomainRefusal('not_granted');
+   clearTimeout(this.audienceTimer);
+   if(this.audienceMask!==command.mask||this.audienceApplied!==command.mask){
+    this.audienceMask=command.mask;this.audienceApplied=command.mask;this.audienceEpoch={};
+    await this.display.retireAudience();
+   }
+   await this.updateProtection(command.policy);
+   if(!this.audienceMask){
+    this.audienceTimer=setTimeout(()=>{
+     // Revoke old frame validity immediately, before waiting for the queue.
+     this.audienceMask=true;this.audienceEpoch={};
+     void this.request({op:'display_mask',mask:true,policy:this.protection}).catch(()=>this.display.close());
+    },3000);this.audienceTimer.unref?.();
+   }
+   return {mask:this.audienceMask};
+  }
   if(!['display_subscribe','display_attach','screenshot','unsubscribe','display_suspend','display_resume','display_resume_attach'].includes(command?.op)
    ||typeof command.observed_by!=='string'||!command.observed_by||command.observed_by.length>256
    ||command.policy?.unknown!==false||!Array.isArray(command.policy.targets)||!Array.isArray(command.policy.values))throw new UserDomainRefusal('not_granted');
-  const started=timestamp(),surface=await this.desktop.binding(command.viewport),policy=JSON.stringify(command.policy);
+  const started=timestamp(),surface=await this.desktop.binding(command.viewport);
   const traced=this.displays.get(command.display_subscription_id??command.subscription_id);
   if(traced&&command.op!=='screenshot'&&command.op!=='display_subscribe'){traced.producer?.wakeReady?.();await traced.pumpTail;}
   this.timing.event?.('room_display_binding',{at:started,viewer:traced?.timingViewer??0,delivery:traced?.timingDelivery??0});
   if(this.surface!==surface){await this.display.close();this.surface=surface;}
-  if(this.policyKey!==policy){await this.display.retireSource();this.policyKey=policy;this.protection=command.policy;}
+  await this.updateProtection(command.policy);
   if(command.op==='display_subscribe'){
    if(command.target&&(command.target.kind!=='desktop'||command.target.surface_id!==surface.surface_id||command.target.generation!==surface.generation))throw new UserDomainRefusal('stale_reference');
    const result=await this.display.subscribe({...command,surface_id:surface.surface_id,generation:surface.generation},command.observed_by);
@@ -75,5 +94,14 @@ export class RoomSharedDisplay {
   if(traced)traced.pumpTail=pump.catch(()=>{});
   release();return pump;
  }
- async close(){await this.pending;try{await this.display.close()}finally{for(const timer of this.timers.values())clearTimeout(timer);this.timers.clear();this.timing.flush?.()}}
+ async updateProtection(registered){
+  const protection=registered,key=JSON.stringify(protection);
+  if(this.policyKey!==key){
+   // Invalidate frame validity before the first await: retirement may wait for
+   // an encoder, while a previously released pump is still finishing a frame.
+   this.policyKey=key;this.protection=protection;
+   await this.display.retireSource();
+  }
+ }
+ async close(){clearTimeout(this.audienceTimer);await this.pending;clearTimeout(this.audienceTimer);try{await this.display.close()}finally{for(const timer of this.timers.values())clearTimeout(timer);this.timers.clear();this.timing.flush?.()}}
 }
