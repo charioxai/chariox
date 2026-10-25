@@ -1,4 +1,5 @@
 // MP-08 / MP-09 / MP-10 / MP-11: owned real base kernels and product account transfer.
+import {completedWorkspaceTool} from './workspace-proof.mjs';
 import {openTui} from '../context-switch/tui.mjs';
 import {LocalIpcClient} from '../../../packages/kernel-client/dist/ipc.js';
 import {mkdir,writeFile,readFile,readdir,rm} from 'node:fs/promises';
@@ -79,8 +80,19 @@ try{
  async function command(tui,text){await tui.type('\x15/'+text+'\r');await sleep(700);}
  async function focus(tui){const s=await tui.send('snapshot');return s.session.focusedAgentId;}
  function entries(snapshot){return snapshot.agentPanes?.[snapshot.session.focusedAgentId]??[];}
- async function turn(tui,prompt){const before=new Set(entries(await tui.send('snapshot')).map(r=>r.id));await tui.send('submit_prompt',{prompt});let saw=false,settledAt;for(let n=0;n<240;n++){const s=await tui.send('snapshot'),a=s.session.agents.find(a=>a.id===s.session.focusedAgentId),busy=a?.isProcessing||a?.state==='Working';if(busy){saw=true;settledAt=undefined;}const terminal=entries(s).some(r=>!before.has(r.id)&&['assistant','error'].includes(r.role)&&(r.text??'').trim());if(a&&!busy&&(saw||terminal)){settledAt??=Date.now();if(Date.now()-settledAt>=1500)return {snapshot:s,sawWorking:saw};}await sleep(250)}throw Error('TUI turn deadline');}
+ async function turn(tui,prompt){const before=new Set(entries(await tui.send('snapshot')).map(r=>r.id));await tui.send('submit_prompt',{prompt});let saw=false,settledAt;for(let n=0;n<240;n++){const s=await tui.send('snapshot'),a=s.session.agents.find(a=>a.id===s.session.focusedAgentId),busy=a?.isProcessing||a?.state==='Working';if(busy){saw=true;settledAt=undefined;}const terminal=entries(s).some(r=>!before.has(r.id)&&['assistant','error'].includes(r.role)&&(r.text??'').trim());if(a&&!busy&&(saw||terminal)){settledAt??=Date.now();if(Date.now()-settledAt>=1500)return {snapshot:s,sawWorking:saw,promptId:entries(s).findLast(r=>r.role==='user'&&(r.text??'').trim()===prompt)?.promptId};}await sleep(250)}throw Error('TUI turn deadline');}
 
+ async function expandTools(tui,turn){
+  let snapshot=turn.snapshot;
+  if(entries(snapshot).some(r=>r.role==='tool'&&r.promptId===turn.promptId&&r.blobCollapsed===true))await tui.type('\x0f');
+  for(let n=0;n<80;n++){
+   snapshot=await tui.send('snapshot');
+   const rows=entries(snapshot).filter(r=>r.role==='tool'&&r.promptId===turn.promptId);
+   if(rows.every(r=>r.blobCollapsed!==true&&!r.historyBlobLoading))return snapshot;
+   await sleep(250);
+  }
+  throw Error('Fresh tool output did not expand');
+ }
  async function run(stack,tui){const s=await tui.send('snapshot');const core=(await request(stack.client,{GetSessionState:{session_id:s.session.id}},'SessionState'));const a=core.session.agents.find(a=>a.id===s.session.focusedAgentId);const id=a.active_provider_run_id??core.agent_activity?.[a.id]?.last_completed_turn?.provider_run_id;if(!id)throw Error('No real provider run identity');return (await request(stack.client,{GetProviderRun:{provider_run_id:id}},'ProviderRun')).provider_run;}
  const sourceTui=await openTui({tree:source.dir+'/workspace',env:source.env,url:'ws://127.0.0.1:'+source.env.CHARIOX_KERNEL_PORT+'/kernel',profile:linked.profile_id,root:source.dir,provider:'codex',model:'gpt-6-luna',binary:tuiBinary});sourceTui.child.charioxStart=processes().find(p=>p.pid===sourceTui.child.pid)?.start;tuis.push(sourceTui);
  await command(sourceTui,'permissions required');await command(sourceTui,'agent variant '+await focus(sourceTui)+' low');
@@ -98,24 +110,27 @@ try{
  summary.sourceNativeSessionRemoved=true;
  const binding=exported.binding;
  const launched=await launch(target,{session_id:session.session.id,agent_id:session.agent.id,adapter_key:'codex',provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',variant:'low',provider_session_id:sourceRun.provider_session_id,native_tui:false,native_checkpoint_binding:binding});
- await adapter('import',target,launched.provider_run,targetHome);
+ summary.targetImport=await adapter('import',target,launched.provider_run,targetHome);await save();
  summary.steps.push({sourceStopped:true,checkpointExported:true,checkpointImported:true,sourceAndTargetProfilesDiffer:profile!==targetHome});await save();
  const targetTui=await openTui({tree:target.dir+'/workspace',env:target.env,url:'ws://127.0.0.1:'+target.env.CHARIOX_KERNEL_PORT+'/kernel',profile:linked.profile_id,session:session.session.id,root:target.dir,provider:'codex',model:'gpt-6-luna',binary:tuiBinary});targetTui.child.charioxStart=processes().find(p=>p.pid===targetTui.child.pid)?.start;tuis.push(targetTui);
  const targetPrompt='Use a shell command to print your working directory, then repeat the marker from our earlier conversation. Do not use any other tools.';
  if(targetPrompt.includes(marker))throw Error('Drill must not send the earlier marker to the target');
  const first=await turn(targetTui,targetPrompt);
- const rendered=JSON.stringify(entries(first.snapshot)),targetRun=await run(target,targetTui);
- const positive={sameNativeId:targetRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:entries(first.snapshot).some(row=>row.role==='assistant'&&(row.text??'').includes(marker)),relocatedWorkspaceExecuted:rendered.includes(target.dir+'/workspace'),model:targetRun.model,variant:targetRun.variant,state:first.snapshot.session.agents.find(a=>a.id===first.snapshot.session.focusedAgentId)?.state,observedRoles:[...new Set(entries(first.snapshot).map(row=>row.role))]};
- summary.positive=positive;await save();
+ first.snapshot=await expandTools(targetTui,first);
+ const targetRun=await run(target,targetTui);
+ const positive={sameNativeId:targetRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:entries(first.snapshot).some(row=>row.role==='assistant'&&(row.text??'').includes(marker)),relocatedWorkspaceExecuted:completedWorkspaceTool(entries(first.snapshot),first.promptId,target.dir+'/workspace'),model:targetRun.model,variant:targetRun.variant,state:first.snapshot.session.agents.find(a=>a.id===first.snapshot.session.focusedAgentId)?.state,observedRoles:[...new Set(entries(first.snapshot).map(row=>row.role))]};
+ summary.positive=positive;summary.targetToolEvidence=entries(first.snapshot).filter(r=>r.role==='tool'&&r.promptId===first.promptId).map(({role,promptId,text,blobCollapsed,historyBlobLoaded})=>({role,promptId,text:(text??'').split(marker).join('<native-context-marker>'),blobCollapsed,historyBlobLoaded}));await save();
  if(!positive.sameNativeId||!positive.contextRecalled||!positive.relocatedWorkspaceExecuted||positive.state==='Error')throw Error('Native continuity or relocated workspace failed');
  const endedTarget=await terminate(target,targetRun);
  const returnCheckpoint=await adapter('export',target,endedTarget,targetHome);
  const returned=await launch(source,{session_id:homeBefore.id,agent_id:homeBefore.focusedAgentId,adapter_key:'codex',provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',variant:'low',provider_session_id:sourceRun.provider_session_id,native_tui:false,native_checkpoint_binding:returnCheckpoint.binding});
  summary.sourceNativeSessionRemoved=false;
- await adapter('import',source,returned.provider_run,profile);
+ summary.returnImport=await adapter('import',source,returned.provider_run,profile);await save();
  const back=await turn(sourceTui,'Use a shell command to print your working directory, then repeat the marker and the working directory you printed in the previous task. Do not use any other tools.');
- const backRun=await run(source,sourceTui),backEntries=entries(back.snapshot),backText=JSON.stringify(backEntries);
- summary.returned={sameNativeId:backRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:backEntries.some(row=>row.role==='assistant'&&(row.text??'').includes(marker)),targetTurnRecalled:backEntries.some(row=>row.role==='assistant'&&(row.text??'').includes(target.dir+'/workspace')),homeWorkspaceExecuted:backText.includes(source.dir+'/workspace'),sameHomeSession:back.snapshot.session.id===homeBefore.id,sameHomeAgent:back.snapshot.session.focusedAgentId===homeBefore.focusedAgentId,homeHistoryRetained:backEntries.some(row=>row.role==='assistant'&&(row.text??'').includes('ACK')),providerSucceeded:back.snapshot.session.agents.find(a=>a.id===back.snapshot.session.focusedAgentId)?.state!=='Error'};await save();
+ back.snapshot=await expandTools(sourceTui,back);
+ const backRun=await run(source,sourceTui),backEntries=entries(back.snapshot);
+ summary.homeToolEvidence=backEntries.filter(r=>r.role==='tool'&&r.promptId===back.promptId).map(({role,promptId,text,blobCollapsed,historyBlobLoaded})=>({role,promptId,text:(text??'').split(marker).join('<native-context-marker>'),blobCollapsed,historyBlobLoaded}));
+ summary.returned={sameNativeId:backRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:backEntries.some(row=>row.role==='assistant'&&(row.text??'').includes(marker)),targetTurnRecalled:backEntries.some(row=>row.role==='assistant'&&(row.text??'').includes(target.dir+'/workspace')),homeWorkspaceExecuted:completedWorkspaceTool(backEntries,back.promptId,source.dir+'/workspace'),sameHomeSession:back.snapshot.session.id===homeBefore.id,sameHomeAgent:back.snapshot.session.focusedAgentId===homeBefore.focusedAgentId,homeHistoryRetained:backEntries.some(row=>row.role==='assistant'&&(row.text??'').includes('ACK')),providerSucceeded:back.snapshot.session.agents.find(a=>a.id===back.snapshot.session.focusedAgentId)?.state!=='Error'};await save();
  if(Object.values(summary.returned).some(value=>value!==true))throw Error('Return checkpoint continuity, workspace or home history failed');
  await terminate(source,backRun);
  await adapter('delete',target,endedTarget,targetHome);
