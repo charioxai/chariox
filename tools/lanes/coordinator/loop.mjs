@@ -17,10 +17,12 @@ export const defaultCli = argv => execute(argv, '', process.env.CHARIOX_BIN || '
 // round loopd is running for it, and a round key is taken as it is.
 async function runningKey(home, name, options) {
   validLane(name);
-  if (await readFile(join(home, `${name}.json`), 'utf8').then(() => true, () => false)) return name;
+  const exists = path => readFile(path, 'utf8').then(() => true, () => false);
+  // The round loopd is running for this lane name comes first: a retained receipt of an old classic lane of the same name is not its target.
   const agents = options.agents || process.env.LOOPD_AGENTS || '/root/.chariox/dev/browser-resume-20260930/agents';
   const run = await read(join(agents, name, 'LOOP_RUN.json')).catch(() => undefined);
-  if (run?.round && !run.finishedAtMs && await readFile(join(home, `${name}-${run.round}.json`), 'utf8').then(() => true, () => false)) return `${name}-${run.round}`;
+  if (run?.round && !run.finishedAtMs && await exists(join(home, `${name}-${run.round}.json`))) return `${name}-${run.round}`;
+  if (await exists(join(home, `${name}.json`))) return name;
   throw new LaneError('lane_not_running', `${name} has no round running under loopd; a classic lane gets its notes through REVIEW_INBOX.md only.`);
 }
 export async function coordinate(operation, args, options = {}) {

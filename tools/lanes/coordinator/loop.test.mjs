@@ -453,3 +453,21 @@ test('steer and answer take the lane name and use the round loopd is running; a 
   await assert.rejects(coordinate('answer', ['lane', 'd', 'yes'], options), { code: 'lane_not_running' });
   await assert.rejects(coordinate('answer', ['nobody', 'd', 'yes'], options), { code: 'lane_not_running' });
 });
+
+test('a stopped classic receipt of the same lane name does not capture steer and answer while a round is running', async t => {
+  const r = await launched(t);
+  const receipt = JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8'));
+  await writeFile(join(r.home, 'lane-r4.json'), JSON.stringify({ ...receipt, lane: 'lane-r4' }));
+  await writeFile(join(r.home, 'lane.json'), JSON.stringify({ ...receipt, stopped: true, launch: { ...receipt.launch, agentId: 'old-agent', taskId: 'old' } }));
+  const agents = join(r.home, 'agents'); await mkdir(join(agents, 'lane'), { recursive: true });
+  await writeFile(join(agents, 'lane', 'LOOP_RUN.json'), JSON.stringify({ round: 'r4', launchedAtMs: 1 }));
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'status' ? { state: 'working', currentPrompt: 'turn', lastActivityMs: 1, interactions: [{ id: 'd', choices: ['yes'] }] } : adapter(op, input);
+  const options = { ...r.options, agents };
+  await coordinate('answer', ['lane', 'd', 'yes'], options);
+  const note = join(r.home, 'note.md'); await writeFile(note, '## 10:00Z coordinator\nwhere am I\n');
+  await coordinate('steer', ['lane', note], options);
+  const used = r.calls.filter(c => ['respond', 'steer', 'status'].includes(c.op)).map(c => c.input.agentId);
+  assert.ok(used.length === 2 && used.every(id => id === receipt.launch.agentId), `every call targets the running round, saw ${used}`);
+  assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).stopped, true);
+});
