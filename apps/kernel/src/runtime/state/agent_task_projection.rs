@@ -308,7 +308,10 @@ mod tests {
         task.obligations.clear();
         let text = task_correction_text(&task);
         assert!(text.contains("without a final answer"), "{text}");
-        assert!(!text.contains("obligation") && !text.contains("chariox.events"), "{text}");
+        assert!(
+            !text.contains("obligation") && !text.contains("chariox.events"),
+            "{text}"
+        );
     }
     #[test]
     fn correction_with_no_open_obligation_asks_only_for_the_final_answer() {
