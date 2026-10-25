@@ -32,6 +32,28 @@ impl DaemonConfigProjectionStore {
             .unwrap_or_else(|| crate::session::DEFAULT_LOCAL_USER_ID.into())
     }
 
+    /// Pre-enrollment rooms keep their member identity after the owner enrolls.
+    pub(crate) fn room_member_user_id_in(&self, room_owner: &str, user_id: &str) -> String {
+        room_member_user_id_in(
+            &self.config.lock().expect("daemon config projection lock"),
+            room_owner,
+            user_id,
+        )
+    }
+
+    pub(crate) fn workflow_invoker_matches(
+        &self,
+        kernel_id: &str,
+        room_owner: &str,
+        user_id: &str,
+        invoker: &str,
+    ) -> bool {
+        let config = self.config.lock().expect("daemon config projection lock");
+        config.daemon_id == kernel_id
+            && room_member_user_id_in(&config, room_owner, user_id)
+                == room_member_user_id_in(&config, room_owner, invoker)
+    }
+
     /// The enrolled owner, or the `local` identity this owner's pre-enrollment rooms keep: the
     /// terminal reaches those under `local` for membership.
     pub(crate) fn is_kernel_owner(&self, kernel_id: &str, user_id: &str) -> bool {
@@ -84,5 +106,19 @@ impl DaemonConfigProjectionStore {
         if let Some(incoming) = resolved.owner_scoped {
             scoped.extend(incoming);
         }
+    }
+}
+
+fn room_member_user_id_in(config: &DaemonConfig, room_owner: &str, user_id: &str) -> String {
+    if room_owner == crate::session::DEFAULT_LOCAL_USER_ID
+        && !user_id.is_empty()
+        && config
+            .cloud_relay
+            .as_ref()
+            .is_some_and(|profile| profile.user_id == user_id)
+    {
+        crate::session::DEFAULT_LOCAL_USER_ID.into()
+    } else {
+        user_id.into()
     }
 }

@@ -190,6 +190,9 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
             .collect::<Vec<_>>()
     };
     let (settling, running, failed) = (with("settling"), with("open"), with("failed"));
+    if task.obligations.is_empty() {
+        return "Your last turn ended without a final answer. Reply now with the final answer to the original request in plain text. One correction is allowed.".into();
+    }
     if settling.is_empty() && running.is_empty() && failed.is_empty() {
         return "Every tracked obligation is already resolved. Reply now with the final answer to the original request. No chariox.events call is needed.".into();
     }
@@ -298,6 +301,17 @@ mod tests {
         );
         task.state = ExecutionState::Done;
         assert_eq!(task_status_notice(&task, "Researcher"), "Researcher: Done.");
+    }
+    #[test]
+    fn correction_without_any_obligation_asks_for_the_final_answer() {
+        let mut task = correction_task(&["open"]);
+        task.obligations.clear();
+        let text = task_correction_text(&task);
+        assert!(text.contains("without a final answer"), "{text}");
+        assert!(
+            !text.contains("obligation") && !text.contains("chariox.events"),
+            "{text}"
+        );
     }
     #[test]
     fn correction_with_no_open_obligation_asks_only_for_the_final_answer() {

@@ -121,7 +121,10 @@ impl KernelRuntimeState {
 
         let mut create_request =
             crate::agent::CreateAgentRequest::new(&request.session_id, source_agent.provider())
-                .with_owner_user_id(caller_user_id.clone());
+                .with_owner_user_id(
+                    self.owned
+                        .room_member_user_id(&request.session_id, &caller_user_id),
+                );
         if let Some(alias) = request.alias.and_then(|alias| {
             let trimmed = alias.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())

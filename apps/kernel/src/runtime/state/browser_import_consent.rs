@@ -547,14 +547,16 @@ impl KernelRuntimeState {
             .owned
             .ensure_attachment_in_session(session_id, attachment_id)
             .map_err(|_| denied())?;
-        if attachment.owner_user_id() != user_id
-            || !matches!(
-                attachment.capability_level(),
-                ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
-            )
-            || (command.source == KernelCommandSource::RelayClient
-                && (command.caller.client_id.as_deref() != Some(attachment.client_id())
-                    || command.caller.caller_id != attachment.client_id()))
+        if !self.owned.acts_for_owner_in(
+            session.owner_user_id(),
+            user_id,
+            attachment.owner_user_id(),
+        ) || !matches!(
+            attachment.capability_level(),
+            ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
+        ) || (command.source == KernelCommandSource::RelayClient
+            && (command.caller.client_id.as_deref() != Some(attachment.client_id())
+                || command.caller.caller_id != attachment.client_id()))
         {
             return Err(denied());
         }

@@ -225,3 +225,5 @@ mod projection_redaction;
 
 mod historical_workflows;
 mod legacy_room_agents;
+
+mod legacy_workflow_visibility;

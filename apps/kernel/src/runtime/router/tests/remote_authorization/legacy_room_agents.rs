@@ -187,6 +187,144 @@ async fn f4_legacy_agents_inner() {
     }
 }
 
+// An agent the enrolled owner forks in its pre-enrollment room belongs to the room member, like
+// one it spawns, so the owner's own session reads keep showing it, focused and unredacted.
+#[test]
+fn mp11_f4_agent_forked_by_the_enrolled_owner_stays_visible_to_it() {
+    run_remote_authorization_large_stack_test("f4-legacy-fork", f4_legacy_fork_inner);
+}
+
+async fn f4_legacy_fork_inner() {
+    let root = crate::test_support::TestWorktree::new("f4-legacy-fork");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let id = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap()
+        .id()
+        .to_string();
+    let source = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&id, "codex")
+                .with_alias("source")
+                .with_model("model-source")
+                .with_owner_user_id(DEFAULT_LOCAL_USER_ID),
+        )
+        .unwrap();
+    launch_test_provider(
+        &mut app,
+        &id,
+        source.id(),
+        "dev-stub",
+        "codex",
+        "model-source",
+    );
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let attach = LocalDaemonRequest::AttachToSession(crate::local::AttachToSessionRequest {
+        session_id: id.clone(),
+        client_id: "client-remote".into(),
+        capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+    });
+    let LocalDaemonResponse::SessionAttached { attachment } = router
+        .dispatch(terminal_command(&attach, Some("kernel-owner")), attach)
+        .await
+        .expect("the enrolled owner attaches")
+    else {
+        panic!("attachment response")
+    };
+
+    let fork = LocalDaemonRequest::ForkAgent(crate::local::ForkAgentRequest {
+        session_id: id.clone(),
+        source_agent_ref: Some(source.id().to_string()),
+        alias: Some("forked".into()),
+    });
+    let LocalDaemonResponse::AgentForked { agent, session, .. } = router
+        .dispatch(terminal_command(&fork, Some("kernel-owner")), fork)
+        .await
+        .expect("fork as the enrolled owner")
+    else {
+        panic!("fork response");
+    };
+    assert_eq!(agent.owner_user_id(), DEFAULT_LOCAL_USER_ID);
+    let shown = |session: &crate::session::RuntimeSession| {
+        let fork = session
+            .agents()
+            .iter()
+            .find(|candidate| candidate.id() == agent.id())
+            .expect("the owner sees its fork");
+        assert!(fork.visible_in_freeform());
+        assert_eq!(
+            fork.model(),
+            Some("model-source"),
+            "parameters are not redacted"
+        );
+        assert_eq!(session.focused_agent_id(), Some(agent.id()));
+    };
+    shown(&session);
+    let prompt = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: id.clone(),
+        attachment_id: attachment.id().into(),
+        target_agent_id: Some(agent.id().into()),
+        prompt: "Keep the fork trace visible.".into(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(terminal_command(&prompt, Some("kernel-owner")), prompt)
+        .await
+        .expect("the owner prompts its fork");
+    let shown_trace = |session: &crate::session::RuntimeSession| {
+        shown(session);
+        assert!(
+            session.prompt_states().contains_key(agent.id()),
+            "the fork prompt trace is visible"
+        );
+        assert!(
+            session
+                .agent_tasks()
+                .iter()
+                .any(|task| task.agent_id == agent.id()),
+            "the fork task trace is visible"
+        );
+    };
+
+    let session = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let state = LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+                session_id: id.clone(),
+            });
+            let LocalDaemonResponse::SessionState { session, .. } = router
+                .dispatch(terminal_command(&state, Some("kernel-owner")), state)
+                .await
+                .expect("session state as the enrolled owner")
+            else {
+                panic!("session state response")
+            };
+            if session
+                .agent_tasks()
+                .iter()
+                .any(|task| task.agent_id == agent.id())
+            {
+                break session;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the accepted prompt creates a task trace");
+    shown_trace(&session);
+    let pushed = router
+        .session_snapshot_projection_for_attachment(&id, attachment.id(), 0)
+        .expect("the owner's pushed snapshot");
+    shown_trace(&pushed.session);
+}
+
 // A decision bound to the room's `local` owner (an agent's blocked task) or to the enrolled
 // owner's Cloud identity is answered by the enrolled owner, and by nobody else.
 #[test]

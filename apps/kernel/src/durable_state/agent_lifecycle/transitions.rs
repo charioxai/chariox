@@ -572,7 +572,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     false
                 };
-                if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
+                let plain = is_plain(tx, &t)?;
+                if has_answer && (plain || (!open && t.wait.is_none())) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
                 } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
@@ -589,12 +590,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         super::goals::CORRECTION_PROMPT_PREFIX,
                         t.task_id
                     ));
-                    t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
+                    t.reason = if plain {
+                        "Turn ended without a final answer; correct once".into()
+                    } else {
+                        "Turn ended without completing its obligations or a valid live wait; correct once".into()
+                    };
                 } else {
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;
                     t.wait = None;
-                    t.reason = "Repeated invalid turn end; owner must resume or cancel".into();
+                    t.reason = if plain {
+                        super::goals::EMPTY_FINAL_ANSWER_REASON.into()
+                    } else {
+                        "Repeated invalid turn end; owner must resume or cancel".into()
+                    };
                 }
             }
             t.provider_run_id = Some(run);
