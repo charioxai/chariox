@@ -690,3 +690,49 @@ async fn historical_archive_resume_inner() {
         "MP-11: an archived historical run must report its read-only policy: {error}"
     );
 }
+
+// Seam A (amlegacy r2): the waiting room projection keeps only the sessions whose member list
+// holds the caller's raw user id, so the enrolled owner of a pre-enrollment (`local`) room sees
+// an empty waiting room while the room's invited members see it.
+#[test]
+fn seam_a_enrolled_owner_waiting_room_lists_its_pre_enrollment_room() {
+    run_remote_authorization_large_stack_test("seam-a-legacy-waiting-room", seam_a_inner);
+}
+
+async fn seam_a_inner() {
+    let root = crate::test_support::TestWorktree::new("seam-a-legacy-waiting-room");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let id = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap()
+        .id()
+        .to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    for user in ["kernel-owner", "stranger"] {
+        let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            crate::local::GetWaitingRoomPublicSnapshotRequest,
+        );
+        let response = router
+            .dispatch(terminal_command(&request, Some(user)), request)
+            .await
+            .unwrap();
+        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = response else {
+            panic!("unexpected response for {user}: {response:?}");
+        };
+        let listed = snapshot.sessions.iter().any(|session| session.id == id);
+        assert_eq!(
+            listed,
+            user == "kernel-owner",
+            "waiting room for {user} lists the pre-enrollment room: {:?}",
+            snapshot.sessions.iter().map(|s| &s.id).collect::<Vec<_>>()
+        );
+    }
+}

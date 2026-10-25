@@ -87,11 +87,11 @@ impl SessionStateStore {
 
     pub(crate) fn list_visible_projects(
         &self,
-        caller_user_id: &str,
         include_archived: bool,
+        is_member: impl Fn(&RuntimeSession) -> bool,
     ) -> Vec<RuntimeProject> {
         self.read()
-            .list_visible_projects(caller_user_id, include_archived)
+            .list_visible_projects(include_archived, is_member)
     }
 
     pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
