@@ -33,7 +33,7 @@ echo "probe: $probe"
 set=$(LANES_KERNEL_STATE=$STATE node "$K/lanes-kernel.mjs" set-claude-credential --from "$TOKENS/$FILE" 2>&1); code=$?
 echo "kernel: $set"
 [ $code -eq 0 ] || { echo "the lanes kernel refused the credential; oauth-token left as it was" >&2; exit 5; }
-if [ -d "$TOKENS/.oauth-token.new" ] || ! cp -p "$TOKENS/$FILE" "$TOKENS/.oauth-token.new" || ! mv -fT "$TOKENS/.oauth-token.new" "$TOKENS/oauth-token"; then
+if [ -d "$TOKENS/.oauth-token.new" ] || ! cp -p "$TOKENS/$FILE" "$TOKENS/.oauth-token.new" || [ -d "$TOKENS/oauth-token" ] || ! node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$TOKENS/.oauth-token.new" "$TOKENS/oauth-token"; then
   echo "FAILED: kernel credential has already changed; classic token update failed; repair it before classic launches" >&2; exit 6
 fi
 if ! touch "$AGENTS/CLAUDE_SWITCHED"; then

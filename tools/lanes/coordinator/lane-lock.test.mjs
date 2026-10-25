@@ -51,3 +51,16 @@ test('the OS releases a lock when its driver dies, without stealing a live lock'
   assert.ok(lock, 'the dead driver does not leave the lane locked');
   await releaseLaneLock(lock);
 });
+
+test('lock acquisition and release need no external flock utility', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'lane-portable-lock-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const { spawn } = await import('node:child_process');
+  const script = `import { tryLaneLock, releaseLaneLock } from ${JSON.stringify(new URL('./lane-lock.mjs', import.meta.url).href)};
+    const lock = await tryLaneLock(process.argv[1], 'portable', 'steer');
+    if (!lock) throw new Error('not acquired'); await releaseLaneLock(lock);`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, home], { env: { ...process.env, PATH: home } });
+  let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+  const code = await new Promise(resolve => child.once('close', resolve));
+  assert.equal(code, 0, stderr);
+});

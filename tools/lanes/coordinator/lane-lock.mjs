@@ -1,26 +1,25 @@
 // MP-08 / MP-09 / MP-10 / MP-11: serialize direct prompts with collection for the entire operation.
-import { stat, readFile, rm } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { stat, readFile, rm, realpath } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { LaneError } from '../lanes.mjs';
 
-// flock owns the lock until its stdin closes, including when this process dies. Never unlink the
-// file: replacing its inode would let two holders enter. The returned handle releases only its fd.
+// A loopback listener is an OS-owned lock on Linux and macOS: process death releases it.
+// Hash collisions conservatively report busy; they can never admit two holders. No pathname is
+// unlinked on release, so an old handle cannot release its successor's lock.
 export async function tryLaneLock(home, name, owner, now = Date.now) {
-  const child = spawn('flock', ['--exclusive', '--nonblock', join(home, `${name}.admission.flock`),
-    'sh', '-c', 'printf "locked\\n"; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
-  child.stdin.on('error', () => {});
-  const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', code => resolve(code)); });
-  let stderr = '';
-  child.stderr.on('data', chunk => { stderr += chunk; });
-  const acquired = await Promise.race([
-    new Promise(resolve => child.stdout.once('data', () => resolve(true))),
-    exited.then(code => { if (code === 1) return false; throw new Error(`lane lock failed (${code}): ${stderr.trim()}`); }),
-  ]);
+  const digest = createHash('sha256').update(await realpath(home)).update('\0').update(name).digest();
+  const port = 20000 + digest.readUInt32BE(0) % 40000;
+  const server = createServer(socket => socket.destroy());
+  const acquired = await new Promise((resolve, reject) => {
+    server.once('error', error => { if (error.code === 'EADDRINUSE') resolve(false); else reject(error); });
+    server.listen({ host: '127.0.0.1', port, exclusive: true }, () => resolve(true));
+  });
   if (!acquired) return undefined;
-  const handle = { child, exited };
+  const handle = { server };
   try {
-    // Bridge directory locks left by the previous driver. Migration is itself under flock.
+    // Bridge directory locks left by the previous driver. Migration is itself under the listener lock.
     const dir = join(home, `${name}.admission.lock`);
     const held = await stat(dir).catch(error => { if (error.code !== 'ENOENT') throw error; });
     if (held) {
@@ -35,8 +34,8 @@ export async function tryLaneLock(home, name, owner, now = Date.now) {
 }
 
 export async function releaseLaneLock(handle) {
-  handle.child.stdin.end();
-  await handle.exited;
+  handle.release ??= new Promise((resolve, reject) => handle.server.close(error => error ? reject(error) : resolve()));
+  await handle.release;
 }
 
 // Waits for a busy lock (a collection in progress) up to waitMs, then says what to do.
