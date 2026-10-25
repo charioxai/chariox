@@ -14,7 +14,8 @@ async function tree(path) {
     const result = [];
     async function walk(relative) {
         for (const name of (await readdir(path + '/' + relative)).sort()) {
-            if (name === '.git')
+            // Transfer control files are excluded by the product's file policy.
+            if (name === '.git' || name === '.charioxignore')
                 continue;
             const item = relative ? relative + '/' + name : name, info = await lstat(path + '/' + item);
             assert.ok(!info.isSymbolicLink());
