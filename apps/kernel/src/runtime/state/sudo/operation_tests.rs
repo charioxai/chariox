@@ -309,27 +309,51 @@ async fn sudo_operations_required_watched_command_runs() {
 
 #[tokio::test]
 async fn sudo_operations_startup_trust_requires_approved_workspace_launch() {
+    startup_trust_reuses_approved_workspace_launch(false).await;
+}
+
+#[tokio::test]
+async fn sudo_operations_startup_trust_reuses_enrolled_owner_consent() {
+    startup_trust_reuses_approved_workspace_launch(true).await;
+}
+
+async fn startup_trust_reuses_approved_workspace_launch(enrolled: bool) {
     let f = fixture();
-    let turn = running(&f);
+    let mut turn = running(&f);
+    if enrolled {
+        let mut config = f.state.owned.config_projection.snapshot();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "enrolled-owner".into(),
+            ..Default::default()
+        });
+        f.state.owned.config_projection.update(config);
+        turn.owner_user_id = "enrolled-owner".into();
+        f.state
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .insert(turn.entry_id.clone(), turn.clone());
+    }
     let session = f
         .state
         .owned
         .session_store
         .get_session(&turn.session_id)
         .unwrap();
+    assert_eq!(session.owner_user_id(), "local");
     f.state
         .owned
         .prompt_state_owner
         .cancel_active_prompt_only(&session, &turn.agent_id)
         .unwrap();
+    turn.prompt_id = None;
     f.state
         .owned
         .sudo_turns
         .lock()
         .unwrap()
-        .get_mut(&turn.entry_id)
-        .unwrap()
-        .prompt_id = None;
+        .insert(turn.entry_id.clone(), turn.clone());
     assert!(
         f.state.sudo_for_provider_run(f.run.id()).is_err(),
         "approved startup is not a live tool turn"
@@ -352,6 +376,53 @@ async fn sudo_operations_startup_trust_requires_approved_workspace_launch() {
     .with_native_origin(Some(NativeInteractionOrigin::ProviderStartup {
         provider_run_id: f.run.id().into(),
     }));
+    for denied_scope in [
+        "owner",
+        "agent",
+        "session",
+        "placement",
+        "unapproved",
+        "expired",
+    ] {
+        let mut denied = turn.clone();
+        match denied_scope {
+            "owner" => denied.owner_user_id = "another-user".into(),
+            "agent" => denied.agent_id = "another-agent".into(),
+            "session" => denied.session_id = "another-session".into(),
+            "placement" => denied.placement = Some("another-lease".into()),
+            "unapproved" => denied.deadline = None,
+            "expired" => denied.deadline = Some(std::time::Instant::now() - Duration::from_secs(1)),
+            _ => unreachable!(),
+        }
+        f.state
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .insert(turn.entry_id.clone(), denied);
+        assert!(
+            f.state
+                .sudo_native_permission_resolution(&turn.session_id, &interaction, None)
+                .is_none(),
+            "startup consent must reject {denied_scope} mismatch"
+        );
+    }
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn.clone());
+    let stale_run =
+        interaction
+            .clone()
+            .with_native_origin(Some(NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "another-run".into(),
+            }));
+    assert!(f
+        .state
+        .sudo_native_permission_resolution(&turn.session_id, &stale_run, None)
+        .is_none());
     let result = tokio::time::timeout(
         Duration::from_millis(500),
         crate::runtime::native_interaction_bridge::request_provider_native_interaction(
