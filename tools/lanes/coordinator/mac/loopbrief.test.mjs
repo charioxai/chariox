@@ -17,6 +17,8 @@ async function rig(t) {
     const child = spawn('bash', [script, ...args], { env: { PATH: process.env.PATH, HOME: root, B3: shim, LOOP_AGENTS: agents, WAIT_SECONDS: '6', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', c => { stdout += c; }); child.stderr.on('data', c => { stderr += c; });
+    // Argument rejection may close stdin before the unused brief is written.
+    child.stdin.on('error', error => { if (error.code !== 'EPIPE') child.emit('error', error); });
     child.stdin.end(brief);
     return { done: once(child, 'exit').then(([code]) => ({ code, stdout, stderr })) };
   };

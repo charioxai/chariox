@@ -228,10 +228,11 @@ test('launch resumes after deadline refusal without creating another agent or up
 
 test('stop cleans a real owned child using its boot and start identity', { skip: process.platform !== 'linux' && 'Linux /proc process identity is unavailable on this host' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-pid-'));
-  const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  const child = spawn(process.execPath, ['-e', 'process.stdout.write("ready"); setInterval(()=>{},1000)'], { stdio: ['ignore', 'pipe', 'ignore'] });
   const ended = once(child, 'exit');
   try {
     if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw Error('unsafe owned child PID');
+    await once(child.stdout, 'data'); // Read identity after the child has exec'd its final program.
     const stat = await readFile(`/proc/${child.pid}/stat`, 'utf8');
     const entry = { owner: 'lane', pid: child.pid, startTime: stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19], bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim(), executable: await readlink(`/proc/${child.pid}/exe`) };
     assert.equal(await verifyOwnedPid(entry, 'lane'), true);

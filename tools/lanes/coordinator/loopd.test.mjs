@@ -420,12 +420,19 @@ test('round.mjs serve starts as a real process, serves the queue and stops clean
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
   const exited = once(child, 'exit');
-  for (let i = 0; i < 100 && !output.includes('"started"'); i++) await new Promise(resolve => setTimeout(resolve, 100));
-  assert.match(output, /"kind":"started"/);
-  assert.ok((await readdir(join(agents, '_loop', 'queue'))).includes('done'), 'the queue directories exist once it serves');
-  child.kill('SIGTERM');
-  const [code] = await exited;
-  assert.equal(code, 0);
+  try {
+    let ready = false;
+    for (let i = 0; i < 100 && !ready; i++) {
+      const directories = await readdir(join(agents, '_loop', 'queue')).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+      ready = output.includes('"started"') && directories.includes('done');
+      if (!ready) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(ready, true, 'the real service created its queue directories');
+  } finally {
+    if (Number.isSafeInteger(child.pid) && child.pid > 1 && child.exitCode === null) child.kill('SIGTERM');
+    const [code] = await exited;
+    assert.equal(code, 0);
+  }
   assert.match(output, /"kind":"stopped"/);
 });
 
