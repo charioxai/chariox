@@ -122,45 +122,30 @@ impl KernelRuntimeState {
         mask: bool,
         force: bool,
     ) -> Result<(), DaemonError> {
-        let leases = self
-            .owned
-            .room_display_leases
-            .home
-            .lock()
-            .map_err(|_| error())?
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut rooms = BTreeMap::new();
-        let mut busy = false;
-        for lease in leases {
-            let Ok(lease) = lease.try_lock() else {
-                busy = true;
-                continue;
-            };
-            if lease.used.elapsed() < Duration::from_secs(60) {
-                rooms.insert(lease.session_id.clone(), lease.slice_id.clone());
-            }
-        }
-        if busy {
-            for (room, slice) in self
-                .owned
-                .room_display_leases
-                .audience
-                .sent
-                .lock()
-                .map_err(|_| error())?
-                .keys()
-            {
-                rooms.insert(room.clone(), slice.clone());
-            }
-        }
+        let rooms = self.room_display_scopes();
         for (room, slice_id) in rooms {
             let slice = self.resolve_slice(&slice_id)?;
             self.send_room_display_audience(&slice, &room, mask, force)
                 .await?;
         }
         Ok(())
+    }
+
+    pub(super) fn room_display_scopes(&self) -> BTreeMap<String, String> {
+        self.owned
+            .room_display_leases
+            .home
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|lease| {
+                lease
+                    .state
+                    .try_lock()
+                    .map_or(true, |state| state.used.elapsed() < Duration::from_secs(60))
+            })
+            .map(|lease| (lease.session_id.clone(), lease.slice_id.clone()))
+            .collect()
     }
 
     pub(crate) fn room_display_audience_epoch(&self, room: &str) -> u64 {

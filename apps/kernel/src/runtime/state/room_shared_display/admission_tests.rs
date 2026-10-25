@@ -93,7 +93,7 @@ async fn mp10_resume_reaches_peer_while_three_other_viewers_hold_reads() {
             .unwrap()
             .insert(
                 binding.subscription_id.clone(),
-                Arc::new(Mutex::new(RoomDisplayLease {
+                HomeLease::new(RoomDisplayLease {
                     caller: caller.clone(),
                     session_id: room.session_id.clone(),
                     attachment_id: attachment,
@@ -102,8 +102,16 @@ async fn mp10_resume_reaches_peer_while_three_other_viewers_hold_reads() {
                     binding,
                     worker_public_key: viewer,
                     used: Instant::now(),
-                })),
+                }),
             );
+        let lease = runtime.home_display_lease("resume-admission").unwrap();
+        let held_frame = lease.lock().await;
+        assert_eq!(
+            runtime.room_display_scopes(),
+            BTreeMap::from([(room.session_id.clone(), slice.clone())]),
+            "audience refresh uses live immutable scopes without waiting for frames or reviving stale rooms"
+        );
+        drop(held_frame);
         let mut readers = Vec::new();
         for _ in 0..3 {
             readers.push(

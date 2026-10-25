@@ -16,8 +16,23 @@ use crate::transport::room_shared_display::{
 #[derive(Clone, Default)]
 pub(super) struct RoomDisplayLeases {
     audience: Arc<audience::Audience>,
-    home: Arc<std::sync::Mutex<BTreeMap<String, Arc<Mutex<RoomDisplayLease>>>>>,
+    home: Arc<std::sync::Mutex<BTreeMap<String, HomeLease>>>,
     worker: Arc<std::sync::Mutex<BTreeMap<String, Arc<Mutex<WorkerLease>>>>>,
+}
+#[derive(Clone)]
+struct HomeLease {
+    session_id: String,
+    slice_id: String,
+    state: Arc<Mutex<RoomDisplayLease>>,
+}
+impl HomeLease {
+    fn new(lease: RoomDisplayLease) -> Self {
+        Self {
+            session_id: lease.session_id.clone(),
+            slice_id: lease.slice_id.clone(),
+            state: Arc::new(Mutex::new(lease)),
+        }
+    }
 }
 struct RoomDisplayLease {
     caller: KernelCaller,
@@ -237,13 +252,14 @@ impl KernelRuntimeState {
             .map_err(|_| error())?;
         leases.retain(|_, lease| {
             lease
+                .state
                 .try_lock()
                 .map_or(true, |lease| lease.used.elapsed() < Duration::from_secs(60))
         });
         if leases.len() >= 32 {
             return Err(error());
         }
-        leases.insert(id, Arc::new(Mutex::new(lease)));
+        leases.insert(id, HomeLease::new(lease));
         Ok(endpoint)
     }
     fn home_display_lease(&self, id: &str) -> Result<Arc<Mutex<RoomDisplayLease>>, DaemonError> {
@@ -253,7 +269,7 @@ impl KernelRuntimeState {
             .lock()
             .map_err(|_| error())?
             .get(id)
-            .cloned()
+            .map(|lease| lease.state.clone())
             .ok_or_else(error)
     }
     async fn room_display_peer(
