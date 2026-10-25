@@ -33,10 +33,10 @@ export async function openInbox(home, cli, settleMs = 1000) {
     }
   }
   // A destroyed agent that stays a target makes the kernel refuse the whole stream (every lane goes silent).
-  // Stopped workers lose their agent target; their sessions go once the removal event has been seen.
+  // Lost workers cannot report removal; their session targets are retired with confirmed removals.
   const targets = new Set();
   for (const r of records.filter(r => r.launch && r.stopped)) {
-    const wanted = [[r.launch.sessionId, r.launch.agentId], ...(r.stop?.removal ? [[r.launch.sessionId], [r.launch.operationsSessionId]] : [])];
+    const wanted = [[r.launch.sessionId, r.launch.agentId], ...((r.stop?.removal || r.stop?.workerLost) ? [[r.launch.sessionId], [r.launch.operationsSessionId]] : [])];
     for (const [session, agent] of wanted) {
       if (session && subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === session && (t.agent_id ?? undefined) === agent)) targets.add(JSON.stringify([r.launch.kernel, session, agent]));
     }
@@ -90,6 +90,11 @@ export async function followLaunch(cli, launch) {
 // Called before a worker is destroyed: the agent target would be dead the moment it is gone.
 export async function dropAgentTarget(cli, launch) {
   await cli(['events', 'unsubscribe', '--kernel', launch.kernel, '--session', launch.sessionId, '--agent', launch.agentId]);
+}
+
+// A missing Room cannot publish an agent removal; remove its session target before retiring the worker.
+export async function dropSessionTarget(cli, launch) {
+  await cli(['events', 'unsubscribe', '--kernel', launch.kernel, '--session', launch.sessionId]);
 }
 
 export async function waitBatch(home, cli, now, seconds) {

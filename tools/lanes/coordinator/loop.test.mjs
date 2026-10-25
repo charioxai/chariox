@@ -546,3 +546,48 @@ test('steer: unresolved A survives B and a new driver process replays A exactly 
   assert.deepEqual(Object.values(accepted).sort(), ['## A\nDo A\n', '## B\nDo B\n']);
   assert.equal(Object.keys(accepted).length, 2, 'A never acquires a fresh steer identity across process restarts');
 });
+
+test('retiring a lost Room removes its targets so another lane can watch and answer permissions', async t => {
+  const r = await launched(t);
+  const healthy = { ...r.launch, sessionId: 'healthy-room', operationsSessionId: 'healthy-ops', agentId: 'healthy-agent' };
+  await save(join(r.home, 'healthy.json'), { lane: 'healthy', input: {}, launch: healthy });
+  const targets = [r.launch, healthy].flatMap(l => [
+    { kernel: l.kernel, session_id: l.sessionId },
+    { kernel: l.kernel, session_id: l.sessionId, agent_id: l.agentId },
+    { kernel: l.kernel, session_id: l.operationsSessionId },
+  ]);
+  const permission = { id: 'healthy-permission', kind: 'permission', choices: ['allow_once'] };
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') {
+      if (input.agentId === r.launch.agentId) throw new LaneError('session_not_found');
+      return { state: 'working', currentPrompt: 'healthy-prompt', interactions: [permission] };
+    }
+    if (op === 'fetch') return {};
+    return adapter(op, input);
+  };
+  r.options.cli = async (argv, body) => {
+    r.calls.push({ argv });
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets,
+      kernels: targets.some(t => t.session_id === 'room') ? [{ kernel: 'executor', error: { code: 'events_refused', message: 'Room no longer exists' } }] : [] } };
+    if (argv[1] === 'unsubscribe') {
+      const session = argv[argv.indexOf('--session') + 1];
+      const agent = argv.includes('--agent') ? argv[argv.indexOf('--agent') + 1] : undefined;
+      const index = targets.findIndex(t => t.session_id === session && t.agent_id === agent);
+      if (index >= 0) targets.splice(index, 1);
+    }
+    if (argv[0] === 'request') return { SessionState: { agents: [{ id: healthy.agentId }] } };
+    if (argv[1] === 'wait') return { events: [{ type: 'interaction', session_id: healthy.sessionId, agent_id: healthy.agentId, refs: { interaction_id: permission.id } }], next_cursor: 1 };
+    return {};
+  };
+  await coordinate('lanefin', ['lane', 'worker_lost'], r.options);
+  const stopped = JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8'));
+  assert.equal(stopped.stop.workerLost, true);
+  assert.equal(stopped.stop.removal, undefined, 'a removed Room cannot emit a removal receipt');
+  const batch = await coordinate('watch', ['1'], { ...r.options, settleMs: 0 });
+  assert.equal(batch.events[0].agent_id, healthy.agentId);
+  await coordinate('answer', ['healthy', permission.id, 'allow_once'], r.options);
+  assert.ok(r.calls.some(c => c.op === 'respond' && c.input.interactionId === permission.id));
+  assert.equal(targets.some(t => t.session_id === 'room'), false);
+  assert.equal(targets.filter(t => t.session_id === 'healthy-room').length, 2);
+});

@@ -44,3 +44,25 @@ test('a refused inbox whose removed agent target still exists is classified from
   };
   await assert.rejects(openInbox(home, cli, 0), error => error.code === 'worker_lost' && error.launch.agentId === 'agent');
 });
+
+test('an already-retired lost Room is cleaned after a driver restart without a removal event', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'inbox-retired-room-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await writeFile(join(home, 'lane.json'), JSON.stringify({ lane: 'lane-r1', launch, stopped: true, stop: { stopped: true, workerLost: true } }));
+  const targets = [
+    { kernel: 'executor', session_id: 'room' }, { kernel: 'executor', session_id: 'room', agent_id: 'agent' }, { kernel: 'executor', session_id: 'ops' },
+  ];
+  const cli = async argv => {
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets,
+      kernels: targets.length ? [{ kernel: 'executor', error: { code: 'events_refused', message: 'session missing' } }] : [] } };
+    if (argv[1] === 'unsubscribe') {
+      const session = argv[argv.indexOf('--session') + 1];
+      const agent = argv.includes('--agent') ? argv[argv.indexOf('--agent') + 1] : undefined;
+      const i = targets.findIndex(t => t.session_id === session && t.agent_id === agent);
+      if (i >= 0) targets.splice(i, 1);
+    }
+    return {};
+  };
+  await openInbox(home, cli, 0);
+  assert.deepEqual(targets, []);
+});

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { execute, LaneError, save } from '../lanes.mjs';
 import { newSections } from './sections.mjs';
 import { withLaneLock } from './lane-lock.mjs';
-import { openInbox, waitBatch, confirmSteer, confirmRemoval, dropAgentTarget } from './events.mjs';
+import { openInbox, waitBatch, confirmSteer, confirmRemoval, dropAgentTarget, dropSessionTarget } from './events.mjs';
 export { save };
 
 const validLane = lane => {
@@ -215,6 +215,7 @@ export async function coordinate(operation, args, options = {}) {
     catch (error) {
       if (args[1] !== 'worker_lost' || !['agent_not_found', 'agent_not_in_session', 'session_not_found'].includes(error.code)) throw error;
       await dropAgentTarget(cli, record.launch);
+      if (error.code === 'session_not_found') await dropSessionTarget(cli, record.launch);
       record.stopped = true; record.stop = { stopped: true, workerLost: true };
       await save(path, record);
       status = { state: 'worker_lost', currentPrompt: null };
