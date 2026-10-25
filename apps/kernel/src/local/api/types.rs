@@ -357,4 +357,4 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 573/181 binds leased assessment wire identities to the home check.
 /// Allocated 585 adds outside event subscriptions and executor-local agent deadlines.
 /// Allocated 591 adds the outside `steer` event.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 591;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 604;

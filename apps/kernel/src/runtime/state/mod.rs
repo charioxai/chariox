@@ -141,6 +141,7 @@ pub(crate) use managed_kernel_quiescence_state::{
     ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
     ManagedKernelQuiescenceOutcome,
 };
+mod claude_permission_rules;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
@@ -188,6 +189,9 @@ pub(crate) struct KernelRuntimeState {
     /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
     /// behind it any more, so restart recovery may supersede it instead of waiting for it.
     restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// What the person granted with "Allow for this session" on Claude permission prompts, per
+    /// agent, so a restarted Claude process starts with it again.
+    claude_session_grants: claude_permission_rules::StandingGrants,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
@@ -954,6 +958,7 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_wake_driver: None,
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
@@ -1413,6 +1418,8 @@ mod agent_lifecycle_runtime;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
+#[cfg(test)]
+mod agent_reply_tests;
 mod agent_task_cancellation;
 mod agent_task_failure;
 mod agent_task_human_control_wait;

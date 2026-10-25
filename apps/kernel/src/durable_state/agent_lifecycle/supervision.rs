@@ -20,6 +20,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Task(t))
         }
+        Operation::DelegateUnavailable {
+            room,
+            agent,
+            reason,
+            now,
+        } => {
+            replies::recipient_lost(tx, &room, &agent, now, Some(&reason.answer(&agent)))?;
+            Ok(Outcome::Saved)
+        }
         Operation::SourceOutcome {
             mut public_answer,
             room,
@@ -116,6 +125,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             replies::reconcile_source(tx, &room, &source)?;
+            if !success {
+                replies::recipient_lost(tx, &room, &source, now, public_answer.as_ref())?;
+            }
             Ok(Outcome::Saved)
         }
         Operation::Sweep {

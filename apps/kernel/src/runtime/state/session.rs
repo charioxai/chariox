@@ -253,13 +253,32 @@ impl KernelRuntimeOwnedState {
         requires_idle: bool,
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
         self.ensure_attachment_in_session(session_id, attachment_id)?;
-        if requires_idle {
-            let session = self.session_store.get_session(session_id)?;
-            if self.prompt_state_owner.has_any_active_prompt(&session) {
-                return Err(DaemonError::ConfigChangeRejectedWhilePromptRunning {
-                    session_id: session_id.to_string(),
+        let session = self.session_store.get_session(session_id)?;
+        let mut next_session = session.clone();
+        next_session.apply_config_changes(values.clone(), attachment_id);
+        // Defaults can revoke rules held by a provider process. Reject the whole
+        // change before committing if applying it would interrupt active work.
+        let affects_active_agent =
+            self.agent_store
+                .get_session_agents(session_id)
+                .iter()
+                .any(|agent| {
+                    crate::session::effective_agent_execution_config(&session, Some(agent))
+                        != crate::session::effective_agent_execution_config(
+                            &next_session,
+                            Some(agent),
+                        )
+                        && self
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, agent.id())
+                            .is_some()
                 });
-            }
+        if affects_active_agent
+            || (requires_idle && self.prompt_state_owner.has_any_active_prompt(&session))
+        {
+            return Err(DaemonError::ConfigChangeRejectedWhilePromptRunning {
+                session_id: session_id.to_string(),
+            });
         }
         let (_session, config) = SessionStateOwner::new(self.session_store.clone()).update_config(
             session_id,

@@ -81,7 +81,7 @@ pub(super) fn reconcile_event(tx: &Transaction<'_>, event: &InboxEvent) -> Resul
         let source = format!("agent-event-{}-{}", event.agent_id, event.sequence);
         let occurrence = format!("reply-terminal-{}", event.sequence);
         // A reply terminal occurrence is immutable; dedup also bounds recursive fanout.
-        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND occurrence_id=?3)",params![event.room_id,source,occurrence],|r|r.get(0)).map_err(sql)?;
+        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2)",params![event.room_id,source],|r|r.get(0)).map_err(sql)?;
         if !exists {
             super::supervision::apply(
                 tx,
@@ -91,9 +91,13 @@ pub(super) fn reconcile_event(tx: &Transaction<'_>, event: &InboxEvent) -> Resul
                     source,
                     occurrence,
                     success,
-                    public_answer: answer
-                        .map(|v| decode::<serde_json::Value>(&v))
-                        .transpose()?,
+                    public_answer: if success {
+                        answer
+                            .map(|v| decode::<serde_json::Value>(&v))
+                            .transpose()?
+                    } else {
+                        Some(DelegateGoneReason::SourceLost.answer(&event.agent_id))
+                    },
                 },
             )?;
         }
@@ -101,22 +105,27 @@ pub(super) fn reconcile_event(tx: &Transaction<'_>, event: &InboxEvent) -> Resul
     Ok(())
 }
 
-// A recipient that never admitted its task has no task outcome to relay. Its removal is
-// nevertheless a terminal source for every sender waiting on that exact inbox receipt.
+// Removal is terminal even when the recipient never admitted a receiving task.
 pub(super) fn recipient_removed(
     tx: &Transaction<'_>,
     event: &InboxEvent,
     now: u64,
 ) -> Result<(), DaemonError> {
+    recipient_unavailable(tx, event, now, DelegateGoneReason::Deleted)
+}
+fn recipient_unavailable(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    now: u64,
+    reason: DelegateGoneReason,
+) -> Result<(), DaemonError> {
     if !event.reply_requested {
         return Ok(());
     }
     let source = format!("agent-event-{}-{}", event.agent_id, event.sequence);
-    let occurrence = format!("reply-terminal-{}", event.sequence);
     let settled: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND occurrence_id=?3)",
-        params![event.room_id, source, occurrence],
-        |row| row.get(0),
+        "SELECT EXISTS(SELECT 1 FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2)",
+        params![event.room_id, source], |row| row.get(0),
     ).map_err(sql)?;
     if !settled {
         super::supervision::apply(
@@ -125,11 +134,39 @@ pub(super) fn recipient_removed(
                 now,
                 room: event.room_id.clone(),
                 source,
-                occurrence,
+                occurrence: format!("reply-terminal-{}", event.sequence),
                 success: false,
-                public_answer: None,
+                public_answer: Some(reason.answer(&event.agent_id)),
             },
         )?;
+    }
+    Ok(())
+}
+// Match the real recipient receipt, never parse an agent id out of a synthetic source.
+pub(super) fn recipient_lost(
+    tx: &Transaction<'_>,
+    room: &str,
+    recipient: &str,
+    now: u64,
+    answer: Option<&serde_json::Value>,
+) -> Result<(), DaemonError> {
+    let reason = match answer
+        .cloned()
+        .and_then(|a| serde_json::from_value::<ReplyOutcome>(a).ok())
+    {
+        Some(ReplyOutcome::DelegateGone { reason, .. }) => reason,
+        None => DelegateGoneReason::SourceLost,
+    };
+    let mut query = tx.prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.reply_requested')=1").map_err(sql)?;
+    let sequences = query
+        .query_map(params![room, recipient], |r| r.get::<_, i64>(0))
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    drop(query);
+    for sequence in sequences {
+        let sequence = u64::try_from(sequence).map_err(|_| error("corrupt reply sequence"))?;
+        recipient_unavailable(tx, &get_event(tx, room, recipient, sequence)?, now, reason)?;
     }
     Ok(())
 }

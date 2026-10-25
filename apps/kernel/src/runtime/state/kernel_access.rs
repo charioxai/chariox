@@ -604,7 +604,8 @@ impl KernelRuntimeState {
             Ok(Ok(answer)) if answer.choice_id.as_deref() == Some("approve") => {
                 // The answer path already checked the reply against policy.
                 match answer.reply.as_deref().filter(|reply| !reply.is_empty()) {
-                    None => Ok(grant.term),
+                    // A plain Approve resolves to the choice's reply, not a lifetime override.
+                    None | Some("approve") => Ok(grant.term),
                     Some(reply) => KernelAccessTerm::from_reply(reply)
                         .ok_or_else(|| error("approval term is not recognised")),
                 }

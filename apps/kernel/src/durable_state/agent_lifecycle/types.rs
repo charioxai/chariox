@@ -381,6 +381,12 @@ pub(crate) enum Operation {
         receipt: String,
         now: u64,
     },
+    DelegateUnavailable {
+        room: String,
+        agent: String,
+        reason: DelegateGoneReason,
+        now: u64,
+    },
     SourceOutcome {
         public_answer: Option<serde_json::Value>,
         room: String,
@@ -539,4 +545,30 @@ pub(crate) fn unresolved_source_outcome(task: &AgentTaskExecution, event: &Inbox
             obligation.completion_source() == Some(event.source_id.as_str())
                 && matches!(obligation.status.as_str(), "settling" | "failed")
         })
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a requested reply has an explicit terminal cause.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ReplyOutcome {
+    DelegateGone {
+        delegate_id: String,
+        reason: DelegateGoneReason,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DelegateGoneReason {
+    Deleted,
+    FailedStart,
+    SourceLost,
+}
+impl DelegateGoneReason {
+    pub(crate) fn answer(self, delegate: &str) -> serde_json::Value {
+        serde_json::to_value(ReplyOutcome::DelegateGone {
+            delegate_id: delegate.into(),
+            reason: self,
+        })
+        .expect("reply outcome is serializable")
+    }
 }

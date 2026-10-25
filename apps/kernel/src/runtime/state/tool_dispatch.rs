@@ -36,7 +36,6 @@ mod home_room_browser_runtime;
 mod home_script_executor;
 mod meta;
 mod permission_prompt;
-mod permission_prompt_rule;
 mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
