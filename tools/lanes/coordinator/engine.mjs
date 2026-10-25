@@ -293,6 +293,7 @@ export function createRound(options) {
       // Events can be missed (a worker that finishes before the inbox sees it), so every lane is also read once in its
       // first minute and then every `reconcileMs`; a change seen earlier than that is read at the next wake.
       if (touched.has(lane) || now() - (lane.readAtMs ?? lane.run.launchedAtMs) >= reconcileMs) lane.needsRead = true;
+      if (now() >= lane.run.launchedAtMs + 60_000) await nudgeAcceptance(lane); // a file write raises no event, so it is checked on every wake
       if (!lane.needsRead || now() < lane.run.launchedAtMs + 60_000) continue;
       lane.needsRead = false;
       lane.readAtMs = now();

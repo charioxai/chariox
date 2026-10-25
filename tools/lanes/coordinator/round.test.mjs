@@ -399,3 +399,19 @@ test('round: a worker that ends its turn with an invalid file is prompted again,
   assert.equal(alpha.acceptanceNudges.length, 3);
   assert.equal(alpha.finishReason, 'finished');
 });
+
+test('round: a quiet worker with an invalid ACCEPTANCE_UPDATE.json is steered at the next wake, not at the five-minute reconcile', async t => {
+  const r = await rig(t, ['alpha']);
+  const bad = JSON.stringify({ rows: [{ id: 'area/ROW-1', status: 'PASS', head: 'abc1234', date: '2026-10-25' }] });
+  let wakes = 0, steeredAtWake;
+  const before = r.options.cli;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait') { wakes++; if (r.calls.some(c => c.op === 'steer')) steeredAtWake ??= wakes; }
+    if (argv[1] === 'wait' && wakes === 2) await writeFile(join(r.home, 'runs', 'ACCEPTANCE_UPDATE.json'), bad);
+    return before(argv);
+  };
+  r.spec.lanes[0].hardStopMinutes = 6; // the round ends at its hard stop
+  r.waits.push(...Array.from({ length: 10 }, () => ({})));
+  await runRound(r.spec, r.options);
+  assert.ok(steeredAtWake <= 4, `steered at wake ${steeredAtWake}: the file is checked on every wake, not only when the worker is read`);
+});
