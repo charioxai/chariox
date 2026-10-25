@@ -71,7 +71,7 @@ impl KernelRuntimeOwnedState {
         let owner = pending
             .kernel_operation_owner
             .clone()
-            .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
+            .filter(|owner| self.answers_for_owner(owner, caller_user_id))?;
         let interaction = if let Some(interaction) = pending
             .kernel_wide_interaction
             .or(pending.user_domain_interaction)
