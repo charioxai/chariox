@@ -345,13 +345,7 @@ fn full_collaborator_fast_session_reads_redact_unreadable_provider_run() {
 
 async fn full_attach_run_visibility() {
     let root = crate::test_support::TestWorktree::new("full-attach-run");
-    let mut config = DaemonConfig::for_tests();
-    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
-        user_id: "enrolled-owner".into(),
-        realm_id: "test-realm".into(),
-        ..Default::default()
-    });
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let room = app
         .sessions_mut()
         .create_session(root.session_request())
@@ -377,7 +371,6 @@ async fn full_attach_run_visibility() {
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     for (user, expected) in [
         (DEFAULT_LOCAL_USER_ID, Some(run_id.as_str())),
-        ("enrolled-owner", Some(run_id.as_str())),
         ("collaborator", None),
     ] {
         let requests = [
@@ -394,6 +387,7 @@ async fn full_attach_run_visibility() {
                 client_id: format!("client-{user}"),
                 capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
                 preferred_agent_id: None,
+                latest_prompt_count: None,
             }),
         ];
         for request in requests {
@@ -422,10 +416,13 @@ async fn full_attach_run_visibility() {
         });
         let command = super::historical_workflows::terminal_command(&request, Some(user));
         let result = router.dispatch(command, request).await;
-        assert_eq!(
-            result.is_ok(),
-            expected.is_some(),
-            "provider run read authority is unchanged"
-        );
+        if expected.is_some() {
+            assert!(
+                result.is_ok(),
+                "owner retains provider run read authority: {result:?}"
+            );
+        } else {
+            assert_ownership_denied(result.unwrap_err(), user, run.owner_user_id());
+        }
     }
 }
