@@ -140,6 +140,7 @@ export async function serve(options) {
   const flag_down = async (entry, error) => {
     const path = join(layout.agents, entry.lane, 'LOOP_RUN.json');
     const run = await read(path);
+    if (run.round !== entry.round) return; // the lane file already belongs to another round
     run.driverError = { code: error.code || 'resume_failed', message: String(error.message).slice(0, 300), at_ms: now() };
     await save(path, run);
   };
