@@ -1,16 +1,17 @@
 // MP-08 / MP-09 / MP-10 / MP-11: the Mac's round loop for several lanes, event-driven (the shared engine).
 import { readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { coordinate, defaultCli, save } from './loop.mjs';
 import { followLaunch } from './events.mjs';
 import { classifyDecision } from './decisions.mjs';
-import { execute } from '../lanes.mjs';
+import { execute, acceptanceIssues } from '../lanes.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const sha256 = text => createHash('sha256').update(text).digest('hex');
 const KEEP_EVENTS = 400;
 const NOTE_ATTEMPTS = 10;
+const ACCEPTANCE_NUDGES = 3;
 const sameCommit = /^[0-9a-f]{40}$/;
 
 const target = event => `${event.kernel}/${event.session_id}/${event.agent_id}`;
@@ -173,6 +174,33 @@ export function createRound(options) {
     return touched;
   };
 
+  // The coordinator drops acceptance rows whose file does not validate, and only learns that after the round. So the file is
+  // checked while the worker runs: a running turn is steered with the exact problems, and a worker that ends its turn with an
+  // invalid file gets them as its next prompt instead of being collected. At most ACCEPTANCE_NUDGES per round; after that the
+  // problems are reported with the collection as before.
+  const nudgeAcceptance = async lane => {
+    const path = join(dirname(lane.entry.runFile), 'ACCEPTANCE_UPDATE.json');
+    let text; try { text = await readFile(path, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    let issues; try { issues = acceptanceIssues(JSON.parse(text)); } catch { issues = [{ field: 'file', problem: 'is not valid JSON' }]; }
+    const nudges = lane.run.acceptanceNudges ??= [];
+    if (!issues.length || nudges.length >= ACCEPTANCE_NUDGES) return false;
+    const digest = sha256(text);
+    // Mid-round, one nudge per distinct content: the worker may still be writing the file.
+    if (!lane.settled && nudges.some(item => item.sha256 === digest)) return false;
+    const file = join(roundDirectory, `${lane.entry.lane}.acceptance-${nudges.length + 1}.md`);
+    await writeFile(file, `## ${new Date(now()).toISOString().slice(11, 16)}Z loopd: ACCEPTANCE_UPDATE.json does not validate (check ${nudges.length + 1} of ${ACCEPTANCE_NUDGES})\nThe coordinator drops every row of ${path} until it validates. Fix these and rewrite the file, then end your turn again:\n${issues.map(issue => `- ${issue.field}: ${issue.problem}`).join('\n')}\n`, { mode: 0o600 });
+    try {
+      const sent = await coordinator('steer', [lane.entry.lane, file]);
+      nudges.push({ sha256: digest, at_ms: now(), mode: sent.mode, issues: issues.length });
+      log(lane, 'acceptance_nudge', { mode: sent.mode, issues: issues.length });
+      lane.needsRead = true;
+      return true;
+    } catch (error) {
+      log(lane, 'acceptance_nudge_failed', { code: error.code || 'steer_failed' });
+      return false;
+    }
+  };
+
   // A lane can change a second repository (e.g. OSS and Cloud); each tip gets its own verified bundle.
   const bundleExtras = async lane => {
     const results = [];
@@ -275,7 +303,11 @@ export function createRound(options) {
       lane.run.health = { atMs: now(), state: status.state, flags: status.flags, lastActivityMs: status.lastActivityMs };
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
       for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
-      if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
+      if (status.state === 'idle' && !status.currentPrompt) {
+        lane.settled = true;
+        if (!await nudgeAcceptance(lane)) await collect(lane, 'finished');
+        lane.settled = false;
+      } else if (status.currentPrompt) await nudgeAcceptance(lane);
     }
     for (const lane of pending()) if (lane.run.driverError) { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }
     for (const lane of lanes) await persist(lane);

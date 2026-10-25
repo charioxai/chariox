@@ -360,3 +360,42 @@ test('round: a note the coordinator already steered directly is recorded, not de
   assert.equal(r.calls.filter(c => c.op === 'steer').length, 1, 'only the section that was not steered directly goes out');
   assert.match(r.calls.find(c => c.op === 'steer').input.prompt, /only appended/);
 });
+
+test('round: an invalid ACCEPTANCE_UPDATE.json is steered while the worker runs, and a worker that ends its turn with one gets the problems as its next prompt', async t => {
+  const r = await rig(t, ['alpha']);
+  const runs = join(r.home, 'runs');
+  const bad = JSON.stringify({ rows: [{ id: 'area/ROW-1', status: 'PASS', head: 'abc1234', date: '2026-10-25' }] });
+  await writeFile(join(runs, 'ACCEPTANCE_UPDATE.json'), bad);
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', summary: 'working', value: {} })] });
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const before = r.options.cli; let wakes = 0;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait' && ++wakes === 2) {
+      r.idle.add('alpha'); // the worker ends its turn without fixing the file
+      await writeFile(join(runs, 'ACCEPTANCE_UPDATE.json'), JSON.stringify({ rows: [{ id: 'area/ROW-1', status: 'PASS', head: 'a'.repeat(40), date: '2026-10-25' }] }));
+    }
+    return before(argv);
+  };
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'prompt' ? (r.calls.push({ op, input }), { PromptSubmitted: { outcome: { Started: { prompt: { id: 'again' } } } } }) : adapter(op, input);
+  r.waits.push({});
+  const [alpha] = await runRound(r.spec, r.options);
+  const steer = r.calls.find(c => c.op === 'steer');
+  assert.match(steer.input.prompt, /rows\[0\]\.head: must be one full 40-character git commit id/);
+  assert.match(steer.input.prompt, /check 1 of 3/);
+  assert.equal(alpha.acceptanceNudges.length, 1, 'valid by the time the worker ended its turn: no second nudge, the round is collected');
+  assert.equal(alpha.finishReason, 'finished');
+});
+
+test('round: a worker that ends its turn with an invalid file is prompted again, at most three times, and then collected with the problems', async t => {
+  const r = await rig(t, ['alpha']);
+  await writeFile(join(r.home, 'runs', 'ACCEPTANCE_UPDATE.json'), JSON.stringify({ rows: [{ id: 'bad', status: 'PASS', head: 'x', date: 'now' }] }));
+  r.idle.add('alpha');
+  for (let i = 0; i < 6; i++) r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'prompt' ? (r.calls.push({ op, input }), { PromptSubmitted: { outcome: { Started: { prompt: { id: `n${r.calls.length}` } } } } }) : adapter(op, input);
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(r.calls.filter(c => c.op === 'prompt').length, 3);
+  assert.equal(alpha.acceptanceNudges.length, 3);
+  assert.equal(alpha.finishReason, 'finished');
+});
