@@ -1319,6 +1319,7 @@ mod tests {
     }
 
     fn used_session(workspace: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
+            pinned: false,
         WaitingRoomPublicSessionSummary {
             id: format!("session-{last_used_at_ms}"),
             project_id: "project".to_string(),
