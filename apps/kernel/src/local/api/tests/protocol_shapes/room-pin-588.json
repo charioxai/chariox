@@ -1,6 +1,6 @@
 {
-  "local_protocol": 588,
-  "peer_protocol": 194,
+  "local_protocol": 599,
+  "peer_protocol": 205,
   "pin": {
     "SetRoomPinned": {
       "session_id": "room",
