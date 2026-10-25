@@ -336,3 +336,95 @@ async fn collaborator_waiting_room_directory_redaction_inner() {
         }
     }
 }
+
+// MP-08 / MP-10 / MP-11: exercise the fast reads used by a real terminal attach.
+#[test]
+fn full_collaborator_fast_session_reads_redact_unreadable_provider_run() {
+    run_remote_authorization_large_stack_test("full-attach-run", full_attach_run_visibility);
+}
+
+async fn full_attach_run_visibility() {
+    let root = crate::test_support::TestWorktree::new("full-attach-run");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolled-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let app = DaemonApp::bootstrap(config).unwrap();
+    let room = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap();
+    let id = room.id().to_string();
+    let mut snapshot = app.session_state_store().get_session(&id).unwrap();
+    snapshot.add_member(
+        "collaborator",
+        None,
+        crate::session::CollaborationLevel::Full,
+    );
+    snapshot.set_active_provider_run(Some("owner-run".into()));
+    app.session_state_store().write().restore_session(snapshot);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    router
+        .provider_run_projection
+        .update(RuntimeProviderRun::from_control_capability_inference(
+            "owner-run",
+            id.clone(),
+            None,
+            "dev-stub".into(),
+        ));
+    for (user, expected) in [
+        (DEFAULT_LOCAL_USER_ID, Some("owner-run")),
+        ("enrolled-owner", Some("owner-run")),
+        ("collaborator", None),
+    ] {
+        let requests = [
+            LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+            LocalDaemonRequest::ResolveSession(crate::local::ResolveSessionRequest {
+                session_ref: id.clone(),
+                workspace_id: None,
+            }),
+            LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+                session_id: id.clone(),
+            }),
+            LocalDaemonRequest::AttachSessionView(crate::local::AttachSessionViewRequest {
+                session_id: id.clone(),
+                client_id: format!("client-{user}"),
+                capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+                preferred_agent_id: None,
+            }),
+        ];
+        for request in requests {
+            let command = super::historical_workflows::terminal_command(&request, Some(user));
+            let response = router.dispatch(command, request).await.unwrap();
+            let response = match response {
+                LocalDaemonResponse::SessionViewAttached { state, .. } => *state,
+                response => response,
+            };
+            let session = match response {
+                LocalDaemonResponse::SessionsListed { sessions } => {
+                    sessions.into_iter().find(|s| s.id() == id).unwrap()
+                }
+                LocalDaemonResponse::SessionResolved { session }
+                | LocalDaemonResponse::SessionState { session, .. } => session,
+                _ => panic!("unexpected session response"),
+            };
+            assert_eq!(
+                session.active_provider_run_id(),
+                expected,
+                "fast session reads must not direct collaborators to unreadable runs"
+            );
+        }
+        let request = LocalDaemonRequest::GetProviderRun(crate::local::GetProviderRunRequest {
+            provider_run_id: "owner-run".into(),
+        });
+        let command = super::historical_workflows::terminal_command(&request, Some(user));
+        let result = router.dispatch(command, request).await;
+        assert_eq!(
+            result.is_ok(),
+            expected.is_some(),
+            "provider run read authority is unchanged"
+        );
+    }
+}
