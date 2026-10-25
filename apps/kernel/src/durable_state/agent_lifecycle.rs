@@ -12,6 +12,8 @@ mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+#[cfg(test)]
+mod blocked_intent_tests;
 mod delivery_waits;
 #[cfg(test)]
 mod fault_tests;

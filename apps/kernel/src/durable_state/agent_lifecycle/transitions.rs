@@ -465,16 +465,28 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             reason,
         } => {
             let mut t = load(tx, &task)?;
-            if t.prompt_id != prompt || t.state != ExecutionState::Working {
-                return Err(error("stale blocked intent"));
+            if t.prompt_id != prompt {
+                return Err(error(
+                    "stale blocked intent: use the current task and prompt",
+                ));
+            }
+            if !matches!(t.state, ExecutionState::Working | ExecutionState::Blocked) {
+                return Err(error("blocked intent requires a working or blocked turn; submit a new prompt for a closed task"));
             }
             if reason.trim().is_empty() {
                 return Err(error("blocked requires an owner action"));
             }
+            let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
+            if t.state == ExecutionState::Blocked && t.reason == reason {
+                return Ok(Outcome::Task(t));
+            }
             super::goals::clock(&mut t, crate::session::unix_epoch_ms());
+            // Refreshing the reason must keep the existing owner Resume/Cancel valid.
+            if t.state == ExecutionState::Working {
+                t.blocked_revision = t.revision + 1;
+            }
             t.state = ExecutionState::Blocked;
-            t.blocked_revision = t.revision + 1;
-            t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
+            t.reason = reason;
             t.revision += 1;
             save(tx, &t)?;
             Ok(Outcome::Task(t))
