@@ -15,7 +15,7 @@ export async function runningRounds(agents) {
 }
 
 export async function restartWithSandbox({ state, agents, preflight, stopLoopd, startLoopd, stop, start, inspect, report = console.log,
-  now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 120_000 }) {
+  now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 360_000 }) {
   // Resolve prerequisites before interrupting any service. stopLoopd finishes its current step before the snapshot.
   const account = await preflight();
   const loopd = await stopLoopd();
@@ -23,15 +23,15 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
   const workers = new Map();
   const logPath = join(state, 'loopd.log');
   try {
-  before = await runningRounds(agents);
-  for (const run of before) {
-    const worker = await inspect(run);
-    if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${run.key} has no healthy worker or permission level`);
-    workers.set(run.key, worker);
-  }
-  await writeFile(join(state, 'restart-rounds.json'), JSON.stringify(before.map(({ path, key, round, launch, launchedAtMs }) => ({ path, key, round, launch, launchedAtMs }))), { mode: 0o600 });
-  await writeFile(join(state, 'kernel-environment.json'), JSON.stringify({ IS_SANDBOX: '1' }) + '\n', { mode: 0o600 });
-  previousLog = await readFile(logPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+    before = await runningRounds(agents);
+    for (const run of before) {
+      const worker = await inspect(run);
+      if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${run.key} has no healthy worker or permission level`);
+      workers.set(run.key, worker);
+    }
+    await writeFile(join(state, 'restart-rounds.json'), JSON.stringify(before.map(({ path, key, round, launch, launchedAtMs }) => ({ path, key, round, launch, launchedAtMs }))), { mode: 0o600 });
+    await writeFile(join(state, 'kernel-environment.json'), JSON.stringify({ IS_SANDBOX: '1' }) + '\n', { mode: 0o600 });
+    previousLog = await readFile(logPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
   } catch (error) {
     if (loopd?.stopped) {
       try { await startLoopd(); } catch (restore) {
@@ -40,6 +40,7 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
     }
     throw new Error(`restart precheck failed: ${error.message}; kernels were not restarted; loopd ${loopd?.stopped ? "restored" : "left as it was"}`, { cause: error });
   }
+  const restartedAtMs = now();
   await stop();
   await start();
   const deadline = now() + timeoutMs;
@@ -59,6 +60,14 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
       const worker = run.finishedAtMs ? workers.get(key) : await inspect(run);
       if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${key} has no healthy worker or permission level`);
       if (worker.provider !== workers.get(key).provider || worker.permission !== workers.get(key).permission) throw new Error(`worker launch selection changed: ${key}`);
+      // Receipt replay only proves attachment. A fresh tool permission comes from the worker;
+      // provider activity and successful turn completion come from kernel-owned projections.
+      const freshPermission = (run.events || []).some(event => event.kind === 'event' && event.type === 'interaction'
+        && event.state === 'pending' && event.agent_id === old.launch.agentId && event.at_ms > restartedAtMs);
+      const freshRun = worker.providerActivityAtMs > restartedAtMs
+        && worker.providerActivityAtMs > (workers.get(key).providerActivityAtMs ?? 0);
+      const completed = worker.completedAtMs > restartedAtMs && worker.completedSuccessfully;
+      if (!freshPermission && !freshRun && !completed) continue;
       report(`${key} provider=${worker.provider} permission=${worker.permission} account=${worker.provider === 'claude' ? account : 'n/a'} resumed=true${run.finishedAtMs ? ' completed=true' : ''}`);
       pending.delete(key);
     }

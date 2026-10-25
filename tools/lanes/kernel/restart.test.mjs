@@ -18,7 +18,7 @@ async function rig(t) {
   const options = { state, agents, timeoutMs: 2, now: () => clock++, sleep: async () => {},
     preflight: async () => 'chariox(org=…123)', stopLoopd: async () => calls.push('stopLoopd'),
     stop: async () => calls.push('stop'), start: async () => { calls.push('start'); await writeFile(join(state, 'loopd.log'), '{"kind":"picked_up","key":"alpha-r1"}\n'.repeat(2)); },
-    inspect: async () => ({ provider: 'claude', permission: 'required', state: 'working' }), report: line => lines.push(line) };
+    inspect: async () => ({ provider: 'claude', permission: 'required', state: 'working', providerActivityAtMs: calls.includes('start') ? 1000 : 0 }), report: line => lines.push(line) };
   return { state, path, run, calls, lines, options };
 }
 
@@ -58,7 +58,7 @@ test('a carried round that finishes before verification is confirmed from its ar
   const r = await rig(t); const start = r.options.start;
   r.options.start = async () => {
     await start();
-    await writeFile(join(r.options.agents, 'alpha', 'LOOP_RUN.r1.json'), JSON.stringify({ ...r.run, finishReason: 'finished', finishedAtMs: 456 }));
+    await writeFile(join(r.options.agents, 'alpha', 'LOOP_RUN.r1.json'), JSON.stringify({ ...r.run, finishReason: 'finished', finishedAtMs: 456, events: [{ kind: 'event', type: 'interaction', state: 'pending', at_ms: 1000, agent_id: 'agent' }] }));
     await writeFile(r.path, JSON.stringify({ ...r.run, key: 'alpha-r2', round: 'r2', launchedAtMs: 789 }));
   };
   r.options.inspect = async run => {
@@ -86,4 +86,19 @@ test('a failed precheck leaves an already stopped loopd stopped', async t => {
   r.options.inspect = async () => { throw new Error('inspection failed'); };
   await assert.rejects(restartWithSandbox(r.options), /inspection failed/);
   assert.deepEqual(r.calls, []);
+});
+
+test('receipt pickup without fresh provider activity must never verify recovery', async t => {
+  const r = await rig(t);
+  r.options.inspect = async () => ({ provider: 'claude', permission: 'required', state: 'working', providerActivityAtMs: 0 });
+  await assert.rejects(restartWithSandbox(r.options), /rounds did not resume/);
+  assert.equal(r.lines.length, 0);
+});
+
+test('a provider that fails after receipt pickup fails restart verification', async t => {
+  const r = await rig(t); let inspections = 0;
+  r.options.timeoutMs = 10;
+  r.options.inspect = async () => ({ provider: 'claude', permission: 'required', state: ++inspections > 2 ? 'error' : 'working' });
+  await assert.rejects(restartWithSandbox(r.options), /no healthy worker/);
+  assert.equal(r.lines.length, 0);
 });

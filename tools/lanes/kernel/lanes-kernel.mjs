@@ -479,8 +479,16 @@ try {
         const session = response.SessionState.session;
         const agent = (response.SessionState.agents || session.agents || []).find(agent => agent.id === run.launch.agentId);
         if (!agent) throw new Error(`worker missing after restart: ${run.key}`);
+        const activity = (response.SessionState.agent_activity || session.agent_activity)?.[agent.id];
+        const runId = activity?.active_turn?.provider_run_id;
+        const providerRun = runId ? (await rpc('executor', { GetProviderRun: { provider_run_id: runId } })).ProviderRun.provider_run : undefined;
+        const completed = activity?.last_completed_turn;
         return { provider: agent.provider, permission: agent.permission_level_override || session.permission_level,
-          state: (response.SessionState.agent_activity || session.agent_activity)?.[agent.id]?.status };
+          state: activity?.status,
+          providerActivityAtMs: providerRun?.state === 'running' ? providerRun.last_activity_at_ms : undefined,
+          completedAtMs: completed?.completed_at_ms,
+          completedSuccessfully: completed?.settlement_status === 'completed' && !completed?.provider_termination };
+
       },
     });
     out(check);
