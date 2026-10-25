@@ -64,12 +64,44 @@ Start the daemon from the repository root:
 pnpm run start:kernel
 ```
 
+Run the kernel as a normal user. This is the default for self-hosting.
+
 What it does:
 
 - boots the daemon runtime
 - binds the kernel WebSocket listener
 - manages sessions and provider runs
 - launches and supervises the local OpenCode and Codex structured server paths
+
+### Claude YOLO when self-hosting as root
+
+MP-08 / MP-09 / MP-10 / MP-11: when the kernel's effective UID is 0,
+Chariox passes `IS_SANDBOX=1` to Claude processes launched with YOLO permissions.
+This compatibility shim relies on an undocumented Claude variable; it does not
+create an OS sandbox. Other permission levels, non-root kernels, and other
+providers do not receive this override. The existing managed bubblewrap
+environment continues to set it for Claude inside its namespace.
+
+If a future Claude version refuses root YOLO despite the shim, the existing
+provider failure pane reports: "Claude refused YOLO because this kernel runs as
+root. Run the kernel as a normal user, or update Chariox."
+
+After every Claude version bump, run this offline check as root on a disposable
+host with the candidate official `claude` binary installed:
+
+```bash
+node scripts/claude-root-yolo-drill.mjs /absolute/path/to/claude
+```
+
+The drill prints the installed version, verifies that root YOLO without the
+variable is refused before an API request, then verifies that `IS_SANDBOX=1`
+lets a Bash tool run as UID 0 without a permission prompt. It uses an empty
+provider home and a fake local API, needs no credentials, and removes its scratch
+state under `~/.chariox/dev/claude-root-yolo-drill/` (or `CHARIOX_HOME`). Both
+arms must pass before updating the provider pin in
+`deploy/managed-kernel/provider-versions.env`. The kernel's Claude launch tests
+separately verify that real launch plans supply the variable only for root YOLO.
+This offline check supplements the real kernel/client/provider drill.
 
 ## 6. Running The Primary CLI
 

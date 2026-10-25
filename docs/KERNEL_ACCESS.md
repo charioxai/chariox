@@ -8,6 +8,11 @@ Use `/cloud link` on each kernel to enroll it. The kernel keeps its own durable 
 
 ## Self-hosted operator realm
 
+Run the kernel as a normal user. If you run it as root, Chariox passes
+`IS_SANDBOX=1` to YOLO Claude agents using an undocumented Claude variable.
+See the [root YOLO compatibility drill](RUNNING_LOCAL.md#claude-yolo-when-self-hosting-as-root)
+for the check to run after each Claude version bump.
+
 Cloud is optional. Configure an operator-controlled relay and each kernel's relay connection. Live relay registration/heartbeats provide discovery. Open the terminal-pairing dialog in the attached kernel's waiting room, then use the issued link with `chariox --terminal-pairing-link <link>`. The link is private; do not log it or commit it. The terminal keeps its existing private profile key. Pairing records a durable key-bound grant at that exact kernel; operator transport access alone cannot read runtime inventory or subscribe. Revoke the paired terminal at the kernel to stop requests and existing event streams. Grants have no fixed lifetime; restarting with the same CLI profile key preserves admission.
 
 The simplest realm uses a shared transport token. Operators rotate that shared token to revoke relay-level realm access; per-terminal relay credential revocation is not promised for a shared token. Kernel pairing revocation remains independent.
