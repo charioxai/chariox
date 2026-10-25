@@ -17,10 +17,12 @@ impl KernelRuntimeState {
                 agent_id: request.agent_id,
             });
         }
+        // A usage read must not wait for an unrelated provider operation that holds the
+        // service mutex; it then answers from the last published run projection.
         let run = self
             .owned
             .provider_store
-            .get_run_for_agent(session.id(), agent.id())
+            .try_get_agent_run_for_projection(session.id(), agent.id())
             .or_else(|| {
                 self.owned
                     .provider_run_projection

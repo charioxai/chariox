@@ -191,3 +191,69 @@ fn usage_snapshot_uses_agent_projection_and_never_serializes_remote_credentials(
         });
     assert!(harness.dispatch(wrong).is_err());
 }
+
+#[test]
+fn usage_snapshot_answers_from_the_projection_while_the_provider_service_is_busy() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("usage-snapshot-busy-provider");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("expected session"),
+    };
+    let providers = harness.with_app_mut(|app| {
+        let mut run = RuntimeProviderRun::from_control_capability_inference(
+            "leased:busy-provider-run",
+            session.id().into(),
+            Some(agent.id().into()),
+            "codex".into(),
+        );
+        run.set_usage(crate::provider::ProviderRunTokenUsage {
+            context_tokens: Some(1200),
+            context_window: Some(4000),
+            ..Default::default()
+        });
+        app.provider_run_projection_store().update(run);
+        app.providers().clone()
+    });
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let holder = {
+        let release = std::sync::Arc::clone(&release);
+        std::thread::spawn(move || {
+            let _unrelated_provider_operation = providers.read();
+            locked_tx.send(()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !release.load(std::sync::atomic::Ordering::SeqCst)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        })
+    };
+    locked_rx.recv().unwrap();
+    let started = std::time::Instant::now();
+    let response = harness.dispatch(LocalDaemonRequest::GetAgentUsageSnapshot(
+        crate::local::GetAgentUsageSnapshotRequest {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+        },
+    ));
+    let answered_in = started.elapsed();
+    release.store(true, std::sync::atomic::Ordering::SeqCst);
+    holder.join().unwrap();
+    assert!(
+        answered_in < std::time::Duration::from_secs(1),
+        "usage read waited {answered_in:?} for an unrelated provider operation"
+    );
+    let response = serde_json::to_value(response.unwrap()).unwrap();
+    let snapshot = &response["AgentUsageSnapshot"]["snapshot"];
+    assert_eq!(snapshot["agent_id"], agent.id());
+    assert_eq!(snapshot["context"]["used_tokens"], 1200);
+    assert_eq!(snapshot["context"]["limit_tokens"], 4000);
+}
