@@ -109,6 +109,23 @@ export async function coordinate(operation, args, options = {}) {
       throw recoveryFailed();
     }
   };
+  // Both delivery paths replay the same command after renewal, including its exact body.
+  const dispatch = async (key, initial, send) => {
+    record.deliveryCommands ??= {};
+    let command = record.deliveryCommands[key];
+    if (!command) {
+      command = record.deliveryCommands[key] = initial;
+      await save(path, record);
+    }
+    try { return await attached(() => send(command), async () => {
+      command = { id: renewedCommand(key, common.attachmentId), attachmentId: common.attachmentId, prompt: command.prompt };
+      record.deliveryCommands[key] = command;
+      await save(path, record);
+    }); } catch (error) {
+      if (error.code !== 'duplicate_command_conflict' || !command.legacyAttachment) throw error;
+      throw new LaneError('delivery_replay_attachment_unknown', 'The old pending note did not retain its attachment; recover its original launch receipt before retrying.');
+    }
+  };
   if (operation === 'deliver') return withLaneLock(home, lane, 'deliver', async () => {
     await reload();
     const reviewFile = args[1];
@@ -136,9 +153,10 @@ export async function coordinate(operation, args, options = {}) {
     }
     if (!receipt.result) {
       let result, mode = receipt.confirmationMode;
-      try { result = await attached(() => adapter('steer', { ...common, attachmentId: receipt.dispatch.attachmentId, expectedPromptId, prompt, steerId: receipt.dispatch.id }), async () => {
-        receipt.dispatch = { id: renewedCommand(steerId, common.attachmentId), attachmentId: common.attachmentId };
+      try { result = await dispatch(steerId, { ...receipt.dispatch, prompt }, async command => {
+        receipt.dispatch = command;
         await save(deliveryPath, receipt);
+        return adapter('steer', { ...common, attachmentId: command.attachmentId, expectedPromptId, prompt: command.prompt, steerId: command.id });
       }); }
       catch (error) {
         // The kernel took the steer but could not record its event: it is delivered, and sending again would repeat it.
@@ -193,18 +211,15 @@ export async function coordinate(operation, args, options = {}) {
           status = undefined;
           ledger.pendingDeliveries[section] = pending; await save(ledgerPath, ledger);
         }
-        // Old ledgers predate attachment-bound replay. Bind them before the first attempt.
-        if (!pending.attachmentId) { pending.attachmentId = common.attachmentId; await save(ledgerPath, ledger); }
-        const renewed = async () => {
-          pending.id = renewedCommand(pending.id, common.attachmentId);
-          pending.attachmentId = common.attachmentId;
-          await save(ledgerPath, ledger);
-        };
+        const key = pending.operation === 'steer'
+          ? `review-${createHash('sha256').update(pending.expectedPromptId).update(pending.prompt).digest('hex')}`
+          : `direct-${pending.sha256}`;
+        const initial = { id: pending.id, attachmentId: pending.attachmentId || common.attachmentId, prompt: pending.prompt, ...(!pending.attachmentId && { legacyAttachment: true }) };
         try {
           if (pending.operation === 'prompt') {
-            answer = await attached(() => adapter('prompt', { ...common, attachmentId: pending.attachmentId, prompt, commandId: pending.id }), renewed);
+            answer = await dispatch(key, initial, command => adapter('prompt', { ...common, attachmentId: command.attachmentId, prompt: command.prompt, commandId: command.id }));
             mode = answer.PromptSubmitted?.outcome?.Started ? 'prompt-started' : 'prompt-queued';
-          } else { answer = await attached(() => adapter('steer', { ...common, attachmentId: pending.attachmentId, expectedPromptId: pending.expectedPromptId, prompt, steerId: pending.id }), renewed); mode = 'steered'; }
+          } else { answer = await dispatch(key, initial, command => adapter('steer', { ...common, attachmentId: command.attachmentId, expectedPromptId: pending.expectedPromptId, prompt: command.prompt, steerId: command.id })); mode = 'steered'; }
         } catch (error) {
           // The kernel took the note but could not record its event: it is delivered, and sending again would repeat it.
           if (pending.operation === 'steer' && error.code === 'prompt_steer_event_unrecorded') { answer = { delivered: true, event: 'unrecorded' }; mode = 'steered'; }

@@ -632,7 +632,7 @@ for (const operation of ['steer', 'deliver']) test(`${operation}: two attachment
   if (operation === 'steer') assert.equal(Object.keys(JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8')).pendingDeliveries).length, 1);
 });
 
-test('steer: renews an idle worker attachment without changing its pending prompt command', async t => {
+test('steer: renews an idle worker attachment after a definitive command refusal', async t => {
   const r = await launched(t);
   const review = join(r.home, 'review.md'); await writeFile(review, 'MP-08 / MP-09 / MP-10 / MP-11: next turn');
   const sent = []; let renewals = 0;
@@ -700,4 +700,55 @@ test('lanefin: an acceptance row about a second worktree does not fence the prim
   const result = await coordinate('lanefin', ['lane'], r.options);
   assert.equal(result.bundle.head, head);
   assert.equal(JSON.parse(await readFile(join(r.home, 'artifacts/lane/ACCEPTANCE_UPDATE.json'), 'utf8')).rows[0].head, secondaryHead);
+});
+
+for (const running of [true, false]) test(`steer: an uncertain ${running ? 'steer' : 'prompt'} replays saved text when surrounding whitespace changes`, async t => {
+  const r = await launched(t), review = join(r.home, 'review.md'), prompt = 'MP-08 / MP-09 / MP-10 / MP-11: replay original bytes';
+  await writeFile(review, prompt);
+  let accepted, loseReply = true;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { currentPrompt: running ? 'current' : null };
+    if (!['steer', 'prompt'].includes(op)) throw new Error(`unexpected ${op}`);
+    if (!accepted) accepted = input;
+    else assert.deepEqual(input, accepted, 'the same normalized note must replay the original bytes');
+    if (loseReply) { loseReply = false; throw new LaneError('kernel_connection_lost'); }
+    return running ? { ActivePromptSteered: { prompt: { id: 'taken' } } } : { PromptSubmitted: { outcome: { Started: { prompt: { id: 'taken' } } } } };
+  };
+  await assert.rejects(coordinate('steer', ['lane', review], r.options), { code: 'kernel_connection_lost' });
+  await writeFile(review, `\n${prompt}\n`);
+  await coordinate('steer', ['lane', review], r.options);
+});
+
+for (const first of ['steer', 'deliver']) test(`delivery: ${first} renewal and the other path share one accepted command`, async t => {
+  const r = await launched(t), review = join(r.home, 'review.md'); await writeFile(review, 'MP-08 / MP-09 / MP-10 / MP-11: shared delivery');
+  const commands = new Map(); let accepted = 0;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { currentPrompt: 'current' };
+    if (op === 'launch') return { ...r.launch, attachmentId: 'renewed' };
+    if (op !== 'steer') throw new Error(`unexpected ${op}`);
+    const body = JSON.stringify(input), prior = commands.get(input.steerId);
+    if (prior && prior !== body) throw new LaneError('duplicate_command_conflict');
+    if (!prior && input.attachmentId !== 'attached') accepted++;
+    commands.set(input.steerId, body);
+    if (input.attachmentId === 'attached') throw new LaneError('attachment_not_found');
+    return { ActivePromptSteered: { prompt: { id: input.steerId } } };
+  };
+  await coordinate(first, ['lane', review], r.options);
+  await coordinate(first === 'steer' ? 'deliver' : 'steer', ['lane', review], r.options);
+  assert.equal(accepted, 1);
+});
+
+test('steer: an old pending note with an unknown attachment fails explicitly instead of changing a possibly accepted command', async t => {
+  const r = await launched(t), review = join(r.home, 'review.md'), prompt = 'MP-08 / MP-09 / MP-10 / MP-11: legacy note';
+  await writeFile(review, prompt);
+  const sha256 = (await import('node:crypto')).createHash('sha256').update(prompt).digest('hex');
+  await save(join(r.home, 'lane.direct.json'), { sections: [], pendingDeliveries: { [sha256]: { sha256, operation: 'prompt', id: `direct-${sha256}`, prompt, parts: [sha256] } } });
+  let sends = 0;
+  r.options.adapter = async op => {
+    assert.equal(op, 'prompt'); sends++;
+    throw new LaneError('duplicate_command_conflict');
+  };
+  await assert.rejects(coordinate('steer', ['lane', review], r.options), { code: 'delivery_replay_attachment_unknown' });
+  assert.equal(sends, 1);
+  assert.equal(Object.keys(JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8')).pendingDeliveries).length, 1);
 });
