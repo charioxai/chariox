@@ -550,6 +550,7 @@ async fn daemon_events_must_match_subscription_owner() {
                 client_public_key: "client-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             })
             .expect("client subscribe should serialize")
             .into(),

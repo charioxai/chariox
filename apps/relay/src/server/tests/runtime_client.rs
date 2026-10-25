@@ -287,6 +287,7 @@ async fn runtime_client_frames_reject_empty_identifiers_without_pending_state() 
                 client_public_key: "client-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             })
             .expect("invalid subscribe should serialize")
             .into(),
@@ -499,6 +500,7 @@ async fn runtime_client_frames_must_match_connected_target() {
                 client_public_key: "client-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             })
             .expect("wrong-target subscribe should serialize")
             .into(),

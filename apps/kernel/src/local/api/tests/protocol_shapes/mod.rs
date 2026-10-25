@@ -50,6 +50,7 @@ mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
+mod session_feed_596;
 mod session_view;
 mod slice_disk_quota;
 mod slice_display;

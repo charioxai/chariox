@@ -4824,6 +4824,36 @@ agent the initial `history` holds, so a pane that needs more than one turn draws
 older turns only ever load above it. Older kernels ignore the field and return one turn; clients
 feature-detect 596 for both and keep the read-after-event path below it.
 
+MP-08 / MP-10 / MP-11: the same 596/202 allocation (still unpublished on main, so it stays inside 596; if it
+had been published it would take 598/204) adds two events to a session subscription and one field to every
+subscription, so a client draws from events instead of reading again. Fixture: `session-feed-596.json`
+(`session_feed_596_shapes_are_pinned`), which pins all three shapes.
+- `agent_turn_changed { session_id, agent_id, history_revision, turn }`: the agent's latest turn changed.
+  `turn` is exactly the `SessionHistoryOutlineTurn` that `GetSessionHistoryOutline` (one prompt) and
+  `AttachSessionView.history` return, read the same way, so a client applies it with the code it has. It is
+  sent when terminal output, an assistant message or an activity change touches the agent, at most once per
+  50 ms per agent, and once more at the turn's end with its final status (`completed`, `cancelled` or
+  `failed`; the kernel looks again for up to 2 s until history shows the end). Nothing is sent when the
+  turn is identical to the one last sent, nor before the subscription's first snapshot: the view's own
+  read covers everything before it. `history_revision` is the newest history sequence stored for the agent
+  when the turn was read, before it was read, so the turn is never older than its revision. It orders
+  events of one agent, never decreases and, like `agent_activity_revision`, is a label the client compares,
+  not a cursor. Only agents of the session the caller may see get the event; external-agent streams never do.
+- `home_extension_audit_appended { session_id, agent_id, audit_event }`: a row appended to the agent's home
+  extension audit. `audit_event` is the row `ListHomeExtensionAudit` returns (`sequence`, `event_id`, `kind`,
+  `subject_id`, `timestamp_ms`, `payload`). It is named `audit_event` because `event` is the tag of every
+  kernel event. Only the caller's own audit rows arrive (same authority as the list) and only those of the
+  session's agents. The kernel logs a warning when a slow subscriber missed rows; a client then reads the
+  list once more.
+- `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
+  subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
+  is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
+  Over the relay the field travels in `client_subscribe` and `daemon_subscribe`, next to
+  `resume_from_event_id`; a relay or kernel that does not know it ignores it and the default stays, so a
+  client keeps its liveness check while heartbeats arrive slower than it asked. `AttachSessionView` does not
+  take the field: the subscription that follows it does.
+Older kernels send neither event; clients feature-detect 596 and keep the read-after-event path below it.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that

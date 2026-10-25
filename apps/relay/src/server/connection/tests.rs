@@ -1375,6 +1375,7 @@ async fn concurrent_subscription_admission_has_one_owner() {
         client_public_key: "key".into(),
         subscription_scope: None,
         resume_from_event_id: None,
+        heartbeat_interval_ms: None,
     };
     {
         let first = handle_client_packet_route_envelope(

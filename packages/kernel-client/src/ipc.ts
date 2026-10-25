@@ -471,7 +471,11 @@ export class LocalIpcClient {
     return this.send<KernelResourceTelemetryResponse>(getKernelResourceTelemetryRequest(options))
   }
 
-  async subscribeToKernelEvents(sessionId: string, attachmentId: string): Promise<void> {
+  async subscribeToKernelEvents(
+    sessionId: string,
+    attachmentId: string,
+    options: { readonly heartbeatIntervalMs?: number } = {},
+  ): Promise<void> {
     if (!this.supportsKernelEvents()) {
       return
     }
@@ -487,6 +491,7 @@ export class LocalIpcClient {
       sessionId,
       attachmentId,
       relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
+      heartbeatIntervalMs: options.heartbeatIntervalMs,
     })
     if (start.resetLastReceivedEventId) {
       this.lastReceivedEventId = null
@@ -509,7 +514,7 @@ export class LocalIpcClient {
     }
   }
 
-  async subscribeToWaitingRoomInventory(): Promise<void> {
+  async subscribeToWaitingRoomInventory(options: { readonly heartbeatIntervalMs?: number } = {}): Promise<void> {
     if (!this.supportsKernelEvents()) {
       return
     }
@@ -522,6 +527,7 @@ export class LocalIpcClient {
       previous: this.activeKernelSubscription,
       lastReceivedEventId: this.lastReceivedEventId,
       relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
+      heartbeatIntervalMs: options.heartbeatIntervalMs,
     })
     if (start.resetLastReceivedEventId) {
       this.lastReceivedEventId = null
@@ -880,6 +886,7 @@ export class LocalIpcClient {
         clientPublicKey,
         resumeFromEventId,
         subscriptionScope,
+        heartbeatIntervalMs: subscription.heartbeatIntervalMs,
       })
       socket.send(JSON.stringify(frame))
       this.countRequest("RelaySubscribe")

@@ -57,3 +57,23 @@ test("extractTransportRequest rejects malformed transport controls", () => {
     type: "unsubscribe",
   })
 })
+
+test("normalizeWebSocketRequest keeps a requested heartbeat interval on subscribe controls", () => {
+  const control = { type: "subscribe", session_id: "session-1", attachment_id: "attachment-1" }
+  assert.equal(
+    "heartbeat_interval_ms" in normalizeWebSocketRequest("request-4", { __kernel_transport: control }),
+    false,
+  )
+  assert.deepEqual(
+    normalizeWebSocketRequest("request-5", { __kernel_transport: { ...control, heartbeat_interval_ms: 1000 } }),
+    {
+      type: "subscribe",
+      request_id: "request-5",
+      session_id: "session-1",
+      attachment_id: "attachment-1",
+      subscription_scope: null,
+      resume_from_event_id: null,
+      heartbeat_interval_ms: 1000,
+    },
+  )
+})

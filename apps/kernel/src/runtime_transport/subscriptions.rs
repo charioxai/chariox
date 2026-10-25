@@ -22,6 +22,8 @@ use crate::transport::kernel_protocol::{
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
+use crate::transport::agent_turn_feed::AgentTurnFeed;
+use crate::transport::home_audit_feed::HomeAuditFeed;
 use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 
 use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
@@ -43,6 +45,7 @@ pub(super) async fn run_subscription_loop(
     let mut passkey_prompts = PasskeyPromptFeed::new_local(subscription.connection_class, &router);
     if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
         run_waiting_room_inventory_subscription_loop(
+            subscription.heartbeat_interval,
             router,
             runtime,
             outgoing_tx,
@@ -59,6 +62,8 @@ pub(super) async fn run_subscription_loop(
     let mut last_snapshot_projection_sequence: Option<u64> = None;
     let mut next_snapshot_reconciliation_at = Instant::now();
     let mut next_heartbeat_at = Instant::now();
+    let mut agent_turns = AgentTurnFeed::default();
+    let mut home_audit = HomeAuditFeed::new(&router);
     let event_stream_id =
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
 
@@ -126,7 +131,7 @@ pub(super) async fn run_subscription_loop(
                 last_workflow_design_sequence,
             ),
             &mut next_heartbeat_at,
-            subscription_heartbeat_interval(),
+            subscription.heartbeat_interval,
             || {
                 emit_kernel_event(
                     &runtime,
@@ -170,6 +175,7 @@ pub(super) async fn run_subscription_loop(
                             previous_snapshot.as_ref(),
                             !workflow_run_updates.is_empty(),
                         );
+                        agent_turns.observe_snapshot(&snapshot);
                         previous_snapshot = Some(snapshot);
                         events
                     })
@@ -189,6 +195,12 @@ pub(super) async fn run_subscription_loop(
                     {
                         return;
                     }
+                }
+                for agent_id in records
+                    .iter()
+                    .filter_map(|record| record.agent_id.as_deref())
+                {
+                    agent_turns.mark_changed(agent_id);
                 }
                 if !records.is_empty()
                     && !emit_kernel_event(
@@ -221,6 +233,9 @@ pub(super) async fn run_subscription_loop(
                     break;
                 }
                 for completion in completions {
+                    if let Some(agent_id) = completion.agent_id.as_deref() {
+                        agent_turns.mark_changed(agent_id);
+                    }
                     if !emit_kernel_event(
                         &runtime,
                         &outgoing_tx,
@@ -282,6 +297,33 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
+                let mut feed_events = agent_turns.flush(&router, &subscription.session_id).await;
+                feed_events.extend(
+                    home_audit
+                        .next_events(
+                            &router,
+                            &subscription.session_id,
+                            &subscription.attachment_id,
+                            agent_turns.session_agents(),
+                        )
+                        .await,
+                );
+                for event in feed_events {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        event,
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
 
                 if Instant::now() >= next_heartbeat_at {
                     if !emit_kernel_event(
@@ -302,7 +344,7 @@ pub(super) async fn run_subscription_loop(
                     }
                     next_heartbeat_at = advance_subscription_deadline(
                         next_heartbeat_at,
-                        subscription_heartbeat_interval(),
+                        subscription.heartbeat_interval,
                     );
                 }
             }
@@ -326,7 +368,14 @@ pub(super) async fn run_subscription_loop(
         }
 
         let _ = timeout(
-            next_subscription_wait_duration(next_heartbeat_at, next_snapshot_reconciliation_at),
+            next_subscription_wait_duration(
+                next_heartbeat_at,
+                agent_turns
+                    .next_due()
+                    .map_or(next_snapshot_reconciliation_at, |due| {
+                        due.min(next_snapshot_reconciliation_at)
+                    }),
+            ),
             async {
                 tokio::select! {
                     _ = router.wait_for_terminal_attachment_change_after(
@@ -347,6 +396,7 @@ pub(super) async fn run_subscription_loop(
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
+                    _ = home_audit.changed() => {}
                 }
             },
         )
@@ -354,7 +404,7 @@ pub(super) async fn run_subscription_loop(
     }
 }
 
-fn subscription_heartbeat_interval() -> Duration {
+pub(super) fn subscription_heartbeat_interval() -> Duration {
     Duration::from_millis(WATCH_INTERVAL_MS * HEARTBEAT_INTERVAL_TICKS)
 }
 
@@ -817,6 +867,7 @@ pub(super) async fn emit_replay_gap_snapshot(
 }
 
 async fn run_waiting_room_inventory_subscription_loop(
+    heartbeat_interval: Duration,
     router: Arc<CommandRouter>,
     runtime: Arc<KernelTransportRuntime>,
     outgoing_tx: KernelOutgoingSender,
@@ -877,7 +928,7 @@ async fn run_waiting_room_inventory_subscription_loop(
             let Some(snapshot_result) = await_subscription_work_with_heartbeats(
                 router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
                 &mut next_heartbeat_at,
-                subscription_heartbeat_interval(),
+                heartbeat_interval,
                 || {
                     emit_kernel_event(
                         &runtime,
@@ -944,7 +995,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                 break;
             }
             next_heartbeat_at =
-                advance_subscription_deadline(next_heartbeat_at, subscription_heartbeat_interval());
+                advance_subscription_deadline(next_heartbeat_at, heartbeat_interval);
         }
         if Instant::now() >= next_relay_status_at {
             let status = router.transport_relay_status_snapshot().await;
@@ -965,10 +1016,8 @@ async fn run_waiting_room_inventory_subscription_loop(
                     break;
                 }
             }
-            next_relay_status_at = advance_subscription_deadline(
-                next_relay_status_at,
-                subscription_heartbeat_interval(),
-            );
+            next_relay_status_at =
+                advance_subscription_deadline(next_relay_status_at, heartbeat_interval);
         }
         if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
             let machines = router.transport_remote_machines_snapshot();

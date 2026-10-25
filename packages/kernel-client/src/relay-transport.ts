@@ -98,6 +98,7 @@ export function buildRelaySubscribeFrame(input: {
   readonly clientPublicKey: string
   readonly resumeFromEventId: number | null
   readonly subscriptionScope?: string | undefined
+  readonly heartbeatIntervalMs?: number | undefined
 }): RelaySubscribeFrame {
   const frame: RelaySubscribeFrame = {
     kind: "client_subscribe",
@@ -111,6 +112,9 @@ export function buildRelaySubscribeFrame(input: {
   }
   if (input.subscriptionScope) {
     frame.subscription_scope = input.subscriptionScope
+  }
+  if (input.heartbeatIntervalMs !== undefined) {
+    frame.heartbeat_interval_ms = input.heartbeatIntervalMs
   }
   return frame
 }
