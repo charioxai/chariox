@@ -82,6 +82,19 @@ async function setup(dpr, run) {
   }
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-10/MP-11 DPR${dpr}: guest stream keeps the Vault target covered across Show/Hide`,()=>setup(dpr,async({browser,policy,fill,evaluate,collect})=>{
+   await fill('#password');
+   const protectedRegions=async()=> (await measureBrowserProtection(browser,policy,{maskPasswords:true})).pages.find(page=>page.regions.length)?.regions??[];
+   const initial=await protectedRegions();
+   assert.equal(initial.length,1,'guest streaming protects the exact filled box before the first reveal');
+   assert.deepEqual(await collect(),[],'ordinary password observations still show native dots');
+   for(let toggle=0;toggle<20;toggle++) {
+     await evaluate(`document.querySelector('#password').type=${JSON.stringify(toggle%2?'password':'text')}`);
+     assert.deepEqual(await protectedRegions(),initial,'a type transition never withdraws guest coverage');
+   }
+   await evaluate("document.querySelector('#password').value=''");
+   assert.deepEqual(await protectedRegions(),[],'clearing the target retires its protection');
+ }));
  test(`MP-08/MP-11 DPR${dpr}: unproved normalized fill completion retains coverage`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,evaluate,collect,capture})=>{
    const nodeRef=await ref('#plain');
    const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef,browserGeneration:browser.browserGeneration},'alpha\nbeta',1);

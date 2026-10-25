@@ -56,7 +56,7 @@ export class DesktopSource {
       const presented=Date.now();
       await awaitPresented(browser,this.gate.protection?.pages??[],1);
       const measured=Date.now();this.timing('desktop_gate_presented',presented,measured);
-      try{return await measureBrowserProtection(browser,this.policy);}finally{this.timing('desktop_gate_measure',measured);}
+      try{return await measureBrowserProtection(browser,this.policy,{maskPasswords:true});}finally{this.timing('desktop_gate_measure',measured);}
     });
   }
   valid() { return !this.closed && this.binding.isCurrent?.() !== false; }

@@ -161,7 +161,7 @@ async function fieldTextGeometry(connection,entry,frameId,backendNodeId) {
   }finally{await connection.send('Runtime.releaseObject',{objectId:object.objectId},entry.sessionId).catch(()=>{});}
 }
 
-export async function measurePageProtection(connection,sessionId,targetId,policy,{includeHidden=false,onPlainField}={}) {
+export async function measurePageProtection(connection,sessionId,targetId,policy,{includeHidden=false,onPlainField,maskPasswords=false}={}) {
   const top=await frameTree(connection,sessionId);
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:top.frame.id,worldName:'chariox-fill-viewport'},sessionId);
   const {result}=await connection.send('Runtime.evaluate',{contextId:executionContextId,returnByValue:true,
@@ -224,7 +224,11 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
         if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
-        if(state.password)continue; // Rechecked even for a previously plain field.
+        // A protected desktop stream keeps this exact Vault target covered
+        // through Show/Hide. Otherwise a readback painted before Hide can be
+        // released against the later password/no-region measurement. Ordinary
+        // observations retain native dots; the separate owner feed stays raw.
+        if(state.password&&!maskPasswords)continue;
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
         // confirmed absence of layout for the entire field subtree permits
         // skipping box lookup; keep identity tracking so reveal remasks it.

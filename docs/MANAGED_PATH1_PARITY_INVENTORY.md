@@ -1,5 +1,16 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 streamed Show/Hide coverage (2026-10-25)
+
+The protected desktop producer keeps the exact Vault-filled browser field's
+box covered in both password and text states. This implements the lane brief's
+continuous-coverage alternative: a readback painted before Hide must not be
+released against a later empty mask measurement. Clearing the field still
+retires coverage. The owner feed remains unmasked, and ordinary model capture
+continues to show native password dots. This stream-specific exception does
+not register person-typed fields or follow copied values. Source checks are
+supplementary; real owner/guest DPR1 and DPR2 frame drills remain required.
+
 ## MP-08 / MP-10 / MP-11 Room Vault captures (2026-10-24)
 
 The r52 scope limits visual masking to exact Vault fill targets. Person-typed
