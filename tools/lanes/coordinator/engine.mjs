@@ -7,6 +7,7 @@ import { followLaunch } from './events.mjs';
 import { classifyDecision } from './decisions.mjs';
 import { execute, acceptanceIssues } from '../lanes.mjs';
 import { newSections } from './sections.mjs';
+import { tryLaneLock, releaseLaneLock } from './lane-lock.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const sha256 = text => createHash('sha256').update(text).digest('hex');
@@ -133,10 +134,15 @@ export function createRound(options) {
     let offset = lane.run.inboxOffset;
     // The coordinator steers its notes itself and records them; the inbox file is then only the record, and what is
     // in the ledger is never delivered a second time. Anything else in it (an older script, a failed steer) still is.
-    const direct = await read(join(home, `${lane.entry.lane}.direct.json`)).catch(error => { if (error.code === 'ENOENT') return { sections: [] }; throw error; });
+    const readLedger = () => read(join(home, `${lane.entry.lane}.direct.json`)).catch(error => { if (error.code === 'ENOENT') return { sections: [] }; throw error; });
+    let direct = await readLedger();
     for (const section of sections) {
       const digest = sha256(section.trim());
-      const sent = direct.sections.find(item => item.sha256 === digest || item.parts?.includes(digest));
+      const findSent = () => direct.sections.find(item => item.sha256 === digest || item.parts?.includes(digest));
+      // A direct note whose reply was lost may or may not have reached the worker: the same operation is replayed under its saved
+      // identity, never a new steer built from the worker's current turn.
+      const replay = !findSent() && (direct.pending?.parts?.includes(digest) || direct.pending?.sha256 === digest) ? direct.pending : undefined;
+      const sent = findSent();
       if (sent) {
         const note = { heading: section.split('\n', 1)[0].slice(0, 120), sha256: sha256(section), at_ms: now(), delivered: true, mode: `direct-${sent.mode}` };
         lane.run.notes.push(note);
@@ -147,13 +153,19 @@ export function createRound(options) {
         continue;
       }
       const file = join(roundDirectory, `${lane.entry.lane}.note-${lane.run.notes.length + 1}.md`);
-      await writeFile(file, section, { mode: 0o600 });
+      await writeFile(file, replay ? replay.prompt : section, { mode: 0o600 });
       const note = { heading: section.split('\n', 1)[0].slice(0, 120), sha256: sha256(section), at_ms: now() };
       const failures = lane.run.noteFailures?.sha256 === note.sha256 ? lane.run.noteFailures.count : 0;
       try {
-        const result = await coordinator('deliver', [lane.entry.lane, file]);
-        note.mode = result.confirmation?.mode; note.delivered = true;
-        for (const other of await archived(result.confirmation?.archives)) touched.add(other);
+        if (replay) {
+          const result = await coordinator('steer', [lane.entry.lane, file]);
+          note.mode = `direct-${result.mode}`; note.delivered = true;
+          direct = await readLedger();
+        } else {
+          const result = await coordinator('deliver', [lane.entry.lane, file]);
+          note.mode = result.confirmation?.mode; note.delivered = true;
+          for (const other of await archived(result.confirmation?.archives)) touched.add(other);
+        }
       } catch (error) {
         note.delivered = false; note.reason = error.code || 'deliver_failed';
         if (error.code !== 'no_active_prompt' && failures + 1 < NOTE_ATTEMPTS) {
@@ -258,6 +270,8 @@ export function createRound(options) {
       if (reason !== 'hard_stop') await stopLane(lane);
       lane.run.finishReason = reason;
     } catch (error) {
+      // New work reached the worker after it was read idle (a direct prompt): it is not a failed collection and must not be stopped.
+      if (reason !== 'hard_stop' && error.code === 'lane_still_running') { lane.needsRead = true; log(lane, 'collect_deferred', { reason: error.code }); return; }
       lane.run.finishReason = `${reason}_collect_failed`;
       lane.run.collectError = { code: error.code || 'collect_failed', message: String(error.message).slice(0, 300) };
       if (!lane.run.stopped) {
@@ -269,6 +283,18 @@ export function createRound(options) {
     log(lane, 'finished', { reason: lane.run.finishReason, head: lane.run.head });
     await persist(lane);
   };
+
+  // Collection (bundle, then stop) and the coordinator's direct prompts exclude each other per lane. Under the lock the worker is
+  // read again, so a prompt admitted since the idle read keeps it running and the lane is simply read again at the next wake.
+  const collectUnderLock = async (lane, reason, stillIdle) => {
+    const lock = await tryLaneLock(home, lane.entry.lane, 'loopd', now);
+    if (!lock) { lane.needsRead = true; return; }
+    try {
+      if (!stillIdle || await stillIdle()) await collect(lane, reason);
+      else { lane.needsRead = true; log(lane, 'collect_deferred', { reason: 'prompted_since_read' }); }
+    } finally { await releaseLaneLock(lock); }
+  };
+  const readsIdle = lane => async () => { const again = await coordinator('lanehealth', [lane.entry.lane]); return again.state === 'idle' && !again.currentPrompt; };
 
   const pending = () => lanes.filter(lane => !lane.finished);
   let rereadAll = false;
@@ -287,7 +313,7 @@ export function createRound(options) {
     if (rereadAll) { rereadAll = false; for (const lane of pending()) touched.add(lane); }
     for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
     for (const lane of pending()) {
-      if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collect(lane, 'hard_stop'); continue; }
+      if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collectUnderLock(lane, 'hard_stop'); continue; }
       // A change seen in a lane's first minute is read at the next wake, not lost.
       // Events can be missed (a worker that finishes before the inbox sees it), so every lane is also read once in its
       // first minute and then every `reconcileMs`; a change seen earlier than that is read at the next wake.
@@ -305,7 +331,7 @@ export function createRound(options) {
       for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
       if (status.state === 'idle' && !status.currentPrompt) {
         lane.settled = true;
-        if (!await nudgeAcceptance(lane)) await collect(lane, 'finished');
+        if (!await nudgeAcceptance(lane)) await collectUnderLock(lane, 'finished', readsIdle(lane));
         lane.settled = false;
       } else if (status.currentPrompt) await nudgeAcceptance(lane);
     }

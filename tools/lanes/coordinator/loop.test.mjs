@@ -471,3 +471,53 @@ test('a stopped classic receipt of the same lane name does not capture steer and
   assert.ok(used.length === 2 && used.every(id => id === receipt.launch.agentId), `every call targets the running round, saw ${used}`);
   assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).stopped, true);
 });
+
+test('steer waits for a collection in progress, then refuses a lane whose round is over instead of prompting a stopped worker', async t => {
+  const r = await launched(t);
+  const { tryLaneLock, releaseLaneLock } = await import('./lane-lock.mjs');
+  const lock = await tryLaneLock(r.home, 'lane', 'loopd');
+  assert.ok(lock);
+  assert.equal(await tryLaneLock(r.home, 'lane', 'steer'), undefined, 'a second holder is refused while the lock is fresh');
+  const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\nlate note\n');
+  const waiting = coordinate('steer', ['lane', file], r.options);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(r.calls.some(c => c.op === 'prompt' || c.op === 'steer'), false, 'nothing is admitted while the lane is being collected');
+  await coordinate('stop', ['lane'], r.options);
+  await releaseLaneLock(lock);
+  await assert.rejects(waiting, { code: 'lane_not_running' });
+  assert.equal(r.calls.some(c => c.op === 'prompt' || c.op === 'steer'), false);
+});
+
+test('a stale lock from a dead holder is taken over, loopd retakes its own, and a steer lock is not taken from a live steer', async t => {
+  const r = await launched(t);
+  const { tryLaneLock } = await import('./lane-lock.mjs');
+  let clock = 1_000;
+  assert.ok(await tryLaneLock(r.home, 'lane', 'steer', () => clock));
+  assert.equal(await tryLaneLock(r.home, 'lane', 'steer', () => clock + 60_000), undefined);
+  assert.ok(await tryLaneLock(r.home, 'lane', 'loopd', () => clock + 4 * 60_000), 'a steer lock older than its limit is stale');
+  assert.ok(await tryLaneLock(r.home, 'lane', 'loopd', () => clock + 4 * 60_000 + 1), 'the previous loopd incarnation left it');
+});
+
+test('steer: a prompt the kernel accepted but whose reply was lost is replayed under the same command id, never as a new steer', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter;
+  let accepted = false, lost = true;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return accepted ? { state: 'working', currentPrompt: 'prompt-from-note', lastActivityMs: 1 } : { state: 'idle', currentPrompt: null, lastActivityMs: 1 };
+    if (op === 'prompt') { r.calls.push({ op, input }); accepted = true; if (lost) { lost = false; throw new LaneError('local_transport_error', 'reply lost'); } return { PromptSubmitted: { outcome: { Started: { prompt: { id: 'prompt-from-note', status: 'Running' } } } } }; }
+    return adapter(op, input);
+  };
+  const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\ndo X\n');
+  await assert.rejects(coordinate('steer', ['lane', file], r.options), { code: 'local_transport_error' });
+  const saved = JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8'));
+  assert.equal(saved.pending.operation, 'prompt', 'the operation is saved before it is sent');
+  const retried = await coordinate('steer', ['lane', file], r.options);
+  assert.equal(retried.mode, 'prompt-started');
+  const prompts = r.calls.filter(c => c.op === 'prompt');
+  assert.equal(prompts.length, 2);
+  assert.equal(prompts[1].input.commandId, prompts[0].input.commandId);
+  assert.equal(r.calls.some(c => c.op === 'steer'), false, 'the now-running turn is not steered with the same text');
+  const ledger = JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8'));
+  assert.equal(ledger.pending, undefined);
+  assert.equal(ledger.sections.length, 1);
+});

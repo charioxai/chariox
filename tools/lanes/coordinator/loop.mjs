@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execute, LaneError, save } from '../lanes.mjs';
 import { newSections } from './sections.mjs';
+import { withLaneLock } from './lane-lock.mjs';
 import { openInbox, waitBatch, confirmSteer, confirmRemoval, dropAgentTarget } from './events.mjs';
 export { save };
 
@@ -135,34 +136,51 @@ export async function coordinate(operation, args, options = {}) {
     if (!prompt.trim()) throw new LaneError('empty_review');
     const section = createHash('sha256').update(prompt.trim()).digest('hex');
     const ledgerPath = join(home, `${lane}.direct.json`);
-    let ledger; try { ledger = await read(ledgerPath); } catch (error) { if (error.code !== 'ENOENT') throw error; ledger = { sections: [] }; }
-    const sent = ledger.sections.find(item => item.sha256 === section);
-    if (sent) return { lane, mode: sent.mode, ...(sent.promptId !== undefined && { promptId: sent.promptId, agentStatus: sent.agentStatus }), repeated: true };
-    let status = await adapter('status', { ...common, stateFile: record.input.stateFile });
-    let mode, answer;
-    for (let attempt = 1; !mode; attempt++) {
-      if (!status.currentPrompt) {
-        answer = await adapter('prompt', { ...common, prompt, commandId: `direct-${section}` });
-        mode = answer.PromptSubmitted?.outcome?.Started ? 'prompt-started' : 'prompt-queued';
-        break;
+    // One step at a time per lane: loopd collects an idle worker (bundle, then stop) under the same lock, so a prompt is never
+    // admitted into a worker that is about to be stopped.
+    return withLaneLock(home, lane, 'steer', async () => {
+      if ((await load()).stopped) throw new LaneError('lane_not_running', `${lane} has been stopped; its round is over.`);
+      let ledger; try { ledger = await read(ledgerPath); } catch (error) { if (error.code !== 'ENOENT') throw error; ledger = { sections: [] }; }
+      const sent = ledger.sections.find(item => item.sha256 === section);
+      if (sent) return { lane, mode: sent.mode, ...(sent.promptId !== undefined && { promptId: sent.promptId, agentStatus: sent.agentStatus }), repeated: true };
+      // The operation and its identity are saved before anything is sent. If the kernel took the note but the reply was lost,
+      // this call, a retry and loopd's inbox fallback all replay that same operation instead of choosing a new one.
+      let pending = ledger.pending?.sha256 === section ? ledger.pending : undefined;
+      let status, mode, answer;
+      for (let attempt = 1; !mode; attempt++) {
+        if (!pending) {
+          status ??= await adapter('status', { ...common, stateFile: record.input.stateFile });
+          const operationFor = status.currentPrompt
+            ? { operation: 'steer', id: `review-${createHash('sha256').update(status.currentPrompt).update(prompt).digest('hex')}`, expectedPromptId: status.currentPrompt }
+            : { operation: 'prompt', id: `direct-${section}` };
+          // parts: the inbox consumer cuts the appended note at its headings, so each of those sections counts as delivered with it.
+          pending = { sha256: section, ...operationFor, parts: newSections(prompt, 0).map(part => createHash('sha256').update(part.trim()).digest('hex')), prompt };
+          status = undefined;
+          ledger.pending = pending; await save(ledgerPath, ledger);
+        }
+        try {
+          if (pending.operation === 'prompt') {
+            answer = await adapter('prompt', { ...common, prompt, commandId: pending.id });
+            mode = answer.PromptSubmitted?.outcome?.Started ? 'prompt-started' : 'prompt-queued';
+          } else { answer = await adapter('steer', { ...common, expectedPromptId: pending.expectedPromptId, prompt, steerId: pending.id }); mode = 'steered'; }
+        } catch (error) {
+          // The kernel took the note but could not record its event: it is delivered, and sending again would repeat it.
+          if (pending.operation === 'steer' && error.code === 'prompt_steer_event_unrecorded') { answer = { delivered: true, event: 'unrecorded' }; mode = 'steered'; }
+          // The turn ended or changed between the read and the steer: nothing was taken, look once more, then say what is wrong.
+          else if (pending.operation === 'steer' && error.code === 'prompt_steer_rejected' && attempt < 2) {
+            delete ledger.pending; pending = undefined; await save(ledgerPath, ledger);
+            status = await adapter('status', { ...common, stateFile: record.input.stateFile });
+          } else throw error; // any other failure may have been accepted: the pending operation stays for the replay
+        }
       }
-      const steerId = `review-${createHash('sha256').update(status.currentPrompt).update(prompt).digest('hex')}`;
-      try { answer = await adapter('steer', { ...common, expectedPromptId: status.currentPrompt, prompt, steerId }); mode = 'steered'; }
-      catch (error) {
-        // The kernel took the note but could not record its event: it is delivered, and sending again would repeat it.
-        if (error.code === 'prompt_steer_event_unrecorded') { answer = { delivered: true, event: 'unrecorded' }; mode = 'steered'; }
-        // The turn ended or changed between the read and the steer: look once more, then say what is wrong.
-        else if (error.code === 'prompt_steer_rejected' && attempt < 2) status = await adapter('status', { ...common, stateFile: record.input.stateFile });
-        else throw error;
-      }
-    }
     // The kernel's answer carries the whole session and the note text: the coordinator needs only which prompt took it and its status.
-    const taken = answer.ActivePromptSteered?.prompt ?? answer.PromptSubmitted?.outcome?.Started?.prompt ?? answer.PromptSubmitted?.outcome?.Queued?.prompt;
-    const summary = { promptId: taken?.id ?? null, agentStatus: taken?.status ?? (answer.delivered ? 'delivered-event-unrecorded' : 'unknown') };
-    // parts: the inbox consumer cuts the appended note at its headings, so each of those sections counts as delivered with it.
-    ledger.sections.push({ sha256: section, parts: newSections(prompt, 0).map(part => createHash('sha256').update(part.trim()).digest('hex')), mode, at_ms: now(), ...summary });
-    await save(ledgerPath, ledger);
-    return { lane, mode, ...summary };
+      const taken = answer.ActivePromptSteered?.prompt ?? answer.PromptSubmitted?.outcome?.Started?.prompt ?? answer.PromptSubmitted?.outcome?.Queued?.prompt;
+      const summary = { promptId: taken?.id ?? null, agentStatus: taken?.status ?? (answer.delivered ? 'delivered-event-unrecorded' : 'unknown') };
+      ledger.sections.push({ sha256: section, parts: pending.parts, mode, at_ms: now(), ...summary });
+      delete ledger.pending;
+      await save(ledgerPath, ledger);
+      return { lane, mode, ...summary };
+    });
   }
   // The coordinator's one-command answer to a decision loopd left alone.
   if (operation === 'answer') {

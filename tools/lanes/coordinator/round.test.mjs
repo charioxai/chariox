@@ -378,6 +378,44 @@ test('round: a note with several headings steered directly is not delivered agai
   assert.deepEqual(alpha.notes.map(n => [n.mode, n.delivered]), [['direct-steered', true], ['direct-steered', true]]);
 });
 
+test('round: a prompt that reaches the worker after it was read idle defers the collection instead of stopping it', async t => {
+  const r = await rig(t, ['alpha']);
+  const base = r.options.adapter; let armed = false, reads = 0;
+  r.options.adapter = async (op, input) => {
+    const answer = await base(op, input);
+    if (op !== 'status' || !armed) return answer;
+    // read 1 is the engine's idle read; read 2 (the lanefin check on the old code, the re-read under the lock on the new) finds the prompt admitted since
+    return ++reads === 2 ? { ...answer, state: 'working', currentPrompt: 'prompt-from-coordinator' } : answer;
+  };
+  r.waits.push({});
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  r.waits.push({});
+  r.waits.push({});
+  const before = r.options.cli; let wakes = 0;
+  r.options.cli = async argv => { if (argv[1] === 'wait' && ++wakes === 2) { r.idle.add('alpha'); armed = true; } return before(argv); };
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(alpha.finishReason, 'finished', 'the new turn was monitored and the round ended normally');
+  assert.equal(r.calls.filter(c => c.op === 'stop').length, 1, 'the worker was stopped once, after the new turn ended');
+  assert.ok(reads >= 3, 'the worker was read again after the deferral');
+});
+
+test('round: a direct note whose reply was lost is replayed from the inbox fallback under its saved command id, not steered again', async t => {
+  const r = await rig(t, ['alpha']);
+  const note = '## 11:00Z coordinator\nplease also do Y\n';
+  const digest = createHash('sha256').update(note.trim()).digest('hex');
+  await writeFile(join(r.home, 'alpha.direct.json'), JSON.stringify({ sections: [], pending: { sha256: digest, operation: 'prompt', id: `direct-${digest}`, parts: [digest], prompt: note } }));
+  r.waits.push({});
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const before = r.options.cli; let wakes = 0;
+  r.options.cli = async argv => { if (argv[1] === 'wait' && ++wakes === 1) await appendFile(join(r.home, 'alpha.inbox.md'), note); if (argv[1] === 'wait' && wakes === 2) r.idle.add('alpha'); return before(argv); };
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(r.calls.filter(c => c.op === 'steer').length, 0, 'no fresh steer is built from the worker current turn');
+  const prompts = r.calls.filter(c => c.op === 'prompt');
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].input.commandId, `direct-${digest}`);
+  assert.deepEqual(alpha.notes.map(n => n.delivered), [true]);
+});
+
 test('round: an invalid ACCEPTANCE_UPDATE.json is steered while the worker runs, and a worker that ends its turn with one gets the problems as its next prompt', async t => {
   const r = await rig(t, ['alpha']);
   const runs = join(r.home, 'runs');
