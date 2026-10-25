@@ -1714,11 +1714,7 @@ pub(in crate::runtime::state) mod tests {
         let failure = claude_native_dispatch_terminal_failure(&run)
             .expect("terminal failure should be classified");
 
-        assert!(failure.contains("terminal permission error"), "{failure}");
-        assert!(
-            failure.contains("cannot be used with root/sudo privileges"),
-            "{failure}"
-        );
+        assert_eq!(failure, "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.");
         let _ = std::fs::remove_dir_all(fixture_root);
     }
 

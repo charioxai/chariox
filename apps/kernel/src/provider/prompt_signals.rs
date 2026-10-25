@@ -5,6 +5,15 @@ use super::runtime_run::ProviderRunTokenUsage;
 
 pub(crate) const PROVIDER_CONNECTION_RETRY_MERGE_KEY: &str = "__provider_connection_retry__";
 
+const CLAUDE_ROOT_YOLO_REFUSAL: &str =
+    "--dangerously-skip-permissions cannot be used with root/sudo privileges";
+
+#[derive(Debug, thiserror::Error)]
+enum ProviderTerminalPermissionError {
+    #[error("Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.")]
+    ClaudeRootYolo,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderPromptChunk {
     pub kind: TerminalOutputKind,
@@ -78,10 +87,7 @@ pub(crate) fn classify_provider_terminal_failure_text(
         && normalized.contains("dangerously-skip-permissions")
         && normalized.contains("cannot be used with root/sudo privileges")
     {
-        return Some(format!(
-            "Provider reported a terminal permission error: {}",
-            compact_provider_error_snippet(text)
-        ));
+        return Some(ProviderTerminalPermissionError::ClaudeRootYolo.to_string());
     }
     let fatal_model_error = normalized.contains("unsupported model")
         || normalized.contains("invalid model")
@@ -114,7 +120,10 @@ pub(crate) fn classify_provider_terminal_failure_output_text(
     text.lines().find_map(|line| {
         let normalized = line.trim().to_lowercase();
         let exact_provider_dialog = adapter_key == "claude"
-            && claude_normalized_text_reports_resource_limit_dialog(&normalized);
+            && (claude_normalized_text_reports_resource_limit_dialog(&normalized)
+                || normalized
+                    .strip_prefix(CLAUDE_ROOT_YOLO_REFUSAL)
+                    .is_some_and(|suffix| matches!(suffix, "" | " for security reasons")));
         if !provider_normalized_text_has_error_frame(&normalized) && !exact_provider_dialog {
             return None;
         }
@@ -386,6 +395,7 @@ mod tests {
         classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
         claude_native_stop_failure, provider_retry_status, provider_turn_failure_reason,
+        CLAUDE_ROOT_YOLO_REFUSAL,
     };
     use crate::provider::ProviderRunTermination;
 
@@ -722,16 +732,33 @@ mod tests {
     }
 
     #[test]
-    fn terminal_classifier_preserves_claude_root_permission_restriction() {
+    fn terminal_classifier_explains_claude_root_permission_restriction() {
         let failure = classify_provider_terminal_failure_text(
             "claude",
-            "Error: --dangerously-skip-permissions cannot be used with root/sudo privileges",
+            "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons",
         )
         .expect("Claude root permission restriction should be terminal");
 
-        assert!(failure.contains("terminal permission error"));
-        assert!(failure.contains("--dangerously-skip-permissions"));
-        assert!(failure.contains("root/sudo privileges"));
+        assert_eq!(failure, "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.");
+        assert_eq!(
+            classify_provider_terminal_failure_output_text(
+                "claude",
+                &format!("{CLAUDE_ROOT_YOLO_REFUSAL} for security reasons")
+            ),
+            Some(failure.clone()),
+            "the recorded unframed refusal must use the existing pane failure path"
+        );
+        for adapter in ["codex", "opencode"] {
+            assert!(
+                classify_provider_terminal_failure_text(adapter, CLAUDE_ROOT_YOLO_REFUSAL)
+                    .is_none()
+            );
+        }
+        assert!(classify_provider_terminal_failure_output_text(
+            "claude",
+            &format!("Review the message: {CLAUDE_ROOT_YOLO_REFUSAL}")
+        )
+        .is_none());
     }
 
     #[test]
@@ -741,7 +768,11 @@ mod tests {
             classify_provider_terminal_failure_text("claude", &format!("{repeated}\n{repeated}"))
                 .expect("Claude root permission restriction should be terminal");
 
-        assert_eq!(failure.matches(repeated).count(), 1, "{failure}");
+        assert_eq!(
+            failure.matches("Claude refused YOLO").count(),
+            1,
+            "{failure}"
+        );
     }
 
     #[test]
