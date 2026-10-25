@@ -207,7 +207,9 @@ export async function serve(options) {
     }
   };
 
-  await resetStaleInbox();
+  // A kernel that is down at startup must not stop the service: the lanes' launches are retried, and a changed grant
+  // is noticed by the first wake that fails with subscription_changed.
+  await resetStaleInbox().catch(error => log('inbox_unavailable', { code: error.code, message: error.message }));
   // Settle the inbox before the first lane: targets of workers stopped by an earlier service are dropped now.
   await openInbox(home, round.cli).catch(error => log('inbox_unavailable', { code: error.code, message: error.message }));
   while (!signal?.aborted) {

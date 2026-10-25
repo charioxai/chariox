@@ -344,6 +344,21 @@ test('after a grant change the stale inbox is set aside and every running lane i
   assert.ok(r.logs.some(l => l.kind === 'inbox_reset'));
 });
 
+test('a service started while the kernel is unreachable keeps running and serves once it answers', async t => {
+  const r = await rig(t);
+  await mkdir(r.layout.home, { recursive: true });
+  await writeFile(join(r.layout.home, 'subscription.json'), JSON.stringify({ subscription_id: 'grant' }));
+  await r.drop('alpha', 'r1');
+  r.idle.add('alpha-r1');
+  r.finished(1);
+  const cli = r.options.cli;
+  let down = 2;
+  r.options.cli = async argv => { if (argv[1] === 'subscription' && down-- > 0) throw Object.assign(new Error('kernel down'), { code: 'kernel_unreachable' }); return cli(argv); };
+  await serve(r.options);
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
+  assert.ok(r.logs.some(l => l.kind === 'inbox_unavailable' && l.code === 'kernel_unreachable'), 'the outage is logged, not fatal');
+});
+
 test('after a restart gives the service a new grant, the running lanes follow the new inbox and finish', async t => {
   const r = await rig(t);
   await r.drop('alpha', 'r1');
