@@ -117,11 +117,23 @@ impl DictationService {
         self.handle_with_vault(owner, command, None).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn handle_with_vault(
         self: &Arc<Self>,
         owner: &str,
         command: DictationCommand,
         vault: Option<crate::config::UserCredentialVaultConfig>,
+    ) -> Result<DictationResult, DaemonError> {
+        self.handle_with_provider(owner, command, vault, self.selected_service())
+            .await
+    }
+
+    pub(crate) async fn handle_with_provider(
+        self: &Arc<Self>,
+        owner: &str,
+        command: DictationCommand,
+        vault: Option<crate::config::UserCredentialVaultConfig>,
+        provider: DictationProvider,
     ) -> Result<DictationResult, DaemonError> {
         let result = match command {
             DictationCommand::Status => Ok(DictationResult::Status {
@@ -152,7 +164,7 @@ impl DictationService {
                 })
             }
             DictationCommand::Transcribe { upload_id, .. } => {
-                self.transcribe(owner, &upload_id, vault.clone())
+                self.transcribe_with_provider(owner, &upload_id, vault.clone(), provider)
                     .await
             }
         }?;
@@ -320,13 +332,28 @@ impl DictationService {
             .map_err(|_| refuse("dictation_settings_failed", "Cannot save the dictation settings. Check the kernel's disk space and permissions, then try again.", true))
     }
 
+    #[cfg(test)]
     async fn transcribe(
         self: &Arc<Self>,
         owner: &str,
         upload_id: &str,
         vault: Option<crate::config::UserCredentialVaultConfig>,
     ) -> Result<DictationResult, DaemonError> {
-        let provider = self.lock().settings.service;
+        self.transcribe_with_provider(owner, upload_id, vault, self.selected_service())
+            .await
+    }
+
+    async fn transcribe_with_provider(
+        self: &Arc<Self>,
+        owner: &str,
+        upload_id: &str,
+        vault: Option<crate::config::UserCredentialVaultConfig>,
+        provider: DictationProvider,
+    ) -> Result<DictationResult, DaemonError> {
+        if self.selected_service() != provider {
+            return Err(refuse("dictation_service_changed", "The dictation service changed while waiting for the Vault. Record again with the selected service.", true));
+        }
+
         if provider == DictationProvider::Local && !self.model_ready() {
             return Err(refuse(
                 "dictation_model_missing",
