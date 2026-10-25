@@ -97,6 +97,7 @@ pub(super) fn collect_overlay(
             Ok(())
         })?;
     }
+    reject_dirty_head_types(worktree, &paths, &ignore_patterns, vault_enabled)?;
     let mut stored_objects = BTreeSet::new();
     let mut pending = BTreeMap::new();
     let mut overlay_size_bytes = 0_u64;
@@ -136,6 +137,33 @@ pub(super) fn collect_overlay(
         entries.push(entry);
     }
     Ok((entries, overlay_size_bytes, pending))
+}
+
+fn reject_dirty_head_types(
+    worktree: &Path,
+    paths: &BTreeSet<String>,
+    ignore_patterns: &[String],
+    vault_enabled: bool,
+) -> Result<(), DaemonError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    // A staged deletion or type change hides the old type from ls-files.
+    // Inspect HEAD too, before accepting either index or worktree bytes.
+    stream_git_nul_records(worktree, &["ls-tree", "-r", "-z", "HEAD"], usize::MAX, |record| {
+        let (metadata, path) = record.split_once('\t')
+            .ok_or_else(|| context_error("Git tree returned malformed dirty-path metadata"))?;
+        if paths.contains(path)
+            && !excluded_for_export(path, vault_enabled)
+            && !crate::workspace_live_sync_ignore::user_rules_exclude_path(path, ignore_patterns)
+            && matches!(metadata.split_whitespace().next(), Some("120000" | "160000"))
+        {
+            return Err(context_error(format!(
+                "dirty path `{path}` is a symlink or submodule in HEAD; dirty symlinks and submodules are not supported"
+            )));
+        }
+        Ok(())
+    })
 }
 
 fn index_file_state(

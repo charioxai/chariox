@@ -261,3 +261,33 @@ fn mk02_directory_uses_project_private_file_choices() {
     );
 }
 
+#[test]
+fn mk02_rejects_deleted_or_replaced_committed_symlinks() {
+    for deletion in [false, true] {
+        let root = test_root("move-dirty-head-symlink");
+        let _cleanup = PlainWorkspaceCleanup(root.clone());
+        let repository = root.join("repository");
+        init_repository(&repository, "input", "base\n");
+        std::os::unix::fs::symlink("input", repository.join("link")).unwrap();
+        git(&repository, &["add", "link"]);
+        git(&repository, &["commit", "-m", "internal symlink"]);
+        fs::remove_file(repository.join("link")).unwrap();
+        if !deletion {
+            fs::write(repository.join("link"), "replacement\n").unwrap();
+        }
+        git(&repository, &["add", "link"]);
+        let archive = root.join("snapshot.tar.gz");
+        let result = export_development_context(DevelopmentContextExportRequest {
+            project_id: "move-project".into(),
+            repositories: vec![selection(&repository, true)],
+            archive_path: archive.clone(),
+        });
+        assert!(
+            result.is_err(),
+            "dirty symlinks must be refused even after their index entry changes type"
+        );
+        assert!(result.unwrap_err().to_string().contains("dirty symlinks"));
+        assert!(!archive.exists());
+        assert_no_export_temporaries(&root);
+    }
+}
