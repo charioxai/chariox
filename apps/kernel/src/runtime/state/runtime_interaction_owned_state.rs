@@ -665,6 +665,8 @@ impl KernelRuntimeOwnedState {
         let Some(interaction) = session.remove_active_interaction(interaction_id) else {
             return Ok(());
         };
+        // The provider continues its turn with the timeout reply, so the goal leaves the wait.
+        self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         sessions.restore_session(session);
         activity_mutation.record();
         drop(sessions);
