@@ -46,7 +46,11 @@ impl KernelRuntimeOwnedState {
                             .is_some_and(|session| {
                                 session.workflow_publications().iter().any(|publication| {
                                     publication.creation_operation_key() == Some(operation_key)
-                                        && publication.created_by_user_id() == caller_user_id
+                                        && self.acts_for_owner_in(
+                                            session.owner_user_id(),
+                                            caller_user_id,
+                                            publication.created_by_user_id(),
+                                        )
                                 })
                             })
                 });
@@ -236,7 +240,11 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-        if publication.created_by_user_id() != caller_user_id {
+        if !self.acts_for_owner(
+            &request.session_id,
+            caller_user_id,
+            publication.created_by_user_id(),
+        ) {
             return Err(Self::deny_owner(
                 caller_user_id,
                 publication.created_by_user_id(),
@@ -268,7 +276,11 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-        if publication.created_by_user_id() != caller_user_id {
+        if !self.acts_for_owner(
+            &request.session_id,
+            caller_user_id,
+            publication.created_by_user_id(),
+        ) {
             return Err(Self::deny_owner(
                 caller_user_id,
                 publication.created_by_user_id(),

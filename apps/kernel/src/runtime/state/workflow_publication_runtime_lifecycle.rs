@@ -103,7 +103,11 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
         .session_store
         .read()
         .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-    if publication.created_by_user_id() != caller_user_id {
+    if !runtime_state.acts_for_owner(
+        &request.session_id,
+        caller_user_id,
+        publication.created_by_user_id(),
+    ) {
         return Err(super::KernelRuntimeOwnedState::deny_owner(
             caller_user_id,
             publication.created_by_user_id(),
@@ -195,7 +199,11 @@ pub(crate) async fn execute_bind_workflow_publication_deployment_request(
         .session_store
         .read()
         .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-    if publication.created_by_user_id() != caller_user_id {
+    if !runtime_state.acts_for_owner(
+        &request.session_id,
+        caller_user_id,
+        publication.created_by_user_id(),
+    ) {
         return Err(super::KernelRuntimeOwnedState::deny_owner(
             caller_user_id,
             publication.created_by_user_id(),

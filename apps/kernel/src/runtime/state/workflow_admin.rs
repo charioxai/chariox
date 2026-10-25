@@ -181,7 +181,12 @@ impl KernelRuntimeOwnedState {
                         workflow_id: workflow.id().to_string(),
                         node_id: edge.to_node_id.clone(),
                     })?;
-                if from_owner != caller_user_id && to_owner != caller_user_id {
+                let room_owner = workflows
+                    .session_owner_user_id(session_id)
+                    .unwrap_or_default();
+                if !self.acts_for_owner_in(&room_owner, caller_user_id, from_owner)
+                    && !self.acts_for_owner_in(&room_owner, caller_user_id, to_owner)
+                {
                     return Err(Self::deny_owner(
                         caller_user_id,
                         from_owner,

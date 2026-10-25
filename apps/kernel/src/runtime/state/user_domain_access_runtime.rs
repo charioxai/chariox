@@ -131,7 +131,7 @@ impl KernelRuntimeState {
         }
         let session = self.owned.session_snapshot(run.session_id())?;
         if agent.session_id() != run.session_id()
-            || !session.has_member(agent.owner_user_id())
+            || !self.is_room_member(&session, agent.owner_user_id())
             || session.status() == crate::session::SessionStatus::Ended
         {
             return Err(host_error(
