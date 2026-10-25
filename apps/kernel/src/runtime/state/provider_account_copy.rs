@@ -9,7 +9,7 @@ use crate::provider_account_copy::{
 fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
     if config.user_config.credential_vault.backend
         == crate::config::CredentialVaultBackend::CharioxEncrypted
-        && !crate::secret::chariox_encrypted_vault_status(&expand_vault_path(
+        && !crate::secret::chariox_encrypted_vault_status(expand_vault_path(
             &config.user_config.credential_vault.path,
         ))
         .map_err(|_| failure("provider_account_copy_vault_locked"))?
