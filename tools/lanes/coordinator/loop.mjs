@@ -45,7 +45,7 @@ export async function coordinate(operation, args, options = {}) {
     return record;
   };
   const ids = r => ({ kernel: r.launch.kernel, taskId: r.launch.taskId, sessionId: r.launch.sessionId, attachmentId: r.launch.attachmentId, agentId: r.launch.agentId });
-  if (operation === 'brief') {
+  if (operation === 'brief') return withLaneLock(home, lane, 'brief', async () => {
     const [, worktree, provider = 'codex', briefFile] = args;
     if (!worktree || !worktree.startsWith('/')) throw new LaneError('invalid_worktree');
     let record;
@@ -66,7 +66,7 @@ export async function coordinate(operation, args, options = {}) {
     record.launch = await adapter('launch', record.input);
     await save(path, record);
     return record;
-  }
+  });
   if (operation === 'watch') {
     const timeout = Number(args[0] || 15) * 60;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 14400) throw new LaneError('invalid_watch_timeout', 'watch takes 1/60..240 minutes');
@@ -81,10 +81,36 @@ export async function coordinate(operation, args, options = {}) {
       if (batch.events.length || !batch.timed_out || remaining === 0) return batch;
     }
   }
-  const record = await load();
+  let record = await load();
   if (!record.launch) throw new LaneError('launch_incomplete', 'Resume brief with its original inputs first.');
   const common = ids(record);
-  if (operation === 'deliver') {
+  // Delivery and launch share the lane lock. Reload before saving so another process's
+  // renewed attachment or latest prompt cannot be replaced with an older receipt.
+  const reload = async () => {
+    record = await load();
+    Object.assign(common, ids(record));
+    if (record.stopped) throw new LaneError('lane_not_running', `${lane} has been stopped; its round is over.`);
+  };
+  let attachmentRecovered = false;
+  const renewedCommand = (id, attachment) => `reattach-${createHash('sha256').update(id).update(attachment).digest('hex')}`;
+  const recoveryFailed = () => new LaneError('attachment_recovery_failed', 'Delivery was refused after one re-attach; inspect the retained round receipt before retrying.');
+  const attached = async (send, renewed) => {
+    try { return await send(); } catch (error) {
+      if (error.code !== 'attachment_not_found') throw error;
+      if (attachmentRecovered) throw recoveryFailed();
+    }
+    attachmentRecovered = true;
+    record.launch = await adapter('launch', record.input);
+    await save(path, record);
+    Object.assign(common, ids(record));
+    await renewed();
+    try { return await send(); } catch (error) {
+      if (error.code !== 'attachment_not_found') throw error;
+      throw recoveryFailed();
+    }
+  };
+  if (operation === 'deliver') return withLaneLock(home, lane, 'deliver', async () => {
+    await reload();
     const reviewFile = args[1];
     if (!reviewFile) throw new LaneError('missing_review_file');
     const prompt = await readFile(reviewFile, 'utf8');
@@ -94,26 +120,33 @@ export async function coordinate(operation, args, options = {}) {
     let receipt; try { receipt = await read(deliveryPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const commandId = expected => `review-${createHash('sha256').update(expected).update(prompt).digest('hex')}`;
     // Resume confirmation of an accepted steer even if its turn has since settled.
-    const resuming = receipt && receipt.steerId === commandId(receipt.expectedPromptId) && (!status.currentPrompt || status.currentPrompt === receipt.expectedPromptId || !receipt.result.confirmation);
+    const resuming = receipt && receipt.steerId === commandId(receipt.expectedPromptId) && (!status.currentPrompt || status.currentPrompt === receipt.expectedPromptId || !receipt.result?.confirmation);
     const expectedPromptId = resuming ? receipt.expectedPromptId : status.currentPrompt;
     if (!expectedPromptId) throw new LaneError('no_active_prompt', 'The worker settled; start a new round to deliver new work.');
     const steerId = commandId(expectedPromptId);
     if (receipt?.steerId !== steerId) receipt = undefined;
-    if (receipt?.result.confirmation) return receipt.result;
+    if (receipt?.result?.confirmation) return receipt.result;
     const advertised = Array.isArray(status.capabilities) && status.capabilities.includes('outside_steer_events_v1');
     const eventMode = receipt?.confirmationMode ? receipt.confirmationMode === 'event' : advertised;
     if (eventMode && !advertised) throw new LaneError('steer_events_unavailable', 'Restore the kernel steer-event capability to resume this event confirmation.');
     if (eventMode) await openInbox(home, cli, options.settleMs);
     if (!receipt) {
-      let result, mode = eventMode ? 'event' : 'acknowledged-steer-status';
-      try { result = await adapter('steer', { ...common, expectedPromptId, prompt, steerId }); }
+      receipt = { steerId, expectedPromptId, confirmationMode: eventMode ? 'event' : 'acknowledged-steer-status', dispatch: { id: steerId, attachmentId: common.attachmentId } };
+      await save(deliveryPath, receipt);
+    }
+    if (!receipt.result) {
+      let result, mode = receipt.confirmationMode;
+      try { result = await attached(() => adapter('steer', { ...common, attachmentId: receipt.dispatch.attachmentId, expectedPromptId, prompt, steerId: receipt.dispatch.id }), async () => {
+        receipt.dispatch = { id: renewedCommand(steerId, common.attachmentId), attachmentId: common.attachmentId };
+        await save(deliveryPath, receipt);
+      }); }
       catch (error) {
         // The kernel took the steer but could not record its event: it is delivered, and sending again would repeat it.
         if (error.code !== 'prompt_steer_event_unrecorded') throw error;
         mode = 'delivered-event-unrecorded';
-        result = { ActivePromptSteered: { prompt: { id: steerId } }, confirmation: { mode } };
+        result = { ActivePromptSteered: { prompt: { id: receipt.dispatch.id } }, confirmation: { mode } };
       }
-      receipt = { steerId, expectedPromptId, confirmationMode: mode, result };
+      receipt.result = result; receipt.confirmationMode = mode;
       await save(deliveryPath, receipt);
     }
     if (receipt.result.confirmation) return receipt.result;
@@ -125,7 +158,7 @@ export async function coordinate(operation, args, options = {}) {
     if (eventMode) await confirmSteer({ home, cli, now, target: common, steerId: returnedSteerId, confirmed });
     else await confirmed({ mode: 'acknowledged-steer-status', status: await adapter('status', { ...common, stateFile: record.input.stateFile }) });
     return receipt.result;
-  }
+  });
   // The coordinator's direct note: steers the running turn, or becomes the next prompt when the worker is between turns.
   // The kernel's own answer is the confirmation, so no inbox is read and loopd's events are left alone. The command id is the
   // one loopd's inbox delivery would use, so a later fallback delivery of the same text is the same mutation to the kernel.
@@ -139,7 +172,7 @@ export async function coordinate(operation, args, options = {}) {
     // One step at a time per lane: loopd collects an idle worker (bundle, then stop) under the same lock, so a prompt is never
     // admitted into a worker that is about to be stopped.
     return withLaneLock(home, lane, 'steer', async () => {
-      if ((await load()).stopped) throw new LaneError('lane_not_running', `${lane} has been stopped; its round is over.`);
+      await reload();
       let ledger; try { ledger = await read(ledgerPath); } catch (error) { if (error.code !== 'ENOENT') throw error; ledger = { sections: [] }; }
       const sent = ledger.sections.find(item => item.sha256 === section);
       if (sent) return { lane, mode: sent.mode, ...(sent.promptId !== undefined && { promptId: sent.promptId, agentStatus: sent.agentStatus }), repeated: true };
@@ -156,15 +189,22 @@ export async function coordinate(operation, args, options = {}) {
             ? { operation: 'steer', id: `review-${createHash('sha256').update(status.currentPrompt).update(prompt).digest('hex')}`, expectedPromptId: status.currentPrompt }
             : { operation: 'prompt', id: `direct-${section}` };
           // parts: the inbox consumer cuts the appended note at its headings, so each of those sections counts as delivered with it.
-          pending = { sha256: section, ...operationFor, parts: newSections(prompt, 0).map(part => createHash('sha256').update(part.trim()).digest('hex')), prompt };
+          pending = { sha256: section, ...operationFor, attachmentId: common.attachmentId, parts: newSections(prompt, 0).map(part => createHash('sha256').update(part.trim()).digest('hex')), prompt };
           status = undefined;
           ledger.pendingDeliveries[section] = pending; await save(ledgerPath, ledger);
         }
+        // Old ledgers predate attachment-bound replay. Bind them before the first attempt.
+        if (!pending.attachmentId) { pending.attachmentId = common.attachmentId; await save(ledgerPath, ledger); }
+        const renewed = async () => {
+          pending.id = renewedCommand(pending.id, common.attachmentId);
+          pending.attachmentId = common.attachmentId;
+          await save(ledgerPath, ledger);
+        };
         try {
           if (pending.operation === 'prompt') {
-            answer = await adapter('prompt', { ...common, prompt, commandId: pending.id });
+            answer = await attached(() => adapter('prompt', { ...common, attachmentId: pending.attachmentId, prompt, commandId: pending.id }), renewed);
             mode = answer.PromptSubmitted?.outcome?.Started ? 'prompt-started' : 'prompt-queued';
-          } else { answer = await adapter('steer', { ...common, expectedPromptId: pending.expectedPromptId, prompt, steerId: pending.id }); mode = 'steered'; }
+          } else { answer = await attached(() => adapter('steer', { ...common, attachmentId: pending.attachmentId, expectedPromptId: pending.expectedPromptId, prompt, steerId: pending.id }), renewed); mode = 'steered'; }
         } catch (error) {
           // The kernel took the note but could not record its event: it is delivered, and sending again would repeat it.
           if (pending.operation === 'steer' && error.code === 'prompt_steer_event_unrecorded') { answer = { delivered: true, event: 'unrecorded' }; mode = 'steered'; }

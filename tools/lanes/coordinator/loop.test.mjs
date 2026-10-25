@@ -591,3 +591,93 @@ test('retiring a lost Room removes its targets so another lane can watch and ans
   assert.equal(targets.some(t => t.session_id === 'room'), false);
   assert.equal(targets.filter(t => t.session_id === 'healthy-room').length, 2);
 });
+
+for (const operation of ['steer', 'deliver']) test(`${operation}: renews a stale attachment once and persists it for the next invocation`, async t => {
+  const r = await launched(t);
+  const review = join(r.home, 'review.md'); await writeFile(review, '## MP-08 / MP-09 / MP-10 / MP-11\nrenew the attachment\n');
+  const original = r.options.adapter, attempts = [];
+  let renewals = 0;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { currentPrompt: 'current' };
+    if (op === 'launch') { renewals++; return { ...r.launch, attachmentId: 'renewed' }; }
+    if (op === 'steer') {
+      attempts.push(input);
+      if (input.attachmentId !== 'renewed') throw new LaneError('attachment_not_found');
+    }
+    return original(op, input);
+  };
+  await coordinate(operation, ['lane', review], r.options);
+  assert.deepEqual(attempts.map(a => a.attachmentId), ['attached', 'renewed']);
+  assert.notEqual(attempts[0].steerId, attempts[1].steerId, 'a definitive refusal needs a new command for its changed attachment body');
+  assert.equal(renewals, 1);
+  assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).launch.attachmentId, 'renewed');
+  await writeFile(review, '## MP-08 / MP-09 / MP-10 / MP-11\na second note\n');
+  await coordinate(operation, ['lane', review], r.options);
+  assert.equal(attempts.at(-1).attachmentId, 'renewed');
+});
+
+for (const operation of ['steer', 'deliver']) test(`${operation}: two attachment refusals fail with a typed error and retain the operation for replay`, async t => {
+  const r = await launched(t);
+  const review = join(r.home, 'review.md'); await writeFile(review, 'MP-08 / MP-09 / MP-10 / MP-11: expired twice');
+  let launches = 0, sends = 0;
+  r.options.adapter = async op => {
+    if (op === 'status') return { currentPrompt: 'current' };
+    if (op === 'launch') { launches++; return { ...r.launch, attachmentId: 'renewed' }; }
+    if (op === 'steer') { sends++; throw new LaneError('attachment_not_found'); }
+    throw new Error(`unexpected ${op}`);
+  };
+  await assert.rejects(coordinate(operation, ['lane', review], r.options), { code: 'attachment_recovery_failed' });
+  assert.equal(launches, 1); assert.equal(sends, 2);
+  assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).launch.attachmentId, 'renewed');
+  if (operation === 'steer') assert.equal(Object.keys(JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8')).pendingDeliveries).length, 1);
+});
+
+test('steer: renews an idle worker attachment without changing its pending prompt command', async t => {
+  const r = await launched(t);
+  const review = join(r.home, 'review.md'); await writeFile(review, 'MP-08 / MP-09 / MP-10 / MP-11: next turn');
+  const sent = []; let renewals = 0;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { currentPrompt: null };
+    if (op === 'launch') { renewals++; return { ...r.launch, attachmentId: 'renewed' }; }
+    if (op === 'prompt') {
+      sent.push(input);
+      if (input.attachmentId === 'attached') throw new LaneError('attachment_not_found');
+      return { PromptSubmitted: { outcome: { Started: { prompt: { id: 'next', status: 'running' } } } } };
+    }
+    throw new Error(`unexpected ${op}`);
+  };
+  assert.equal((await coordinate('steer', ['lane', review], r.options)).mode, 'prompt-started');
+  assert.equal(renewals, 1);
+  assert.notEqual(sent[0].commandId, sent[1].commandId);
+  const record = JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8'));
+  assert.equal(record.launch.attachmentId, 'renewed'); assert.equal(record.latestPromptId, 'next');
+  await coordinate('brief', ['lane', '/work', 'codex'], r.options);
+  assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).launch.attachmentId, 'renewed');
+});
+
+for (const operation of ['steer', 'deliver']) test(`${operation}: uncertain delivery after renewal replays the exact saved command and attachment`, async t => {
+  const r = await launched(t);
+  const review = join(r.home, 'review.md'); await writeFile(review, 'MP-08 / MP-09 / MP-10 / MP-11: uncertain renewal');
+  let renewals = 0, accepted, loseReply = true;
+  const commands = new Map();
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { currentPrompt: 'current' };
+    if (op === 'launch') { renewals++; return { ...r.launch, attachmentId: 'renewed' }; }
+    if (op !== 'steer') throw new Error(`unexpected ${op}`);
+    const body = JSON.stringify(input);
+    if (commands.has(input.steerId) && commands.get(input.steerId) !== body) throw new LaneError('duplicate_command_conflict');
+    commands.set(input.steerId, body);
+    if (input.attachmentId === 'attached') throw new LaneError('attachment_not_found');
+    if (!accepted) accepted = input;
+    else assert.deepEqual(input, accepted, 'an uncertain command must keep the entire original body');
+    if (loseReply) { loseReply = false; throw new LaneError('kernel_connection_lost'); }
+    return { ActivePromptSteered: { prompt: { id: 'taken' } } };
+  };
+  await assert.rejects(coordinate(operation, ['lane', review], r.options), { code: 'kernel_connection_lost' });
+  // Another launch can refresh the round receipt while the accepted request's result is still unknown.
+  const record = JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8'));
+  record.launch.attachmentId = 'another-attachment'; await save(join(r.home, 'lane.json'), record);
+  await coordinate(operation, ['lane', review], r.options);
+  assert.equal(renewals, 1);
+  assert.equal(commands.size, 2, 'one definitive refusal and one accepted command, replayed without a new identity');
+});
