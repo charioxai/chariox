@@ -296,3 +296,12 @@ Each has a fail-first test (revert the fix and the test is red).
 ### What the next kernel changes for loopd
 
 extagent r27 (`89c4e35ef6`, not pushed, protocol unchanged) keeps an `until-exit` grant across a kernel restart as long as its holder process lives, with the same inbox and `subscription.json`; a restored session answers its own decisions; `last_activity_at_ms` moves with each recorded entry. loopd needs no change for that: the new-grant path (set the stale inbox aside, follow the lanes again, answer decisions from status) stays for the case where the holder is gone, and `lanes-kernel.mjs start` should then stop re-requesting a grant that is still granted. The `events_refused` poisoning by a removed agent target and the replay of a decision raised during a restart are still open with the kernel owner.
+
+### Real queue rounds: not exercised in this round
+
+The coordinator dropped no entry into `agents/_loop/queue/` between 20:13Z and the end of the round (00:46Z), so
+integ2 r35 and webterm2 r15 were not run by loopd. The drill above used the same path (`loopbrief.sh` over the
+`b3.sh` helper, queue entry, loopd, kernel, real Claude and Codex workers), but with scratch repositories and cheap
+models. What a real entry still has to show: a multi-hour lane, `REVIEW_INBOX.md` sections delivered live, a second
+repository through `extraBundles`, and the Mac's `lanes.sh` / `watch.sh` reading `LOOP_RUN.json`. loopd stays running
+for the first one.
