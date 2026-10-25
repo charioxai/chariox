@@ -82,6 +82,23 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    #[cfg(test)]
+    if matches!(
+        &request,
+        RelayPeerRequest::InstallProviderAccountCopy { .. }
+    ) && require_bound_managed_context_sender(caller_identity.as_ref(), &encrypted_request)
+        .is_ok()
+    {
+        let release = {
+            state
+                .read()
+                .await
+                .test_observe_authenticated_peer_request(&request)
+        };
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+    }
     if let RelayPeerRequest::InstallProviderAccountCopy {
         binding,
         credential,

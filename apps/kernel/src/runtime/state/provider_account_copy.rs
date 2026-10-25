@@ -122,28 +122,31 @@ impl KernelRuntimeState {
         {
             return Err(failure("provider_account_copy_unsupported"));
         }
-        let _unlock = vault_unlock_request_lock(&expand_vault_path(
-            &config.user_config.credential_vault.path,
-        ))
-        .lock_owned()
-        .await;
-        unlocked(&config)?;
-        let selected = crate::provider::resolve_provider_account_credentials(
-            &config,
-            &owner,
-            &binding.provider,
-            &binding.source_profile_id,
-        )
-        .map_err(|_| failure("provider_account_copy_vault_locked"))?;
-        let value = selected
-            .iter()
-            .find(|(name, _)| *name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
-            .map(|(_, value)| value.to_string())
-            .ok_or_else(|| failure("provider_account_copy_profile"))?;
+        let credential = {
+            let _unlock = vault_unlock_request_lock(&expand_vault_path(
+                &config.user_config.credential_vault.path,
+            ))
+            .lock_owned()
+            .await;
+            unlocked(&config)?;
+            let selected = crate::provider::resolve_provider_account_credentials(
+                &config,
+                &owner,
+                &binding.provider,
+                &binding.source_profile_id,
+            )
+            .map_err(|_| failure("provider_account_copy_vault_locked"))?;
+            let value = selected
+                .iter()
+                .find(|(name, _)| *name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV)
+                .map(|(_, value)| value.to_string())
+                .ok_or_else(|| failure("provider_account_copy_profile"))?;
+            ProviderAccountCopyCredential::new(value)
+        };
         let response = crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
             &config, &self.owned.relay_state,
             ClientTarget { daemon_id: Some(peer.kernel_id), daemon_alias: None }, &peer.public_key,
-            RelayPeerRequest::InstallProviderAccountCopy { binding: binding.clone(), credential: ProviderAccountCopyCredential::new(value) },
+            RelayPeerRequest::InstallProviderAccountCopy { binding: binding.clone(), credential },
             Duration::from_secs(90),
         ).await.map_err(|_| failure("provider_account_copy_unavailable"))?;
         match response {

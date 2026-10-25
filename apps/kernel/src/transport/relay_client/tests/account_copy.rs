@@ -158,11 +158,18 @@ fn account_copy_verification_revalidates_changed_profile() {
     run_account_copy_drill(CopyScenario::ChangedProfile);
 }
 
+#[test]
+fn account_copy_bidirectional_encrypted_installs_do_not_hold_source_vaults() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::Bidirectional);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CopyScenario {
     Serial,
     RegistryAccess,
     ChangedProfile,
+    Bidirectional,
 }
 
 fn run_account_copy_drill(scenario: CopyScenario) {
@@ -285,14 +292,14 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         let (stop_target, stopped_target) = watch::channel(false);
         let source_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
             source_router.clone(),
-            source_state,
+            source_state.clone(),
             stopped_source,
             url.clone(),
             source.relay_token.clone().unwrap(),
         ));
         let target_task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
             target_router.clone(),
-            target_state,
+            target_state.clone(),
             stopped_target,
             url,
             target.relay_token.clone().unwrap(),
@@ -391,7 +398,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             "provider":"claude", "account_profile":profile.profile_id, "operation_id":"copy-1",
             "target_kernel_id":target.daemon_id, "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),"replace":false
         }});
-        if scenario != CopyScenario::Serial {
+        if matches!(
+            scenario,
+            CopyScenario::RegistryAccess | CopyScenario::ChangedProfile
+        ) {
             struct ReleaseVerifier(PathBuf);
             impl Drop for ReleaseVerifier {
                 fn drop(&mut self) {
@@ -721,15 +731,132 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             }
         }
 
+        if scenario == CopyScenario::Bidirectional {
+            let mut request = good.clone();
+            request["CopyProviderAccountToKernel"]["operation_id"] = "bidirectional-copy".into();
+            request["CopyProviderAccountToKernel"]["replace"] = true.into();
+            let reverse_profile = target_profiles
+                .create_managed("local", "claude", "Reverse source")
+                .unwrap();
+            crate::provider::store_provider_account_credential(
+                &target,
+                "local",
+                "claude",
+                &reverse_profile.profile_id,
+                canary,
+                false,
+            )
+            .unwrap();
+            target_profiles
+                .update_observation(
+                    "local",
+                    "claude",
+                    &reverse_profile.profile_id,
+                    crate::account_profile::ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let reverse = serde_json::json!({"CopyProviderAccountToKernel":{
+                "provider":"claude", "account_profile":reverse_profile.profile_id,
+                "operation_id":"reverse-copy", "target_kernel_id":source.daemon_id,
+                "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
+                "replace":false
+            }});
+            let (source_observer, mut source_observations) = tokio::sync::mpsc::unbounded_channel();
+            let (target_observer, mut target_observations) = tokio::sync::mpsc::unbounded_channel();
+            source_state
+                .write()
+                .await
+                .test_set_authenticated_peer_request_observer(source_observer);
+            target_state
+                .write()
+                .await
+                .test_set_authenticated_peer_request_observer(target_observer);
+            let forward_request = request.clone();
+            let forward_router = source_router.clone();
+            let mut forward =
+                tokio::spawn(async move { source_request(&forward_router, forward_request).await });
+            let reverse_request = reverse.clone();
+            let reverse_router = target_router.clone();
+            let mut backward =
+                tokio::spawn(async move { source_request(&reverse_router, reverse_request).await });
+            use super::super::connection_state::TestPeerRequestObservation;
+            let releases = tokio::time::timeout(Duration::from_secs(5), async {
+                let Some(TestPeerRequestObservation::InstallProviderAccountCopy {
+                    operation_id,
+                    release: source_release,
+                }) = source_observations.recv().await
+                else {
+                    panic!("reverse copy did not reach authenticated encrypted admission");
+                };
+                assert_eq!(operation_id, "reverse-copy");
+                let Some(TestPeerRequestObservation::InstallProviderAccountCopy {
+                    operation_id,
+                    release: target_release,
+                }) = target_observations.recv().await
+                else {
+                    panic!("forward copy did not reach authenticated encrypted admission");
+                };
+                assert_eq!(operation_id, "bidirectional-copy");
+                (source_release, target_release)
+            })
+            .await
+            .expect(
+                "both source kernels must resolve credentials and send their encrypted requests",
+            );
+            source_state
+                .write()
+                .await
+                .test_clear_authenticated_peer_request_observer();
+            target_state
+                .write()
+                .await
+                .test_clear_authenticated_peer_request_observer();
+            // Both requests have left their source and reached the peer, so neither
+            // target mutation may depend on its source's outstanding round trip.
+            let _ = releases.0.send(());
+            let _ = releases.1.send(());
+            let completed = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(&mut forward, &mut backward)
+            })
+            .await;
+            let (forward, backward) = match completed {
+                Ok(results) => results,
+                Err(_) => {
+                    forward.abort();
+                    backward.abort();
+                    let _ = forward.await;
+                    let _ = backward.await;
+                    panic!(
+                        "bidirectional copies held their source Vaults across the peer round trip"
+                    );
+                }
+            };
+            let forward = forward.unwrap().unwrap();
+            let backward = backward.unwrap().unwrap();
+            assert!(!forward.to_string().contains(canary));
+            assert!(!backward.to_string().contains(canary));
+            assert_eq!(
+                source_request(&source_router, request.clone())
+                    .await
+                    .unwrap(),
+                forward
+            );
+            assert_eq!(
+                source_request(&target_router, reverse).await.unwrap(),
+                backward
+            );
+        }
         let _ = stop_target.send(true);
         tokio::time::timeout(Duration::from_secs(5), target_task)
             .await
             .unwrap()
             .unwrap();
-        let unavailable = good;
-
         assert_code(
-            source_request(&source_router, unavailable).await,
+            source_request(&source_router, good).await,
             "provider_account_copy_unavailable",
             canary,
         );

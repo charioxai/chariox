@@ -17,3 +17,5 @@ Supplementary regression drill: `cargo test -p chariox-kernel --lib account_copy
 PAC-01 is blocked until dogfood upgrades the lanes kernel from af52049173 to a runtime containing this operation. That is the only authorized real-account source; do not touch token files or restart shared services to bypass it.
 
 MP-08 / MP-09 / MP-10 / MP-11: the target durably reserves the operation binding before verification and Vault storage. Retrying an interrupted operation with a different profile, credential or binding is a conflict; use a new operation ID when the source credential changes.
+
+MP-08 / MP-09 / MP-10 / MP-11: verification releases the profile registry lock after persisting its reservation. Publication revalidates that reservation and the target profile, preserves unrelated registry writes, and refuses concurrent target changes. Source Vault mutation locks cover credential resolution only; they are released before awaiting the encrypted peer. Paused-verifier and simultaneous bidirectional-copy regressions cover these lock boundaries.
