@@ -86,7 +86,7 @@ fn is_plain(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | '/' | '+' | '@' | ',')
 }
 
-fn names<'a>(path: &'a Path) -> impl Iterator<Item = &'a str> {
+fn names(path: &Path) -> impl Iterator<Item = &str> {
     path.components().filter_map(|component| match component {
         Component::Normal(name) => name.to_str(),
         _ => None,
