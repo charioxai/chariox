@@ -86,3 +86,51 @@ test('laneanswer.sh passes the lane, decision and choice to the coordinator seat
   assert.equal((await r.calls())[0].seat, 'coordinator');
   assert.equal(r.sh('laneanswer.sh', ['alpha', 'a b', 'blue']).status, 2);
 });
+
+// switch-claude-account.sh against a stand-in adapters tree (probe and kernel command are stubs) and a token directory.
+async function switchRig(t) {
+  const root = await mkdtemp(join(tmpdir(), 'switchacct-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const kernel = join(root, 'adapters/tools/lanes/kernel'), tokens = join(root, 'tokens'), agents = join(root, 'agents');
+  await mkdir(kernel, { recursive: true }); await mkdir(tokens); await mkdir(agents);
+  await writeFile(join(tokens, 'oauth-token'), 'ACTIVE\n'); await writeFile(join(tokens, 'oauth-token.chariox'), 'CHARIOX\n'); await writeFile(join(tokens, 'oauth-token.old-account'), 'OLD\n');
+  await writeFile(join(kernel, 'claude-account.mjs'), `import { readFileSync } from 'node:fs';
+    const usable = readFileSync(process.argv[3], 'utf8').trim() !== 'EXHAUSTED';
+    console.log(JSON.stringify({ usable, org: '0123456789ab' })); process.exitCode = usable ? 0 : 3;`);
+  await writeFile(join(kernel, 'lanes-kernel.mjs'), `import { appendFileSync } from 'node:fs';
+    appendFileSync(${JSON.stringify(join(root, 'kernel.log'))}, JSON.stringify({ args: process.argv.slice(2), state: process.env.LANES_KERNEL_STATE }) + '\\n');
+    if (process.env.KERNEL_REFUSES) { console.error('{"error":"vault locked"}'); process.exitCode = 1; } else console.log(JSON.stringify({ auth: ['authenticated'], org: '0123456789ab' }));`);
+  const run = (target, extra = {}) => spawnSync('bash', [here('switch-claude-account.sh'), ...target], { env: { PATH: process.env.PATH, HOME: root, B3: 'local', LANES_STATE: join(root, 'state'), LOOP_AGENTS: agents, CLAUDE_TOKENS: tokens, ADAPTERS: join(root, 'adapters'), ...extra }, encoding: 'utf8' });
+  return { root, tokens, agents, run, active: async () => (await readFile(join(tokens, 'oauth-token'), 'utf8')).trim(), kernelCalls: async () => existsSync(join(root, 'kernel.log')) ? (await readFile(join(root, 'kernel.log'), 'utf8')).trim().split('\n').map(l => JSON.parse(l)) : [] };
+}
+
+test('switch-claude-account.sh re-stores the kernel credential from the target file and then makes it the active token', async t => {
+  const r = await switchRig(t);
+  const result = r.run(['chariox']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await r.active(), 'CHARIOX');
+  const [call] = await r.kernelCalls();
+  assert.deepEqual(call.args, ['set-claude-credential', '--from', join(r.tokens, 'oauth-token.chariox')]);
+  assert.equal(call.state, join(r.root, 'state'));
+  assert.ok(existsSync(join(r.agents, 'CLAUDE_SWITCHED')));
+  assert.ok(!result.stdout.includes('CHARIOX') && !result.stderr.includes('CHARIOX'), 'a token must never be printed');
+  assert.equal((await readFile(join(r.tokens, 'oauth-token.old-account'), 'utf8')).trim(), 'OLD');
+});
+
+test('switch-claude-account.sh refuses an account that is not usable yet and changes nothing', async t => {
+  const r = await switchRig(t);
+  await writeFile(join(r.tokens, 'oauth-token.chariox'), 'EXHAUSTED\n');
+  const result = r.run(['chariox']);
+  assert.equal(result.status, 3);
+  assert.match(result.stderr, /not usable yet; nothing changed/);
+  assert.equal(await r.active(), 'ACTIVE');
+  assert.deepEqual(await r.kernelCalls(), []);
+});
+
+test('switch-claude-account.sh leaves the active token alone when the kernel refuses, and rejects an unknown target', async t => {
+  const r = await switchRig(t);
+  const refused = r.run(['old'], { KERNEL_REFUSES: '1' });
+  assert.equal(refused.status, 5);
+  assert.equal(await r.active(), 'ACTIVE');
+  assert.equal(r.run(['elsewhere']).status, 2);
+  assert.equal(r.run([]).status, 2);
+});
