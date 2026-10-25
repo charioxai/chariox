@@ -216,7 +216,7 @@ impl KernelRuntimeState {
         self.authorize_bound_room_computer_read(home, key, room, slice)?;
         let audience = &self.owned.room_display_leases.audience;
         let _gate = audience.worker_gate.lock().await;
-        if revision == 0 || !mask && !self.owned.relay_state.read().await.connected {
+        if revision == 0 || !mask && !self.owned.relay_state.read().await.connected() {
             return Err(error());
         }
         {
@@ -425,7 +425,6 @@ mod tests {
             .lock()
             .unwrap()
             .is_empty());
-        state.owned.relay_state.write().await.connected = true;
         state
             .owned
             .room_display_leases
@@ -441,7 +440,7 @@ mod tests {
                     &config.relay_public_key,
                     &room.session_id,
                     "slice",
-                    false,
+                    true,
                     revision
                 )
                 .await
