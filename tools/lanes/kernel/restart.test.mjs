@@ -58,7 +58,7 @@ test('a carried round that finishes before verification is confirmed from its ar
   const r = await rig(t); const start = r.options.start;
   r.options.start = async () => {
     await start();
-    await writeFile(join(r.options.agents, 'alpha', 'LOOP_RUN.r1.json'), JSON.stringify({ ...r.run, finishReason: 'finished', finishedAtMs: 456, events: [{ kind: 'event', type: 'interaction', state: 'pending', at_ms: 1000, agent_id: 'agent' }] }));
+    await writeFile(join(r.options.agents, 'alpha', 'LOOP_RUN.r1.json'), JSON.stringify({ ...r.run, finishReason: 'finished', finishedAtMs: 456, completedTurn: { status: 'completed', completedAtMs: 1000 } }));
     await writeFile(r.path, JSON.stringify({ ...r.run, key: 'alpha-r2', round: 'r2', launchedAtMs: 789 }));
   };
   r.options.inspect = async run => {
@@ -100,5 +100,15 @@ test('a provider that fails after receipt pickup fails restart verification', as
   r.options.timeoutMs = 10;
   r.options.inspect = async () => ({ provider: 'claude', permission: 'required', state: ++inspections > 2 ? 'error' : 'working' });
   await assert.rejects(restartWithSandbox(r.options), /no healthy worker/);
+  assert.equal(r.lines.length, 0);
+});
+
+test('replayed pending decisions do not count as fresh provider activity', async t => {
+  const r = await rig(t);
+  r.options.inspect = async () => ({ provider: 'claude', permission: 'required', state: 'working' });
+  const start = r.options.start;
+  r.options.start = async () => { await start(); await writeFile(r.path, JSON.stringify({ ...r.run,
+    events: [{ kind: 'event', type: 'interaction', state: 'pending', at_ms: 1000, agent_id: 'agent' }] })); };
+  await assert.rejects(restartWithSandbox(r.options), /rounds did not resume/);
   assert.equal(r.lines.length, 0);
 });

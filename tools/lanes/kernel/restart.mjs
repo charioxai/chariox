@@ -57,17 +57,14 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
       if (run.driverError) throw new Error(`round ${key} failed to resume: ${run.driverError.code}`);
       if (!pickedUp.has(key)) continue;
       if (run.finishedAtMs && run.finishReason !== 'finished') throw new Error(`round ${key} ended during restart: ${run.finishReason}`);
-      const worker = run.finishedAtMs ? workers.get(key) : await inspect(run);
+      const worker = run.finishedAtMs ? { ...workers.get(key), providerActivityAtMs: undefined, completedAtMs: run.completedTurn?.completedAtMs, completedSuccessfully: run.completedTurn?.status === 'completed' } : await inspect(run);
       if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${key} has no healthy worker or permission level`);
       if (worker.provider !== workers.get(key).provider || worker.permission !== workers.get(key).permission) throw new Error(`worker launch selection changed: ${key}`);
-      // Receipt replay only proves attachment. A fresh tool permission comes from the worker;
-      // provider activity and successful turn completion come from kernel-owned projections.
-      const freshPermission = (run.events || []).some(event => event.kind === 'event' && event.type === 'interaction'
-        && event.state === 'pending' && event.agent_id === old.launch.agentId && event.at_ms > restartedAtMs);
+      // Receipt replay and replayed open decisions prove attachment, not provider recovery.
       const freshRun = worker.providerActivityAtMs > restartedAtMs
         && worker.providerActivityAtMs > (workers.get(key).providerActivityAtMs ?? 0);
       const completed = worker.completedAtMs > restartedAtMs && worker.completedSuccessfully;
-      if (!freshPermission && !freshRun && !completed) continue;
+      if (!freshRun && !completed) continue;
       report(`${key} provider=${worker.provider} permission=${worker.permission} account=${worker.provider === 'claude' ? account : 'n/a'} resumed=true${run.finishedAtMs ? ' completed=true' : ''}`);
       pending.delete(key);
     }

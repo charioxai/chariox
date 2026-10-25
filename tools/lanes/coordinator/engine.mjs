@@ -349,6 +349,7 @@ export function createRound(options) {
       lane.run.health = { atMs: now(), state: status.state, flags: status.flags, lastActivityMs: status.lastActivityMs };
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
       for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
+      if (status.completedTurn) lane.run.completedTurn = status.completedTurn;
       if (status.state === 'idle' && !status.currentPrompt) {
         if (lane.restored && !(status.completedTurn?.promptId === lane.receipt.promptId && status.completedTurn.status === 'completed')) {
           if (now() - lane.recoveryStartedAtMs >= 360_000 || ['cancelled', 'failed'].includes(status.completedTurn?.status)) {
