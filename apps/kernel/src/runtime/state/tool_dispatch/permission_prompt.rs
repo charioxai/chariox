@@ -4,8 +4,8 @@
 //! tool_use_id?}` whenever a tool needs approval. The kernel asks the user
 //! through one permission `RuntimeInteraction` and answers with the JSON text
 //! Claude expects: `{"behavior":"allow","updatedInput":...}` or
-//! `{"behavior":"deny","message":...}`. "Allow for session" also answers with a
-//! session-scoped rule, so Claude stops asking for the same tool shape in that
+//! `{"behavior":"deny","message":...}`. "Allow for this session" also answers with
+//! session-scoped rules, so Claude stops asking for the same kind of call in that
 //! run.
 
 use super::*;
@@ -15,8 +15,9 @@ use crate::session::{
     RuntimeInteractionKind, RuntimeInteractionLevel,
 };
 use crate::transport::runtime_tools::{PermissionPromptArgs, RuntimeToolResult};
+use std::path::PathBuf;
 
-use super::permission_prompt_rule::{allow_for_session, session_allow_rule};
+use super::super::claude_permission_rules::{allow_for_session, session_grant, SessionGrant};
 
 const OPERATION: &str = "runtime_tool_permission_prompt";
 const PERMISSION_PROMPT_TIMEOUT_SEC: u64 = 300;
@@ -57,12 +58,19 @@ impl KernelRuntimeState {
                     operation: OPERATION,
                     message: "provider run is not bound to an agent".to_string(),
                 })?;
-        let interaction = claude_permission_prompt_interaction(provider_run.id(), agent_id, &args)
-            .with_native_origin(self.owned.capture_native_interaction_origin(
-                provider_run.session_id(),
-                agent_id,
-                provider_run.id(),
-            ));
+        let working_directory = provider_run.working_directory().map(PathBuf::as_path);
+        let grant = session_grant(&args.tool_name, &args.input, working_directory);
+        let interaction = claude_permission_prompt_interaction(
+            provider_run.id(),
+            agent_id,
+            &args,
+            grant.as_ref(),
+        )
+        .with_native_origin(self.owned.capture_native_interaction_origin(
+            provider_run.session_id(),
+            agent_id,
+            provider_run.id(),
+        ));
         let resolution =
             crate::runtime::native_interaction_bridge::request_provider_native_interaction(
                 self,
@@ -72,7 +80,7 @@ impl KernelRuntimeState {
             )
             .await;
         let payload = match resolution {
-            Ok(resolution) => claude_permission_prompt_decision(&resolution, &args),
+            Ok(resolution) => claude_permission_prompt_decision(&resolution, &args, grant.as_ref()),
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "runtime.permission_prompt",
@@ -95,6 +103,7 @@ fn claude_permission_prompt_interaction(
     provider_run_id: &str,
     agent_id: &str,
     args: &PermissionPromptArgs,
+    grant: Option<&SessionGrant>,
 ) -> RuntimeInteraction {
     let request_id = args
         .tool_use_id
@@ -112,16 +121,21 @@ fn claude_permission_prompt_interaction(
         "tool_name": args.tool_name,
         "tool_input": args.input,
     });
+    let mut message = crate::app::format_claude_permission_message(&event);
+    if let Some(grant) = grant {
+        message.push_str("\n\n");
+        message.push_str(&grant.description());
+    }
     let mut choices = vec![RuntimeInteractionChoice::new(
         "allow_once",
         "Allow once",
         "allow",
         Some(RuntimeInteractionChoiceStyle::Primary),
     )];
-    if session_allow_rule(&args.tool_name, &args.input).is_some() {
+    if let Some(grant) = grant {
         choices.push(RuntimeInteractionChoice::new(
             "allow_session",
-            "Allow for session",
+            grant.label(),
             "allow_session",
             Some(RuntimeInteractionChoiceStyle::Secondary),
         ));
@@ -138,7 +152,7 @@ fn claude_permission_prompt_interaction(
         RuntimeInteractionKind::Permission,
         RuntimeInteractionLevel::Warning,
         Some(format!("Approve Claude Code {}?", args.tool_name)),
-        crate::app::format_claude_permission_message(&event),
+        message,
         choices,
         None,
         Some(PERMISSION_PROMPT_TIMEOUT_SEC),
@@ -149,17 +163,18 @@ fn claude_permission_prompt_interaction(
 fn claude_permission_prompt_decision(
     resolution: &ProviderNativeInteractionResolution,
     args: &PermissionPromptArgs,
+    grant: Option<&SessionGrant>,
 ) -> serde_json::Value {
     let input = args.input.clone();
     match resolution.choice_id.as_deref() {
         Some("allow_once") => {
             return serde_json::json!({ "behavior": "allow", "updatedInput": input })
         }
-        // The choice is only listed when a rule can be stated, so a missing
-        // rule here is a bug: deny rather than allow more than was approved.
+        // The choice is only listed when rules can be stated, so a missing
+        // grant here is a bug: deny rather than allow more than was approved.
         Some("allow_session") => {
-            if let Some(rule) = session_allow_rule(&args.tool_name, &args.input) {
-                return allow_for_session(input, rule);
+            if let Some(grant) = grant {
+                return allow_for_session(input, grant);
             }
         }
         _ => {}

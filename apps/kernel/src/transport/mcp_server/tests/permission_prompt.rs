@@ -5,6 +5,8 @@ const NATIVE_TUI_TOKEN: &str = "claude-native-tui-permission-token";
 const PLAN_TOKEN: &str = "claude-print-plan-permission-token";
 const YOLO_TOKEN: &str = "claude-print-yolo-permission-token";
 const BROKEN_TOKEN: &str = "claude-print-broken-permission-token";
+/// Where the fixture Claude runs work, as the session rules are stated for that directory.
+const RUN_DIRECTORY: &str = "/work/app";
 
 fn insert_claude_run(
     app: &mut DaemonApp,
@@ -59,7 +61,7 @@ fn insert_claude_run_in_mode(
             pty_args: Vec::new(),
             pty_env: Default::default(),
             pty_env_remove: Vec::new(),
-            working_directory: None,
+            working_directory: Some(std::path::PathBuf::from(RUN_DIRECTORY)),
             structured_endpoint: Some("stdio://claude".to_string()),
         },
     );
@@ -727,8 +729,13 @@ fn choice_ids(interaction: &crate::session::RuntimeInteraction) -> Vec<&str> {
         .collect()
 }
 
-#[tokio::test]
-async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rule() {
+/// A router with one session whose agent runs the fixture Claude print run, and the directory
+/// that holds the session's files.
+fn claude_print_fixture() -> (
+    Arc<CommandRouter>,
+    crate::session::RuntimeSession,
+    std::path::PathBuf,
+) {
     let root = std::env::temp_dir().join(format!(
         "chariox-permission-prompt-session-{}-{}",
         std::process::id(),
@@ -761,81 +768,130 @@ async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rul
         Arc::new(Mutex::new(app)),
         8,
     ));
+    (router, session, root)
+}
+
+#[tokio::test]
+async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rule() {
+    let (router, session, root) = claude_print_fixture();
     let answer = |call: tokio::task::JoinHandle<Value>| async move {
         decision(&call.await.expect("permission prompt call should join"))
     };
+    let choose = |interaction: crate::session::RuntimeInteraction, choice: &'static str| {
+        let router = router.clone();
+        let session_id = session.id().to_string();
+        async move {
+            router
+                .runtime_state()
+                .resolve_runtime_interaction(&session_id, interaction.id(), choice, None)
+                .await
+        }
+    };
 
-    // A command Claude can match exactly: the choice is listed and answers
-    // with a session-scoped rule for that command.
-    let (call, interaction) = start_prompt(&router, CLAUDE_TOKEN, session.id(), "toolu_cmd").await;
+    // A compound build command: the choice shows the exact rule and answers with that rule for
+    // this run only.
+    let compound = "cd /work/app/src && cargo test -p kernel --lib x 2>&1 | tail -40";
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_cmd",
+        "Bash",
+        serde_json::json!({"command": compound}),
+    )
+    .await;
     assert_eq!(
         choice_ids(&interaction),
         ["allow_once", "allow_session", "deny"]
     );
-    router
-        .runtime_state()
-        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+    assert_eq!(
+        interaction.choices()[1].label(),
+        "Allow for this session: Bash(cargo test:*)"
+    );
+    assert!(
+        interaction
+            .message()
+            .contains("Allow for this session grants: Bash(cargo test:*)"),
+        "{}",
+        interaction.message()
+    );
+    choose(interaction, "allow_session")
         .await
         .expect("allow_session should resolve");
     assert_eq!(
         answer(call).await,
         serde_json::json!({
             "behavior": "allow",
-            "updatedInput": {"command": "touch approved.txt", "description": "Create a file"},
+            "updatedInput": {"command": compound},
             "updatedPermissions": [{
                 "type": "addRules",
                 "behavior": "allow",
                 "destination": "session",
-                "rules": [{"toolName": "Bash", "ruleContent": "touch approved.txt"}],
+                "rules": [{"toolName": "Bash", "ruleContent": "cargo test:*"}],
             }],
         })
     );
 
-    // A file write is remembered for that path only.
-    let file_input = serde_json::json!({"file_path": "/work/app/c.txt", "content": "x"});
+    // A file write grants the session's working directory and keeps credential names asking.
     let (call, interaction) = start_tool_prompt(
         &router,
         CLAUDE_TOKEN,
         session.id(),
         "toolu_write",
         "Write",
-        file_input.clone(),
+        serde_json::json!({"file_path": "/work/app/src/c.txt", "content": "x"}),
     )
     .await;
-    router
-        .runtime_state()
-        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+    assert_eq!(
+        interaction.choices()[1].label(),
+        "Allow for this session: Edit(//work/app/**)"
+    );
+    choose(interaction, "allow_session")
         .await
         .expect("allow_session should resolve");
+    let granted = answer(call).await;
+    let additions = granted["updatedPermissions"].as_array().expect("additions");
     assert_eq!(
-        answer(call).await["updatedPermissions"][0]["rules"],
-        serde_json::json!([{"toolName": "Edit", "ruleContent": "//work/app/c.txt"}])
+        additions[0]["rules"],
+        serde_json::json!([{"toolName": "Edit", "ruleContent": "//work/app/**"}])
     );
+    assert_eq!(additions[1]["behavior"], "ask");
+    assert!(additions
+        .iter()
+        .all(|addition| addition["destination"] == "session"));
 
-    // No rule can be stated for a redirect: the choice is not offered and
-    // cannot be chosen anyway.
-    let (call, interaction) = start_tool_prompt(
-        &router,
-        CLAUDE_TOKEN,
-        session.id(),
-        "toolu_redirect",
-        "Bash",
-        serde_json::json!({"command": "echo hi > out.txt"}),
-    )
-    .await;
-    assert_eq!(choice_ids(&interaction), ["allow_once", "deny"]);
-    assert!(router
-        .runtime_state()
-        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
-        .await
-        .is_err());
-    router
-        .runtime_state()
-        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_once", None)
-        .await
-        .expect("allow_once should resolve");
-    let allowed = answer(call).await;
-    assert_eq!(allowed["behavior"], "allow");
-    assert!(allowed.get("updatedPermissions").is_none(), "{allowed:#}");
+    // No rule is stated for a command outside the prefixes, a credential file or a file outside
+    // the working directory: two buttons, and the third cannot be chosen.
+    for (id, tool, input) in [
+        (
+            "toolu_outside_prefix",
+            "Bash",
+            serde_json::json!({"command": "cargo test && git push"}),
+        ),
+        (
+            "toolu_env",
+            "Write",
+            serde_json::json!({"file_path": "/work/app/.env"}),
+        ),
+        (
+            "toolu_outside",
+            "Write",
+            serde_json::json!({"file_path": "/etc/hosts"}),
+        ),
+    ] {
+        let (call, interaction) =
+            start_tool_prompt(&router, CLAUDE_TOKEN, session.id(), id, tool, input).await;
+        assert_eq!(choice_ids(&interaction), ["allow_once", "deny"], "{id}");
+        assert!(
+            choose(interaction.clone(), "allow_session").await.is_err(),
+            "{id}"
+        );
+        choose(interaction, "allow_once")
+            .await
+            .expect("allow_once should resolve");
+        let allowed = answer(call).await;
+        assert_eq!(allowed["behavior"], "allow", "{id}");
+        assert!(allowed.get("updatedPermissions").is_none(), "{allowed:#}");
+    }
     let _ = std::fs::remove_dir_all(root);
 }
