@@ -159,3 +159,16 @@ test('a room refused right after a kernel restart is retried; only a lasting ref
   assert.ok(r.kernel.targets.some(x => x.session_id === 'room-alpha-r1'), 'alpha was followed on the third attempt');
   assert.ok(slept.length >= 5);
 });
+
+test('a permission loopd answered before the read is not a decision; one that cannot be read is passed on as unclassified', async t => {
+  const r = await rig(t);
+  const pending = (id, cursor) => ({ ...r.event('alpha-r1', { type: 'interaction', refs: { interaction_id: id }, summary: 'Approve Claude Code Bash?', value: { state: 'pending' } }), cursor });
+  r.status['alpha-r1'] = { interactions: [] };
+  r.kernel.batches.push({ events: [pending('answered', 1)], next_cursor: 1, timed_out: false });
+  assert.deepEqual(await lanewait({ ...r.options, minutes: 1 }), []);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => { if (op === 'status') throw new Error('unreadable'); return adapter(op, input); };
+  r.kernel.batches.push({ events: [pending('unreadable', 2)], next_cursor: 2, timed_out: false });
+  const lines = await lanewait({ ...r.options, minutes: 1 });
+  assert.deepEqual(lines.map(l => [l.kind, l.reason, l.interactionId]), [['decision', 'unclassified', 'unreadable']]);
+});

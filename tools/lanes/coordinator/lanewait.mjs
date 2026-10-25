@@ -126,7 +126,8 @@ export async function lanewait(options) {
         const status = await coordinator('lanehealth', [key]).catch(() => undefined);
         const interaction = status?.interactions?.find(item => item.id === event.refs?.interaction_id);
         if (interaction) await interactionLine(key, interaction);
-        else if (!(state.decisions[key] ??= []).includes(event.refs?.interaction_id)) {
+        // Read and gone: loopd answered it before this read. Only a decision that could not be read is passed on unclassified.
+        else if (!status && !(state.decisions[key] ??= []).includes(event.refs?.interaction_id)) {
           state.decisions[key].push(event.refs?.interaction_id);
           await emit(key, 'decision', `${event.summary} [unclassified]`, { interactionId: event.refs?.interaction_id, reason: 'unclassified', choices: [] });
         }
