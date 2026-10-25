@@ -123,7 +123,7 @@ test('lanefin: status then fetch then verified bundle; running worker refused', 
   const r = await launched(t); await coordinate('lanefin', ['lane'], r.options);
   assert.deepEqual(r.calls.map(c => c.op), ['status', 'fetch', 'bundle']);
   assert.equal(r.calls.at(-1).input.sessionId, 'ops');
-  assert.equal(r.calls.at(-1).input.head, head);
+  assert.equal(r.calls.at(-1).input.head, undefined);
   r.options.adapter = async () => ({ state: 'working', currentPrompt: 'new' });
   await assert.rejects(coordinate('lanefin', ['lane'], r.options), { code: 'lane_still_running' });
 });
@@ -680,4 +680,24 @@ for (const operation of ['steer', 'deliver']) test(`${operation}: uncertain deli
   await coordinate(operation, ['lane', review], r.options);
   assert.equal(renewals, 1);
   assert.equal(commands.size, 2, 'one definitive refusal and one accepted command, replayed without a new identity');
+});
+
+test('lanefin: an acceptance row about a second worktree does not fence the primary bundle', async t => {
+  const r = await launched(t), secondaryHead = 'b'.repeat(40);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => {
+    if (op === 'fetch') {
+      await mkdir(input.directory, { recursive: true });
+      await save(join(input.directory, 'ACCEPTANCE_UPDATE.json'), { rows: [{ head: secondaryHead }] });
+      return { 'ACCEPTANCE_UPDATE.json': { acceptance: { valid: true } } };
+    }
+    if (op === 'bundle') {
+      if (input.head && input.head !== head) throw new LaneError('terminal_command_failed');
+      return { head, path: '/primary.bundle' };
+    }
+    return adapter(op, input);
+  };
+  const result = await coordinate('lanefin', ['lane'], r.options);
+  assert.equal(result.bundle.head, head);
+  assert.equal(JSON.parse(await readFile(join(r.home, 'artifacts/lane/ACCEPTANCE_UPDATE.json'), 'utf8')).rows[0].head, secondaryHead);
 });
