@@ -802,7 +802,8 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let contents = std::fs::read_to_string(path).unwrap_or_default();
-            if contents.lines().count() >= expected {
+            // The child appends each row in several writes; wait for its final newline.
+            if contents.bytes().filter(|byte| *byte == b'\n').count() >= expected {
                 return contents;
             }
             assert!(
@@ -829,6 +830,7 @@ set -eu
   printf 'argv'
   printf '\t%s' "$0"
   for arg in "$@"; do printf '\t%s' "$arg"; done
+  printf '\tmarker:%s' "${IS_SANDBOX+x}"
   printf '\n'
 } >> "$CLAUDE_TEST_TRACE"
 cat >/dev/null
@@ -856,7 +858,7 @@ cat >/dev/null
                     "CLAUDE_TEST_TRACE".to_string(),
                     trace.display().to_string(),
                 )]),
-                pty_env_remove: Vec::new(),
+                pty_env_remove: vec!["IS_SANDBOX".to_string()],
                 working_directory: Some(root.clone()),
                 structured_endpoint: None,
             },
@@ -884,12 +886,36 @@ cat >/dev/null
             .collect::<Vec<_>>();
         let latest = launches.last().expect("restarted child should log argv");
         assert!(latest.contains("\t--permission-mode\tplan"));
+        assert!(latest.ends_with("\tmarker:"));
         assert!(!latest.contains("bypassPermissions"));
         assert!(!latest.contains("--allow-dangerously-skip-permissions"));
         assert!(
             !latest.contains("\t--resume\t"),
             "a restart before native init must not resume a nonexistent conversation: {latest}"
         );
+
+        let mut yolo_run = plan_run;
+        yolo_run.set_execution_config(AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
+        restart_claude_runtime(&yolo_run, &mut binding.state, "test root YOLO restart")
+            .expect("YOLO selection should restart the provider child");
+        let trace_contents = wait_for_trace_lines(&trace, 3);
+        let latest = trace_contents.lines().last().unwrap();
+        assert!(latest.contains("\t--permission-mode\tbypassPermissions"));
+        assert_eq!(
+            latest.ends_with("\tmarker:x"),
+            unsafe { libc::geteuid() } == 0,
+            "only root YOLO restarts receive the compatibility environment"
+        );
+
+        yolo_run.set_execution_config(AgentExecutionMode::Build, AgentPermissionLevel::Required);
+        restart_claude_runtime(&yolo_run, &mut binding.state, "test required restart")
+            .expect("Required selection should restart the provider child");
+        let trace_contents = wait_for_trace_lines(&trace, 4);
+        assert!(trace_contents
+            .lines()
+            .last()
+            .unwrap()
+            .ends_with("\tmarker:"));
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use rand::RngCore;
 
 use crate::error::DaemonError;
-use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+use crate::provider::{
+    AgentEndpointMode, AgentPermissionLevel, LaunchProviderRequest, ProviderLaunchResult,
+};
 
 use super::executable_resolution::ExecutableResolutionState;
 
@@ -137,8 +139,7 @@ fn plan_claude_launch_unlocked(
         );
         let mut native = prepare_claude_native_tui_files(request)?;
         native.materialize_mcp_config(request)?;
-        let mut pty_env = claude_process_env();
-        pty_env.extend(request.provider_account_env.clone());
+        let mut pty_env = claude_process_env(request);
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
@@ -189,8 +190,7 @@ fn plan_claude_launch_unlocked(
         );
         let mut native = prepare_claude_native_tui_files(request)?;
         native.materialize_mcp_config(request)?;
-        let mut pty_env = claude_process_env();
-        pty_env.extend(request.provider_account_env.clone());
+        let mut pty_env = claude_process_env(request);
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
@@ -246,8 +246,7 @@ fn plan_claude_launch_unlocked(
         return Ok(launch);
     }
     let mut native = prepare_claude_native_tui_files(request)?;
-    let mut pty_env = claude_process_env();
-    pty_env.extend(request.provider_account_env.clone());
+    let mut pty_env = claude_process_env(request);
     pty_env.insert(
         "CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE".into(),
         "dispatched".into(),
@@ -549,8 +548,39 @@ fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<St
     names
 }
 
-fn claude_process_env() -> BTreeMap<String, String> {
-    BTreeMap::from([(CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string())])
+fn claude_process_env(request: &LaunchProviderRequest) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::from([(CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string())]);
+    env.extend(request.provider_account_env.clone());
+    apply_claude_root_yolo_environment(&mut env, request.permission_level.unwrap_or_default());
+    env
+}
+
+pub(super) fn apply_claude_root_yolo_environment(
+    env: &mut BTreeMap<String, String>,
+    permission_level: AgentPermissionLevel,
+) {
+    #[cfg(unix)]
+    let kernel_is_root = unsafe { libc::geteuid() } == 0;
+    #[cfg(not(unix))]
+    let kernel_is_root = false;
+    apply_claude_root_yolo_environment_for_user(env, permission_level, kernel_is_root);
+}
+
+fn apply_claude_root_yolo_environment_for_user(
+    env: &mut BTreeMap<String, String>,
+    permission_level: AgentPermissionLevel,
+    kernel_is_root: bool,
+) {
+    if !kernel_is_root {
+        return;
+    }
+    // Claude's undocumented marker permits bypass mode as root. Scope it to
+    // this process, and remove it when an existing run leaves YOLO.
+    if permission_level.is_yolo() {
+        env.insert("IS_SANDBOX".to_string(), "1".to_string());
+    } else {
+        env.remove("IS_SANDBOX");
+    }
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
@@ -645,6 +675,25 @@ mod tests {
 
     fn env_guard() -> crate::env_lock::EnvGuard {
         crate::env_lock::lock()
+    }
+
+    #[test]
+    fn root_yolo_environment_is_scoped_to_root_and_yolo() {
+        for kernel_is_root in [false, true] {
+            for permission in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+                let mut env = std::collections::BTreeMap::from([("OTHER".into(), "kept".into())]);
+                super::apply_claude_root_yolo_environment_for_user(
+                    &mut env,
+                    permission,
+                    kernel_is_root,
+                );
+                assert_eq!(
+                    env.get("IS_SANDBOX").map(String::as_str),
+                    (kernel_is_root && permission.is_yolo()).then_some("1"),
+                );
+                assert_eq!(env.get("OTHER").map(String::as_str), Some("kept"));
+            }
+        }
     }
 
     fn write_executable_fixture(path: &std::path::Path, contents: &str) {
@@ -807,6 +856,13 @@ mod tests {
         .with_execution_mode(AgentExecutionMode::Plan)
         .with_permission_level(AgentPermissionLevel::Yolo);
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        #[cfg(unix)]
+        assert_eq!(
+            launch.pty_env.get("IS_SANDBOX").map(String::as_str),
+            (unsafe { libc::geteuid() } == 0).then_some("1"),
+            "root Claude YOLO launches must pass the compatibility environment"
+        );
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
         std::env::remove_var("ANTHROPIC_API_KEY");
