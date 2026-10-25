@@ -4,6 +4,21 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn settle_failed_delegate_start(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store
+            .agent_lifecycle(Operation::DelegateUnavailable {
+                room: room.into(),
+                agent: agent.into(),
+                reason: crate::durable_state::agent_lifecycle::DelegateGoneReason::FailedStart,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        Ok(())
+    }
+
     pub(super) fn block_failed_prompt_task(
         &self,
         room: &str,
@@ -27,6 +42,14 @@ impl KernelRuntimeOwnedState {
                     })
             });
         if let Some(task) = task {
+            if let Some(event) = self
+                .durable_state_store
+                .agent_event_for_prompt(room, agent, prompt)?
+            {
+                if event.reply_requested {
+                    self.settle_failed_delegate_start(room, agent)?;
+                }
+            }
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);
             self.durable_state_store.agent_lifecycle(Operation::Block {
                 task: task.task_id,

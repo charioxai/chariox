@@ -1418,6 +1418,8 @@ mod agent_lifecycle_runtime;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
+#[cfg(test)]
+mod agent_reply_tests;
 mod agent_task_cancellation;
 mod agent_task_failure;
 mod agent_task_human_control_wait;

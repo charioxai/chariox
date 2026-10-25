@@ -618,6 +618,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
         | Operation::SourceOutcome { .. }
+        | Operation::DelegateUnavailable { .. }
         | Operation::Sweep { .. }
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),

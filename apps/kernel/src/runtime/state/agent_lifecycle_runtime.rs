@@ -857,6 +857,36 @@ impl KernelRuntimeState {
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
+        // Recover replies orphaned before this version, even when delivery already ended.
+        for (room, agent) in self
+            .owned
+            .durable_state_store
+            .agent_unsettled_reply_recipients()?
+        {
+            match self.owned.agent_store.get_agent(&agent) {
+                Err(DaemonError::AgentNotFound { .. }) => {
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::RetireWakes {
+                            room,
+                            agent: Some(agent),
+                            now,
+                        })?;
+                }
+                Ok(recipient) if recipient.state() == crate::agent::AgentState::Error => {
+                    self.owned.durable_state_store.agent_lifecycle(
+                        Operation::DelegateUnavailable {
+                            room,
+                            agent,
+                            reason: ledger::DelegateGoneReason::SourceLost,
+                            now,
+                        },
+                    )?;
+                }
+                Err(error) => return Err(error),
+                _ => {}
+            }
+        }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
         self.check_leased_task_connections(&tasks).await?;
         let now = crate::session::unix_epoch_ms();
