@@ -24,7 +24,7 @@ pub(super) fn advance(
     if !active && !arming {
         return Ok(());
     }
-    let previous: Option<(String, u64)> = db
+    let previous: Option<(String, i64)> = db
         .query_row(
             "SELECT instance_id,last_seen_ms FROM agent_deadline_clock WHERE id=1",
             [],
@@ -32,6 +32,13 @@ pub(super) fn advance(
         )
         .optional()
         .map_err(sql)?;
+    let previous = previous
+        .map(|(id, last)| {
+            u64::try_from(last)
+                .map(|last| (id, last))
+                .map_err(|_| error("negative lane deadline heartbeat"))
+        })
+        .transpose()?;
     if let Some((old_instance, last_seen)) = &previous {
         if old_instance != instance && active {
             let down_ms = now.saturating_sub(*last_seen);
