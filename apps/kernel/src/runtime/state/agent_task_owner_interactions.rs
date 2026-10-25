@@ -61,7 +61,7 @@ impl KernelRuntimeState {
                 let mut sessions = self.owned.session_store.write();
                 let mut latest = sessions.get_session(&task.room_id)?;
                 if let Some(current) = latest.remove_active_interaction(&id) {
-                    latest.add_active_interaction(current.with_message(message));
+                    latest.add_active_interaction(current.with_message(message.clone()));
                     sessions.restore_session(latest);
                     mutation.record();
                 }
@@ -71,7 +71,19 @@ impl KernelRuntimeState {
                     .terminal_stream
                     .notify_terminal_projection_change(&task.room_id);
             }
-            return Ok(());
+            // The card is durable; its response channel is process-local. A restored
+            // card must be superseded by a fresh registration for the same subject.
+            if self
+                .owned
+                .pending_interactions
+                .write()
+                .get(&id)
+                .is_some_and(|pending| {
+                    pending.belongs_to(&self.owned.session_store) && !pending.nobody_waits()
+                })
+            {
+                return Ok(());
+            }
         }
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &id,

@@ -156,6 +156,9 @@ pub(crate) enum WakeEnd {
 #[derive(Clone)]
 pub(crate) enum Operation {
     Outside(super::outside::Mutation),
+    AdvanceDeadlineClock {
+        now: u64,
+    },
     SetDeadline {
         room: String,
         agent: String,

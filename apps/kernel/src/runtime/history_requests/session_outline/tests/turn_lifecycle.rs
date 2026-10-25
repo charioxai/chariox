@@ -2881,3 +2881,115 @@ async fn internal_turn_outline_rehydrates_replies_without_instruction_text() {
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }
+
+#[tokio::test]
+async fn resumed_blocked_turn_history_uses_its_completed_continuation() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-resumed-blocked-history-{}-{}.db",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let original = HistoryEventTurnContext {
+        session_id: Some("session-1".into()),
+        agent_id: Some("agent-1".into()),
+        turn_id: Some("prompt-1".into()),
+        prompt_id: Some("prompt-1".into()),
+        provider_run_id: Some("run-1".into()),
+        ..Default::default()
+    };
+    let resumed = HistoryEventTurnContext {
+        turn_id: Some("task-resume-prompt-1-3".into()),
+        prompt_id: Some("task-resume-prompt-1-3".into()),
+        provider_run_id: Some("run-2".into()),
+        ..original.clone()
+    };
+    let settlement = |sequence, at, status, context| {
+        HistoryEvent::operational(
+            sequence,
+            HistoryEventKind::ProviderStatus,
+            Some(crate::history::HistoryEventRole::System),
+            None,
+            BTreeMap::from([
+                (
+                    crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY.into(),
+                    serde_json::json!(at),
+                ),
+                (
+                    crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY.into(),
+                    serde_json::json!(status),
+                ),
+            ]),
+            context,
+        )
+    };
+    let mut prompt = HistoryEvent::transcript(
+        1,
+        &SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "Complete approved work",
+        ),
+        original.clone(),
+    );
+    prompt.timestamp_ms = 1000;
+    let failed = settlement(2, 2000_u64, "failed", original);
+    let mut continuation = HistoryEvent::transcript(
+        3,
+        &SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "Owner explicitly resumed",
+        ),
+        resumed.clone(),
+    );
+    continuation.timestamp_ms = 3000;
+    let mut answer = HistoryEvent::transcript(
+        4,
+        &SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-2",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            "RESUMED_TASK_COMPLETE",
+        ),
+        resumed.clone(),
+    );
+    answer.timestamp_ms = 4000;
+    let completed = settlement(5, 5000_u64, "completed", resumed);
+    let store = OperationalHistoryStore::open(path.clone()).unwrap();
+    store
+        .append_many(&[prompt, failed, continuation, answer, completed])
+        .unwrap();
+    let response = execute_session_history_outline_request(
+        store,
+        GetSessionHistoryOutlineRequest {
+            session_id: "session-1".into(),
+            agent_ids: Some(vec!["agent-1".into()]),
+            latest_prompt_count: Some(1),
+            include_prefetched_content: false,
+            cursor: None,
+        },
+    )
+    .await
+    .unwrap();
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+        panic!("expected outline")
+    };
+    assert_eq!(agents[0].turns.len(), 1);
+    let turn = &agents[0].turns[0];
+    assert_eq!(
+        turn.summary.as_ref().unwrap().entry.text,
+        "RESUMED_TASK_COMPLETE"
+    );
+    assert_eq!(turn.completed_at_ms, Some(5000));
+    assert_eq!(
+        turn.lifecycle,
+        SessionHistoryOutlineTurnLifecycle::Completed
+    );
+}

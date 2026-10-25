@@ -3,7 +3,8 @@ use super::*;
 use crate::local::{AgentDeadline, AgentDeadlineState};
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_deadlines(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(room_id,agent_id));").map_err(sql)
+    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_deadlines(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(room_id,agent_id));CREATE INDEX IF NOT EXISTS agent_deadlines_state ON agent_deadlines(json_extract(payload,'$.state'));").map_err(sql)?;
+    super::deadline_clock::initialize(db)
 }
 
 pub(super) fn get(
@@ -39,6 +40,12 @@ pub(super) fn set(
             message: "deadline must be a positive bounded epoch millisecond".into(),
         });
     }
+    super::deadline_clock::advance(
+        db,
+        crate::session::unix_epoch_ms(),
+        super::deadline_clock::instance_id(),
+        true,
+    )?;
     if let Some(mut old) = get(db, &room, &agent)? {
         if deadline > old.deadline_ms {
             return Err(DaemonError::MachineRequest {
@@ -91,9 +98,29 @@ impl DurableKernelStateStore {
         agent: &str,
     ) -> Result<Option<AgentDeadline>, DaemonError> {
         let db = self.lock_connection("agent.deadline")?;
+        let deadline = get(&db, room, agent)?;
+        if deadline
+            .as_ref()
+            .is_none_or(|value| value.state != AgentDeadlineState::Armed)
+        {
+            return Ok(deadline);
+        }
+        drop(db);
+        self.agent_lifecycle(Operation::AdvanceDeadlineClock {
+            now: crate::session::unix_epoch_ms(),
+        })?;
+        let db = self.lock_connection("agent.deadline")?;
         get(&db, room, agent)
     }
     pub(crate) fn agent_deadlines(&self) -> Result<Vec<AgentDeadline>, DaemonError> {
+        let db = self.lock_connection("agent.deadline")?;
+        let armed: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM agent_deadlines WHERE json_extract(payload,'$.state')='armed')", [], |row| row.get(0)).map_err(sql)?;
+        drop(db);
+        if armed {
+            self.agent_lifecycle(Operation::AdvanceDeadlineClock {
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        }
         let db = self.lock_connection("agent.deadline")?;
         let mut query = db
             .prepare("SELECT payload FROM agent_deadlines ORDER BY room_id,agent_id")
@@ -101,6 +128,10 @@ impl DurableKernelStateStore {
         let rows = query
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(sql)?;
-        rows.map(|row| decode(&row.map_err(sql)?)).collect()
+        let deadlines = rows
+            .map(|row| decode(&row.map_err(sql)?))
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(query);
+        Ok(deadlines)
     }
 }

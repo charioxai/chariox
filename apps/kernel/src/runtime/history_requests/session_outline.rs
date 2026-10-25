@@ -899,23 +899,24 @@ fn outline_turn_lifecycle(
     if completed_at_ms.is_none() {
         return SessionHistoryOutlineTurnLifecycle::Open;
     }
-    if events.iter().any(|event| {
-        event
-            .metadata
-            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
-            .and_then(serde_json::Value::as_str)
-            == Some("failed")
-    }) {
-        return SessionHistoryOutlineTurnLifecycle::Failed;
-    }
-    if events.iter().any(|event| {
-        event
-            .metadata
-            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
-            .and_then(serde_json::Value::as_str)
-            == Some("cancelled")
-    }) {
-        return SessionHistoryOutlineTurnLifecycle::Cancelled;
+    // Hidden owner/wake continuations share their visible user turn. Its latest
+    // settled invocation supplies the current outcome; an interrupted invocation
+    // must not keep a genuinely completed continuation marked failed forever.
+    let latest = events
+        .iter()
+        .filter_map(|event| {
+            let at = persisted_prompt_settlement_at_ms(event)?;
+            let status = event
+                .metadata
+                .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)?
+                .as_str()?;
+            Some(((at, event.sequence), status))
+        })
+        .max_by_key(|(order, _)| *order);
+    match latest.map(|(_, status)| status) {
+        Some("failed") => return SessionHistoryOutlineTurnLifecycle::Failed,
+        Some("cancelled") => return SessionHistoryOutlineTurnLifecycle::Cancelled,
+        _ => {}
     }
     SessionHistoryOutlineTurnLifecycle::Completed
 }
