@@ -616,3 +616,36 @@ fn workflow_node_prompt_fragments_read_user_edited_registry_templates() {
         .iter()
         .any(|entry| entry.template_id == "workflow/run-intermediate-output"));
 }
+
+#[test]
+fn completing_node_is_told_an_exact_reply_task_still_needs_the_submit_tool() {
+    // A recorded Codex gpt-6-luna turn for the entry prompt "Reply with exactly: run-ok" acked the turn
+    // and then answered with the plain text `run-ok`, never calling the submit tool: the run failed
+    // with missing_structured_output in about one run in four.
+    crate::test_support::isolated_env_test!();
+    let _guard = env_lock::lock();
+    let home = temp_chariox_home("exact-reply-precedence");
+    let previous_home = set_chariox_home(&home);
+    let mut context = test_context();
+    context.node_turn = Some(WorkflowNodeTurnPromptContext {
+        turn_index: 1,
+        max_turns: None,
+        can_complete_workflow_run: true,
+        run_output_contract: None,
+        can_emit_intermediate_output: false,
+        wait_for_all_inputs: false,
+    });
+
+    let assembly = build_workflow_turn_prompt_assembly(context);
+    restore_chariox_home(previous_home);
+
+    let prompt = &assembly.hidden_system_context;
+    assert!(
+        prompt.contains("Your reply text is never the workflow run output"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("asks you to reply with exact text"),
+        "{prompt}"
+    );
+}
