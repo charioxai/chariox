@@ -303,6 +303,20 @@ test('a restored round keeps its run, queue entry and lane after every retry fai
   assert.equal((await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r9.json'), 'utf8').then(JSON.parse)).finishReason, 'finished');
 });
 
+test('the lane file records the health signals of the last status read, so a worker with no activity shows as SILENT', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'status' ? { state: 'working', currentPrompt: 'prompt', lastActivityMs: r.clock.ms - 20 * 60_000, deadline: { mode: 'kernel', state: 'armed' } } : adapter(op, input);
+  for (let i = 0; i < 6; i++) r.script.push(async () => []);
+  r.script.push(async () => { r.controller.abort(); return []; });
+  await serve(r.options);
+  const run = await runFile(r, 'alpha');
+  assert.deepEqual(run.health.flags, ['SILENT']);
+  assert.equal(run.health.state, 'working');
+  assert.ok(run.health.atMs > run.launchedAtMs);
+});
+
 test('an entry that cannot launch is retried, then ends as launch_failed with its reason', async t => {
   const r = await rig(t);
   await r.drop('alpha', 'r1');

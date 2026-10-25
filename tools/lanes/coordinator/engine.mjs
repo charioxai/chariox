@@ -251,6 +251,8 @@ export function createRound(options) {
       lane.run.statusReads++;
       let status;
       try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
+      // Kept for the coordinator: a restored worker that never resumed still reads as working, and only SILENT shows it.
+      lane.run.health = { atMs: now(), state: status.state, flags: status.flags, lastActivityMs: status.lastActivityMs };
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
       for (const interaction of status.interactions || []) await answer(lane, { refs: { interaction_id: interaction.id }, summary: interaction.title }, interaction.choices ?? []);
       if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
