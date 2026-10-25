@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { coordinate, defaultCli, save } from './loop.mjs';
 import { followLaunch } from './events.mjs';
+import { classifyDecision } from './decisions.mjs';
 import { execute } from '../lanes.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -72,23 +73,29 @@ export function createRound(options) {
   };
 
   // Routine permissions are answered for the session when the kernel offers that choice, so the worker is not asked again
-  // for the same kind of call. Events do not list the choices, so the lane's status is read for them.
-  const choiceFor = async (lane, id, offered) => {
-    try { offered ??= (await coordinator('lanehealth', [lane.entry.lane])).interactions?.find(item => item.id === id)?.choices; }
-    catch { /* the status is only a hint: a plain allow still resolves the decision */ }
-    return { offered, choiceId: offered?.includes('allow_session') ? 'allow_session' : 'allow_once' };
+  // for the same kind of call. Everything else (critical, owner hand-offs, credentials, questions, or a decision whose
+  // details cannot be read) is left for the coordinator, whose lanewait lists it with the reason.
+  const detailsFor = async (lane, id) => {
+    try { return (await coordinator('lanehealth', [lane.entry.lane])).interactions?.find(item => item.id === id); }
+    catch { return undefined; }
   };
 
   // A reply that failed stays unresolved: the next read of the lane's status lists the decision again and it is retried.
-  const answer = async (lane, event, offered) => {
-    const id = event.refs?.interaction_id;
+  const answer = async (lane, id, summary, known) => {
     if (!id || lane.run.permissions.some(p => p.interactionId === id && p.choice)) return;
-    if (!/^Approve Claude Code /.test(event.summary || '')) { if (!lane.run.unanswered.some(p => p.interactionId === id)) lane.run.unanswered.push({ interactionId: id, summary: event.summary }); return; }
+    const interaction = known ?? await detailsFor(lane, id);
+    const verdict = classifyDecision(interaction);
+    if (!verdict.routine) {
+      if (!lane.run.unanswered.some(p => p.interactionId === id)) lane.run.unanswered.push({ interactionId: id, summary: interaction?.title ?? summary, reason: verdict.reason, at_ms: now() });
+      if (verdict.reason === 'unclassified') lane.needsRead = true; // the status could not be read: look again at the next wake
+      return;
+    }
+    lane.run.unanswered = lane.run.unanswered.filter(p => p.interactionId !== id);
     let entry = lane.run.permissions.find(p => p.interactionId === id);
-    if (!entry) lane.run.permissions.push(entry = { interactionId: id, summary: event.summary, at_ms: now() });
+    if (!entry) lane.run.permissions.push(entry = { interactionId: id, summary: interaction.title, at_ms: now() });
     entry.attempts = (entry.attempts ?? 0) + 1;
-    const { offered: choices, choiceId } = await choiceFor(lane, id, offered);
-    if (choices) entry.offered = choices; // what the kernel offered, so a run shows whether allow_session was available
+    entry.offered = interaction.choices; // what the kernel offered, so a run shows whether allow_session was available
+    const choiceId = interaction.choices.includes('allow_session') ? 'allow_session' : 'allow_once';
     try {
       await respond({ kernel: lane.run.launch.kernel, taskId: lane.entry.lane, sessionId: lane.run.launch.sessionId, interactionId: id, choiceId });
       entry.choice = choiceId; delete entry.error;
@@ -106,7 +113,7 @@ export function createRound(options) {
       lane.run.events.push({ ...compact(event), kind: 'event' });
       // The agent's own last_activity_at_ms only moves at turn boundaries; event times show a worker is alive.
       lane.run.lastEventAtMs = Math.max(lane.run.lastEventAtMs ?? 0, event.at_ms ?? 0);
-      if (event.type === 'interaction' && event.value?.state === 'pending') await answer(lane, event);
+      if (event.type === 'interaction' && event.value?.state === 'pending') await answer(lane, event.refs?.interaction_id, event.summary);
       else if (event.type !== 'interaction') { touched.add(lane); lane.needsRead = true; }
     }
     for (const lane of lanes) lane.run.events = lane.run.events.slice(-KEEP_EVENTS);
@@ -254,7 +261,7 @@ export function createRound(options) {
       // Kept for the coordinator: a restored worker that never resumed still reads as working, and only SILENT shows it.
       lane.run.health = { atMs: now(), state: status.state, flags: status.flags, lastActivityMs: status.lastActivityMs };
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
-      for (const interaction of status.interactions || []) await answer(lane, { refs: { interaction_id: interaction.id }, summary: interaction.title }, interaction.choices ?? []);
+      for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
       if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
     }
     for (const lane of pending()) if (lane.run.driverError) { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }

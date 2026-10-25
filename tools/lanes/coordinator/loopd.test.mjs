@@ -401,7 +401,7 @@ test('a decision raised while no inbox followed the worker is read from its stat
   const adapter = r.options.adapter;
   const answers = [];
   r.options.adapter = async (op, input) => op === 'status' && input.taskId === 'alpha-r1' && !answers.length
-    ? { ...await adapter(op, input), interactions: [{ id: 'perm-gap', kind: 'permission', title: 'Approve Claude Code Write?' }] }
+    ? { ...await adapter(op, input), interactions: [{ id: 'perm-gap', kind: 'permission', title: 'Approve Claude Code Write?', choices: ['allow_once'] }] }
     : adapter(op, input);
   r.options.respond = async input => { answers.push(input); r.idle.add('alpha-r1'); return {}; };
   r.finished(1);

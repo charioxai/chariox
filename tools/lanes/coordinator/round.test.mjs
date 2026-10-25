@@ -10,7 +10,7 @@ const head = 'b'.repeat(40);
 
 async function rig(t, lanes = ['alpha', 'beta']) {
   const home = await mkdtemp(join(tmpdir(), 'round-')); t.after(() => rm(home, { recursive: true, force: true }));
-  const clock = { ms: 1_000_000 }, calls = [], waits = [], idle = new Set(), launches = {};
+  const clock = { ms: 1_000_000 }, calls = [], waits = [], idle = new Set(), launches = {}, interactions = {};
   const specs = [];
   for (const lane of lanes) {
     await writeFile(join(home, `${lane}.brief.src.md`), `brief ${lane}`);
@@ -27,7 +27,7 @@ async function rig(t, lanes = ['alpha', 'beta']) {
       calls.push({ op, taskId: input.taskId, input });
       if (op === 'launch') return launches[input.taskId];
       if (op === 'steer') return { ActivePromptSteered: { prompt: { id: 'steer-id' } } };
-      if (op === 'status') return { state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, deadline: { mode: 'kernel', state: 'armed' } };
+      if (op === 'status') return { state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, interactions: interactions[input.taskId] ?? [], deadline: { mode: 'kernel', state: 'armed' } };
       if (op === 'fetch') return { 'ACCEPTANCE_UPDATE.json': { missing: true, reason: 'file_not_found' } };
       if (op === 'bundle') return { base: head, head, sha256: 'c'.repeat(64), path: `/bundles/${input.taskId}.bundle` };
       return { stopped: true };
@@ -44,7 +44,7 @@ async function rig(t, lanes = ['alpha', 'beta']) {
     },
     respond: async input => { calls.push({ op: 'respond', input }); return {}; },
   };
-  return { home, clock, calls, waits, idle, options, ev, spec: { home, wakeMinutes: 5, lanes: specs } };
+  return { home, clock, calls, waits, idle, interactions, options, ev, spec: { home, wakeMinutes: 5, lanes: specs } };
 }
 
 test('newSections splits appended sections and ignores earlier bytes', () => {
@@ -55,6 +55,7 @@ test('newSections splits appended sections and ignores earlier bytes', () => {
 
 test('round: permission answered, note delivered once, finish collected, hard stop stops', async t => {
   const r = await rig(t);
+  r.interactions.alpha = [{ id: 'claude-permission-1', kind: 'permission', title: 'Approve Claude Code Read?', choices: ['allow_once'] }];
   r.waits.push({ events: [r.ev('alpha', { at_ms: 123_456, type: 'interaction', refs: { interaction_id: 'claude-permission-1' }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } }),
     r.ev('beta', { type: 'interaction', refs: { interaction_id: 'ask-1' }, summary: 'Question for the user', value: { state: 'pending' } })] });
   r.waits.push({});
@@ -255,7 +256,7 @@ test('round: a permission reply that failed is retried from the lane status unti
   const adapter = r.options.adapter;
   r.options.adapter = async (op, input) => {
     const status = await adapter(op, input);
-    return op === 'status' && !r.calls.some(c => c.op === 'respond') ? { ...status, interactions: [{ id: 'claude-permission-1', kind: 'permission', title: 'Approve Claude Code Read?' }] } : status;
+    return op === 'status' && !r.calls.some(c => c.op === 'respond') ? { ...status, interactions: [{ id: 'claude-permission-1', kind: 'permission', title: 'Approve Claude Code Read?', choices: ['allow_once'] }] } : status;
   };
   r.waits.push({ events: [r.ev('alpha', { type: 'interaction', refs: { interaction_id: 'claude-permission-1' }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } })] });
   r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
@@ -292,6 +293,7 @@ test('round: events consumed while another lane stops are handled even when its 
   r.spec.lanes[0].hardStopMinutes = 2;
   const cli = r.options.cli;
   let combined = false;
+  r.interactions.beta = [{ id: 'claude-permission-9', kind: 'permission', title: 'Approve Claude Code Read?', choices: ['allow_once'] }];
   r.options.cli = async argv => {
     if (argv[1] === 'wait' && r.calls.some(c => c.op === 'stop')) {
       if (combined) { r.clock.ms += 60_000; return { events: [], timed_out: true, next_cursor: 0 }; }
@@ -327,4 +329,18 @@ test('round: a routine permission is answered for the session when the kernel of
   assert.deepEqual(r.calls.filter(c => c.op === 'respond').map(c => [c.input.interactionId, c.input.choiceId]), [['claude-permission-1', 'allow_session'], ['claude-permission-2', 'allow_once']]);
   assert.deepEqual(run.permissions.map(p => p.choice), ['allow_session', 'allow_once']);
   assert.deepEqual(run.permissions.map(p => p.offered), [['allow_once', 'allow_session', 'deny'], ['allow_once', 'deny']], 'the run records what the kernel offered');
+});
+
+test('round: critical, credential and unreadable decisions are left for the coordinator, not answered', async t => {
+  const r = await rig(t, ['alpha']);
+  const permission = (id, extra) => ({ id, kind: 'permission', level: 'warning', title: 'Approve Claude Code Bash?', choices: ['allow_once', 'allow_session'], ...extra });
+  r.interactions.alpha = [permission('crit', { level: 'critical' }), permission('cred', { title: 'Approve Claude Code passkey entry?' }), permission('ok')];
+  const pending = id => r.ev('alpha', { type: 'interaction', refs: { interaction_id: id }, summary: 'Approve Claude Code Bash?', value: { state: 'pending' } });
+  r.waits.push({ events: [pending('crit'), pending('cred'), pending('ok'), pending('missing')] });
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const before = r.options.cli;
+  r.options.cli = async argv => { if (argv[1] === 'wait' && r.waits.length === 1) r.idle.add('alpha'); return before(argv); };
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.deepEqual(r.calls.filter(c => c.op === 'respond').map(c => c.input.interactionId), ['ok'], 'only the routine one is answered');
+  assert.deepEqual(alpha.unanswered.map(u => [u.interactionId, u.reason]), [['crit', 'critical'], ['cred', 'credential_related'], ['missing', 'unclassified']]);
 });
