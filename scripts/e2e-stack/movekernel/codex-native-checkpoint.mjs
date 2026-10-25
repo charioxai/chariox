@@ -86,8 +86,9 @@ try{
  await command(sourceTui,'permissions required');await command(sourceTui,'agent variant '+await focus(sourceTui)+' low');
  marker='orchid-'+randomBytes(12).toString('hex');
  const sourceTurn=await turn(sourceTui,'Remember this marker for our next task: '+marker+'. Reply only ACK. Do not use tools or create agents.');
+ sourceRun=await run(source,sourceTui);
  if(sourceTurn.snapshot.session.agents.find(a=>a.id===sourceTurn.snapshot.session.focusedAgentId)?.state==='Error'||!entries(sourceTurn.snapshot).some(r=>r.role==='assistant'&&(r.text??'').includes('ACK')))throw Error('The real source provider turn did not succeed');
- sourceRun=await run(source,sourceTui);if(!sourceRun.provider_session_id)throw Error('Source has no real native thread');
+ if(!sourceRun.provider_session_id)throw Error('Source has no real native thread');
  summary.steps.push({sourceRealTurn:true,model:sourceRun.model,variant:sourceRun.variant});await save();
  const homeBefore=sourceTurn.snapshot.session;
  try{await source.client.send({MoveAgentToRemote:{session_id:homeBefore.id,agent_ref:homeBefore.focusedAgentId,machine_ref:target.status.machine_id}});throw Error('Unexpected lease move admission before checkpoint composition');}
@@ -144,7 +145,7 @@ finally{
  if(left.length)await sleep(1000);
  const remaining=processes().filter(p=>owned.has(p.pid)&&owned.get(p.pid).start===p.start&&p.state!=='Z');
  for(const p of remaining){if(!Number.isInteger(p.pid)||p.pid<=1)throw Error('Invalid owned cleanup PID');process.kill(p.pid,'SIGKILL');}
- if(sourceRun&&sourceStack&&summary.sourceNativeSessionRemoved!==true)try{await adapter('delete',sourceStack,sourceRun,profile);summary.sourceNativeSessionRemoved=true;}catch{summary.sourceNativeSessionRemoved=false;summary.passed=false;}
+ if(sourceRun?.provider_session_id&&sourceStack&&summary.sourceNativeSessionRemoved!==true)try{await adapter('delete',sourceStack,sourceRun,profile);summary.sourceNativeSessionRemoved=true;}catch{summary.sourceNativeSessionRemoved=false;summary.passed=false;}
  summary.cleanup={remainingOwnedProcesses:processes().filter(p=>owned.has(p.pid)&&owned.get(p.pid).start===p.start&&p.state!=='Z').map(p=>p.pid)};
  if(summary.cleanup.remainingOwnedProcesses.length)summary.passed=false;
  for(const name of ['source','target'])try{const raw=await readFile(root+'/'+name+'/tui.ansi','utf8'),safe=marker?raw.split(marker).join('<native-context-marker>'):raw;const plain=safe.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'');if(/Bearer\s+[A-Za-z0-9._-]{12,}|sk-[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{20,}|-----BEGIN.*PRIVATE KEY/.test(plain)){summary.cleanup.captureRefused=true;}else await writeFile(evidence+'/'+name+'-tui.ansi.gz',gzipSync(safe),{mode:0o600});}catch{}
