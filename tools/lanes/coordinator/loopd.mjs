@@ -6,9 +6,11 @@ import { setTimeout as sleepFor } from 'node:timers/promises';
 import { LaneError, save, execute } from '../lanes.mjs';
 import { createRound } from './engine.mjs';
 import { openInbox } from './events.mjs';
+import { claudeProfileFor } from './account-profile.mjs';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}$/;
+const LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/;
 const LAUNCH_ATTEMPTS = 5;
 // What a worker leaves for the coordinator in agents/<lane>/; each round starts with none of them.
@@ -28,6 +30,10 @@ export function parseEntry(fileName, text) {
   if (!['claude', 'codex'].includes(raw.provider)) invalid('provider', 'must be claude or codex');
   if (typeof raw.model !== 'string' || !MODEL.test(raw.model)) invalid('model', 'must be a model id');
   if (!EFFORTS.includes(raw.effort)) invalid('effort', `must be one of ${EFFORTS.join(', ')}`);
+  if (raw.account !== undefined) {
+    if (raw.provider !== 'claude') invalid('account', 'is a Claude account profile label; the entry provider must be claude');
+    if (typeof raw.account !== 'string' || !LABEL.test(raw.account)) invalid('account', 'must be a Claude account profile label (letters, digits, . _ -)');
+  }
   if (!Number.isSafeInteger(raw.hardStopMinutes) || raw.hardStopMinutes < 1 || raw.hardStopMinutes > 1440) invalid('hardStopMinutes', 'must be a whole number of minutes, 1..1440');
   if (!absolute(raw.brief)) invalid('brief', 'must be an absolute path');
   if (raw.notes !== undefined && !absolute(raw.notes)) invalid('notes', 'must be an absolute path');
@@ -41,7 +47,7 @@ export function parseEntry(fileName, text) {
     if (worktree.base !== undefined && !/^[a-f0-9]{40}$/.test(worktree.base)) invalid(`worktrees[${index}].base`, 'must be a full 40-character commit id');
     return { path: worktree.path, base: worktree.base };
   });
-  return { lane: raw.lane, round: raw.round, key: `${raw.lane}-${raw.round}`, provider: raw.provider, model: raw.model, effort: raw.effort, hardStopMinutes: raw.hardStopMinutes, brief: raw.brief, preamble, notes: raw.notes, worktrees };
+  return { lane: raw.lane, round: raw.round, key: `${raw.lane}-${raw.round}`, provider: raw.provider, model: raw.model, effort: raw.effort, account: raw.account, hardStopMinutes: raw.hardStopMinutes, brief: raw.brief, preamble, notes: raw.notes, worktrees };
 }
 
 export async function serve(options) {
@@ -85,6 +91,9 @@ export async function serve(options) {
 
   // Bases are fixed at the first sighting of an entry, so a restarted service bundles the same round.
   const prepare = async entry => {
+    // An account the kernel cannot use is refused before the round touches the lane. A started round keeps the profile
+    // its launch receipt fixed; only a new one asks the kernel which profile the label is.
+    const profile = entry.account && !await exists(join(home, `${entry.key}.json`)) ? await claudeProfileFor({ cli: round.cli, kernel: config.kernel, label: entry.account }) : undefined;
     const specPath = join(home, 'rounds', `${entry.key}.spec.json`);
     const laneDirectory = join(layout.agents, entry.lane);
     let spec; try { spec = await read(specPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -104,7 +113,7 @@ export async function serve(options) {
     // A file left by another round (or by a driver that predates round ids) stays next to the new one.
     const previous = await read(join(laneDirectory, 'LOOP_RUN.json')).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
     if (previous && previous.round !== entry.round) await copyFile(join(laneDirectory, 'LOOP_RUN.json'), join(laneDirectory, `LOOP_RUN.${previous.round ?? `legacy-${previous.launchedAtMs}`}.json`));
-    config.laneProfiles[entry.key] = { model: entry.model, effort: entry.effort, deadlineSeconds: (entry.hardStopMinutes + 15) * 60 };
+    config.laneProfiles[entry.key] = { model: entry.model, effort: entry.effort, ...(profile && { profile }), deadlineSeconds: (entry.hardStopMinutes + 15) * 60 };
     config.laneDirectories[entry.key] = laneDirectory;
     config.bases[entry.key] = spec.bases[0];
     return {
@@ -174,6 +183,7 @@ export async function serve(options) {
         attempts.delete(key);
         log('picked_up', { key });
       } catch (error) {
+        if (error.code === 'account_unavailable') { await reject(`${key}.json`, error); continue; }
         const count = (attempts.get(key)?.count ?? 0) + 1;
         attempts.set(key, { count, nextAtMs: now() + retryMs });
         log('launch_error', { key, count, code: error.code, message: error.message });

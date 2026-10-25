@@ -15,7 +15,7 @@ async function rig(t) {
   const root = await mkdtemp(join(tmpdir(), 'loopd-')); t.after(() => rm(root, { recursive: true, force: true }));
   const layout = { agents: join(root, 'agents'), queue: join(root, 'agents', '_loop', 'queue'), home: join(root, 'home') };
   await mkdir(layout.queue, { recursive: true });
-  const clock = { ms: 1_000_000 }, calls = [], idle = new Set(), launches = new Map(), script = [], controller = new AbortController(), logs = [];
+  const clock = { ms: 1_000_000 }, calls = [], idle = new Set(), launches = new Map(), script = [], controller = new AbortController(), logs = [], profiles = [];
   const config = { kernel: 'executor', providers: { claude: { profile: 'p', model: 'm', effort: 'high', permission: 'required' }, codex: { profile: 'c', model: 'g', effort: 'low', permission: 'yolo' } } };
   const brief = join(root, 'BRIEF.md'); await writeFile(brief, 'the brief');
   const drop = async (lane, round, extra) => writeFile(join(layout.queue, `${lane}-${round}.json`), JSON.stringify(entryFile(lane, round, { brief, ...extra })));
@@ -36,6 +36,7 @@ async function rig(t) {
     },
     cli: async argv => {
       calls.push({ argv });
+      if (argv[0] === 'request') return { ProviderAccountProfilesListed: { profiles } };
       if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [...launches.keys()].flatMap(key => [{ kernel: 'executor', session_id: `room-${key}` }, { kernel: 'executor', session_id: `room-${key}`, agent_id: `agent-${key}` }, { kernel: 'executor', session_id: `ops-${key}` }]) } };
       if (argv[1] === 'wait') {
         clock.ms += 15_000;
@@ -50,7 +51,7 @@ async function rig(t) {
     respond: async () => ({}),
   };
   const finished = count => { const watcher = options.log; options.log = (kind, detail) => { watcher(kind, detail); if (logs.filter(l => l.kind === 'finished').length >= count) controller.abort(); }; };
-  return { root, layout, clock, calls, idle, script, controller, options, logs, drop, ev, finished, launches };
+  return { root, layout, clock, calls, idle, script, controller, options, logs, drop, ev, finished, launches, profiles };
 }
 const runFile = (r, lane) => readFile(join(r.layout.agents, lane, 'LOOP_RUN.json'), 'utf8').then(JSON.parse);
 
@@ -115,6 +116,69 @@ test('serve passes the entry model, effort and deadline to launch and keeps lane
   assert.equal(launch.taskId, 'alpha-r1');
   assert.equal(launch.deadlineMs, 1_000_000 + (90 + 15) * 60_000, 'deadline = hard stop plus margin from the first sighting');
   assert.equal(launch.remoteBrief.startsWith(join(r.layout.agents, 'alpha')), true);
+});
+
+const profile = (label, id, extra = {}) => ({ provider: 'claude', label, profile_id: id, origin: 'chariox_created', auth_state: 'authenticated', ...extra });
+
+test('parseEntry takes an account label only for a claude entry', () => {
+  assert.equal(parseEntry('a-r1.json', JSON.stringify(entryFile('a', 'r1', { account: 'lanes-claude-old' }))).account, 'lanes-claude-old');
+  assert.equal(parseEntry('a-r1.json', JSON.stringify(entryFile('a', 'r1'))).account, undefined);
+  for (const extra of [{ provider: 'codex', account: 'lanes-claude-old' }, { account: '../old' }, { account: 7 }, { account: '' }]) {
+    assert.throws(() => parseEntry('a-r1.json', JSON.stringify(entryFile('a', 'r1', extra))), error => error.code === 'invalid_queue_entry' && error.message.startsWith('account'), JSON.stringify(extra));
+  }
+});
+
+test('serve launches an entry with an account on the profile the kernel lists for that label, and others on the default', async t => {
+  const r = await rig(t);
+  r.profiles.push(profile('lanes-claude', 'lanes-claude-aaaa'), profile('lanes-claude-old', 'lanes-claude-old-bbbb'));
+  await r.drop('alpha', 'r1', { account: 'lanes-claude-old' });
+  await r.drop('beta', 'r1');
+  r.idle.add('alpha-r1'); r.idle.add('beta-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } }), r.ev('beta-r1', { type: 'agent', value: { state: 'idle' } })]);
+  r.finished(2);
+  await serve(r.options);
+  assert.equal(r.calls.find(c => c.op === 'launch' && c.taskId === 'alpha-r1').input.profile, 'lanes-claude-old-bbbb');
+  assert.equal(r.calls.find(c => c.op === 'launch' && c.taskId === 'beta-r1').input.profile, 'p');
+  const lookups = r.calls.filter(c => c.argv?.[0] === 'request');
+  assert.equal(lookups.length, 1, 'only the entry that names an account asks the kernel');
+  assert.deepEqual(lookups[0].argv, ['request', '--kernel', 'executor']);
+});
+
+test('serve rejects an account the kernel does not know, cannot use, or lists twice, and keeps serving the rest', async t => {
+  const r = await rig(t);
+  r.profiles.push(profile('lanes-claude', 'lanes-claude-aaaa'), profile('lanes-claude-cold', 'lanes-claude-cold-cccc', { auth_state: 'unauthenticated' }),
+    profile('lanes-claude-twin', 'lanes-claude-twin-1'), profile('lanes-claude-twin', 'lanes-claude-twin-2'), profile('lanes-claude-codexish', 'x-1', { provider: 'codex' }));
+  for (const [lane, account] of [['ghost', 'lanes-claude-ghost'], ['cold', 'lanes-claude-cold'], ['twin', 'lanes-claude-twin'], ['codexish', 'lanes-claude-codexish']]) await r.drop(lane, 'r1', { account });
+  await r.drop('alpha', 'r1');
+  r.idle.add('alpha-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]);
+  r.finished(1);
+  await serve(r.options);
+  const reason = lane => readFile(join(r.layout.queue, 'rejected', `${lane}-r1.json.reason.txt`), 'utf8');
+  assert.match(await reason('ghost'), /^account_unavailable: account: no Claude profile is labelled lanes-claude-ghost; known labels: lanes-claude, lanes-claude-cold, lanes-claude-twin/);
+  assert.match(await reason('cold'), /^account_unavailable: account: lanes-claude-cold is unauthenticated; run lanes-kernel\.mjs set-claude-credential --profile lanes-claude-cold --from <token-file>/);
+  assert.match(await reason('twin'), /^account_unavailable: account: 2 Claude profiles are labelled lanes-claude-twin/);
+  assert.match(await reason('codexish'), /^account_unavailable: account: no Claude profile is labelled lanes-claude-codexish/);
+  assert.equal(r.calls.filter(c => c.op === 'launch' && c.taskId !== 'alpha-r1').length, 0);
+  assert.deepEqual((await readdir(join(r.layout.home, 'rounds'))).filter(file => /^(ghost|cold|twin|codexish)/.test(file)), [], 'a refused entry leaves no round state');
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
+});
+
+test('a resumed round does not ask the kernel for its account again', async t => {
+  const r = await rig(t);
+  r.profiles.push(profile('lanes-claude-old', 'lanes-claude-old-bbbb'));
+  await r.drop('alpha', 'r1', { account: 'lanes-claude-old' });
+  r.script.push(async () => { r.controller.abort(); return []; });
+  await serve(r.options);
+  const lookups = () => r.calls.filter(c => c.argv?.[0] === 'request').length;
+  assert.equal(lookups(), 1);
+  r.profiles.length = 0;
+  const again = new AbortController(); r.options.signal = again.signal; r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'finished') again.abort(); };
+  r.idle.add('alpha-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]);
+  await serve(r.options);
+  assert.equal(lookups(), 1, 'the receipt already fixed the profile');
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
 });
 
 test('serve rejects a bad entry with its reason and keeps serving the good one', async t => {
