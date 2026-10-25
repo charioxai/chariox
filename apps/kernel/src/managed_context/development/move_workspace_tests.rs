@@ -266,6 +266,18 @@ fn mk02_directory_uses_project_private_file_choices() {
         !paths.contains(&"private.txt"),
         "unselected ignored files must stay home"
     );
+    let imported = import_development_context(DevelopmentContextImportRequest {
+        archive_path: exported.archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: "move-project".into(),
+        expected_source_repositories: None,
+        destination_root: root.join("selected-target"),
+    }).unwrap();
+    let restored = &imported.repositories[0].destination_path;
+    assert_eq!(fs::read(restored.join("private/needed.bin")).unwrap(), b"selected\0bytes\n");
+    assert!(!restored.join("private/stays.txt").exists());
+    assert!(!restored.join("unselected").exists());
+
 }
 
 #[test]

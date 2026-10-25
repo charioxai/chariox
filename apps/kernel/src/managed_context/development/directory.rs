@@ -166,6 +166,19 @@ pub(super) fn snapshot(
             }
         }
     }
+    // Selected children of ignored directories still need declared parents.
+    // Do not publish unrelated ignored directories that were only traversed.
+    let mut parents = BTreeSet::new();
+    for path in directories.iter().chain(files.iter()) {
+        let mut current = path.as_str();
+        while let Some((parent, _)) = current.rsplit_once('/') {
+            if !directories.contains(parent) && parents.insert(parent.to_string()) {
+                budget.consume(parent.len() + 256)?;
+            }
+            current = parent;
+        }
+    }
+    directories.extend(parents);
     let mut stored = BTreeSet::new();
     let mut pending_objects = BTreeMap::new();
     let mut size = 0;
