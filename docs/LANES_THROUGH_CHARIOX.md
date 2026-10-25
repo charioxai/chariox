@@ -422,3 +422,18 @@ What #1080 af52049173 changes for the loop: a restored turn that nothing identif
   was never checked, so a failure before lanewait's grant (or in an event gap) stayed silent, and loopd's round only finishes on
   `idle`. `lanehealth` now flags `ERROR` when the agent state is `error`, and lanewait reports it as an `error` line on its first
   health read, once per episode (the failure event and the health read do not both report it).
+
+### r14: review of 40e27d94b (four findings)
+
+- **Direct prompt vs collection (P1).** `steer` and loopd's collection of an idle worker now take one per-lane lock (`<lane>.admission.lock` in the
+  coordinator home, `coordinator/lane-lock.mjs`). Under the lock loopd reads the worker again; a prompt admitted since the idle read defers
+  the collection (`collect_deferred`) and the lane is read again at the next wake, and a `lane_still_running` from the bundle step is a deferral,
+  never a failed collection that stops the worker. A steer that waited for a collection finds the round over and says `lane_not_running`
+  (deliver.sh then only appends). A lock left by a dead holder is taken over after 3 min (steer) or by loopd itself (15 min for others).
+- **Pending command (P2).** The direct ledger now saves `pending` (operation, command or steer id, expected turn, the note text and its section
+  hashes) before anything is sent. A retry and loopd's inbox fallback replay that exact operation; a definite `prompt_steer_rejected` clears it.
+- **Section boundaries (P2).** One `newSections` (`coordinator/sections.mjs`) cuts notes for both sides; the ledger records each section's hash
+  next to the whole-note hash, so a note with several headings is not delivered again section by section.
+- **Legacy receipt (P2).** `steer` and `answer` resolve a lane name to the running round first; an old classic receipt of the same name is only
+  used when no round is running.
+- Live on a drill pair (installed copy of this head): a two-heading note steered mid-turn gave one line, both files were created and loopd recorded two `direct-steered` notes with no second delivery; after the round a note was appended only ("no round under loopd"); no lock directory was left.
