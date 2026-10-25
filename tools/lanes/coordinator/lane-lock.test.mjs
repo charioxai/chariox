@@ -64,3 +64,17 @@ test('lock acquisition and release need no external flock utility', async t => {
   const code = await new Promise(resolve => child.once('close', resolve));
   assert.equal(code, 0, stderr);
 });
+
+test('the portable lock also excludes an already running legacy Linux flock holder', { skip: process.platform !== 'linux' }, async t => {
+  const { spawn } = await import('node:child_process');
+  const { once } = await import('node:events');
+  const home = await mkdtemp(join(tmpdir(), 'lane-lock-migration-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const legacy = spawn('flock', ['--exclusive', join(home, 'lane.admission.flock'), 'sh', '-c', 'printf "locked\\n"; cat >/dev/null']);
+  const exited = once(legacy, 'close');
+  t.after(async () => { legacy.stdin.end(); await exited; });
+  await once(legacy.stdout, 'data');
+  const lock = await tryLaneLock(home, 'lane', 'steer');
+  if (lock) t.after(() => releaseLaneLock(lock));
+  assert.equal(lock, undefined, 'a live pre-upgrade collector still owns the lane');
+});

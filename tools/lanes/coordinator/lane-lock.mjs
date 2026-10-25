@@ -1,5 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11: serialize direct prompts with collection for the entire operation.
 import { stat, readFile, rm, realpath } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -19,6 +20,20 @@ export async function tryLaneLock(home, name, owner, now = Date.now) {
   if (!acquired) return undefined;
   const handle = { server };
   try {
+    // A frozen pre-upgrade Linux collector can still own its persistent flock inode.
+    // Bridge it only while that legacy inode exists; fresh installs and macOS use Node alone.
+    const legacy = join(home, `${name}.admission.flock`);
+    if (process.platform === 'linux' && await stat(legacy).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) {
+      const child = spawn('flock', ['--exclusive', '--nonblock', legacy, 'sh', '-c', 'printf "locked\\n"; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      child.stdin.on('error', () => {});
+      const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+      const acquired = await Promise.race([
+        new Promise(resolve => child.stdout.once('data', () => resolve(true))),
+        exited.then(code => { if (code === 1) return false; throw new Error(`legacy lane lock failed (${code}); finish the old loopd upgrade before retrying`); }),
+      ]);
+      if (!acquired) { await releaseLaneLock(handle); return undefined; }
+      handle.legacy = { child, exited };
+    }
     // Bridge directory locks left by the previous driver. Migration is itself under the listener lock.
     const dir = join(home, `${name}.admission.lock`);
     const held = await stat(dir).catch(error => { if (error.code !== 'ENOENT') throw error; });
@@ -34,7 +49,10 @@ export async function tryLaneLock(home, name, owner, now = Date.now) {
 }
 
 export async function releaseLaneLock(handle) {
-  handle.release ??= new Promise((resolve, reject) => handle.server.close(error => error ? reject(error) : resolve()));
+  handle.release ??= (async () => {
+    if (handle.legacy) { handle.legacy.child.stdin.end(); await handle.legacy.exited; }
+    await new Promise((resolve, reject) => handle.server.close(error => error ? reject(error) : resolve()));
+  })();
   await handle.release;
 }
 
