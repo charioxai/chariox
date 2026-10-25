@@ -305,3 +305,19 @@ integ2 r35 and webterm2 r15 were not run by loopd. The drill above used the same
 models. What a real entry still has to show: a multi-hour lane, `REVIEW_INBOX.md` sections delivered live, a second
 repository through `extraBundles`, and the Mac's `lanes.sh` / `watch.sh` reading `LOOP_RUN.json`. loopd stays running
 for the first one.
+
+## dogfood r11: loopd's restart P1 and two P2s, while it served the coordinator's rounds
+
+The incremental review of `b1361dd3bf` had one P1 and two P2s in loopd. Each is fixed with a fail-first test (fake adapters); the live drills below ran through the installed loopd while it kept serving `amint-r21` and `webterm2-r15`.
+
+| Finding | Fix | Live proof |
+| --- | --- | --- |
+| P1: a restart admitted a queued round before restoring the running one (`alpha-r10` sorts before `alpha-r9`) | `scan` reads every queue entry first and admits the ones whose `LOOP_RUN.json` shows a launched, unfinished round before any waiting entry; the one-round-per-lane guard then holds the rest. | `loopdrillr11-r9` running and `-r10` queued; loopd stopped and started: `picked_up loopdrillr11-r9` only, r10 `picked_up` 2 s after r9 `finished` (`p1-restart.txt`, `loopd-log-drill.txt`). |
+| P2: the next round read the previous round's handoff files | When a round is first admitted (before its worker exists) `PUSH_READY.md`, `LANE_STATUS.md` and `ACCEPTANCE_UPDATE.json` of the lane are renamed `<name>.<previous round>.<ext>`. Admission is keyed on the round's spec file, so a resume moves nothing. The live file for the current round stays at `agents/<lane>/PUSH_READY.md`. | r9 left a valid `ACCEPTANCE_UPDATE.json` (head `45e280a2be`); r10 wrote none and was hard-stopped: `hard_stop`, head `d8183333d1` equals the worktree HEAD, no `acceptanceIssues`, no `collectError`, r9's files only under `*.r9.*`. |
+| P2: events consumed while a stop waited for a removal that never came were lost | `confirmRemoval` puts the archives it consumed on the `stop_confirmation_timeout` error; the engine handles them before it softens the error. An empty wake is no longer listed as an archive (it is never written). | Unit regression only: alpha's removal never arrives, beta's pending permission and completion still reach the engine. |
+
+Also in this round:
+
+- **Preamble.** A queue entry may list `preamble` files (absolute paths, up to 8). loopd writes `rounds/<key>.brief.md` once at admission (brief, then each file, separated by a blank line) and launches with that, so the wrapper no longer pastes `common.md` itself. `loopbrief.sh` sends `PREAMBLE` (space-separated paths) or, if it is unset and `agents/common.md` exists, that file. A missing file ends the entry as `launch_failed` with `preamble_unavailable` naming it. Live: the drill rounds ran with a one-line preamble (`rounds/loopdrillr11-r9.brief.md`).
+- **Permissions.** The lane status lists each decision's choice ids. The engine answers a routine `Approve Claude Code …` decision with `allow_session` when it is offered, else `allow_once`; events carry no choices, so the status is read first. Critical, passkey and credential decisions are not touched. The running kernel (`e46dcc0ce6`) offers no `allow_session` yet, so the live drill still recorded 80 `allow_once` answers.
+- **Install and carry-over.** `loopd install` (HEAD `aa3a21a729`) and a plain `loopd stop/start` restarted loopd twice with `amint-r21` and `webterm2-r15` running: the log shows `stopped … stillRunning` naming both, then `picked_up` for both within a second; agent and session ids and `launchedAtMs` are unchanged in their `LOOP_RUN.json` files, and their permission counts kept rising (`install-before.txt`, `install-after.txt`).

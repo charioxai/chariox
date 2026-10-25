@@ -17,6 +17,21 @@ Both kernels are the exact OSS #1080 build `e46dcc0ce6` (upgraded from `f2220d93
 binaries stay in `bin.prev/`); hashes and worktree are in `PROVENANCE.json`. The Rust binaries were built through `agents/cargo-slot.sh` and
 copied out of the slot into `bin/`.
 
+## Upgrading the runtime
+
+Only when no coordinator round is running (`status` shows `loopd.queued: 0`, or the queue holds only entries that
+are waiting): a kernel restart ends the `until-exit` grant of the old holder and any decision nobody answers
+within 300 s is denied. The binaries can be built at any time, because the running kernels use copies in `bin/`.
+
+1. In `/root/work/agent-dogfood/lanes-kernel` (detached checkout of the new head): `touch` the sources, then
+   `agents/cargo-slot.sh cargo build -p chariox-kernel --bin chariox-kernel --bin chariox-cli -p chariox-relay` (dev profile, `CARGO_BUILD_JOBS=4`,
+   `TMPDIR` under the state dir). Copy `chariox-kernel`, `chariox-cli` (installed as `chariox`) and `chariox-relay` out of the slot's `target/debug`
+   into `bin.next/`, check with `strings` that they embed that worktree, and write their sha256 to `PROVENANCE.json`.
+2. `lanes-kernel.mjs stop`, then `mv bin bin.prev && mv bin.next bin`, then `lanes-kernel.mjs start` (about 15 s).
+3. Check `status`, `chariox access status` through `exec`, and that loopd resumed every lane it listed in `stopped.stillRunning`.
+
+From `c76466e0be` the kernel offers Claude `allow_session` on routine permissions; the loop picks it by itself.
+
 ## State layout
 
 ```
