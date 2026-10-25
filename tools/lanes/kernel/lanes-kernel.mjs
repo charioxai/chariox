@@ -34,7 +34,8 @@ const kernelPid = role => ownedPid(role, file(role, 'kernel.pid'), kernelBinary)
 function roleEnv(role) {
   const root = dir(role);
   return {
-    PATH: `${config.toolchain}/cargo/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin`,
+    // The sbin directories are part of the standard root PATH: workers run ufw, ip, iptables and the like.
+    PATH: `${config.toolchain}/cargo/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
     HOME: join(root, 'home'), SHELL: '/bin/bash', TMPDIR: join(root, 'tmp'),
     CARGO_HOME: `${config.toolchain}/cargo`, RUSTUP_HOME: `${config.toolchain}/rustup`,
     XDG_CONFIG_HOME: join(root, 'xdg-config'), XDG_STATE_HOME: join(root, 'xdg-state'), XDG_CACHE_HOME: join(root, 'xdg-cache'),
@@ -216,17 +217,30 @@ function writeLoopConfig() {
   writeFileSync(path, JSON.stringify(loop, null, 2) + '\n', { mode: 0o600 });
 }
 
-const holderSocket = join(STATE, 'holder.sock'), holderPidFile = join(STATE, 'holder.pid');
-const holderPid = () => {
-  if (!existsSync(holderPidFile)) return undefined;
-  const pid = Number(readText(holderPidFile));
-  return Number.isSafeInteger(pid) && pid > 1 && pidAlive(pid) && readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('lanes-kernel.mjs\0holder') ? pid : undefined;
+// Two holders: loopd's (the round service) and the coordinator's own. Each has its own until-exit access grant, so each has its
+// own event inbox: the coordinator's session waits on worker events without taking them from loopd.
+const SEATS = {
+  loopd: { socket: 'holder.sock', pidFile: 'holder.pid', log: 'holder.log', argv: ['holder'] },
+  coordinator: { socket: 'coordinator-holder.sock', pidFile: 'coordinator-holder.pid', log: 'coordinator-holder.log', argv: ['holder', 'coordinator'] },
+};
+const seatOf = name => SEATS[name ?? 'loopd'] ?? (() => { throw new Error(`unknown seat ${name}; use ${Object.keys(SEATS).join(' or ')}`); })();
+const holderPid = seat => {
+  const { pidFile, argv } = seatOf(seat);
+  if (!existsSync(join(STATE, pidFile))) return undefined;
+  const pid = Number(readText(join(STATE, pidFile)));
+  if (!Number.isSafeInteger(pid) || pid <= 1 || !pidAlive(pid)) return undefined;
+  try {
+    const args = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0'); args.pop();
+    return args[1]?.endsWith('lanes-kernel.mjs') && args.slice(2).join(' ') === argv.join(' ') ? pid : undefined;
+  } catch { return undefined; }
 };
 
 // The holder is the long-lived ancestor an until-exit access grant binds to; exec runs commands beneath it.
-function runHolder() {
-  const env = { ...roleEnv('coordinator'), CHARIOX_BIN: join(STATE, 'bin/chariox'), CHARIOX_COORDINATOR_HOME: join(STATE, 'loop'), CHARIOX_CLI_ACCESS_HOLDER_PID: String(process.pid), ...(config.agents && { LOOPD_AGENTS: config.agents }) };
-  try { unlinkSync(holderSocket); } catch {}
+function runHolder(seatName) {
+  const seat = seatOf(seatName);
+  const socketPath = join(STATE, seat.socket);
+  const env = { ...roleEnv('coordinator'), CHARIOX_BIN: join(STATE, 'bin/chariox'), CHARIOX_COORDINATOR_HOME: join(STATE, 'loop'), CHARIOX_CLI_ACCESS_HOLDER_PID: String(process.pid), ...(config.agents && { LOOPD_AGENTS: config.agents }), ...(seatName === 'coordinator' && { LANEWAIT_HOME: join(STATE, 'watch') }) };
+  try { unlinkSync(socketPath); } catch {}
   const server = createServer(socket => {
     let buffer = '';
     socket.on('error', () => {});
@@ -234,33 +248,36 @@ function runHolder() {
       buffer += chunk;
       if (!buffer.includes('\n')) return;
       const request = JSON.parse(buffer.split('\n')[0]); buffer = '';
-      const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', request.logFile ? openSync(request.logFile, 'a') : 'pipe', request.logFile ? openSync(request.logFile, 'a') : 'pipe'], detached: Boolean(request.detach) });
+      const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', request.logFile ? openSync(request.logFile, 'a') : 'pipe', request.logFile ? openSync(request.logFile, 'a') : 'pipe'] });
       child.on('error', error => socket.end(JSON.stringify({ err: Buffer.from(String(error.message)).toString('base64'), exit: 127 }) + '\n'));
       // A detached command is acknowledged once it has really started; a failed spawn answers through the error above.
       if (request.detach) { child.on('spawn', () => { child.unref(); socket.end(JSON.stringify({ pid: child.pid, exit: 0 }) + '\n'); }); return; }
       child.stdout.on('data', data => socket.write(JSON.stringify({ out: data.toString('base64') }) + '\n'));
       child.stderr.on('data', data => socket.write(JSON.stringify({ err: data.toString('base64') }) + '\n'));
       child.on('close', code => socket.end(JSON.stringify({ exit: code ?? 1 }) + '\n'));
+      // A command whose client is gone (a dropped ssh session) must not go on consuming events nobody reads.
+      socket.on('close', () => { if (child.exitCode === null && child.signalCode === null && Number.isSafeInteger(child.pid) && child.pid > 1) child.kill('SIGTERM'); });
     });
   });
-  server.listen(holderSocket, () => { chmodSync(holderSocket, 0o600); writeFileSync(holderPidFile, String(process.pid)); });
-  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { server.close(); try { unlinkSync(holderSocket); } catch {} process.exit(0); });
+  server.listen(socketPath, () => { chmodSync(socketPath, 0o600); writeFileSync(join(STATE, seat.pidFile), String(process.pid)); });
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { server.close(); try { unlinkSync(socketPath); } catch {} process.exit(0); });
   setInterval(() => {}, 1 << 30);
 }
 
-function ensureHolder() {
-  const existing = holderPid();
+function ensureHolder(seatName) {
+  const existing = holderPid(seatName);
   if (existing) return existing;
-  try { unlinkSync(holderSocket); } catch {}
-  const log = openSync(join(STATE, 'holder.log'), 'a');
-  const child = spawn(process.execPath, [new URL(import.meta.url).pathname, 'holder'], { env: { PATH: process.env.PATH, HOME: process.env.HOME, LANES_KERNEL_STATE: STATE }, detached: true, stdio: ['ignore', log, log] });
+  const seat = seatOf(seatName);
+  try { unlinkSync(join(STATE, seat.socket)); } catch {}
+  const log = openSync(join(STATE, seat.log), 'a');
+  const child = spawn(process.execPath, [new URL(import.meta.url).pathname, ...seat.argv], { env: { PATH: process.env.PATH, HOME: process.env.HOME, LANES_KERNEL_STATE: STATE }, detached: true, stdio: ['ignore', log, log] });
   child.unref();
   return child.pid;
 }
 
-function execInHolder(request) {
+function execInHolder(request, seatName) {
   return new Promise((resolve, reject) => {
-    const socket = connect(holderSocket);
+    const socket = connect(join(STATE, seatOf(seatName).socket));
     const result = { code: 1, stdout: [], stderr: [] };
     let buffer = '';
     socket.on('connect', () => socket.write(JSON.stringify(request) + '\n'));
@@ -342,17 +359,17 @@ async function approveInPopup() {
   } finally { await browser.close(); }
 }
 
-async function grantAccess() {
-  const pid = ensureHolder();
-  for (let i = 0; i < 40 && !existsSync(holderSocket); i++) await delay(250);
-  const holder = holderPid() ?? pid;
+async function grantAccess(seat) {
+  const pid = ensureHolder(seat);
+  for (let i = 0; i < 40 && !existsSync(join(STATE, seatOf(seat).socket)); i++) await delay(250);
+  const holder = holderPid(seat) ?? pid;
   const check = async () => {
-    const result = await execInHolder({ argv: [chariox, 'access', 'status', '--holder-pid', String(holder)], cwd: STATE });
+    const result = await execInHolder({ argv: [chariox, 'access', 'status', '--holder-pid', String(holder)], cwd: STATE }, seat);
     try { return result.code === 0 ? JSON.parse(result.stdout).status : `exit_${result.code}`; } catch { return 'unparsed'; }
   };
   const current = await check();
   if (current === 'granted' || current === 'approved' || current === 'active') return { holder, granted: 'existing', status: current };
-  const request = execInHolder({ argv: [chariox, 'access', 'request', '--until-exit', '--holder-pid', String(holder)], cwd: STATE });
+  const request = execInHolder({ argv: [chariox, 'access', 'request', '--until-exit', '--holder-pid', String(holder)], cwd: STATE }, seat);
   const [approved] = await Promise.all([request, approveInPopup()]);
   if (approved.code !== 0) throw new Error(`access request exited ${approved.code}: ${approved.stderr.slice(0, 200)}`);
   return { holder, granted: 'now', status: await check() };
@@ -374,6 +391,7 @@ async function status() {
     result[role] = entry;
   }
   result.holder = holderPid() ?? null;
+  result.coordinatorHolder = holderPid('coordinator') ?? null;
   result.loopd = { pid: loopdPid() ?? null, queued: queueCount(''), done: queueCount('done'), rejected: queueCount('rejected') };
   const url = `https://${JSON.parse(readFileSync(`/w/valenv/prs/${config.stack}/metadata.json`, 'utf8')).hostname}/validation/ready`;
   result.stack_ready = await fetch(url).then(r => r.ok, () => false);
@@ -382,7 +400,7 @@ async function status() {
 
 const [command, ...rest] = process.argv.slice(2);
 try {
-  if (command === 'holder') runHolder();
+  if (command === 'holder') runHolder(rest[0]);
   else if (command === 'start' || command === 'setup') {
     const started = [];
     for (const role of ['executor', 'coordinator']) started.push(await startKernel(role));
@@ -392,14 +410,18 @@ try {
     steps.push(await ensureClaudeProfile());
     steps.push(await ensureCodexProfile());
     writeLoopConfig();
+    // One popup at a time: the loopd seat first, then the coordinator's own.
     steps.push({ grant: await grantAccess() });
+    steps.push({ coordinatorGrant: await grantAccess('coordinator') });
     steps.push(await startLoopd());
     out({ started, steps });
   } else if (command === 'stop') {
     const results = [];
     results.push(await stopLoopd());
-    const holder = holderPid();
-    if (holder) { process.kill(holder, 'SIGTERM'); results.push({ holder, stopped: true }); }
+    for (const seat of Object.keys(SEATS)) {
+      const holder = holderPid(seat);
+      if (holder) { process.kill(holder, 'SIGTERM'); results.push({ holder, seat, stopped: true }); }
+    }
     for (const role of ROLES) results.push(await stopKernel(role));
     out(results);
   } else if (command === 'status') out(await status());
@@ -410,12 +432,13 @@ try {
     else if (action === 'stop') out(await stopLoopd());
     else { console.error('usage: lanes-kernel.mjs loopd install|start|stop'); process.exitCode = 2; }
   }
-  else if (command === 'grant') out(await grantAccess());
+  else if (command === 'grant') out(await grantAccess(rest[0]));
   else if (command === 'exec') {
+    const seat = rest[0] === '--seat' ? (rest.shift(), rest.shift()) : undefined;
     const detach = rest[0] === '--detach' ? rest.shift() : undefined;
     const log = detach && rest[0] === '--log' ? (rest.shift(), rest.shift()) : undefined;
     if (rest[0] === '--') rest.shift();
-    const result = await execInHolder({ argv: rest, cwd: process.cwd(), detach: Boolean(detach), logFile: log });
+    const result = await execInHolder({ argv: rest, cwd: process.cwd(), detach: Boolean(detach), logFile: log }, seat);
     process.stdout.write(result.stdout); process.stderr.write(result.stderr);
     if (result.pid) out({ pid: result.pid });
     process.exitCode = result.code;
@@ -423,7 +446,7 @@ try {
     const env = roleEnv('coordinator');
     for (const key of ['CHARIOX_HOME', 'CHARIOX_DAEMON_SOCKET']) console.log(`${key}=${env[key]}`);
     console.log(`CHARIOX_BIN=${join(STATE, 'bin/chariox')}`, `CHARIOX_COORDINATOR_HOME=${join(STATE, 'loop')}`);
-  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant|loopd|exec|env'); process.exitCode = 2; }
+  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant [seat]|loopd|exec [--seat coordinator]|env'); process.exitCode = 2; }
 } catch (error) {
   console.error(JSON.stringify({ error: String(error.message).replace(/(?:Bearer\s+|token[=:]\s*)\S+/gi, '[redacted]').slice(0, 300) }));
   process.exitCode = 1;

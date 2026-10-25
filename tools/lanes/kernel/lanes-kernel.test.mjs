@@ -10,16 +10,17 @@ import { once } from 'node:events';
 
 const script = new URL('./lanes-kernel.mjs', import.meta.url).pathname;
 
-async function holder(t, extraConfig = {}) {
+async function holder(t, extraConfig = {}, seat) {
   const state = await mkdtemp(join(tmpdir(), 'lanes-kernel-')); t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, 'config.json'), JSON.stringify({ toolchain: state, ...extraConfig }));
   const env = { PATH: process.env.PATH, HOME: state, LANES_KERNEL_STATE: state };
-  const child = spawn(process.execPath, [script, 'holder'], { env, stdio: 'ignore' });
+  const child = spawn(process.execPath, [script, 'holder', ...(seat ? [seat] : [])], { env, stdio: 'ignore' });
   const exited = once(child, 'exit');
   t.after(async () => { child.kill('SIGTERM'); await exited; });
-  for (let i = 0; i < 100 && !existsSync(join(state, 'holder.pid')); i++) await new Promise(resolve => setTimeout(resolve, 50));
-  assert.ok(existsSync(join(state, 'holder.pid')), 'the holder is listening');
-  return { state, exec: (...args) => spawnSync(process.execPath, [script, 'exec', ...args], { env, encoding: 'utf8' }) };
+  const pidFile = join(state, seat ? `${seat}-holder.pid` : 'holder.pid');
+  for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(existsSync(pidFile), 'the holder is listening');
+  return { state, env, child, exec: (...args) => spawnSync(process.execPath, [script, 'exec', ...(seat ? ['--seat', seat] : []), ...args], { env, encoding: 'utf8' }) };
 }
 
 test('exec --detach exits 0 with the pid of a command that started, and keeps its log', async t => {
@@ -45,4 +46,40 @@ test('a state dir with its own agents directory hands it to the commands it runs
   const { exec } = await holder(t, { agents: '/drill/agents' });
   const result = exec('--', '/bin/sh', '-c', 'echo "$LOOPD_AGENTS"');
   assert.equal(result.stdout.trim(), '/drill/agents');
+});
+
+test('commands under the holder get the standard root PATH, sbin directories included', async t => {
+  const { exec } = await holder(t);
+  const result = exec('--', '/bin/sh', '-c', 'echo "$PATH"');
+  const path = result.stdout.trim().split(':');
+  for (const directory of ['/usr/sbin', '/sbin', '/usr/local/sbin']) assert.ok(path.includes(directory), `${directory} is on PATH`);
+});
+
+test('the coordinator seat is a second holder with its own socket, pid and LANEWAIT_HOME', async t => {
+  const { state, exec } = await holder(t, {}, 'coordinator');
+  const result = exec('--', '/bin/sh', '-c', 'echo "$LANEWAIT_HOME $CHARIOX_CLI_ACCESS_HOLDER_PID"');
+  const [home, pid] = result.stdout.trim().split(' ');
+  assert.equal(home, join(state, 'watch'));
+  assert.equal(pid, readFileSync(join(state, 'coordinator-holder.pid'), 'utf8').trim());
+  assert.equal(existsSync(join(state, 'holder.pid')), false, 'the loopd seat is not touched');
+});
+
+test('an unknown seat is refused by name', async t => {
+  const { env } = await holder(t);
+  const result = spawnSync(process.execPath, [script, 'exec', '--seat', 'nobody', '--', '/bin/true'], { env, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unknown seat nobody/);
+});
+
+test('a command whose client went away is stopped by the holder', async t => {
+  const { state, env } = await holder(t, {}, 'coordinator');
+  const marker = join(state, 'child.pid');
+  const client = spawn(process.execPath, [script, 'exec', '--seat', 'coordinator', '--', '/bin/sh', '-c', `echo $$ > ${marker}; exec sleep 300`], { env, stdio: 'ignore' });
+  for (let i = 0; i < 100 && !existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  const pid = Number(readFileSync(marker, 'utf8'));
+  assert.ok(pid > 1 && !Number.isNaN(pid));
+  client.kill('SIGKILL');
+  let alive = true;
+  for (let i = 0; i < 100 && alive; i++) { await new Promise(resolve => setTimeout(resolve, 50)); try { process.kill(pid, 0); } catch { alive = false; } }
+  assert.equal(alive, false, 'the orphaned command is gone');
 });
