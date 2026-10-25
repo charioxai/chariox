@@ -134,7 +134,7 @@ export async function coordinate(operation, args, options = {}) {
     const ledgerPath = join(home, `${lane}.direct.json`);
     let ledger; try { ledger = await read(ledgerPath); } catch (error) { if (error.code !== 'ENOENT') throw error; ledger = { sections: [] }; }
     const sent = ledger.sections.find(item => item.sha256 === section);
-    if (sent) return { lane, mode: sent.mode, repeated: true, answer: sent.answer };
+    if (sent) return { lane, mode: sent.mode, ...(sent.promptId !== undefined && { promptId: sent.promptId, agentStatus: sent.agentStatus }), repeated: true };
     let status = await adapter('status', { ...common, stateFile: record.input.stateFile });
     let mode, answer;
     for (let attempt = 1; !mode; attempt++) {
@@ -153,9 +153,12 @@ export async function coordinate(operation, args, options = {}) {
         else throw error;
       }
     }
-    ledger.sections.push({ sha256: section, mode, at_ms: now(), answer });
+    // The kernel's answer carries the whole session and the note text: the coordinator needs only which prompt took it and its status.
+    const taken = answer.ActivePromptSteered?.prompt ?? answer.PromptSubmitted?.outcome?.Started?.prompt ?? answer.PromptSubmitted?.outcome?.Queued?.prompt;
+    const summary = { promptId: taken?.id ?? null, agentStatus: taken?.status ?? (answer.delivered ? 'delivered-event-unrecorded' : 'unknown') };
+    ledger.sections.push({ sha256: section, mode, at_ms: now(), ...summary });
     await save(ledgerPath, ledger);
-    return { lane, mode, answer };
+    return { lane, mode, ...summary };
   }
   // The coordinator's one-command answer to a decision loopd left alone.
   if (operation === 'answer') {

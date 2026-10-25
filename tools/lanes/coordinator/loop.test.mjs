@@ -361,6 +361,24 @@ test('steer: a running turn is steered with the kernel answer as the only confir
   assert.equal(r.calls.filter(c => c.op === 'steer').length, 1, 'the same section is never sent twice');
 });
 
+test('steer: the result is one short line (lane, mode, prompt id, agent status), never the kernel session or the note text', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter;
+  const prompt = { id: 'prompt-42', status: 'Running', prompt: 'the whole note text', target_agent_id: 'agent' };
+  r.options.adapter = async (op, input) => op === 'status' ? { state: 'working', currentPrompt: 'turn-1', lastActivityMs: 1 } : op === 'steer' ? { ActivePromptSteered: { prompt } }
+    : op === 'prompt' ? { PromptSubmitted: { outcome: { Started: { prompt } }, session: { id: 's', blob: 'x'.repeat(5000) } } } : adapter(op, input);
+  const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\nthe whole note text\n');
+  const steered = await coordinate('steer', ['lane', file], r.options);
+  assert.deepEqual(steered, { lane: 'lane', mode: 'steered', promptId: 'prompt-42', agentStatus: 'Running' });
+  assert.deepEqual(await coordinate('steer', ['lane', file], r.options), { ...steered, repeated: true });
+  const idle = await launched(t); const idleAdapter = idle.options.adapter;
+  idle.options.adapter = async (op, input) => op === 'prompt' ? { PromptSubmitted: { outcome: { Started: { prompt } }, session: { id: 's', blob: 'x'.repeat(5000) } } } : idleAdapter(op, input);
+  const next = join(idle.home, 'note.md'); await writeFile(next, '## 10:00Z coordinator\nnext\n');
+  const started = await coordinate('steer', ['lane', next], idle.options);
+  assert.deepEqual(started, { lane: 'lane', mode: 'prompt-started', promptId: 'prompt-42', agentStatus: 'Running' });
+  assert.ok(JSON.stringify(started).length < 200);
+});
+
 test('steer: a worker between turns gets the text as its next prompt', async t => {
   const r = await launched(t);
   const adapter = r.options.adapter;
