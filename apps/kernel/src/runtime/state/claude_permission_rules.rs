@@ -24,6 +24,8 @@ pub(crate) struct SessionGrant {
     pub(super) allow: Vec<String>,
     /// Rules that keep asking inside what the allow rules cover.
     pub(super) ask: Vec<String>,
+    /// The names behind the ask rules, for the prompt text.
+    pub(super) ask_names: Vec<String>,
 }
 
 impl SessionGrant {
@@ -57,8 +59,11 @@ impl SessionGrant {
     /// The part of the prompt text that lists everything the choice grants.
     pub(crate) fn description(&self) -> String {
         let mut text = format!("Allow for this session grants: {}", self.allow.join(", "));
-        if !self.ask.is_empty() {
-            text.push_str(&format!("\nStill asks, even then: {}", self.ask.join(", ")));
+        if !self.ask_names.is_empty() {
+            text.push_str(&format!(
+                "\nThese names still ask, even then: {}",
+                self.ask_names.join(", ")
+            ));
         }
         text
     }
@@ -93,6 +98,7 @@ pub(crate) fn session_grant(
             Some(SessionGrant {
                 allow: rules.iter().map(|rule| format!("Bash({rule})")).collect(),
                 ask: Vec::new(),
+                ask_names: Vec::new(),
             })
         }
         "Write" | "Edit" | "MultiEdit" => {
@@ -104,6 +110,7 @@ pub(crate) fn session_grant(
                     .iter()
                     .map(|rule| format!("Edit({rule})"))
                     .collect(),
+                ask_names: granted.ask_names,
             })
         }
         _ => None,
@@ -170,6 +177,16 @@ mod tests {
             );
         }
         let granted = grant("Write", json!({"file_path": "/root/work/app/c.txt"})).expect("grant");
+        let text = granted.description();
+        assert!(
+            text.starts_with("Allow for this session grants: Edit(//root/work/app/**)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(".env*") && text.contains(".ssh") && text.contains(".config/gh"),
+            "{text}"
+        );
+        assert!(text.len() < 400, "{text}");
         let answer = allow_for_session(json!({}), &granted);
         let additions = answer["updatedPermissions"].as_array().expect("additions");
         assert_eq!(additions.len(), 2);

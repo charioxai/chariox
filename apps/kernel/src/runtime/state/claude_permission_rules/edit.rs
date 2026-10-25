@@ -57,6 +57,16 @@ impl Sensitive {
         }
     }
 
+    /// How the name reads in the prompt text.
+    fn shown(&self) -> String {
+        match self {
+            Self::Name(name) => (*name).to_string(),
+            Self::Prefix(prefix) => format!("{prefix}*"),
+            Self::Suffix(suffix) => format!("*{suffix}"),
+            Self::Contains(part) => format!("*{part}*"),
+        }
+    }
+
     /// The gitignore patterns that cover this name anywhere under a directory.
     fn patterns(&self) -> Vec<String> {
         match self {
@@ -112,6 +122,8 @@ fn is_project_directory(directory: &Path) -> bool {
 pub(super) struct EditGrant {
     pub allow: String,
     pub ask: Vec<String>,
+    /// The credential names behind the ask rules, for the prompt text.
+    pub ask_names: Vec<String>,
 }
 
 /// The grant for an edit of `file_path` in a session whose working directory is `directory`.
@@ -132,9 +144,15 @@ pub(super) fn edit_grant(file_path: &str, directory: &Path) -> Option<EditGrant>
         .chain([CONFIG_GH.to_string()])
         .map(|pattern| format!("{root}/{pattern}"))
         .collect();
+    let ask_names = SENSITIVE
+        .iter()
+        .map(Sensitive::shown)
+        .chain([".config/gh".to_string()])
+        .collect();
     Some(EditGrant {
         allow: format!("{root}/**"),
         ask,
+        ask_names,
     })
 }
 
