@@ -417,38 +417,42 @@ pub(super) fn run() -> Result<(), String> {
     let (codec_tx, codec_rx) =
         std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64)>(4);
     let codec_sessions = sessions.clone();
-    std::thread::spawn(move || {
-        let lock = || {
-            codec_sessions
-                .lock()
-                .map_err(|_| "MP-11: native sessions poisoned".to_string())
-        };
-        while let Ok((q, lease, queued)) = codec_rx.recv() {
-            let started = epoch();
-            // x264 runs between two short critical sections.
-            let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
-                let outcome = Sessions::run_encode(&job, lease.pixels());
-                let mut sessions = lock()?;
-                match outcome {
-                    Ok(outcome) => sessions.finish_encode(&q, job, outcome),
-                    Err(error) => Err(error),
-                }
-            });
-            // Encoder failures stay fatal for the worker, as on the capture thread.
-            if result
-                .and_then(|mut value| {
-                    // MP-08/MP-10/MP-11: private numeric queue timing only.
-                    if let Some(spans) = value["timings"].as_array_mut() {
-                        spans.push(json!(["native_codec_queue", queued, started]));
+    // A stable OS thread name permits CPU accounting without timing traces.
+    std::thread::Builder::new()
+        .name("cx-video-codec".into())
+        .spawn(move || {
+            let lock = || {
+                codec_sessions
+                    .lock()
+                    .map_err(|_| "MP-11: native sessions poisoned".to_string())
+            };
+            while let Ok((q, lease, queued)) = codec_rx.recv() {
+                let started = epoch();
+                // x264 runs between two short critical sections.
+                let result = lock().and_then(|mut s| s.begin_encode(&q)).and_then(|job| {
+                    let outcome = Sessions::run_encode(&job, lease.pixels());
+                    let mut sessions = lock()?;
+                    match outcome {
+                        Ok(outcome) => sessions.finish_encode(&q, job, outcome),
+                        Err(error) => Err(error),
                     }
-                    reply(q.id, value)
-                })
-                .is_err()
-            {
-                std::process::exit(2);
+                });
+                // Encoder failures stay fatal for the worker, as on the capture thread.
+                if result
+                    .and_then(|mut value| {
+                        // MP-08/MP-10/MP-11: private numeric queue timing only.
+                        if let Some(spans) = value["timings"].as_array_mut() {
+                            spans.push(json!(["native_codec_queue", queued, started]));
+                        }
+                        reply(q.id, value)
+                    })
+                    .is_err()
+                {
+                    std::process::exit(2);
+                }
             }
-        }
-    });
+        })
+        .map_err(|_| "MD-DISPLAY: native codec worker unavailable")?;
     let mut bounds = [0, 0, w, h];
     loop {
         if unsafe { ffi::cx_capture_damage(capture.0) } != 0 {
@@ -760,6 +764,8 @@ fn owner_windows(pid: u32) -> Result<Vec<Value>, String> {
     }
     let mut data = [0i64; 32 * 13];
     let count = unsafe { ffi::cx_capture_inventory(pid as libc::c_ulong, data.as_mut_ptr(), 32) };
-    if count < 0 { return Err("MP-11: native window inventory".into()); }
+    if count < 0 {
+        return Err("MP-11: native window inventory".into());
+    }
     Ok(data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect())
 }
