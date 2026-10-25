@@ -96,7 +96,10 @@ impl KernelRuntimeState {
         if session.status() == SessionStatus::Ended {
             return Err(error("session has ended"));
         }
-        if session.owner_user_id() != owner {
+        if !self
+            .owned
+            .acts_for_owner_in(session.owner_user_id(), owner, session.owner_user_id())
+        {
             return Err(error("only the session host can authorize sudo"));
         }
         self.owned.attachment_store.attach(

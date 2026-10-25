@@ -1088,7 +1088,7 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
         .unwrap();
 }
 
-fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
+pub(super) fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
     RequestKernelSudoRequest {
         agent_id: f.request.target_agent_id.clone().unwrap(),
         prompt: "  external first line\nfull second line\t  \n".into(),

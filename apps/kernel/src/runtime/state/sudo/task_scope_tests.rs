@@ -11,6 +11,90 @@ fn enroll_fixture(f: &super::tests::Fixture) {
     f.state.owned.config_projection.update(config);
 }
 
+fn external_grant_for(f: &super::tests::Fixture, owner: &str) -> String {
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    f.state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .get_mut(&grant_id)
+        .unwrap()
+        .summary
+        .owner_user_id = owner.into();
+    grant_id
+}
+
+async fn approve_enrolled_sudo(
+    f: &super::tests::Fixture,
+    mut pending: tokio::task::JoinHandle<Result<LocalDaemonResponse, DaemonError>>,
+) -> LocalDaemonResponse {
+    let consent = tokio::select! {
+        consent = super::tests::popup_for(&f.state, "enrolled-owner") => consent,
+        result = &mut pending => panic!("enrolled external grant was refused: {result:?}"),
+    };
+    f.state
+        .answer_terminal_runtime_interaction(
+            &consent.session_id,
+            &consent.interaction_id,
+            "approve",
+            None,
+            Some("enrolled-owner"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    pending.await.unwrap().unwrap()
+}
+
+// MP-08/MP-10/MP-11: an external grant of the enrolled owner acts for the host of a
+// pre-enrollment room; a grant of anyone else does not.
+#[tokio::test]
+async fn enrolled_external_grant_requests_sudo_in_its_pre_enrollment_room() {
+    let f = super::tests::fixture();
+    enroll_fixture(&f);
+    let stranger = external_grant_for(&f, "another-user");
+    assert!(f
+        .state
+        .request_kernel_sudo(&stranger, super::tests::external_request(&f))
+        .await
+        .is_err());
+    let grant_id = external_grant_for(&f, "enrolled-owner");
+    let state = f.state.clone();
+    let request = super::tests::external_request(&f);
+    let requesting =
+        tokio::spawn(async move { state.request_kernel_sudo(&grant_id, request).await });
+    let result = approve_enrolled_sudo(&f, requesting).await;
+    assert!(matches!(
+        result,
+        LocalDaemonResponse::KernelSudoRequested { .. }
+    ));
+    let turn = f.state.list_sudo_turns("enrolled-owner").pop().unwrap();
+    assert_eq!(turn.owner_user_id, "enrolled-owner");
+}
+
+#[tokio::test]
+async fn enrolled_external_grant_submits_sudo_prompt_in_its_pre_enrollment_room() {
+    let f = super::tests::fixture();
+    enroll_fixture(&f);
+    let stranger = external_grant_for(&f, "another-user");
+    assert!(f
+        .state
+        .submit_external_sudo_prompt(&stranger, f.request.clone())
+        .await
+        .is_err());
+    let grant_id = external_grant_for(&f, "enrolled-owner");
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let submitting =
+        tokio::spawn(async move { state.submit_external_sudo_prompt(&grant_id, request).await });
+    approve_enrolled_sudo(&f, submitting).await;
+    assert_eq!(f.state.list_sudo_turns("enrolled-owner").len(), 1);
+}
+
 // MP-08/MP-10/MP-11 G06: enrollment preserves the host's existing attachment.
 #[tokio::test]
 async fn enrolled_host_can_authorize_sudo_in_its_pre_enrollment_room() {
