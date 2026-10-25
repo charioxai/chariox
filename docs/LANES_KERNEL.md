@@ -72,7 +72,7 @@ node tools/lanes/kernel/lanes-kernel.mjs start    # idempotent: kernels, Vault u
 node tools/lanes/kernel/lanes-kernel.mjs stop     # holder and both kernels, by exact verified pid
 node tools/lanes/kernel/lanes-kernel.mjs grant [coordinator]   # only an access grant (headless owner popup), default the loopd seat
 node tools/lanes/kernel/lanes-kernel.mjs loopd install|start|stop   # the round service (see "loopd")
-node tools/lanes/kernel/lanes-kernel.mjs set-claude-credential [--from FILE]   # re-store the lanes-claude credential in place (see "Switching the Claude account")
+node tools/lanes/kernel/lanes-kernel.mjs set-claude-credential [--profile LABEL --from FILE | --from FILE]   # re-store the lanes-claude credential, or create/update another labelled profile (see "Switching the Claude account")
 node tools/lanes/kernel/lanes-kernel.mjs exec [--seat coordinator] [--detach --log FILE] -- CMD...   # run beneath a holder
 ```
 
@@ -110,7 +110,7 @@ organization id suffix of the stored account, nothing else. The kernel verifies 
 single Claude turn before it replaces the stored one, so a revoked token (`expired or revoked`) or an account
 over its limit (`HTTP=429`, `verification was inconclusive`) is refused and the old credential stays.
 
-`tools/lanes/coordinator/mac/switch-claude-account.sh chariox|old` is the whole move: it probes the target
+`tools/lanes/coordinator/mac/switch-claude-account.sh chariox|old` is the "all next launches" switch (to move only some rounds, see "Choosing the Claude account per round"): it probes the target
 token on b3 (HTTP 200 and limit status `allowed` or `allowed_warning`; only the org suffix is printed) and
 refuses if it is not usable yet, then runs `set-claude-credential`, then copies the token to
 `/root/.claude-lanes/oauth-token` so classic launches use it. The kernel step comes first: if it refuses,
@@ -123,6 +123,29 @@ process for a config change reuses it too: `claude_runtime.rs` `restart_claude_r
 running keeps the account it started with until its provider run is launched again**: the next loopd round
 (a new Room and agent), or a restore after a kernel restart. Every new launch after the command reads the new
 credential. Nothing is stopped, but no running worker moves by itself.
+
+## Choosing the Claude account per round
+
+MP-08 / MP-10. `switch-claude-account.sh` changes the one `lanes-claude` profile, so every next Claude launch moves. To put only some
+rounds on another account, give that account its own profile in the executor kernel and name it in the queue entry:
+
+```sh
+# once per account (re-run to replace its token; creates the profile when missing; the token is read inside the process, never printed)
+LANES_KERNEL_STATE=/root/.chariox/dev/lanes-kernel node tools/lanes/kernel/lanes-kernel.mjs \
+  set-claude-credential --profile lanes-claude-old --from /root/.claude-lanes/oauth-token.old-account
+# per round
+ACCT=lanes-claude-old tools/lanes/coordinator/mac/loopbrief.sh <lane> <worktree> claude < brief.md
+```
+
+`--profile` always needs `--from`: another profile never takes the default account token. It prints the profile id, the auth state, the
+organization suffix of the stored account and the worker agent definitions it synced into the profile's config directory. Without
+`--profile` the command is unchanged and touches only `lanes-claude`. A label held by a linked (not Chariox-created) profile is refused.
+
+`ACCT` becomes the entry's `account`. When loopd first admits the entry it asks the executor kernel for its Claude profiles and puts the
+profile id of that label into `laneProfiles[key].profile`, so the worker's agent is spawned on that account. It rejects the entry
+(`queue/rejected/<name>.reason.txt`, code `account_unavailable`, before the round touches the lane) when the label is unknown, labels
+two profiles, or the profile is not authenticated, and at parse time when the provider is not `claude`. A started round keeps the
+profile fixed by its launch receipt, across loopd and kernel restarts; entries without `account` use the default profile as before.
 
 ## Rounds
 
@@ -177,7 +200,7 @@ resumes from receipts). Process: `node run/tools/lanes/coordinator/round.mjs ser
   "preamble": ["/abs/agents/common.md"], "notes": "/abs/REVIEW_INBOX.md" }
 ```
 
-`provider` is `claude` or `codex`; `effort` is `low|medium|high|xhigh|max`; `worktrees` lists 1..4 repositories
+`provider` is `claude` or `codex`; `account` (optional, claude only) is the label of a Claude account profile (see "Choosing the Claude account per round"); `effort` is `low|medium|high|xhigh|max`; `worktrees` lists 1..4 repositories
 (the first is where the worker starts; every other one is bundled too); `notes` is optional and defaults to
 `agents/<lane>/REVIEW_INBOX.md`. `preamble` is an optional list (up to 8) of absolute files that loopd appends to the
 brief, in order, so the worker gets the shared rules without the wrapper pasting them: the composed brief is written
