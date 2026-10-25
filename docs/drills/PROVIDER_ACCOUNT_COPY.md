@@ -15,3 +15,5 @@ Public result: `ProviderAccountCopied { receipt }`, containing only operation/pr
 Supplementary regression drill: `cargo test -p chariox-kernel --lib account_copy`. It covers the public source request, authenticated encrypted peer delivery, wrong owner/realm/key/profile, unavailable and locked targets, conflict/explicit replacement, lost acknowledgement retry, interrupted registry publication after Vault storage and retry, official verification rejection, redacted errors/receipts/history/logs and unchanged source/native files. Synthetic fixtures are never PAC-01 acceptance.
 
 PAC-01 is blocked until dogfood upgrades the lanes kernel from af52049173 to a runtime containing this operation. That is the only authorized real-account source; do not touch token files or restart shared services to bypass it.
+
+MP-08 / MP-09 / MP-10 / MP-11: the target durably reserves the operation binding before verification and Vault storage. Retrying an interrupted operation with a different profile, credential or binding is a conflict; use a new operation ID when the source credential changes.

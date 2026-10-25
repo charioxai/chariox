@@ -335,6 +335,30 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 None,
             )
             .unwrap();
+        let third = source_profiles
+            .create_managed("local", "claude", "Third")
+            .unwrap();
+        crate::provider::store_provider_account_credential(
+            &source,
+            "local",
+            "claude",
+            &third.profile_id,
+            canary,
+            false,
+        )
+        .unwrap();
+        source_profiles
+            .update_observation(
+                "local",
+                "claude",
+                &third.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         let source_before = std::fs::read(source.account_profile_registry_path()).unwrap();
         let mut request = serde_json::json!({"CopyProviderAccountToKernel":{
             "provider":"claude", "account_profile":profile.profile_id, "operation_id":"copy-1",
@@ -418,6 +442,14 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             target.account_profile_registry_path(),
         )
         .unwrap();
+        let mut changed_retry = interrupted.clone();
+        changed_retry["CopyProviderAccountToKernel"]["account_profile"] =
+            third.profile_id.clone().into();
+        assert_code(
+            source_request(&source_router, changed_retry).await,
+            "provider_account_copy_conflict",
+            canary,
+        );
         assert!(
             source_request(&source_router, interrupted).await.is_ok(),
             "same operation must recover after Vault storage but before profile publication"

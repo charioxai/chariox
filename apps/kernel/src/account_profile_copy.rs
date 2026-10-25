@@ -7,9 +7,19 @@ use crate::provider_account_copy::{
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct InstalledAccountCopy {
+pub(super) struct AccountCopyRecord {
     binding: ProviderAccountCopyBinding,
     credential_sha256: String,
+    #[serde(default)]
+    phase: AccountCopyPhase,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AccountCopyPhase {
+    Prepared,
+    #[default]
+    Installed,
 }
 
 impl ProviderAccountProfileRegistry {
@@ -30,30 +40,34 @@ impl ProviderAccountProfileRegistry {
                 && stored.public.provider == binding.provider
                 && stored.public.profile_id == profile_id
         });
-        if let Some(installed) = guard.account_copies.iter().find(|copy| {
+        let operation = guard.account_copies.iter().position(|copy| {
             copy.binding.source_kernel_id == binding.source_kernel_id
                 && copy.binding.source_key_thumbprint == binding.source_key_thumbprint
                 && copy.binding.operation_id == binding.operation_id
-        }) {
-            if installed.binding != *binding
-                || installed.credential_sha256 != digest
-                || existing.is_none()
-            {
+        });
+        if let Some(index) = operation {
+            let recorded = &guard.account_copies[index];
+            if recorded.binding != *binding || recorded.credential_sha256 != digest {
                 return Err(failure("provider_account_copy_conflict"));
             }
-            let selected = crate::provider::resolve_provider_account_credentials(
-                config,
-                owner,
-                &binding.provider,
-                &profile_id,
-            )
-            .map_err(|_| failure("provider_account_copy_vault_locked"))?;
-            if !selected.iter().any(|(name, value)| {
-                name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV && value == credential.value()
-            }) {
-                return Err(failure("provider_account_copy_conflict"));
+            if recorded.phase == AccountCopyPhase::Installed {
+                if existing.is_none() {
+                    return Err(failure("provider_account_copy_conflict"));
+                }
+                let selected = crate::provider::resolve_provider_account_credentials(
+                    config,
+                    owner,
+                    &binding.provider,
+                    &profile_id,
+                )
+                .map_err(|_| failure("provider_account_copy_vault_locked"))?;
+                if !selected.iter().any(|(name, value)| {
+                    name == crate::provider::CLAUDE_OAUTH_TOKEN_ENV && value == credential.value()
+                }) {
+                    return Err(failure("provider_account_copy_conflict"));
+                }
+                return Ok(ProviderAccountCopyReceipt::installed(binding));
             }
-            return Ok(ProviderAccountCopyReceipt::installed(binding));
         }
         if existing.is_some() && !binding.replace {
             return Err(failure("provider_account_copy_conflict"));
@@ -73,6 +87,23 @@ impl ProviderAccountProfileRegistry {
         }
         // A deterministic root is also the recovery point for an interrupted install.
         create_private_roots(&locator).map_err(map_storage)?;
+        // Reserve the immutable operation before verification or Vault writes.
+        // A crash must not let the same operation name a different account.
+        let operation = match operation {
+            Some(index) => index,
+            None => {
+                let mut prepared = guard.clone();
+                let index = prepared.account_copies.len();
+                prepared.account_copies.push(AccountCopyRecord {
+                    binding: binding.clone(),
+                    credential_sha256: digest,
+                    phase: AccountCopyPhase::Prepared,
+                });
+                self.persist_locked(&prepared).map_err(map_storage)?;
+                *guard = prepared;
+                index
+            }
+        };
         let mut environment = locator.environment();
         environment.insert(
             crate::provider::CLAUDE_OAUTH_TOKEN_ENV.into(),
@@ -138,10 +169,7 @@ impl ProviderAccountProfileRegistry {
                 managed_context_replica: None,
             });
         }
-        next.account_copies.push(InstalledAccountCopy {
-            binding: binding.clone(),
-            credential_sha256: digest,
-        });
+        next.account_copies[operation].phase = AccountCopyPhase::Installed;
         self.persist_locked(&next).map_err(map_storage)?;
         *guard = next;
         Ok(ProviderAccountCopyReceipt::installed(binding))

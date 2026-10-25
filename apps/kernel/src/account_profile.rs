@@ -924,7 +924,7 @@ struct ReplacedProviderAccountProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryDocument {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    account_copies: Vec<account_copy::InstalledAccountCopy>,
+    account_copies: Vec<account_copy::AccountCopyRecord>,
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
