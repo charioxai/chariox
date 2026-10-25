@@ -3,7 +3,7 @@
 # Copies the brief to agents/<lane>/BRIEF-<round>.md on b3, drops one queue entry for loopd and waits until loopd has picked it up.
 # Env: MODEL (default claude-sonnet-5-5 / gpt-6.1-sol), EFFORT (high), HARD_STOP_MIN (240), ROUND (default: the next rN),
 #      EXTRA_WORKTREES="/path /path" (more repositories the lane changes), PREAMBLE="/path /path" (shared rules loopd appends
-#      to the brief; default: agents/common.md when it exists), B3 (the b3.sh helper), WAIT_SECONDS (120).
+#      to the brief; default: agents/common.md and agents/worker-session.md when they exist), B3 (the b3.sh helper), WAIT_SECONDS (120).
 set -euo pipefail
 L=${1:?lane} W=${2:?worktree} K=${3:?claude or codex}
 case $K in
@@ -33,7 +33,7 @@ fi
 [ ! -e "$D/BRIEF-$R.md" ] || { echo "round $R of $L already has a brief; pass ROUND=<new id>" >&2; exit 3; }
 [ ! -e "$Q/$L-$R.json" ] && [ ! -e "$Q/done/$L-$R.json" ] || { echo "queue already has $L-$R; pass ROUND=<new id>" >&2; exit 3; }
 cat > "$D/BRIEF-$R.md"
-[ -n "$P" ] || { [ ! -f "$A/common.md" ] || P=$A/common.md; }
+[ -n "$P" ] || for f in common.md worker-session.md; do [ ! -f "$A/$f" ] || P="${P:+$P }$A/$f"; done
 export L R W K M E H X P D
 node -e '
 const e = process.env;
