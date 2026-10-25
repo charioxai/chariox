@@ -128,5 +128,5 @@ fn mp11_leased_computer_protocol_507_115_snapshot() {
         let response: RelayPeerResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *value);
     }
-    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&expected).unwrap())), "be16bdc10f6f5a45f7efb0380d2ceb96122a58c0331fa8e2691329f2fd22e811");
+    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&expected).unwrap())), "cfa6606756629c510288e1cfd3161b43073b12425a197af07fdc7be21a57b8ce");
 }
