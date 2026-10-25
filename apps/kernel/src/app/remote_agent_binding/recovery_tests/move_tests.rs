@@ -13,7 +13,7 @@ async fn mk03_public_move_materializes_current_project_and_return_uses_fresh_roo
                 )
                 .with_project_selection(
                     crate::session::SessionProjectSelection::New {
-                        name: "Move Project".into(),
+                        name: Some("Move Project".into()),
                     },
                 ),
             )
