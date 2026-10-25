@@ -1029,7 +1029,7 @@ impl KernelRuntimeState {
 
     /// Removes the cancelling prompt from its agent and starts what was queued behind it. The
     /// workflow node, if any, is the caller's to settle.
-    async fn release_cancelled_local_prompt_after_restart(
+    pub(super) async fn release_cancelled_local_prompt_after_restart(
         &self,
         session_id: &str,
         agent_id: &str,

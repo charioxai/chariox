@@ -430,11 +430,12 @@ impl KernelRuntimeState {
                         (
                             agent.id().to_string(),
                             prompt.source_attachment_id().to_string(),
+                            prompt.id().to_string(),
                         )
                     })
             })
             .collect::<Vec<_>>();
-        for (agent_id, attachment_id) in active_agents {
+        for (agent_id, attachment_id, prompt_id) in active_agents {
             let cancellation = match self
                 .cancel_agent_prompt_with_external_authority(
                     session_id,
@@ -448,6 +449,13 @@ impl KernelRuntimeState {
             {
                 Ok(cancellation) => cancellation,
                 Err(DaemonError::NoActivePrompt { .. }) => continue,
+                // A kernel restart left the prompt without a provider run. The interrupt has
+                // already ended the run, so the prompt only needs settling here.
+                Err(DaemonError::NoActiveProviderRun { .. }) => {
+                    self.settle_prompt_without_provider_run(session_id, &agent_id, &prompt_id)
+                        .await?;
+                    continue;
+                }
                 Err(error) => return Err(error),
             };
             if let Some(dispatch) = cancellation.dispatch {
@@ -459,6 +467,24 @@ impl KernelRuntimeState {
                 .await?;
         }
         Ok((workflow_run, owned.session_snapshot(session_id)?))
+    }
+
+    async fn settle_prompt_without_provider_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, agent_id, Some(prompt_id))
+        else {
+            return Ok(());
+        };
+        self.release_cancelled_local_prompt_after_restart(session_id, agent_id, &prompt, None)
+            .await
     }
 
     pub(super) async fn execute_workflow_resume_run_request(

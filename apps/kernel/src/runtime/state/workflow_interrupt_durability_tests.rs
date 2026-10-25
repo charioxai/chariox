@@ -646,6 +646,49 @@ fn cancelled_interrupt_prompt_removal_survives_restart() {
     assert_interrupt_prompt_removal_survives_restart(false);
 }
 
+// HW-04: a run whose prompt was active when the kernel stopped has no provider run after the
+// restart. Stopping it ends the run, so the answer is the Stopped run, not a missing provider.
+#[test]
+fn stop_after_restart_answers_the_stopped_run() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("restart test executor should start");
+    let fixture = interrupt_fixture();
+    let (config, session_id, run_id, agent_id) = (
+        fixture.config.clone(),
+        fixture.session_id.clone(),
+        fixture.workflow_run_id.clone(),
+        fixture.target_agent_id.clone(),
+    );
+    drop(fixture.runtime);
+    let restored = runtime_state_from_app(
+        DaemonApp::bootstrap(config).expect("restarted kernel should restore the running run"),
+    );
+    let (result, _) = executor.block_on(restored.execute_workflow_cancel_run_request(
+        crate::local::CancelWorkflowRunRequest {
+            session_id: session_id.clone(),
+            workflow_run_ref: run_id.clone(),
+        },
+    ));
+    let Ok(LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. }) = result else {
+        panic!("a stop that ended the run must answer success: {result:?}");
+    };
+    assert_eq!(
+        workflow_run.status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+    let session = restored.owned.session_store.get_session(&session_id).unwrap();
+    let active = restored
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id);
+    assert!(
+        active.is_none_or(|prompt| prompt.workflow_run_id() != Some(run_id.as_str())),
+        "the stopped run must not keep an active prompt"
+    );
+}
+
 async fn run_interrupt_append_failure_regression(pause: bool) {
     let fixture = interrupt_fixture();
     let baseline_session = fixture
