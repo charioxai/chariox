@@ -13,6 +13,16 @@ const validLane = lane => {
 };
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 export const defaultCli = argv => execute(argv, '', process.env.CHARIOX_BIN || 'chariox', false, argv[0] === 'events' && argv[1] === 'wait' ? [0, 3, 5] : [0]);
+// The coordinator names a lane (`panebuild`), the receipts name its round (`panebuild-r5`): a lane name resolves to the
+// round loopd is running for it, and a round key is taken as it is.
+async function runningKey(home, name, options) {
+  validLane(name);
+  if (await readFile(join(home, `${name}.json`), 'utf8').then(() => true, () => false)) return name;
+  const agents = options.agents || process.env.LOOPD_AGENTS || '/root/.chariox/dev/browser-resume-20260930/agents';
+  const run = await read(join(agents, name, 'LOOP_RUN.json')).catch(() => undefined);
+  if (run?.round && !run.finishedAtMs && await readFile(join(home, `${name}-${run.round}.json`), 'utf8').then(() => true, () => false)) return `${name}-${run.round}`;
+  throw new LaneError('lane_not_running', `${name} has no round running under loopd; a classic lane gets its notes through REVIEW_INBOX.md only.`);
+}
 export async function coordinate(operation, args, options = {}) {
   const home = resolve(options.home || process.env.CHARIOX_COORDINATOR_HOME || join(homedir(), '.chariox', 'dev', 'coordinator-lanes'));
   await mkdir(home, { recursive: true });
@@ -23,7 +33,7 @@ export async function coordinate(operation, args, options = {}) {
     const records = await Promise.all((await readdir(home)).filter(f => f.endsWith('.json')).map(f => read(join(home, f))));
     return Promise.all(records.filter(r => r.lane && r.launch).map(r => coordinate(operation, [r.lane], options)));
   }
-  const lane = operation === 'watch' ? null : validLane(args[0]);
+  const lane = operation === 'watch' ? null : ['steer', 'answer'].includes(operation) ? await runningKey(home, args[0], options) : validLane(args[0]);
   const path = lane && join(home, `${lane}.json`);
   const load = async () => {
     const record = await read(path);
@@ -146,6 +156,17 @@ export async function coordinate(operation, args, options = {}) {
     ledger.sections.push({ sha256: section, mode, at_ms: now(), answer });
     await save(ledgerPath, ledger);
     return { lane, mode, answer };
+  }
+  // The coordinator's one-command answer to a decision loopd left alone.
+  if (operation === 'answer') {
+    const [, interactionId, choiceId] = args;
+    if (!interactionId || !choiceId) throw new LaneError('missing_decision', 'usage: <lane> <decision id> <choice id>');
+    const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
+    const interaction = status.interactions?.find(item => item.id === interactionId);
+    if (!interaction) throw new LaneError('decision_not_pending', `${lane} is not waiting on ${interactionId}; waiting on: ${(status.interactions ?? []).map(item => item.id).join(', ') || 'nothing'}.`);
+    if (!interaction.choices?.includes(choiceId)) throw new LaneError('choice_not_offered', `${interactionId} offers: ${(interaction.choices ?? []).join(', ') || 'no choices'}.`);
+    await adapter('respond', { ...common, interactionId, choiceId });
+    return { lane, decision: interactionId, choice: choiceId, answered: true };
   }
   if (operation === 'lanehealth') {
     const status = await adapter('status', { ...common, stateFile: record.input.stateFile });

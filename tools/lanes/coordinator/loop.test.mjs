@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: each coordinator step against fake adapters.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, copyFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, copyFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { coordinate, save } from './loop.mjs';
@@ -396,4 +396,35 @@ test('steer: a kernel that took the note but could not record its event counts a
   };
   const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\nx\n');
   assert.equal((await coordinate('steer', ['lane', file], r.options)).mode, 'steered');
+});
+
+test('answer: a pending decision is answered with an offered choice; anything else is refused with what is pending or offered', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { state: 'working', currentPrompt: 'p', lastActivityMs: 1, interactions: [{ id: 'ask-1', kind: 'choice', choices: ['red', 'blue'] }] };
+    if (op === 'respond') { r.calls.push({ op, input }); return {}; }
+    return adapter(op, input);
+  };
+  assert.deepEqual(await coordinate('answer', ['lane', 'ask-1', 'blue'], r.options), { lane: 'lane', decision: 'ask-1', choice: 'blue', answered: true });
+  assert.equal(r.calls.find(c => c.op === 'respond').input.choiceId, 'blue');
+  await assert.rejects(coordinate('answer', ['lane', 'ask-1', 'green'], r.options), { code: 'choice_not_offered', message: /red, blue/ });
+  await assert.rejects(coordinate('answer', ['lane', 'gone', 'red'], r.options), { code: 'decision_not_pending', message: /ask-1/ });
+  assert.equal(r.calls.filter(c => c.op === 'respond').length, 1);
+});
+
+test('steer and answer take the lane name and use the round loopd is running; a lane with no running round is refused by name', async t => {
+  const r = await launched(t);
+  await rename(join(r.home, 'lane.json'), join(r.home, 'lane-r4.json'));
+  const receipt = JSON.parse(await readFile(join(r.home, 'lane-r4.json'), 'utf8'));
+  await writeFile(join(r.home, 'lane-r4.json'), JSON.stringify({ ...receipt, lane: 'lane-r4' }));
+  const agents = join(r.home, 'agents'); await mkdir(join(agents, 'lane'), { recursive: true });
+  await writeFile(join(agents, 'lane', 'LOOP_RUN.json'), JSON.stringify({ round: 'r4', launchedAtMs: 1 }));
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'status' ? { state: 'working', currentPrompt: 'turn', lastActivityMs: 1, interactions: [{ id: 'd', choices: ['yes'] }] } : adapter(op, input);
+  const options = { ...r.options, agents };
+  assert.equal((await coordinate('answer', ['lane', 'd', 'yes'], options)).answered, true);
+  await writeFile(join(agents, 'lane', 'LOOP_RUN.json'), JSON.stringify({ round: 'r4', launchedAtMs: 1, finishedAtMs: 2 }));
+  await assert.rejects(coordinate('answer', ['lane', 'd', 'yes'], options), { code: 'lane_not_running' });
+  await assert.rejects(coordinate('answer', ['nobody', 'd', 'yes'], options), { code: 'lane_not_running' });
 });
