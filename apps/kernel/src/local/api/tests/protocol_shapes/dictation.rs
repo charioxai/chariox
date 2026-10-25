@@ -12,15 +12,19 @@ fn dictation_594_snapshot() {
     let bytes = include_bytes!("dictation-594.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a131c1d3aa3031fb91d89dfe54a01e21bf9f02bf0db07961262b791a4b3dcece"
+        "1898b5cb5c454eeaae28dd34382cb1dfb9110a67837d34d10be9e62cbb18045d"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for key in [
+        "service_local_request",
+        "service_openai_request",
+        "service_elevenlabs_request",
         "status_request",
         "download_request",
         "language_request",
         "append_request",
         "transcribe_request",
+        "transcribe_context_request",
     ] {
         let request: crate::local::LocalDaemonRequest =
             serde_json::from_value(snapshot[key].clone()).unwrap();
@@ -31,6 +35,9 @@ fn dictation_594_snapshot() {
         );
     }
     for key in [
+        "status_local",
+        "status_openai",
+        "status_elevenlabs",
         "status_not_downloaded",
         "status_downloading",
         "status_failed",

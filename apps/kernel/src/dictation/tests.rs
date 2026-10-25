@@ -259,7 +259,11 @@ async fn dictating_without_the_model_says_to_download_it() {
         spec_for("http://127.0.0.1:9/m".into(), MODEL_BYTES),
         "hi",
     );
-    let error = service.transcribe(OWNER, "rec-1").await.err().unwrap();
+    let error = service
+        .transcribe(OWNER, "rec-1", None)
+        .await
+        .err()
+        .unwrap();
     assert_eq!(code(error), "dictation_model_missing");
     assert!(engine.heard.lock().unwrap().is_empty());
 }
@@ -291,14 +295,20 @@ async fn chunks_are_assembled_in_order_and_transcribed_once() {
         .append(OWNER, "rec-1", 16000, &pcm_base64(8000))
         .unwrap();
     let DictationResult::Transcript { text, .. } =
-        service.transcribe(OWNER, "rec-1").await.unwrap()
+        service.transcribe(OWNER, "rec-1", None).await.unwrap()
     else {
         panic!("transcript")
     };
     assert_eq!(text, "Hello world");
     assert_eq!(*engine.heard.lock().unwrap(), vec![(16000, None)]);
     assert_eq!(
-        code(service.transcribe(OWNER, "rec-1").await.err().unwrap()),
+        code(
+            service
+                .transcribe(OWNER, "rec-1", None)
+                .await
+                .err()
+                .unwrap()
+        ),
         "dictation_audio_unknown"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -327,7 +337,7 @@ async fn the_chosen_language_is_saved_used_and_validated() {
         .uploads
         .append(OWNER, "rec-1", 0, &pcm_base64(16000))
         .unwrap();
-    service.transcribe(OWNER, "rec-1").await.unwrap();
+    service.transcribe(OWNER, "rec-1", None).await.unwrap();
     assert_eq!(engine.heard.lock().unwrap()[0].1.as_deref(), Some("es"));
     let (reloaded, _) = self::service(
         &dir,
@@ -347,7 +357,7 @@ async fn a_recording_too_short_to_hold_speech_is_empty_without_running_the_model
         .append(OWNER, "rec-1", 0, &pcm_base64(100))
         .unwrap();
     let DictationResult::Transcript { text, .. } =
-        service.transcribe(OWNER, "rec-1").await.unwrap()
+        service.transcribe(OWNER, "rec-1", None).await.unwrap()
     else {
         panic!("transcript")
     };
@@ -445,7 +455,7 @@ async fn the_real_engine_transcribes_recorded_speech() {
             .unwrap();
     }
     let DictationResult::Transcript { text, language } =
-        service.transcribe(OWNER, "real-1").await.unwrap()
+        service.transcribe(OWNER, "real-1", None).await.unwrap()
     else {
         panic!("transcript")
     };
@@ -469,14 +479,20 @@ async fn a_recording_and_a_language_belong_to_the_user_who_made_them() {
         .append("alice", "rec-1", 0, &pcm_base64(16000))
         .unwrap();
     assert_eq!(
-        code(service.transcribe("bob", "rec-1").await.err().unwrap()),
+        code(
+            service
+                .transcribe("bob", "rec-1", None)
+                .await
+                .err()
+                .unwrap()
+        ),
         "dictation_audio_unknown",
         "bob cannot consume alice's recording"
     );
     assert!(engine.heard.lock().unwrap().is_empty());
     service.set_language("alice", Some("es".into())).unwrap();
     assert_eq!(service.status("bob").language, None);
-    service.transcribe("alice", "rec-1").await.unwrap();
+    service.transcribe("alice", "rec-1", None).await.unwrap();
     assert_eq!(engine.heard.lock().unwrap()[0].1.as_deref(), Some("es"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -489,7 +505,11 @@ async fn the_model_is_released_after_five_idle_minutes_even_when_transcription_f
         .uploads
         .append(OWNER, "rec-1", 0, &pcm_base64(16000))
         .unwrap();
-    let error = service.transcribe(OWNER, "rec-1").await.err().unwrap();
+    let error = service
+        .transcribe(OWNER, "rec-1", None)
+        .await
+        .err()
+        .unwrap();
     assert_eq!(code(error), "dictation_transcription_failed");
     tokio::time::sleep(RELEASE_MODEL_AFTER - Duration::from_secs(1)).await;
     assert_eq!(engine.released.load(Ordering::SeqCst), 0, "not yet idle");
@@ -507,7 +527,7 @@ async fn a_newer_use_keeps_the_model_until_it_has_been_idle_too() {
             .uploads
             .append(OWNER, id, 0, &pcm_base64(16000))
             .unwrap();
-        service.transcribe(OWNER, id).await.unwrap();
+        service.transcribe(OWNER, id, None).await.unwrap();
         tokio::time::sleep(Duration::from_secs(wait)).await;
     }
     tokio::time::sleep(Duration::from_secs(150)).await;
@@ -524,3 +544,24 @@ async fn a_newer_use_keeps_the_model_until_it_has_been_idle_too() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn speech_services_can_be_selected_without_sending_a_key() {
+    for service in ["local", "openai", "elevenlabs"] {
+        let value = serde_json::json!({"op": "set_service", "service": service});
+        let command: DictationCommand = serde_json::from_value(value.clone())
+            .expect("each speech service has a typed selection command");
+        assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+    assert!(serde_json::from_value::<DictationCommand>(
+        serde_json::json!({"op": "set_service", "service": "unknown"})
+    )
+    .is_err());
+    assert!(serde_json::from_value::<DictationCommand>(
+        serde_json::json!({"op": "set_service", "service": "openai", "key": "must-use-vault"})
+    )
+    .is_err());
+}
+
+#[path = "remote_tests.rs"]
+mod remote_tests;

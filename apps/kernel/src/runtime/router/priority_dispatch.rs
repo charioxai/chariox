@@ -99,7 +99,7 @@ impl CommandRouter {
             LocalDaemonRequest::Dictation(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state
-                    .dictation_request(&command_caller_user_id(&command), request.command)
+                    .dictation_request(&command, &command_caller_user_id(&command), request.command)
                     .await?;
                 Ok(LocalDaemonResponse::Dictation { result })
             }),

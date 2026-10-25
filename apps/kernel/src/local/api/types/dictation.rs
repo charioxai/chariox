@@ -14,6 +14,8 @@ pub enum DictationCommand {
     Status,
     /// Starts or resumes the pinned model download after the person agreed.
     DownloadModel,
+    /// Selects the speech service for this kernel; secrets use the existing Vault flow.
+    SetService { service: DictationProvider },
     SetLanguage {
         /// ISO 639-1 code such as `es`; `None` lets the model detect the language.
         language: Option<String>,
@@ -25,7 +27,18 @@ pub enum DictationCommand {
         pcm_base64: String,
     },
     /// Transcribes and discards the upload.
-    Transcribe { upload_id: String },
+    Transcribe {
+        upload_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<DictationContext>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DictationContext {
+    pub session_id: String,
+    pub agent_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,9 +61,21 @@ pub enum DictationModelState {
     },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictationProvider {
+    #[default]
+    Local,
+    Openai,
+    Elevenlabs,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DictationStatus {
+    pub service: DictationProvider,
+    /// The authenticated user's Vault handle for this service, never a value.
+    pub vault_key: Option<String>,
     pub model_id: String,
     pub model_size_bytes: u64,
     pub model: DictationModelState,
