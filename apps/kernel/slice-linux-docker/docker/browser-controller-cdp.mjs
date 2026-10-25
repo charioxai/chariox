@@ -1,8 +1,7 @@
 import {pageObservationFence,nativeStatePage} from './browser-controller-frames.mjs';
 import {FOCUS_WORLD,ensureFocusWorld,recordFocusWorld} from './browser-focus-world.mjs';
 import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
-import { recordBrowserFill, finishBrowserFill, awaitPresented } from './browser-protection-regions.mjs';
-import { CapturePresentationFence } from './browser-capture-presentation.mjs';
+import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
@@ -720,9 +719,6 @@ export class BrowserCdpClient {
         withInput: operation => this.inputCapture.run(connection, sessionId, operation),
       }, async options => {
         if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
-          const fence=connection.fillPresentationFence??=new CapturePresentationFence();
-          await fence.recoverFailed();
-          return fence.run(async()=>{
           const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
           this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
           // MP-11: bind the completed value before releasing in-flight coverage.
@@ -733,7 +729,6 @@ export class BrowserCdpClient {
           catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
           await finishBrowserFill(connection, target);
           return result;
-          },()=>awaitPresented(this,[{target_id:targetId}]));
         }
         return performBrowserAction(options);
       });

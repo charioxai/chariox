@@ -187,29 +187,3 @@ test('MP-08/MP-10/MP-11 Computer coalesces transient retries until capture resto
   f.advance(200);finish();await held;f.advance(2);await delay(10);assert.equal(wakes,1);assert.equal(f.published.length,0);
  }finally{await f.source.close()}
 });
-
-test('MP-08/MP-10/MP-11 Vault fill holds guest readbacks without stalling the owner',async()=>{
- const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');const f=fixture();let finish,owners=0;
- const fence=new CapturePresentationFence(f.now),held=fence.run(()=>new Promise(resolve=>finish=resolve),async()=>{});
- f.source.binding={...binding,browser:()=>({connection:{fillPresentationFence:fence}})};
- f.source.owner={publish(){owners++}};f.source.wake=async()=>{};
- f.source.ownerFrame(f.raw(1,f.now()+1));assert.equal(owners,1);
- f.source.offer({raw:f.raw(1,f.now()+1)},0,f.now()+1);
- assert.equal(f.published.length,0,'a pending fill never releases a guest frame');
- f.advance(200);finish();await held;
- f.source.offer({raw:f.raw(2,1001)},0,1001);
- assert.equal(f.published.length,0,'a delayed readback from the fill interval stays excluded');
- f.advance(2);f.source.offer({raw:f.raw(3,f.now())},0,f.now());
- assert.equal(f.published.length,1,'guest resumes after completion');
-});
-
-test('MP-08/MP-10/MP-11 failed fill presentation recovers on an idle desktop',async()=>{
- const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');const f=fixture();let restores=0;
- const fence=new CapturePresentationFence();
- await assert.rejects(fence.run(async()=>{},async()=>{if(++restores===1)throw Error('temporary presentation failure')}));
- f.source.binding={...binding,browser:()=>({connection:{fillPresentationFence:fence}})};
- f.source.gate={protectionSerial:1};
- const loop=f.source.verify();
- try{await until(()=>restores===2);assert(fence.stable(Date.now()+5));}
- finally{f.source.closed=true;await loop;}
-});

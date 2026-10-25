@@ -203,9 +203,8 @@ export class DesktopSource {
     if(this.closed){sample.raw.release?.();return;}
     const presentation=this.binding.browser?.()?.connection?.presentationFence;
     const start=captured??sample.raw.captured_ms,end=start+(sample.raw.capture_ms??0);
-    const fill=this.binding.browser?.()?.connection?.fillPresentationFence;
-    for(const fence of [presentation,fill])if(fence&&!fence.stable(start,end)){
-      this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();resumeAfterCapturePresentation(this,fence,()=>this.wake());return;
+    if(presentation&&!presentation.stable(start,end)){
+      this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();resumeAfterCapturePresentation(this,presentation,()=>this.wake());return;
     }
     // Serial 0 withholds every kernel-browser window: publish at once.
     if(serial===0)this.publish(sample);
@@ -238,8 +237,6 @@ export class DesktopSource {
       // A step starts when a readback arrives, alongside its AT-SPI binding.
       // A withheld kernel-browser window may come from a stale measurement on a
       // still desktop (no readbacks): re-measure calmly until it binds.
-      const fill=this.binding.browser?.()?.connection?.fillPresentationFence;
-      if(fill?.intervals.some(interval=>interval.restore))await fill.recoverFailed().catch(()=>{});
       if(!this.pending.length&&!this.next&&!this.inflight&&!this.withheld&&this.gate.protectionSerial!==0){await delay(4);continue;}
       this.stepStarted=Date.now();
       const {started,verified,changed}=await this.gate.step();
