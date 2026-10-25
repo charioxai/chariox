@@ -4814,6 +4814,16 @@ relay error codes `dictation_model_missing`, `dictation_audio_invalid`,
 `dictation_594_snapshot`). Older kernels refuse the request; clients feature-detect 594. See
 `docs/DICTATION.md`.
 
+MP-08 / MP-10 / MP-11: allocated 596/202 makes two changes for clients that draw a Room from its first reply.
+`GetSessionState` (and the `state` of `AttachSessionView`) reads `agent_activity_revision` before it reads
+the session, so a state is never older than its revision; `session_snapshot` already labelled its
+revision before its state, so a client can order the two by revision and apply a snapshot's `session`,
+`room_workflows` and `agent_activity` instead of asking `GetSessionState` again. `AttachSessionView`
+takes the optional `latest_prompt_count` (default 1, capped at 20 like the history outline): how many of the latest prompts per
+agent the initial `history` holds, so a pane that needs more than one turn draws filled in one reply and
+older turns only ever load above it. Older kernels ignore the field and return one turn; clients
+feature-detect 596 for both and keep the read-after-event path below it.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
