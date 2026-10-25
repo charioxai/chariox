@@ -18,7 +18,7 @@ async function rig(t) {
   const options = { state, agents, timeoutMs: 2, now: () => clock++, sleep: async () => {},
     preflight: async () => 'chariox(org=…123)', stopLoopd: async () => calls.push('stopLoopd'),
     stop: async () => calls.push('stop'), start: async () => { calls.push('start'); await writeFile(join(state, 'loopd.log'), '{"kind":"picked_up","key":"alpha-r1"}\n'.repeat(2)); },
-    inspect: async () => ({ provider: 'claude', permission: 'required', state: 'working', providerActivityAtMs: calls.includes('start') ? 1000 : 0 }), report: line => lines.push(line) };
+    inspect: async () => ({ provider: 'claude', account: 'lanes-claude-old', permission: 'required', state: 'working', providerActivityAtMs: calls.includes('start') ? 1000 : 0 }), report: line => lines.push(line) };
   return { state, path, run, calls, lines, options };
 }
 
@@ -27,7 +27,7 @@ test('one restart preserves session, agent, launch time and existing permission,
   assert.deepEqual((await restartWithSandbox(r.options)).resumed, ['alpha-r1']);
   assert.deepEqual(r.calls, ['stopLoopd', 'stop', 'start']);
   assert.deepEqual(JSON.parse(await readFile(join(r.state, 'kernel-environment.json'), 'utf8')), { IS_SANDBOX: '1' });
-  assert.match(r.lines[0], /provider=claude permission=required account=chariox.*resumed=true/);
+  assert.match(r.lines[0], /provider=claude permission=required account=lanes-claude-old resumed=true/);
 });
 
 test('unusable account or unsupported runtime leaves every service alone', async t => {

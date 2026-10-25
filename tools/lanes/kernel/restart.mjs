@@ -66,7 +66,7 @@ export async function restartWithSandbox({ state, agents, preflight, stopLoopd, 
         && worker.providerActivityAtMs > (workers.get(key).providerActivityAtMs ?? 0);
       const completed = worker.completedAtMs > restartedAtMs && worker.completedSuccessfully;
       if (!freshRun && !completed) continue;
-      report(`${key} provider=${worker.provider} permission=${worker.permission} account=${worker.provider === 'claude' ? account : 'n/a'} resumed=true${run.finishedAtMs ? ' completed=true' : ''}`);
+      report(`${key} provider=${worker.provider} permission=${worker.permission} account=${worker.provider === 'claude' ? worker.account ?? 'unreported' : 'n/a'} resumed=true${run.finishedAtMs ? ' completed=true' : ''}`);
       pending.delete(key);
     }
     if (pending.size) await sleep(500);

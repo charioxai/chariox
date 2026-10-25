@@ -8,7 +8,11 @@ export async function inspectWorker(rpc, run) {
   const runId = activity?.active_turn?.provider_run_id;
   const providerRun = runId ? (await rpc({ GetProviderRun: { provider_run_id: runId } })).ProviderRun.provider_run : undefined;
   const completed = activity?.last_completed_turn;
-  return { provider: agent.provider, permission: agent.permission_level_override || session.permission_level,
+  // The account the kernel launched this worker on: the run's profile, else the agent's own, shown by its label.
+  const profileId = providerRun?.account_profile ?? agent.account_profile;
+  const labels = profileId && agent.provider === 'claude' ? (await rpc({ ListProviderAccountProfiles: { provider: 'claude' } })).ProviderAccountProfilesListed.profiles : [];
+  const account = labels.find(profile => profile.profile_id === profileId)?.label;
+  return { provider: agent.provider, account, permission: agent.permission_level_override || session.permission_level,
     state: activity?.status,
     providerActivityAtMs: providerRun?.state === 'Running' ? providerRun.last_activity_at_ms : undefined,
     completedAtMs: completed?.completed_at_ms,
