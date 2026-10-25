@@ -27,8 +27,8 @@ async function rig(t) {
     git: async argv => { calls.push({ git: argv }); return sha + '\n'; },
     adapter: async (op, input) => {
       calls.push({ op, taskId: input.taskId, input });
-      if (op === 'launch') { launches.set(input.taskId, true); await writeFile(input.stateFile, JSON.stringify({ promptId: `prompt-${input.taskId}` })); return { kernel: 'executor', taskId: input.taskId, sessionId: `room-${input.taskId}`, operationsSessionId: `ops-${input.taskId}`, agentId: `agent-${input.taskId}`, attachmentId: `att-${input.taskId}` }; }
-      if (op === 'status') return { state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, deadline: { mode: 'kernel', state: 'armed' } };
+      if (op === 'launch') { launches.set(input.taskId, true); await writeFile(input.stateFile, JSON.stringify({ promptId: `prompt-${input.taskId}` })); return { kernel: 'executor', taskId: input.taskId, sessionId: `room-${input.taskId}`, operationsSessionId: `ops-${input.taskId}`, agentId: `agent-${input.taskId}`, promptId: `prompt-${input.taskId}`, attachmentId: `att-${input.taskId}` }; }
+      if (op === 'status') return { completedTurn: { promptId: `prompt-${input.taskId}`, status: 'completed' }, state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, deadline: { mode: 'kernel', state: 'armed' } };
       if (op === 'fetch') return { 'ACCEPTANCE_UPDATE.json': { missing: true, reason: 'file_not_found' } };
       if (op === 'bundle') return { base: sha, head: 'b'.repeat(40), sha256: 'c'.repeat(64), path: `/bundles/${input.taskId}.bundle` };
       if (op === 'message') return { text: `final message of ${input.taskId}` };

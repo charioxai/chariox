@@ -28,7 +28,7 @@ async function rig(t, lanes = ['alpha', 'beta']) {
       calls.push({ op, taskId: input.taskId, input });
       if (op === 'launch') return launches[input.taskId];
       if (op === 'steer') return { ActivePromptSteered: { prompt: { id: 'steer-id' } } };
-      if (op === 'status') return { state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, interactions: interactions[input.taskId] ?? [], deadline: { mode: 'kernel', state: 'armed' } };
+      if (op === 'status') return { completedTurn: { promptId: `prompt-${input.taskId}`, status: 'completed' }, state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, interactions: interactions[input.taskId] ?? [], deadline: { mode: 'kernel', state: 'armed' } };
       if (op === 'fetch') return { 'ACCEPTANCE_UPDATE.json': { missing: true, reason: 'file_not_found' } };
       if (op === 'bundle') return { base: head, head, sha256: 'c'.repeat(64), path: `/bundles/${input.taskId}.bundle` };
       return { stopped: true };
@@ -471,4 +471,31 @@ test('round: a quiet worker with an invalid ACCEPTANCE_UPDATE.json is steered at
   r.waits.push(...Array.from({ length: 10 }, () => ({})));
   await runRound(r.spec, r.options);
   assert.ok(steeredAtWake <= 4, `steered at wake ${steeredAtWake}: the file is checked on every wake, not only when the worker is read`);
+});
+
+test('a restored idle worker without a successful completed turn is never collected as finished', async t => {
+  const { createRound } = await import('./engine.mjs');
+  const r = await rig(t, ['alpha']);
+  const first = createRound(r.options); await first.add(r.spec.lanes[0]);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => { const value = await adapter(op, input); if (op === 'status') delete value.completedTurn; return value; };
+  r.idle.add('alpha');
+  const resumed = createRound(r.options); const lane = await resumed.add(r.spec.lanes[0]);
+  r.waits.push({}); await resumed.step(1);
+  assert.equal(lane.finished, false, 'recovery has not proved that the interrupted prompt finished');
+  assert.equal(r.calls.some(c => c.op === 'stop'), false);
+  r.clock.ms += 360_000;
+  r.waits.push({}); await resumed.step(1);
+  assert.equal(lane.run.finishReason, 'worker_lost');
+});
+
+test('a missing worker is collected as worker_lost and never as a successful round', async t => {
+  const { createRound } = await import('./engine.mjs');
+  const { LaneError } = await import('../lanes.mjs');
+  const r = await rig(t, ['alpha']);
+  const adapter = r.options.adapter;
+  r.options.adapter = (op, input) => op === 'status' ? Promise.reject(new LaneError('agent_not_in_session')) : adapter(op, input);
+  const engine = createRound(r.options); const lane = await engine.add(r.spec.lanes[0]);
+  r.waits.push({}); await engine.step(1);
+  assert.equal(lane.run.finishReason, 'worker_lost');
 });

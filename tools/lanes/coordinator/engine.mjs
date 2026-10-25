@@ -54,9 +54,10 @@ export function createRound(options) {
     await mkdir(roundDirectory, { recursive: true });
     let run; try { run = await read(entry.runFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (run && run.round !== entry.round) run = undefined; // another round's file: loopd has kept its copy
+    const restored = Boolean(run?.launchedAtMs && !run.finishReason);
     run ??= { lane: entry.name ?? entry.lane, key: entry.lane, round: entry.round, effort: entry.effort, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
     if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
-    const lane = { entry, run, finished: Boolean(run.finishReason), needsRead: true };
+    const lane = { entry, run, restored, recoveryStartedAtMs: now(), finished: Boolean(run.finishReason), needsRead: true };
     if (!lane.finished) {
       if (!run.launchedAtMs) {
         const brief = await readFile(entry.brief, 'utf8');
@@ -261,7 +262,7 @@ export function createRound(options) {
     await saveLastMessage(lane);
     try {
       if (reason === 'hard_stop') await stopLane(lane);
-      const finished = await coordinator('lanefin', [lane.entry.lane]);
+      const finished = await coordinator('lanefin', [lane.entry.lane, ...(reason === 'worker_lost' ? ['worker_lost'] : [])]);
       lane.run.head = finished.bundle?.head;
       lane.run.bundle = finished.bundle?.path;
       lane.run.bundleSha256 = finished.bundle?.sha256;
@@ -273,7 +274,7 @@ export function createRound(options) {
     } catch (error) {
       // New work reached the worker after it was read idle (a direct prompt): it is not a failed collection and must not be stopped.
       if (reason !== 'hard_stop' && error.code === 'lane_still_running') { lane.needsRead = true; log(lane, 'collect_deferred', { reason: error.code }); return; }
-      lane.run.finishReason = `${reason}_collect_failed`;
+      lane.run.finishReason = reason === 'worker_lost' ? reason : `${reason}_collect_failed`;
       lane.run.collectError = { code: error.code || 'collect_failed', message: String(error.message).slice(0, 300) };
       if (!lane.run.stopped) {
         try { await stopLane(lane); } catch (stopError) { lane.run.stopError = stopError.code || 'stop_failed'; }
@@ -304,6 +305,12 @@ export function createRound(options) {
     let batch;
     try { batch = await coordinator('watch', [String(wakeMinutes)]); }
     catch (error) {
+      if (error.code === 'worker_lost') {
+        const lost = byTarget.get(`${error.launch.kernel}/${error.launch.sessionId}/${error.launch.agentId}`);
+        if (!lost) throw error;
+        await collectUnderLock(lost, 'worker_lost');
+        return;
+      }
       if (error.code !== 'subscription_target_missing') throw error;
       // The inbox of a restarted kernel's new grant is empty: attach the running lanes to it, then read each one.
       for (const lane of pending()) await followLaunch(cli, lane.receipt);
@@ -325,12 +332,23 @@ export function createRound(options) {
       lane.readAtMs = now();
       lane.run.statusReads++;
       let status;
-      try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
+      try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) {
+        if (['agent_not_found', 'agent_not_in_session', 'session_not_found'].includes(error.code)) {
+          await collectUnderLock(lane, 'worker_lost'); continue;
+        }
+        log(lane, 'status_error', { code: error.code || 'status_failed' }); continue;
+      }
       // Kept for the coordinator: a restored worker that never resumed still reads as working, and only SILENT shows it.
       lane.run.health = { atMs: now(), state: status.state, flags: status.flags, lastActivityMs: status.lastActivityMs };
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
       for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
       if (status.state === 'idle' && !status.currentPrompt) {
+        if (lane.restored && !(status.completedTurn?.promptId === lane.receipt.promptId && status.completedTurn.status === 'completed')) {
+          if (now() - lane.recoveryStartedAtMs >= 360_000 || ['cancelled', 'failed'].includes(status.completedTurn?.status)) {
+            await collectUnderLock(lane, 'worker_lost');
+          } else { lane.needsRead = true; log(lane, 'recovery_pending', {}); }
+          continue;
+        }
         lane.settled = true;
         if (!await nudgeAcceptance(lane)) await collectUnderLock(lane, 'finished', readsIdle(lane));
         lane.settled = false;

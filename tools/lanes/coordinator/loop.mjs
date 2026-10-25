@@ -205,7 +205,15 @@ export async function coordinate(operation, args, options = {}) {
   }
   if (operation === 'lanefin') {
     // A stopped worker is gone from its Room; its worktree and bundle are still collectable.
-    const status = record.stopped ? { state: 'stopped', currentPrompt: null } : await adapter('status', { ...common, stateFile: record.input.stateFile });
+    let status;
+    try { status = record.stopped ? { state: 'stopped', currentPrompt: null } : await adapter('status', { ...common, stateFile: record.input.stateFile }); }
+    catch (error) {
+      if (args[1] !== 'worker_lost' || !['agent_not_found', 'agent_not_in_session', 'session_not_found'].includes(error.code)) throw error;
+      await dropAgentTarget(cli, record.launch);
+      record.stopped = true; record.stop = { stopped: true, workerLost: true };
+      await save(path, record);
+      status = { state: 'worker_lost', currentPrompt: null };
+    }
     if (status.currentPrompt || status.state === 'working') throw new LaneError('lane_still_running');
     const directory = join(home, 'artifacts', lane);
     const files = await adapter('fetch', { ...common, worktree: record.laneDirectory || record.input.worktree, directory });
@@ -229,7 +237,7 @@ export async function coordinate(operation, args, options = {}) {
     }
     const result = record.stopped ? record.stop : await adapter('stop', common);
     record.stopped = result.stopped === true; record.stop = result; await save(path, record);
-    if (!record.stopped || result.removal) return result;
+    if (!record.stopped || result.removal || result.workerLost) return result;
     await openInbox(home, cli, options.settleMs);
     await confirmRemoval({ home, cli, now, target: common, confirmed: async removal => {
       record.stop = { ...result, removal }; await save(path, record);
