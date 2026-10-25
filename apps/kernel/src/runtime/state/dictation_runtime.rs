@@ -55,7 +55,7 @@ impl KernelRuntimeState {
             .credential_vault;
         self.owned
             .dictation
-            .handle_with_vault(owner, command, if remote { Some(config) } else { None })
+            .handle_with_vault(owner, command, Some(config))
             .await
     }
 }

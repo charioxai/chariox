@@ -565,3 +565,54 @@ fn speech_services_can_be_selected_without_sending_a_key() {
 
 #[path = "remote_tests.rs"]
 mod remote_tests;
+
+#[tokio::test]
+async fn dictation_configuration_is_explicit_persistent_and_can_be_cleared() {
+    let dir = scratch("configuration");
+    let spec = spec_for("http://127.0.0.1:1/unused".to_string(), MODEL_BYTES);
+    let (first, _) = service(&dir, spec.clone(), "words");
+    let configured = |service: &Arc<DictationService>| {
+        serde_json::to_value(service.status(OWNER)).unwrap()["configured"].clone()
+    };
+    assert_eq!(configured(&first), serde_json::json!(false));
+    first
+        .handle(
+            OWNER,
+            DictationCommand::SetService {
+                service: DictationProvider::Local,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(configured(&first), serde_json::json!(true));
+    let (restarted, _) = service(&dir, spec.clone(), "words");
+    assert_eq!(configured(&restarted), serde_json::json!(true));
+    let clear = serde_json::from_value(serde_json::json!({"op":"clear_service"})).unwrap();
+    restarted.handle(OWNER, clear).await.unwrap();
+    let (cleared, _) = service(&dir, spec, "words");
+    assert_eq!(configured(&cleared), serde_json::json!(false));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn dictation_migrates_existing_model_and_remote_selection_without_reasking() {
+    for (name, settings, model) in [
+        ("old-local", r#"{"service":"local"}"#, true),
+        ("old-remote", r#"{"service":"openai"}"#, false),
+        ("old-unused", r#"{"service":"local"}"#, false),
+    ] {
+        let dir = scratch(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), settings).unwrap();
+        let spec = spec_for("http://127.0.0.1:1/unused".to_string(), MODEL_BYTES);
+        if model {
+            std::fs::write(spec.path(&dir), MODEL_BYTES).unwrap();
+        }
+        let (current, _) = service(&dir, spec, "words");
+        assert_eq!(
+            serde_json::to_value(current.status(OWNER)).unwrap()["configured"],
+            serde_json::json!(name != "old-unused")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

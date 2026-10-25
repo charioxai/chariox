@@ -11,8 +11,17 @@ pub(super) struct SpeechServices {
     elevenlabs: String,
 }
 
+// The ignored live drill runs the real daemon against a loopback speech server.
+// Ordinary kernel binaries have no endpoint override.
+#[cfg(test)]
+pub(super) static LIVE_DRILL_ENDPOINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 impl Default for SpeechServices {
     fn default() -> Self {
+        #[cfg(test)]
+        if let Some(url) = LIVE_DRILL_ENDPOINT.get() {
+            return Self::for_test(url.clone());
+        }
         Self {
             openai: "https://api.openai.com/v1/audio/transcriptions".into(),
             elevenlabs: "https://api.elevenlabs.io/v1/speech-to-text".into(),
