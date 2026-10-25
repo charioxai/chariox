@@ -381,6 +381,8 @@ pub enum RelayEnvelope {
         subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heartbeat_interval_ms: Option<u64>,
     },
     ClientUnsubscribe {
         request_id: String,
@@ -399,6 +401,8 @@ pub enum RelayEnvelope {
         subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heartbeat_interval_ms: Option<u64>,
     },
     DaemonUnsubscribe {
         relay_request_id: String,

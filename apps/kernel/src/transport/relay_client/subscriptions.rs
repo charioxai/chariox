@@ -2,12 +2,14 @@
 
 use std::future::Future;
 
-use super::request_errors::map_relay_error;
+use super::request_errors::{map_relay_error, relay_error};
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::transport::agent_turn_feed::AgentTurnFeed;
 use crate::transport::home_audit_feed::HomeAuditFeed;
-use crate::transport::kernel_protocol::WaitingRoomInventoryEventProjection;
+use crate::transport::kernel_protocol::{
+    requested_heartbeat_interval, WaitingRoomInventoryEventProjection,
+};
 use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 use chariox_relay::protocol::RelayCallerIdentity;
 
@@ -19,6 +21,8 @@ pub(super) struct RelaySubscriber {
     pub(super) caller: crate::runtime::command::KernelCaller,
     pub(super) user_id: String,
     pub(super) connection_class: crate::local::KernelConnectionClass,
+    /// Protocol 596: the interval of this subscription's `heartbeat` events.
+    pub(super) heartbeat_interval: Duration,
 }
 
 pub(super) struct RelaySubscriptionTask {
@@ -82,6 +86,7 @@ pub(super) async fn handle_relay_subscribe(
     client_public_key: String,
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
+    heartbeat_interval_ms: Option<u64>,
 ) -> Result<(), DaemonError> {
     let paired = match router.admit_self_host_terminal(&client_public_key) {
         Ok(grant) => grant.is_some(),
@@ -116,7 +121,25 @@ pub(super) async fn handle_relay_subscribe(
         )
         .await;
     }
+    let heartbeat_interval = match requested_heartbeat_interval(
+        heartbeat_interval_ms,
+        relay_subscription_heartbeat_interval(),
+    ) {
+        Ok(interval) => interval,
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(relay_error(&error.code, &error.message, error.retryable)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
     let subscriber = RelaySubscriber {
+        heartbeat_interval,
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
         user_id: if paired {
             crate::session::DEFAULT_LOCAL_USER_ID.into()
@@ -737,7 +760,7 @@ pub(super) async fn run_relay_subscription_loop(
                     }
                     next_heartbeat_at = advance_relay_subscription_deadline(
                         next_heartbeat_at,
-                        relay_subscription_heartbeat_interval(),
+                        subscriber.heartbeat_interval,
                     );
                 }
             }
@@ -1025,7 +1048,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             }
             next_heartbeat_at = advance_relay_subscription_deadline(
                 next_heartbeat_at,
-                relay_subscription_heartbeat_interval(),
+                subscriber.heartbeat_interval,
             );
         }
         if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {

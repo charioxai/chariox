@@ -180,6 +180,7 @@ pub(super) async fn admit(
                 client_public_key: registration.client_public_key,
                 subscription_scope: Some(crate::frame_transport::DISPLAY_RESUME_SCOPE.into()),
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             },
             registry,
             routes,

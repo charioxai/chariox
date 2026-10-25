@@ -178,6 +178,7 @@ async fn subscription_delivers_three_mib_burst_in_order_without_another_append()
             attachment_id,
             subscription_scope: KernelSubscriptionScope::Session,
             connection_class: crate::local::KernelConnectionClass::Terminal,
+            heartbeat_interval: std::time::Duration::from_secs(5),
         },
     ));
     let receipt = tokio::time::timeout(Duration::from_secs(3), async {
@@ -488,6 +489,7 @@ async fn room_workflows_local_drill_initial_inventory_other_client_creation_and_
             attachment_id: attachment.id().into(),
             subscription_scope: KernelSubscriptionScope::Session,
             connection_class: crate::local::KernelConnectionClass::Terminal,
+            heartbeat_interval: std::time::Duration::from_secs(5),
         },
     ));
     let result = tokio::time::timeout(Duration::from_secs(10), async {

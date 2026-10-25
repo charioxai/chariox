@@ -45,6 +45,7 @@ pub(super) async fn run_subscription_loop(
     let mut passkey_prompts = PasskeyPromptFeed::new_local(subscription.connection_class, &router);
     if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
         run_waiting_room_inventory_subscription_loop(
+            subscription.heartbeat_interval,
             router,
             runtime,
             outgoing_tx,
@@ -130,7 +131,7 @@ pub(super) async fn run_subscription_loop(
                 last_workflow_design_sequence,
             ),
             &mut next_heartbeat_at,
-            subscription_heartbeat_interval(),
+            subscription.heartbeat_interval,
             || {
                 emit_kernel_event(
                     &runtime,
@@ -343,7 +344,7 @@ pub(super) async fn run_subscription_loop(
                     }
                     next_heartbeat_at = advance_subscription_deadline(
                         next_heartbeat_at,
-                        subscription_heartbeat_interval(),
+                        subscription.heartbeat_interval,
                     );
                 }
             }
@@ -403,7 +404,7 @@ pub(super) async fn run_subscription_loop(
     }
 }
 
-fn subscription_heartbeat_interval() -> Duration {
+pub(super) fn subscription_heartbeat_interval() -> Duration {
     Duration::from_millis(WATCH_INTERVAL_MS * HEARTBEAT_INTERVAL_TICKS)
 }
 
@@ -866,6 +867,7 @@ pub(super) async fn emit_replay_gap_snapshot(
 }
 
 async fn run_waiting_room_inventory_subscription_loop(
+    heartbeat_interval: Duration,
     router: Arc<CommandRouter>,
     runtime: Arc<KernelTransportRuntime>,
     outgoing_tx: KernelOutgoingSender,
@@ -926,7 +928,7 @@ async fn run_waiting_room_inventory_subscription_loop(
             let Some(snapshot_result) = await_subscription_work_with_heartbeats(
                 router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
                 &mut next_heartbeat_at,
-                subscription_heartbeat_interval(),
+                heartbeat_interval,
                 || {
                     emit_kernel_event(
                         &runtime,
@@ -993,7 +995,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                 break;
             }
             next_heartbeat_at =
-                advance_subscription_deadline(next_heartbeat_at, subscription_heartbeat_interval());
+                advance_subscription_deadline(next_heartbeat_at, heartbeat_interval);
         }
         if Instant::now() >= next_relay_status_at {
             let status = router.transport_relay_status_snapshot().await;
@@ -1014,10 +1016,8 @@ async fn run_waiting_room_inventory_subscription_loop(
                     break;
                 }
             }
-            next_relay_status_at = advance_subscription_deadline(
-                next_relay_status_at,
-                subscription_heartbeat_interval(),
-            );
+            next_relay_status_at =
+                advance_subscription_deadline(next_relay_status_at, heartbeat_interval);
         }
         if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
             let machines = router.transport_remote_machines_snapshot();

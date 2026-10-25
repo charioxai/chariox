@@ -53,6 +53,10 @@ pub(crate) enum KernelIncomingFrame {
         subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
+        /// Protocol 596: how often the subscription's `heartbeat` arrives; at least
+        /// `MIN_SUBSCRIPTION_HEARTBEAT_MS`. Left out, the default interval applies.
+        #[serde(default)]
+        heartbeat_interval_ms: Option<u64>,
     },
     Unsubscribe {
         request_id: String,
@@ -253,6 +257,28 @@ impl SessionMetadataPatch {
 pub(crate) enum KernelSubscriptionScope {
     Session,
     WaitingRoomInventory,
+}
+
+pub(crate) const MIN_SUBSCRIPTION_HEARTBEAT_MS: u64 = 500;
+pub(crate) const INVALID_HEARTBEAT_INTERVAL_CODE: &str = "invalid_heartbeat_interval";
+
+/// The interval a subscription asked for, or `default` when it did not ask.
+pub(crate) fn requested_heartbeat_interval(
+    requested_ms: Option<u64>,
+    default: std::time::Duration,
+) -> Result<std::time::Duration, KernelTransportError> {
+    match requested_ms {
+        None => Ok(default),
+        Some(ms) if ms >= MIN_SUBSCRIPTION_HEARTBEAT_MS => Ok(std::time::Duration::from_millis(ms)),
+        Some(ms) => Err(KernelTransportError {
+            code: INVALID_HEARTBEAT_INTERVAL_CODE.to_string(),
+            message: format!(
+                "heartbeat_interval_ms {ms} is below the minimum of {MIN_SUBSCRIPTION_HEARTBEAT_MS}; leave it out for the default of {} ms",
+                default.as_millis()
+            ),
+            retryable: false,
+        }),
+    }
 }
 
 pub(crate) fn kernel_subscription_scope(scope: Option<&str>) -> KernelSubscriptionScope {

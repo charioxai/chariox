@@ -29,6 +29,10 @@ struct Watched {
 
 impl Watched {
     async fn start() -> Self {
+        Self::start_with_heartbeat(Duration::from_secs(5)).await
+    }
+
+    async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let session = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -65,6 +69,7 @@ impl Watched {
                 attachment_id: attachment.id().into(),
                 subscription_scope: KernelSubscriptionScope::Session,
                 connection_class: crate::local::KernelConnectionClass::Terminal,
+                heartbeat_interval,
             },
         ));
         let mut watched = Self {
@@ -85,7 +90,7 @@ impl Watched {
 
     async fn next_event(&mut self, wanted: impl Fn(&KernelEvent) -> bool) -> KernelEvent {
         let mut seen = Vec::new();
-        let found = timeout(Duration::from_secs(5), async {
+        let found = timeout(Duration::from_secs(8), async {
             loop {
                 if let KernelOutgoingFrame::Event { event, .. } =
                     self.events.recv().await.expect("subscription closed")
@@ -445,4 +450,59 @@ async fn audit_rows_arrive_as_the_list_returns_them() {
     assert_eq!(appended, events);
     assert_eq!(appended.len(), 3);
     watched.stop().await;
+}
+
+/// The gaps between the next `count + 1` heartbeats of a subscription.
+async fn heartbeat_gaps(watched: &mut Watched, count: usize) -> Vec<Duration> {
+    let mut arrivals = Vec::new();
+    while arrivals.len() <= count {
+        watched
+            .next_event(|event| matches!(event, KernelEvent::Heartbeat { .. }))
+            .await;
+        arrivals.push(std::time::Instant::now());
+    }
+    arrivals.windows(2).map(|pair| pair[1] - pair[0]).collect()
+}
+
+#[tokio::test]
+async fn a_subscription_that_asks_gets_heartbeats_at_its_interval() {
+    let mut watched = Watched::start_with_heartbeat(Duration::from_millis(500)).await;
+    let gaps = heartbeat_gaps(&mut watched, 4).await;
+    for gap in &gaps {
+        assert!(
+            *gap >= Duration::from_millis(450) && *gap <= Duration::from_millis(800),
+            "heartbeat gaps {gaps:?}"
+        );
+    }
+    watched.stop().await;
+}
+
+#[tokio::test]
+async fn a_subscription_that_does_not_ask_keeps_the_default_interval() {
+    let mut watched = Watched::start().await;
+    let gaps = heartbeat_gaps(&mut watched, 1).await;
+    assert!(
+        gaps[0] >= Duration::from_millis(4_500) && gaps[0] <= Duration::from_millis(6_000),
+        "heartbeat gaps {gaps:?}"
+    );
+    watched.stop().await;
+}
+
+#[test]
+fn a_heartbeat_interval_below_the_minimum_is_refused() {
+    use crate::transport::kernel_protocol::requested_heartbeat_interval as requested;
+    let default = Duration::from_secs(5);
+    assert_eq!(requested(None, default).unwrap(), default);
+    assert_eq!(
+        requested(Some(500), default).unwrap(),
+        Duration::from_millis(500)
+    );
+    assert_eq!(
+        requested(Some(60_000), default).unwrap(),
+        Duration::from_secs(60)
+    );
+    let refused = requested(Some(499), default).unwrap_err();
+    assert_eq!(refused.code, "invalid_heartbeat_interval");
+    assert!(refused.message.contains("at least") || refused.message.contains("minimum of 500"));
+    assert!(!refused.retryable);
 }
