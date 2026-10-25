@@ -143,7 +143,30 @@ fn assert_native_files_clean(path: &Path, canary: &str) {
 #[test]
 fn account_copy_source_and_encrypted_install_drill() {
     crate::test_support::isolated_env_test!();
-    run_async_with_large_test_stack("account-copy", || async {
+    run_account_copy_drill(CopyScenario::Serial);
+}
+
+#[test]
+fn account_copy_verification_allows_unrelated_profile_operations() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::RegistryAccess);
+}
+
+#[test]
+fn account_copy_verification_revalidates_changed_profile() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::ChangedProfile);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopyScenario {
+    Serial,
+    RegistryAccess,
+    ChangedProfile,
+}
+
+fn run_account_copy_drill(scenario: CopyScenario) {
+    run_async_with_large_test_stack("account-copy", move || async move {
         let _relay = relay_client_test_guard().await;
         let _home = RelayTestHome::new();
         let root = PathBuf::from(std::env::var_os("CHARIOX_HOME").unwrap());
@@ -159,6 +182,10 @@ fn account_copy_source_and_encrypted_install_drill() {
         let fake = root.join("claude");
         std::fs::write(&fake, format!(r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
+if [ -f '{root}/pause' ]; then
+ touch '{root}/entered'
+ while [ -f '{root}/pause' ]; do sleep 0.02; done
+fi
 if [ -f '{root}/interrupt' ]; then
  rm '{root}/interrupt'
  mv '{root}/target/provider-accounts.json' '{root}/target/provider-accounts.json.backup'
@@ -364,6 +391,77 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             "provider":"claude", "account_profile":profile.profile_id, "operation_id":"copy-1",
             "target_kernel_id":target.daemon_id, "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),"replace":false
         }});
+        if scenario != CopyScenario::Serial {
+            struct ReleaseVerifier(PathBuf);
+            impl Drop for ReleaseVerifier {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_file(&self.0);
+                }
+            }
+            let mut copying = request.clone();
+            let changed_profile = if scenario == CopyScenario::ChangedProfile {
+                let receipt = source_request(&source_router, request.clone())
+                    .await
+                    .unwrap();
+                copying["CopyProviderAccountToKernel"]["operation_id"] = "profile-race".into();
+                copying["CopyProviderAccountToKernel"]["replace"] = true.into();
+                Some(
+                    receipt["ProviderAccountCopied"]["receipt"]["account_profile"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            let pause = root.join("pause");
+            std::fs::write(&pause, b"pause").unwrap();
+            let release = ReleaseVerifier(pause);
+            let router = source_router.clone();
+            let copy = tokio::spawn(async move { source_request(&router, copying).await });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !root.join("entered").exists() {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("copy must enter the paused official verifier");
+            let profiles = target_profiles.clone();
+            let mut concurrent = tokio::task::spawn_blocking(move || {
+                if let Some(profile_id) = changed_profile {
+                    return profiles
+                        .rename("local", "claude", &profile_id, "Concurrent edit")
+                        .unwrap();
+                }
+                let _ = profiles.list("local", Some("claude")).unwrap();
+                let profile = profiles
+                    .create_managed("local", "codex", "Unrelated")
+                    .unwrap();
+                profiles.get("local", "codex", &profile.profile_id).unwrap()
+            });
+            let progressed = tokio::time::timeout(Duration::from_secs(2), &mut concurrent).await;
+            drop(release);
+            let copied = copy.await.unwrap();
+            let profile = match progressed {
+                Ok(result) => result.unwrap(),
+                Err(_) => {
+                    concurrent.await.unwrap();
+                    panic!("unrelated profile operations waited for Claude verification");
+                }
+            };
+            if scenario == CopyScenario::ChangedProfile {
+                assert_code(copied, "provider_account_copy_conflict", canary);
+            } else {
+                copied.unwrap();
+            }
+            assert_eq!(
+                target_profiles
+                    .get("local", &profile.provider, &profile.profile_id)
+                    .unwrap(),
+                profile,
+                "publishing the copy must preserve concurrent registry writes"
+            );
+        }
         let denied_request: LocalDaemonRequest = serde_json::from_value(request.clone()).unwrap();
         let mut denied_command =
             KernelCommand::from_local_request("foreign-owner", None, None, &denied_request);
