@@ -118,7 +118,9 @@ impl CommandRouter {
                 Ok(LocalDaemonResponse::KernelBrowser { result })
             }),
             LocalDaemonRequest::PreviewWorkflowSchedule(request) => {
-                boxed_handler(|| async move { self.runtime_state.preview_workflow_schedule(request) })
+                boxed_handler(
+                    || async move { self.runtime_state.preview_workflow_schedule(request) },
+                )
             }
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
                 boxed_handler(|| async move { terminal_command_catalog_response() })

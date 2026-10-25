@@ -1,5 +1,7 @@
 use super::*;
-use crate::local::{CreateWorkflowScheduleRequest, DestroyAgentRequest, PreviewWorkflowScheduleRequest};
+use crate::local::{
+    CreateWorkflowScheduleRequest, DestroyAgentRequest, PreviewWorkflowScheduleRequest,
+};
 
 #[test]
 fn failed_schedule_tick_does_not_leave_a_queued_prompt() {
