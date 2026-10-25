@@ -56,3 +56,26 @@ fn local_daemon_protocol_provider_account_credential_shape_is_versioned() {
         "e525fa0b75a08d3ce4267c0fe016d37a5ae1fea0d8734368bb3887bc833cf8bc"
     );
 }
+
+#[test]
+fn account_copy_public_and_encrypted_peer_requests_are_admitted() {
+    let source = serde_json::json!({"CopyProviderAccountToKernel": {
+        "provider":"claude", "account_profile":"work-exact", "operation_id":"op-1",
+        "target_kernel_id":"target", "target_key_thumbprint":"a".repeat(64), "replace":false
+    }});
+    let parsed = serde_json::from_value::<LocalDaemonRequest>(source.clone());
+    assert!(parsed.is_ok(), "MP-08/MP-09/MP-10/MP-11 source request must be supported");
+    assert_eq!(serde_json::to_value(parsed.unwrap()).unwrap(), source);
+    let private = crate::transport::relay_crypto::generate_private_key_base64();
+    let public = crate::transport::relay_crypto::public_key_from_private_key_base64(&private).unwrap();
+    let peer = serde_json::json!({"kind":"install_provider_account_copy", "binding": {
+        "operation_id":"op-1", "provider":"claude", "source_profile_id":"work-exact",
+        "source_kernel_id":"source", "source_key_thumbprint":"b".repeat(64),
+        "target_kernel_id":"target", "target_key_thumbprint":"a".repeat(64), "replace":false
+    }, "credential":"synthetic-copy-canary"});
+    let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(&private, &public, &serde_json::to_vec(&peer).unwrap()).unwrap();
+    let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key(&private, &encrypted).unwrap();
+    let request = serde_json::from_slice::<crate::transport::relay_peer::RelayPeerRequest>(&plaintext.plaintext);
+    assert!(request.is_ok(), "encrypted account install must be supported");
+    assert!(!format!("{:?}", request.unwrap()).contains("synthetic-copy-canary"));
+}
