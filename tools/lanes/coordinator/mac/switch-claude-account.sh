@@ -14,7 +14,9 @@ case ${1:-} in
   old) F=oauth-token.old-account;;
   *) echo "usage: switch-claude-account.sh chariox|old" >&2; exit 2;;
 esac
-[ $# -eq 1 ] || { echo "usage: switch-claude-account.sh chariox|old" >&2; exit 2; }
+PROBE_ONLY=0
+if [ "${2:-}" = --probe ] && [ $# -eq 2 ]; then PROBE_ONLY=1; elif [ $# -ne 1 ]; then { echo "usage: switch-claude-account.sh chariox|old" >&2; exit 2; }
+fi
 B3=${B3:-$HOME/.chariox/dev/browser-computer-use/resume-20260930/b3.sh}
 S=${LANES_STATE:-/root/.chariox/dev/lanes-kernel} A=${LOOP_AGENTS:-/root/.chariox/dev/browser-resume-20260930/agents}
 D=${CLAUDE_TOKENS:-/root/.claude-lanes} R=${ADAPTERS:-/root/work/agent-dogfood/adapters}
@@ -27,15 +29,20 @@ K=$ADAPTERS/tools/lanes/kernel
 probe=$(node "$K/claude-account.mjs" probe "$TOKENS/$FILE" 2>&1); code=$?
 echo "probe: $probe"
 [ $code -eq 0 ] || { echo "refused: the $FILE account is not usable yet; nothing changed" >&2; exit 3; }
+[ "$PROBE_ONLY" = 0 ] || exit 0
 set=$(LANES_KERNEL_STATE=$STATE node "$K/lanes-kernel.mjs" set-claude-credential --from "$TOKENS/$FILE" 2>&1); code=$?
 echo "kernel: $set"
 [ $code -eq 0 ] || { echo "the lanes kernel refused the credential; oauth-token left as it was" >&2; exit 5; }
-cp -p "$TOKENS/$FILE" "$TOKENS/.oauth-token.new" && mv -f "$TOKENS/.oauth-token.new" "$TOKENS/oauth-token"
-touch "$AGENTS/CLAUDE_SWITCHED"
+if [ -d "$TOKENS/.oauth-token.new" ] || ! cp -p "$TOKENS/$FILE" "$TOKENS/.oauth-token.new" || ! mv -fT "$TOKENS/.oauth-token.new" "$TOKENS/oauth-token"; then
+  echo "FAILED: kernel credential has already changed; classic token update failed; repair it before classic launches" >&2; exit 6
+fi
+if ! touch "$AGENTS/CLAUDE_SWITCHED"; then
+  echo "FAILED: kernel credential has already changed and classic token was updated; switch marker failed; repair the marker" >&2; exit 7
+fi
 echo "oauth-token now holds the $FILE account; running workers keep their Claude process until it is relaunched"
 REMOTE
 if [ "$B3" = local ]; then
-  STATE=$S AGENTS=$A TOKENS=$D ADAPTERS=$R FILE=$F bash -c "$BODY"
+  STATE=$S AGENTS=$A TOKENS=$D ADAPTERS=$R FILE=$F PROBE_ONLY=$PROBE_ONLY bash -c "$BODY"
 else
-  "$B3" "$(printf 'STATE=%q AGENTS=%q TOKENS=%q ADAPTERS=%q FILE=%q bash -c %q' "$S" "$A" "$D" "$R" "$F" "$BODY")"
+  "$B3" "$(printf 'STATE=%q AGENTS=%q TOKENS=%q ADAPTERS=%q FILE=%q PROBE_ONLY=%q bash -c %q' "$S" "$A" "$D" "$R" "$F" "$PROBE_ONLY" "$BODY")"
 fi

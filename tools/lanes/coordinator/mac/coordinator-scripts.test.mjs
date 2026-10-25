@@ -134,3 +134,35 @@ test('switch-claude-account.sh leaves the active token alone when the kernel ref
   assert.equal(r.run(['elsewhere']).status, 2);
   assert.equal(r.run([]).status, 2);
 });
+
+test('switch reports a partial change when staging, rename or marker fails after kernel success', async t => {
+  for (const failure of ['copy', 'rename', 'marker']) {
+    const r = await switchRig(t);
+    // A file used as a parent fails even as root, without relying on chmod.
+    if (failure === 'copy') {
+      await mkdir(join(r.tokens, '.oauth-token.new'));
+      await mkdir(join(r.tokens, '.oauth-token.new/oauth-token.chariox'));
+    }
+    if (failure === 'rename') await mkdir(join(r.tokens, 'oauth-token/child'), { recursive: true }).catch(async () => {
+      await rm(join(r.tokens, 'oauth-token')); await mkdir(join(r.tokens, 'oauth-token/child'), { recursive: true });
+    });
+    if (failure === 'marker') await writeFile(join(r.root, 'not-a-directory'), 'fixture');
+    const result = r.run(['chariox'], failure === 'marker' ? { LOOP_AGENTS: join(r.root, 'not-a-directory') } : {});
+    assert.notEqual(result.status, 0, `${failure}: cannot report a complete switch`);
+    assert.match(result.stderr, /kernel credential has already changed/);
+    assert.equal((await r.kernelCalls()).length, 1);
+    assert.equal(result.stdout.includes('oauth-token now holds'), false);
+    assert.equal(existsSync(join(r.agents, 'CLAUDE_SWITCHED')), false);
+  }
+});
+
+test('switch probe-only checks usability and never updates the kernel, active file or marker', async t => {
+  const r = await switchRig(t);
+  assert.equal(r.run(['chariox', '--probe']).status, 0);
+  assert.deepEqual(await r.kernelCalls(), []);
+  assert.equal(await r.active(), 'ACTIVE');
+  assert.equal(existsSync(join(r.agents, 'CLAUDE_SWITCHED')), false);
+  await writeFile(join(r.tokens, 'oauth-token.chariox'), 'EXHAUSTED\n');
+  assert.equal(r.run(['chariox', '--probe']).status, 3);
+  assert.deepEqual(await r.kernelCalls(), []);
+});
