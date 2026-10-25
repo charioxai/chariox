@@ -259,3 +259,94 @@ async fn remote_speech_reads_only_its_owners_current_vault_entry() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[tokio::test]
+async fn dictation_key_status_is_owner_scoped_metadata_and_tracks_vault_lock() {
+    let (dir, service, vault) = service("key-status", "http://127.0.0.1:1/unused".into());
+    choose(&service, DictationProvider::Openai).await;
+    async fn status(
+        service: &Arc<DictationService>,
+        owner: &str,
+        vault: &UserCredentialVaultConfig,
+    ) -> DictationStatus {
+        let DictationResult::Status { status } = service
+            .handle_with_vault(owner, DictationCommand::Status, Some(vault.clone()))
+            .await
+            .unwrap()
+        else {
+            panic!("status")
+        };
+        status
+    }
+    assert_eq!(
+        status(&service, OWNER, &vault).await.key_state,
+        DictationKeyState::Missing
+    );
+    store(
+        &vault,
+        OWNER,
+        DictationProvider::Openai,
+        "synthetic-speech-key",
+    );
+    let saved = status(&service, OWNER, &vault).await;
+    assert_eq!(saved.key_state, DictationKeyState::Saved);
+    assert!(!serde_json::to_string(&saved)
+        .unwrap()
+        .contains("synthetic-speech-key"));
+    assert_eq!(
+        status(&service, "other-user", &vault).await.key_state,
+        DictationKeyState::Missing
+    );
+    crate::secret::lock_chariox_encrypted_vault(&vault.path).unwrap();
+    assert_eq!(
+        status(&service, OWNER, &vault).await.key_state,
+        DictationKeyState::Locked
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Start with a disposable CHARIOX_HOME and the normal kernel host/port variables.
+/// One fake HTTP 401 is served for a normal Web mic/Stop recording. No production
+/// speech endpoint, credential or special Web transport participates in this drill.
+#[test]
+#[ignore = "live Web drill: runs a real daemon and one loopback speech request until stopped"]
+fn dictation_live_kernel_with_fake_speech_service() {
+    assert_eq!(
+        std::env::var("CHARIOX_DICTATION_LIVE_DRILL").as_deref(),
+        Ok("1"),
+        "explicit live-drill opt-in required"
+    );
+    let home = std::env::var("CHARIOX_HOME").expect("set a disposable CHARIOX_HOME");
+    assert!(
+        Path::new(&home).is_absolute(),
+        "use an absolute disposable home"
+    );
+    let port: u16 = std::env::var("CHARIOX_KERNEL_PORT")
+        .expect("set an own kernel port")
+        .parse()
+        .unwrap();
+    assert_ne!(port, 0);
+    let (url, request) = fake_service(401, r#"{"error":{"code":"invalid_api_key"}}"#);
+    remote::LIVE_DRILL_ENDPOINT.set(url.clone()).unwrap();
+    crate::slice::initialize_managed_docker_broker();
+    crate::runtime_transport::initialize_kernel_local_auth_from_env().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let app = crate::DaemonApp::bootstrap(crate::DaemonConfig::load_from_env()).unwrap();
+        app.run().await.unwrap();
+    });
+    // Wake the fixture listener on an early client failure so shutdown cannot hang.
+    // The empty wake request then fails the RIFF assertion below.
+    if !request.is_finished() {
+        let _ = ureq::post(&url)
+            .timeout(Duration::from_secs(1))
+            .send_bytes(b"");
+    }
+    let bytes = request.join().unwrap();
+    assert!(bytes.starts_with(b"POST "));
+    assert!(bytes.windows(4).any(|window| window == b"RIFF"));
+}

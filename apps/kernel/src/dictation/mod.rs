@@ -24,8 +24,8 @@ use self::engine::Transcription;
 use self::engine::WhisperEngine;
 use crate::error::DaemonError;
 use crate::local::{
-    DictationCommand, DictationModelState, DictationProvider, DictationResult, DictationStatus,
-    DICTATION_SAMPLE_RATE_HZ,
+    DictationCommand, DictationKeyState, DictationModelState, DictationProvider, DictationResult,
+    DictationStatus, DICTATION_SAMPLE_RATE_HZ,
 };
 
 const RELEASE_MODEL_AFTER: Duration = Duration::from_secs(300);
@@ -34,6 +34,8 @@ const MIN_SPEECH_BYTES: usize = DICTATION_SAMPLE_RATE_HZ as usize * 2 * 3 / 10;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    /// None migrates an already downloaded model or remote selection from earlier releases.
+    configured: Option<bool>,
     service: DictationProvider,
     /// The language each user chose; users without an entry get automatic detection.
     languages: HashMap<String, String>,
@@ -115,20 +117,36 @@ impl DictationService {
         self.handle_with_vault(owner, command, None).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn handle_with_vault(
         self: &Arc<Self>,
         owner: &str,
         command: DictationCommand,
         vault: Option<crate::config::UserCredentialVaultConfig>,
     ) -> Result<DictationResult, DaemonError> {
-        match command {
+        self.handle_with_provider(owner, command, vault, self.selected_service())
+            .await
+    }
+
+    pub(crate) async fn handle_with_provider(
+        self: &Arc<Self>,
+        owner: &str,
+        command: DictationCommand,
+        vault: Option<crate::config::UserCredentialVaultConfig>,
+        provider: DictationProvider,
+    ) -> Result<DictationResult, DaemonError> {
+        let result = match command {
             DictationCommand::Status => Ok(DictationResult::Status {
                 status: self.status(owner),
             }),
-            DictationCommand::DownloadModel => Ok(DictationResult::Status {
-                status: self.start_download(owner),
-            }),
+            DictationCommand::DownloadModel => {
+                self.set_configured(owner, true)?;
+                Ok(DictationResult::Status {
+                    status: self.start_download(owner),
+                })
+            }
             DictationCommand::SetService { service } => self.set_service(owner, service),
+            DictationCommand::ClearService => self.set_configured(owner, false),
             DictationCommand::SetLanguage { language } => self.set_language(owner, language),
             DictationCommand::AppendAudio {
                 upload_id,
@@ -146,9 +164,27 @@ impl DictationService {
                 })
             }
             DictationCommand::Transcribe { upload_id, .. } => {
-                self.transcribe(owner, &upload_id, vault).await
+                self.transcribe_with_provider(owner, &upload_id, vault.clone(), provider)
+                    .await
             }
-        }
+        }?;
+        Ok(match result {
+            DictationResult::Status { mut status } => {
+                if let Some(key) = status.vault_key.as_deref() {
+                    status.key_state = match read_key(vault.as_ref(), key) {
+                        Ok(_) => DictationKeyState::Saved,
+                        Err(DaemonError::RelayTransport { code, .. })
+                            if code == "dictation_vault_locked" =>
+                        {
+                            DictationKeyState::Locked
+                        }
+                        Err(_) => DictationKeyState::Missing,
+                    };
+                }
+                DictationResult::Status { status }
+            }
+            other => other,
+        })
     }
 
     pub(crate) fn selected_service(&self) -> DictationProvider {
@@ -177,6 +213,14 @@ impl DictationService {
             }
         };
         DictationStatus {
+            configured: inner.settings.configured.unwrap_or_else(|| {
+                inner.settings.service != DictationProvider::Local || self.model_ready()
+            }),
+            key_state: if inner.settings.service == DictationProvider::Local {
+                DictationKeyState::NotRequired
+            } else {
+                DictationKeyState::Locked
+            },
             service: inner.settings.service,
             vault_key: vault_key(owner, inner.settings.service),
             model_id: self.spec.id.clone(),
@@ -237,6 +281,26 @@ impl DictationService {
         })
     }
 
+    fn set_configured(
+        &self,
+        owner: &str,
+        configured: bool,
+    ) -> Result<DictationResult, DaemonError> {
+        {
+            let mut inner = self.lock();
+            let mut next = inner.settings.clone();
+            next.configured = Some(configured);
+            if !configured {
+                next.service = DictationProvider::Local;
+            }
+            self.save_settings(&next)?;
+            inner.settings = next;
+        }
+        Ok(DictationResult::Status {
+            status: self.status(owner),
+        })
+    }
+
     fn set_service(
         &self,
         owner: &str,
@@ -246,6 +310,7 @@ impl DictationService {
             let mut inner = self.lock();
             let mut next = inner.settings.clone();
             next.service = service;
+            next.configured = Some(true);
             self.save_settings(&next)?;
             inner.settings = next;
         }
@@ -267,13 +332,28 @@ impl DictationService {
             .map_err(|_| refuse("dictation_settings_failed", "Cannot save the dictation settings. Check the kernel's disk space and permissions, then try again.", true))
     }
 
+    #[cfg(test)]
     async fn transcribe(
         self: &Arc<Self>,
         owner: &str,
         upload_id: &str,
         vault: Option<crate::config::UserCredentialVaultConfig>,
     ) -> Result<DictationResult, DaemonError> {
-        let provider = self.lock().settings.service;
+        self.transcribe_with_provider(owner, upload_id, vault, self.selected_service())
+            .await
+    }
+
+    async fn transcribe_with_provider(
+        self: &Arc<Self>,
+        owner: &str,
+        upload_id: &str,
+        vault: Option<crate::config::UserCredentialVaultConfig>,
+        provider: DictationProvider,
+    ) -> Result<DictationResult, DaemonError> {
+        if self.selected_service() != provider {
+            return Err(refuse("dictation_service_changed", "The dictation service changed while waiting for the Vault. Record again with the selected service.", true));
+        }
+
         if provider == DictationProvider::Local && !self.model_ready() {
             return Err(refuse(
                 "dictation_model_missing",
@@ -389,7 +469,11 @@ fn read_key(
     key: &str,
 ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
     let missing = || {
-        refuse("dictation_no_key", "Add your speech service API key through the Vault prompt in Settings → Dictation, then try again.", false)
+        refuse(
+            "dictation_no_key",
+            "Add your speech service API key in Settings → Dictation, then try again.",
+            false,
+        )
     };
     let vault = vault.ok_or_else(missing)?;
     let service = crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), vault)

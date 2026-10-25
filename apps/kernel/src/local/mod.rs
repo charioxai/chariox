@@ -284,9 +284,9 @@ pub use api::{
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
 pub use api::{
-    DictationCommand, DictationContext, DictationModelState, DictationProvider, DictationRequest,
-    DictationResult, DictationStatus, DICTATION_MAX_AUDIO_BYTES, DICTATION_MAX_CHUNK_BYTES,
-    DICTATION_SAMPLE_RATE_HZ,
+    DictationCommand, DictationContext, DictationKeyState, DictationModelState, DictationProvider,
+    DictationRequest, DictationResult, DictationStatus, DICTATION_MAX_AUDIO_BYTES,
+    DICTATION_MAX_CHUNK_BYTES, DICTATION_SAMPLE_RATE_HZ,
 };
 pub use api::{
     ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,

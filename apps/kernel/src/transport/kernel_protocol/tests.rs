@@ -1136,3 +1136,25 @@ fn env_ux01_unrelated_transport_failures_remain_retryable() {
     };
     assert!(super::map_kernel_error(&error).retryable);
 }
+
+#[test]
+fn dictation_command_errors_keep_the_speech_service_code() {
+    for code in [
+        "dictation_bad_key",
+        "dictation_vault_locked",
+        "dictation_no_key",
+        "dictation_quota",
+        "dictation_network",
+        "dictation_service_changed",
+    ] {
+        let error = DaemonError::RelayTransport {
+            operation: "dictation",
+            code: code.into(),
+            message: "Safe speech-service recovery advice".into(),
+            retryable: false,
+        };
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+    }
+}

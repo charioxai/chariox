@@ -16,6 +16,8 @@ pub enum DictationCommand {
     DownloadModel,
     /// Selects the speech service for this kernel; secrets use the existing Vault flow.
     SetService { service: DictationProvider },
+    /// Stops offering dictation until the person selects a service again.
+    ClearService,
     SetLanguage {
         /// ISO 639-1 code such as `es`; `None` lets the model detect the language.
         language: Option<String>,
@@ -70,9 +72,21 @@ pub enum DictationProvider {
     Elevenlabs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictationKeyState {
+    NotRequired,
+    Locked,
+    Missing,
+    Saved,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DictationStatus {
+    pub configured: bool,
+    /// Vault metadata only; the key value never leaves the kernel.
+    pub key_state: DictationKeyState,
     pub service: DictationProvider,
     /// The authenticated user's Vault handle for this service, never a value.
     pub vault_key: Option<String>,
