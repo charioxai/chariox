@@ -11,6 +11,13 @@ clicks. Navigation alone does not request desktop focus. Office workflows that
 need the browser visible should explicitly activate their tab; reads and
 background navigation must not take focus from a desktop application.
 
+A slice bound to a Room Environment starts its desktop without the bar, so the
+streamed screen is the browser page alone and pointer coordinates are exact. The
+launcher learns the binding from `CHARIOX_ROOM_ENVIRONMENT_SESSION_ID`, which
+every provisioning and snapshot-resume start forwards, and records the choice in
+`taskbar.disabled` so `status` does not report the bar missing. A slice that is
+bound after its desktop started keeps the bar until its desktop starts again.
+
 The desktop launcher owns the bar's startup, health check, and shutdown. Both
 noVNC and Selkies display the same desktop, without browser-only restore logic.
 New slice images install tint2. Support refresh installs it when absent from an
