@@ -344,5 +344,7 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
 /// MP-08/MP-10/MP-11: allocated 596 reads a session state's revision before the state, so a state is never
 /// older than its `agent_activity_revision`, and lets `AttachSessionView` ask for `latest_prompt_count` turns.
+/// Allocated 594 adds `Dictation`: kernel speech-to-text with an on-demand model download.
 /// Allocated 603 adds speech-service selection, owner Vault metadata, setup state and recording context.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 599;
+/// Allocated 610 unions the staging features 588-603 with the new-UI contracts; 599 and 567 stay reciprocal predecessors.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 610;

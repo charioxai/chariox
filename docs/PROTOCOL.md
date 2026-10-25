@@ -5036,3 +5036,14 @@ reciprocal for managed upgrade and rollback. The 32-entry validator limit
 requires retiring unshipped branch protocols 371–375; released 376/377/411,
 Apps 416, main 472/520, display 552, and staging 567 remain admitted.
 The general web minimum remains 567; clients gate additive requests separately.
+
+
+### Staging new UI + dictation union (610/216)
+
+MP-08 / MP-09 / MP-10 / MP-11: this union adds Vault speech services
+(603/209: speech-service selection, owner Vault metadata, setup state and
+recording context) to the 599/205 staging union. It keeps 599 and 567 as
+reciprocal managed-upgrade predecessors. The 32-entry validator limit retires
+the unshipped branch protocol 378; the other admitted releases stay. Clients
+require 603 for the Dictation settings contract and gate it separately from
+the general web minimum.
