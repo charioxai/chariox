@@ -76,7 +76,7 @@ export function createRound(options) {
   const choiceFor = async (lane, id, offered) => {
     try { offered ??= (await coordinator('lanehealth', [lane.entry.lane])).interactions?.find(item => item.id === id)?.choices; }
     catch { /* the status is only a hint: a plain allow still resolves the decision */ }
-    return offered?.includes('allow_session') ? 'allow_session' : 'allow_once';
+    return { offered, choiceId: offered?.includes('allow_session') ? 'allow_session' : 'allow_once' };
   };
 
   // A reply that failed stays unresolved: the next read of the lane's status lists the decision again and it is retried.
@@ -87,7 +87,8 @@ export function createRound(options) {
     let entry = lane.run.permissions.find(p => p.interactionId === id);
     if (!entry) lane.run.permissions.push(entry = { interactionId: id, summary: event.summary, at_ms: now() });
     entry.attempts = (entry.attempts ?? 0) + 1;
-    const choiceId = await choiceFor(lane, id, offered);
+    const { offered: choices, choiceId } = await choiceFor(lane, id, offered);
+    if (choices) entry.offered = choices; // what the kernel offered, so a run shows whether allow_session was available
     try {
       await respond({ kernel: lane.run.launch.kernel, taskId: lane.entry.lane, sessionId: lane.run.launch.sessionId, interactionId: id, choiceId });
       entry.choice = choiceId; delete entry.error;

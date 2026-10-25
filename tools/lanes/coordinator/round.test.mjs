@@ -326,4 +326,5 @@ test('round: a routine permission is answered for the session when the kernel of
   const [run] = await runRound(r.spec, r.options);
   assert.deepEqual(r.calls.filter(c => c.op === 'respond').map(c => [c.input.interactionId, c.input.choiceId]), [['claude-permission-1', 'allow_session'], ['claude-permission-2', 'allow_once']]);
   assert.deepEqual(run.permissions.map(p => p.choice), ['allow_session', 'allow_once']);
+  assert.deepEqual(run.permissions.map(p => p.offered), [['allow_once', 'allow_session', 'deny'], ['allow_once', 'deny']], 'the run records what the kernel offered');
 });
