@@ -14,12 +14,16 @@ spec.loader.exec_module(installer)
 
 
 class BrowserInstallationTests(unittest.TestCase):
-    def fixture(self, root, filename="chrome-linux64/chrome"):
+    def fixture(self, root, filename="chrome-linux64/chrome", sandbox=True):
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w") as bundle:
             entry = zipfile.ZipInfo(filename)
             entry.external_attr = 0o100755 << 16
             bundle.writestr(entry, b"#!/bin/sh\nexit 0\n")
+            if sandbox:
+                helper = zipfile.ZipInfo("chrome-linux64/chrome_sandbox")
+                helper.external_attr = 0o100755 << 16
+                bundle.writestr(helper, b"verified sandbox helper")
         payload = data.getvalue()
         lock = {"schema": "chariox.kernel-browser-chromium.v1", "version": "155.test",
                 "linux64": {"url": "https://example.invalid/browser.zip", "executable": "chrome-linux64/chrome",
@@ -37,6 +41,19 @@ class BrowserInstallationTests(unittest.TestCase):
             binary = root / "installed/chromium/155.test/chrome-linux64/chrome"
             self.assertEqual((root / "installed/chrome").resolve(), binary)
             self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+            helper = binary.with_name("chrome_sandbox")
+            self.assertEqual(helper.stat().st_uid, 0)
+            self.assertEqual(helper.stat().st_mode & 0o7777, 0o4755)
+            self.assertEqual(binary.with_name("chrome-sandbox").resolve(), helper)
+
+    def test_requires_the_pinned_sandbox_helper(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock, payload = self.fixture(root, sandbox=False)
+            with patch.object(installer.urllib.request, "urlopen", return_value=io.BytesIO(payload)):
+                with self.assertRaisesRegex(ValueError, "sandbox helper"):
+                    installer.install(lock, root / "installed")
+            self.assertFalse((root / "installed/chrome").exists())
 
     def test_rejects_modified_archives_before_installing(self):
         with tempfile.TemporaryDirectory() as temporary:

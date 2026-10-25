@@ -40,6 +40,13 @@ def install(lock_path, destination):
         executable = target / pin["executable"]
         if not os.access(executable, os.X_OK):
             raise ValueError("browser executable is missing")
+        # CfT ships its helper without setuid or Chrome's expected filename.
+        # The verified helper lives in the root-owned, read-only image tree.
+        sandbox = executable.with_name("chrome_sandbox")
+        if not sandbox.is_file() or sandbox.stat().st_uid != 0 or not os.access(sandbox, os.X_OK):
+            raise ValueError("root-owned browser sandbox helper is missing")
+        sandbox.chmod(0o4755)
+        executable.with_name("chrome-sandbox").symlink_to(sandbox.name)
         (root / "chrome").symlink_to(executable)
 
 
