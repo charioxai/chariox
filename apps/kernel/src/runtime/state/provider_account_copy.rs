@@ -186,6 +186,11 @@ impl KernelRuntimeState {
             || identity.user_id.as_deref() != Some(profile.user_id.as_str())
             || identity.realm_id != profile.realm_id
             || profile.realm_id.is_empty()
+            || profile.machine_id.as_deref() != Some(config.host_machine_id.as_str())
+            || profile
+                .kernel_credential
+                .as_deref()
+                .is_none_or(str::is_empty)
             || profile.kernel_id.as_deref() != Some(config.daemon_id.as_str())
             || profile.kernel_public_key_thumbprint.as_deref()
                 != Some(binding.target_key_thumbprint.as_str())

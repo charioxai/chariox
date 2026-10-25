@@ -74,6 +74,10 @@ fn account_copy_public_and_encrypted_peer_requests_are_admitted() {
             >= std::time::Duration::from_secs(150)
     );
     assert_eq!(serde_json::to_value(parsed).unwrap(), source);
+}
+
+#[test]
+fn account_copy_encrypted_peer_request_is_admitted() {
     let private = crate::transport::relay_crypto::generate_private_key_base64();
     let public =
         crate::transport::relay_crypto::public_key_from_private_key_base64(&private).unwrap();

@@ -552,6 +552,31 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             canary,
         );
         assert_native_files_clean(&root.join("logs"), canary);
+        for config in [&source, &target] {
+            assert_native_files_clean(
+                &config.private_runtime_state_root().join("sessions"),
+                canary,
+            );
+            for entry in std::fs::read_dir(config.private_runtime_state_root()).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_file()
+                    && path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("history.db")
+                {
+                    assert!(
+                        !std::fs::read(path)
+                            .unwrap()
+                            .windows(canary.len())
+                            .any(|bytes| bytes == canary.as_bytes()),
+                        "credential reached operational history"
+                    );
+                }
+            }
+        }
+
         let _ = stop_target.send(true);
         tokio::time::timeout(Duration::from_secs(5), target_task)
             .await
