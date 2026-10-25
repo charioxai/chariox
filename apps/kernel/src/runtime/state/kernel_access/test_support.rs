@@ -525,6 +525,113 @@ async fn a_revoked_grants_inbox_is_ended_once_the_store_takes_writes_again() {
     assert!(state.outside_ended_response("kept").unwrap().is_some());
 }
 
+/// Makes the audit log refuse revocation records, as a full disk refuses them.
+fn refuse_revocation_records(root: &crate::test_support::TestWorktree, refuse: bool) {
+    let connection = rusqlite::Connection::open(root.path().join("state.db")).unwrap();
+    connection
+        .execute_batch(if refuse {
+            "CREATE TRIGGER refuse_revocation BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'kernel_access.grant' AND NEW.payload_json LIKE '%\"revoked\"%'
+             BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;"
+        } else {
+            "DROP TRIGGER refuse_revocation;"
+        })
+        .unwrap();
+}
+
+// The audit append itself fails: the revocation is kept, a retried revoke
+// writes it once storage recovers, and a restart with the holder alive does
+// not bring the until-exit grant back.
+#[tokio::test]
+async fn a_revocation_the_audit_could_not_append_is_written_by_the_retry() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-append");
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    let summary = KernelAccessGrant {
+        grant_id: "kept".into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term: KernelAccessTerm::UntilHolderExits,
+        expires_at_ms: None,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+    }
+    refuse_revocation_records(&root, true);
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    assert!(state.owned.kernel_access.lock().unwrap().grants.is_empty());
+    // Still refused: the retry fails too and the revocation stays owed.
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    refuse_revocation_records(&root, false);
+    assert_eq!(
+        state
+            .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+            .unwrap(),
+        1
+    );
+    assert!(state.outside_ended_response("kept").unwrap().is_some());
+    drop(state);
+    drop(router);
+    let router = reopen_kernel(&root);
+    assert_eq!(
+        router
+            .runtime_state()
+            .restore_kernel_access_grants()
+            .unwrap(),
+        0
+    );
+}
+
+// The sweep also finishes a revocation whose append failed, with no new revoke.
+#[tokio::test]
+async fn the_sweep_writes_a_revocation_the_audit_could_not_append() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-append-sweep");
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    let summary = KernelAccessGrant {
+        grant_id: "kept".into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term: KernelAccessTerm::UntilHolderExits,
+        expires_at_ms: None,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+    }
+    refuse_revocation_records(&root, true);
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    refuse_revocation_records(&root, false);
+    state.sweep_kernel_access();
+    drop(state);
+    drop(router);
+    let router = reopen_kernel(&root);
+    assert_eq!(
+        router
+            .runtime_state()
+            .restore_kernel_access_grants()
+            .unwrap(),
+        0
+    );
+}
+
 // A grant holder chooses among the choices a routine provider permission
 // carries, `allow_session` included; a critical decision stays terminal-only.
 #[tokio::test]

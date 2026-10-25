@@ -5,7 +5,7 @@ use crate::local::*;
 use crate::runtime::kernel_access::{
     error,
     process::{self, ProcessIdentity},
-    AccessState, Grant, GrantClock, Refusal,
+    AccessState, Grant, GrantClock, OwedEnd, Refusal,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
@@ -40,44 +40,107 @@ impl KernelRuntimeState {
                 },
             )?;
         }
-        let ended = matches!(outcome, "revoked" | "expired");
-        // The recorded end comes first: it is what a restart reads, so an inbox
-        // that cannot be closed now never brings a revoked grant back.
+        if matches!(outcome, "revoked" | "expired") {
+            return self.end_grant(OwedEnd {
+                grant: grant.clone(),
+                outcome: outcome.to_string(),
+                reason: reason.unwrap_or(outcome).to_string(),
+                recorded: false,
+            });
+        }
         self.owned.durable_state_store.append_event(
             "kernel_access.grant",
             Some(grant.grant_id.clone()),
             serde_json::json!({ "outcome": outcome, "grant": grant, "holder": holder, "reason": reason }),
         )?;
-        if ended {
-            let reason = reason.unwrap_or(outcome).to_string();
-            self.end_grant_inbox(&grant.grant_id, &reason)?;
-        }
         Ok(())
     }
 
-    /// A failure is kept and tried again by the next sweep, so the inbox of a
-    /// revoked grant does not stay open.
-    fn end_grant_inbox(&self, id: &str, reason: &str) -> Result<(), DaemonError> {
-        let ended = self.owned.durable_state_store.outside_mutate(
-            crate::durable_state::agent_lifecycle::outside::Mutation::Unsubscribe {
-                id: id.to_string(),
-                targets: Vec::new(),
-                all: true,
-                reason: reason.to_string(),
-            },
-        );
-        let mut state = self
-            .owned
+    /// Records the end, then closes the grant's inbox. The end is written
+    /// first: it is what a restart reads, so an inbox that cannot be closed
+    /// never brings a revoked grant back. A step that fails stays owed and is
+    /// tried again by the next revoke or sweep, so neither a lost revocation
+    /// nor an open inbox outlives a storage failure.
+    fn end_grant(&self, mut owed: OwedEnd) -> Result<(), DaemonError> {
+        let id = owed.grant.grant_id.clone();
+        self.owned
             .kernel_access
             .lock()
-            .expect("access state poisoned");
-        state.owed_inbox_ends.retain(|(owed, _)| owed != id);
-        if ended.is_err() {
-            state
-                .owed_inbox_ends
-                .push((id.to_string(), reason.to_string()));
+            .expect("access state poisoned")
+            .owed_ends
+            .retain(|known| known.grant.grant_id != id);
+        let mut result = Ok(());
+        if !owed.recorded {
+            result = self
+                .owned
+                .durable_state_store
+                .append_event(
+                    "kernel_access.grant",
+                    Some(id.clone()),
+                    serde_json::json!({
+                        "outcome": owed.outcome,
+                        "grant": owed.grant,
+                        "holder": None::<ProcessIdentity>,
+                        "reason": owed.reason,
+                    }),
+                )
+                .map(|_| ());
+            owed.recorded = result.is_ok();
         }
-        ended
+        if result.is_ok() {
+            result = self.owned.durable_state_store.outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Unsubscribe {
+                    id,
+                    targets: Vec::new(),
+                    all: true,
+                    reason: owed.reason.clone(),
+                },
+            );
+        }
+        if result.is_err() {
+            self.owned
+                .kernel_access
+                .lock()
+                .expect("access state poisoned")
+                .owed_ends
+                .push(owed);
+        }
+        result
+    }
+
+    /// Finishes the ends that storage refused earlier, for the grants a revoke
+    /// names (all of them when it names none). Returns how many it finished.
+    fn settle_owed_ends(
+        &self,
+        owner: Option<&str>,
+        id: Option<&str>,
+    ) -> (usize, Option<DaemonError>) {
+        let owed = {
+            let mut state = self
+                .owned
+                .kernel_access
+                .lock()
+                .expect("access state poisoned");
+            let (matching, rest) = std::mem::take(&mut state.owed_ends)
+                .into_iter()
+                .partition::<Vec<_>, _>(|owed| {
+                    id.is_none_or(|id| id == owed.grant.grant_id)
+                        && owner.is_none_or(|owner| owner == owed.grant.owner_user_id)
+                });
+            state.owed_ends = rest;
+            matching
+        };
+        let mut settled = 0;
+        let mut first_error = None;
+        for owed in owed {
+            match self.end_grant(owed) {
+                Ok(()) => settled += 1,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        (settled, first_error)
     }
 
     pub(crate) fn revoke_kernel_access(
@@ -200,6 +263,10 @@ impl KernelRuntimeState {
         }
         drop(state);
         let mut audit_error = sudo_result.err();
+        let (settled, owed_error) = self.settle_owed_ends(owner, id);
+        if audit_error.is_none() {
+            audit_error = owed_error;
+        }
         for grant in revoked {
             self.retire_notification_grants(Some(&grant.summary.grant_id));
             if let Err(error) = self.audit_access(&grant.summary, "revoked", Some(reason)) {
@@ -233,7 +300,7 @@ impl KernelRuntimeState {
         if let Some(error) = audit_error {
             return Err(error);
         }
-        Ok(count + sudo_count)
+        Ok(count + sudo_count + settled)
     }
 
     fn cancel_access_prompt(&self, grant: &KernelAccessGrant, action: &str) {
@@ -268,11 +335,8 @@ impl KernelRuntimeState {
         for (grant, _) in &removed {
             state.remember_ended(&grant.holder);
         }
-        let owed = std::mem::take(&mut state.owed_inbox_ends);
         drop(state);
-        for (id, reason) in owed {
-            let _ = self.end_grant_inbox(&id, &reason);
-        }
+        let _ = self.settle_owed_ends(None, None);
         for (grant, reason) in removed {
             self.retire_notification_grants(Some(&grant.summary.grant_id));
             self.cancel_access_prompt(&grant.summary, "extension");
