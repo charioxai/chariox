@@ -171,7 +171,7 @@ pub(crate) struct RelayOutgoingSender {
 
 impl RelayOutgoingSender {
     // MD-DISPLAY-02/04: only the admitted display producer selects this path.
-    // Small input acknowledgements avoid event batching; large repair/video
+    // Small input acknowledgements use control priority; large repair/video
     // envelopes stay on the bounded event lane so controls are not starved.
     async fn send_display_event(
         &self,

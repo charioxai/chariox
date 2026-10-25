@@ -7,7 +7,7 @@ use futures_util::SinkExt;
 use super::*;
 
 mod writer;
-use writer::{send_relay_envelope_frame, RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
+use writer::write_relay_envelopes;
 
 #[cfg(test)]
 pub async fn run_daemon_relay_connector(
@@ -859,111 +859,26 @@ async fn run_daemon_relay_connector_inner(
                 );
                 let registration_started = Instant::now();
                 let (mut writer, mut reader) = socket.split();
-                let (outgoing_tx, mut priority_outgoing_rx, mut event_outgoing_rx) =
+                let (outgoing_tx, priority_outgoing_rx, event_outgoing_rx) =
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let reconnect_gate = Arc::new(RelayReconnectGate::default());
-                let (pong_tx, mut pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
-                let (transport_receipt_tx, mut transport_receipt_rx) =
+                let (pong_tx, pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
+                let (transport_receipt_tx, transport_receipt_rx) =
                     mpsc::channel::<String>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_closing = Arc::clone(&outgoing_tx.closing);
                 let writer_task = tokio::spawn(async move {
-                    let mut priority_open = true;
-                    let mut event_open = true;
-                    // MP-08/MP-10: a software display packet can exceed the
-                    // small-event priority threshold even for one typed key.
-                    // Keep its bounded event lane and control priority, but
-                    // don't add a whole33ms frame after capture/encoding.
-                    let event_delay =
-                        if std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1") {
-                            0
-                        } else {
-                            RELAY_EVENT_WRITE_COALESCE_MS
-                        };
-                    let mut event_write_coalescer = RelayEventWriteCoalescer::new(event_delay);
-                    'writer_loop: while priority_open
-                        || event_open
-                        || !event_write_coalescer.is_empty()
-                    {
-                        if let Some(ready_at) = event_write_coalescer.ready_at() {
-                            tokio::select! {
-                                biased;
-                                Some(receipt) = transport_receipt_rx.recv() => {
-                                    if writer.send(Message::Text(receipt.into())).await.is_err() { break; }
-                                }
-                                Some(payload) = pong_rx.recv() => {
-                                    if writer.send(Message::Pong(payload.into())).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                envelope = priority_outgoing_rx.recv(), if priority_open => {
-                                    match envelope {
-                                        Some(envelope) => {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &writer_closing).await {
-                                                break;
-                                            }
-                                        }
-                                        None => priority_open = false,
-                                    }
-                                }
-                                envelope = event_outgoing_rx.recv(), if event_open => {
-                                    match envelope {
-                                        Some(envelope) => {
-                                            if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                                if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &writer_closing).await {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        None => event_open = false,
-                                    }
-                                }
-                                _ = tokio::time::sleep_until(ready_at) => {
-                                    if let Some(envelope) = event_write_coalescer.pop_ready(tokio::time::Instant::now()) {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &writer_closing).await {
-                                            break 'writer_loop;
-                                        }
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        tokio::select! {
-                            biased;
-                            Some(receipt) = transport_receipt_rx.recv() => {
-                                if writer.send(Message::Text(receipt.into())).await.is_err() { break; }
-                            }
-                            Some(payload) = pong_rx.recv() => {
-                                if writer.send(Message::Pong(payload.into())).await.is_err() {
-                                    break;
-                                }
-                            }
-                            envelope = priority_outgoing_rx.recv(), if priority_open => {
-                                match envelope {
-                                    Some(envelope) => {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &writer_closing).await {
-                                            break;
-                                        }
-                                    }
-                                    None => priority_open = false,
-                                }
-                            }
-                            envelope = event_outgoing_rx.recv(), if event_open => {
-                                match envelope {
-                                    Some(envelope) => {
-                                        if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &writer_closing).await {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    None => event_open = false,
-                                }
-                            }
-                        }
-                    }
+                    write_relay_envelopes(
+                        &mut writer,
+                        priority_outgoing_rx,
+                        event_outgoing_rx,
+                        transport_receipt_rx,
+                        pong_rx,
+                        binary_events,
+                        &writer_closing,
+                    )
+                    .await;
                     let _ = writer_done_tx.send(());
                 });
                 let subscription_tasks: RelaySubscriptionTasks =

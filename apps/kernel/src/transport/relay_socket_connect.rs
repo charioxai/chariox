@@ -19,7 +19,7 @@ pub(super) fn connect(relay_url: &str) -> ConnectFuture<'_> {
     Box::pin(connect_async_with_config(
         chariox_relay::frame_transport::transport_url(relay_url),
         None,
-        std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
+        true,
     ))
 }
 
@@ -30,11 +30,32 @@ pub(super) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
     match chariox_relay::binary_event::connection_request(
         &chariox_relay::frame_transport::transport_url(relay_url),
     ) {
-        Ok(request) => Box::pin(connect_async_with_config(
-            request,
-            None,
-            std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
-        )),
+        Ok(request) => Box::pin(connect_async_with_config(request, None, true)),
         Err(error) => Box::pin(async move { Err(error) }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // MP-08/MP-10/MP-11: Room desktop works without the user-domain browser
+    // flag. Its ordinary relay socket must not add Nagle delay to input or frames.
+    #[tokio::test]
+    async fn room_relay_socket_sends_small_packets_without_nagle_delay() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let (socket, _) = super::connect(&format!("ws://{address}")).await.unwrap();
+        let tokio_tungstenite::MaybeTlsStream::Plain(stream) = socket.get_ref() else {
+            panic!("local socket must be plain TCP");
+        };
+        assert!(
+            stream.nodelay().unwrap(),
+            "Room packets must leave immediately"
+        );
+        drop(socket);
+        drop(server.await.unwrap());
     }
 }

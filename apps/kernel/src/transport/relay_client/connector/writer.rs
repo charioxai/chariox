@@ -1,12 +1,10 @@
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{Sink, SinkExt};
 use tokio_tungstenite::tungstenite::Message;
 
-pub(super) const RELAY_EVENT_WRITE_COALESCE_MS: u64 = 33;
 const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
 const RELAY_SLOW_WRITE_LOG_MS: u128 = 500;
 
@@ -20,7 +18,7 @@ pub(super) async fn send_relay_envelope_frame<S>(
 where
     S: Sink<Message> + Unpin,
 {
-    // MP-08/MP-10/MP-11: skip coalesced and queued stale stream events while
+    // MP-08/MP-10/MP-11: skip queued stale stream events while
     // preserving every bulk reply. Keep no sender inside its own writer task.
     if !super::super::relay_envelope_should_write(&envelope, closing.load(Ordering::Acquire)) {
         return true;
@@ -91,54 +89,161 @@ fn relay_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct RelayEventWriteCoalescer<T> {
-    delay_ms: u64,
-    envelopes: VecDeque<T>,
-    ready_at: Option<tokio::time::Instant>,
+/// MP-08/MP-10/MP-11: one bounded writer for every runtime surface.
+pub(super) async fn write_relay_envelopes<S>(
+    writer: &mut S,
+    mut priority_outgoing_rx: tokio::sync::mpsc::Receiver<RelayEnvelope>,
+    mut event_outgoing_rx: tokio::sync::mpsc::Receiver<RelayEnvelope>,
+    mut transport_receipt_rx: tokio::sync::mpsc::Receiver<String>,
+    mut pong_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    binary_events: bool,
+    writer_closing: &AtomicBool,
+) where
+    S: Sink<Message> + Unpin,
+{
+    let mut priority_open = true;
+    let mut event_open = true;
+    // MP-08/MP-10/MP-11: Room displays also use this socket.
+    // The bounded event lane supplies backpressure; delaying each
+    // packet by a frame adds latency without combining writes.
+    while priority_open || event_open {
+        tokio::select! {
+            biased;
+            Some(receipt) = transport_receipt_rx.recv() => {
+                if writer.send(Message::Text(receipt.into())).await.is_err() { break; }
+            }
+            Some(payload) = pong_rx.recv() => {
+                if writer.send(Message::Pong(payload.into())).await.is_err() { break; }
+            }
+            envelope = priority_outgoing_rx.recv(), if priority_open => {
+                match envelope {
+                    Some(envelope) => {
+                        if !send_relay_envelope_frame(writer, envelope, "priority", binary_events, writer_closing).await { break; }
+                    }
+                    None => priority_open = false,
+                }
+            }
+            envelope = event_outgoing_rx.recv(), if event_open => {
+                match envelope {
+                    Some(envelope) => {
+                        if !send_relay_envelope_frame(writer, envelope, "event", binary_events, writer_closing).await { break; }
+                    }
+                    None => event_open = false,
+                }
+            }
+        }
+    }
 }
 
-impl<T> RelayEventWriteCoalescer<T> {
-    const MAX_PENDING_EVENTS: usize = 32;
-
-    pub(super) fn new(delay_ms: u64) -> Self {
-        Self {
-            delay_ms,
-            envelopes: VecDeque::new(),
-            ready_at: None,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn event(event_id: u64) -> RelayEnvelope {
+        RelayEnvelope::DaemonEvent {
+            subscription_id: "room-display-test".into(),
+            event_id,
+            encrypted_event: chariox_relay::protocol::EncryptedRelayPayload {
+                sender_public_key: "sender".into(),
+                nonce: "nonce".into(),
+                ciphertext: "payload".into(),
+            },
         }
     }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.envelopes.is_empty()
+    #[tokio::test(start_paused = true)]
+    async fn mp10_room_event_writer_has_no_frame_timer_or_browser_flag() {
+        let (_priority_tx, priority) = tokio::sync::mpsc::channel(1);
+        let (event_tx, events) = tokio::sync::mpsc::channel(1);
+        let (_receipt_tx, receipts) = tokio::sync::mpsc::channel(1);
+        let (_pong_tx, pongs) = tokio::sync::mpsc::channel(1);
+        let (written_tx, mut written_rx) = tokio::sync::mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            let mut sink = Box::pin(futures_util::sink::unfold(
+                written_tx,
+                |tx, packet| async move {
+                    tx.send(packet).await.map_err(|_| ())?;
+                    Ok::<_, ()>(tx)
+                },
+            ));
+            write_relay_envelopes(
+                &mut sink,
+                priority,
+                events,
+                receipts,
+                pongs,
+                false,
+                &AtomicBool::new(false),
+            )
+            .await;
+        });
+        event_tx.send(event(1)).await.unwrap();
+        let packet =
+            tokio::time::timeout(std::time::Duration::from_millis(20), written_rx.recv()).await;
+        task.abort();
+        assert!(
+            packet.unwrap().is_some(),
+            "an event must be written before a 33ms frame timer"
+        );
     }
-
-    pub(super) fn ready_at(&self) -> Option<tokio::time::Instant> {
-        self.ready_at
-    }
-
-    pub(super) fn push_event(&mut self, envelope: T, now: tokio::time::Instant) -> Option<T> {
-        if self.delay_ms == 0 {
-            return Some(envelope);
+    #[tokio::test]
+    async fn mp10_slow_room_writer_preserves_fifo_backpressure_and_control_priority() {
+        let (priority_tx, priority) = tokio::sync::mpsc::channel(1);
+        let (event_tx, events) = tokio::sync::mpsc::channel(2);
+        let (_receipt_tx, receipts) = tokio::sync::mpsc::channel(1);
+        let (_pong_tx, pongs) = tokio::sync::mpsc::channel(1);
+        let (written_tx, mut written_rx) = tokio::sync::mpsc::channel(1);
+        let writer = tokio::spawn(async move {
+            let mut sink = Box::pin(futures_util::sink::unfold(
+                written_tx,
+                |tx, packet| async move {
+                    tx.send(packet).await.map_err(|_| ())?;
+                    Ok::<_, ()>(tx)
+                },
+            ));
+            write_relay_envelopes(
+                &mut sink,
+                priority,
+                events,
+                receipts,
+                pongs,
+                false,
+                &AtomicBool::new(false),
+            )
+            .await;
+        });
+        let producer = tokio::spawn(async move {
+            for id in 0..200 {
+                event_tx.send(event(id)).await.unwrap();
+            }
+        });
+        // Wait for the first write; with the sink blocked, the bounded event
+        // queue cannot absorb the rest of the stream.
+        while written_rx.is_empty() {
+            tokio::task::yield_now().await;
         }
-        self.envelopes.push_back(envelope);
-        if self.ready_at.is_none() {
-            self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
+        assert!(!producer.is_finished());
+        priority_tx.send(event(999)).await.unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..201 {
+            let packet = tokio::time::timeout(std::time::Duration::from_secs(2), written_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let envelope: RelayEnvelope = serde_json::from_str(packet.to_text().unwrap()).unwrap();
+            let RelayEnvelope::DaemonEvent { event_id, .. } = envelope else {
+                panic!("event expected")
+            };
+            ids.push(event_id);
         }
-        // A continuously ready receiver can win over the write timer. Flush
-        // the oldest event at capacity so batching cannot bypass backpressure.
-        if self.envelopes.len() > Self::MAX_PENDING_EVENTS {
-            return self.envelopes.pop_front();
-        }
-        None
-    }
-
-    pub(super) fn pop_ready(&mut self, now: tokio::time::Instant) -> Option<T> {
-        self.ready_at = None;
-        let envelope = self.envelopes.pop_front();
-        if !self.envelopes.is_empty() {
-            self.ready_at = Some(now);
-        }
-        envelope
+        producer.await.unwrap();
+        assert!(
+            ids.iter().position(|id| *id == 999).unwrap() <= 2,
+            "control must precede queued bulk events"
+        );
+        assert_eq!(
+            ids.into_iter().filter(|id| *id != 999).collect::<Vec<_>>(),
+            (0..200).collect::<Vec<_>>()
+        );
+        drop(priority_tx);
+        writer.await.unwrap();
     }
 }
