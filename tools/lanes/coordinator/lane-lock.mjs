@@ -10,7 +10,7 @@ import { LaneError } from '../lanes.mjs';
 // unlinked on release, so an old handle cannot release its successor's lock.
 export async function tryLaneLock(home, name, owner, now = Date.now) {
   const digest = createHash('sha256').update(await realpath(home)).update('\0').update(name).digest();
-  const port = 20000 + digest.readUInt32BE(0) % 40000;
+  const port = 10000 + digest.readUInt32BE(0) % 20000;
   const server = createServer(socket => socket.destroy());
   const acquired = await new Promise((resolve, reject) => {
     server.once('error', error => { if (error.code === 'EADDRINUSE') resolve(false); else reject(error); });
