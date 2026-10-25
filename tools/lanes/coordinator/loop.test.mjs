@@ -752,3 +752,16 @@ test('steer: an old pending note with an unknown attachment fails explicitly ins
   assert.equal(sends, 1);
   assert.equal(Object.keys(JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8')).pendingDeliveries).length, 1);
 });
+
+test('deliver: an acknowledged direct note needs no later event subscription to prove delivery', async t => {
+  const r = await launched(t), review = join(r.home, 'review.md'); await writeFile(review, 'MP-08 / MP-09 / MP-10 / MP-11: already delivered');
+  const adapter = r.options.adapter;
+  r.options.adapter = (op, input) => op === 'status' ? { currentPrompt: 'current' } : adapter(op, input);
+  const direct = await coordinate('steer', ['lane', review], r.options);
+  r.options.adapter = async () => { throw new Error('an acknowledged direct note is already delivered'); };
+  r.options.cli = async () => { throw new Error('do not open or consume an event inbox after acknowledged delivery'); };
+  const result = await coordinate('deliver', ['lane', review], r.options);
+  assert.equal(result.alreadyDelivered, true);
+  assert.equal(result.promptId, direct.promptId);
+  assert.equal(result.confirmation.mode, 'direct-steered');
+});

@@ -132,10 +132,19 @@ export async function coordinate(operation, args, options = {}) {
     if (!reviewFile) throw new LaneError('missing_review_file');
     const prompt = await readFile(reviewFile, 'utf8');
     if (!prompt.trim()) throw new LaneError('empty_review');
-    const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
     const deliveryPath = join(home, `${lane}.delivery.json`);
     let receipt; try { receipt = await read(deliveryPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const commandId = expected => `review-${createHash('sha256').update(expected).update(prompt).digest('hex')}`;
+    const direct = await read(join(home, `${lane}.direct.json`)).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    const digest = createHash('sha256').update(prompt.trim()).digest('hex');
+    const sent = direct?.sections.find(item => item.sha256 === digest || item.parts?.includes(digest));
+    // Direct delivery already has the kernel's acknowledgement. Its event may predate
+    // this observer's subscription, so no later event wait can add evidence of delivery.
+    if (sent) {
+      if (receipt && receipt.steerId === commandId(receipt.expectedPromptId) && receipt.result?.confirmation) return receipt.result;
+      return { alreadyDelivered: true, promptId: sent.promptId, confirmation: { mode: `direct-${sent.mode}` } };
+    }
+    const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
     // Resume confirmation of an accepted steer even if its turn has since settled.
     const resuming = receipt && receipt.steerId === commandId(receipt.expectedPromptId) && (!status.currentPrompt || status.currentPrompt === receipt.expectedPromptId || !receipt.result?.confirmation);
     const expectedPromptId = resuming ? receipt.expectedPromptId : status.currentPrompt;
