@@ -341,4 +341,5 @@ pub use workspace::*;
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
 /// Allocated 594 adds `Dictation`: kernel speech-to-text with an on-demand model download.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 594;
+/// Allocated 603 adds speech-service selection, owner Vault metadata, setup state and recording context.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 603;

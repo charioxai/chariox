@@ -1,18 +1,18 @@
-//! Protocol 594: kernel dictation requests and replies.
+//! Protocol 603: kernel dictation requests and replies.
 use super::*;
 
 #[test]
-fn dictation_594_snapshot() {
+fn dictation_603_snapshot() {
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 594);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 603);
     };
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 200);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 209);
     };
-    let bytes = include_bytes!("dictation-594.json");
+    let bytes = include_bytes!("dictation-603.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "1898b5cb5c454eeaae28dd34382cb1dfb9110a67837d34d10be9e62cbb18045d"
+        "2110cddfa2af33a427c86e60cc8d6cf6e5a6e3d148bbfbb92d46b4ea004d5299"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for key in [
@@ -20,6 +20,7 @@ fn dictation_594_snapshot() {
         "service_openai_request",
         "service_elevenlabs_request",
         "status_request",
+        "clear_service_request",
         "download_request",
         "language_request",
         "append_request",
@@ -36,6 +37,9 @@ fn dictation_594_snapshot() {
     }
     for key in [
         "status_local",
+        "status_not_configured",
+        "status_vault_locked",
+        "status_key_missing",
         "status_openai",
         "status_elevenlabs",
         "status_not_downloaded",
@@ -62,4 +66,15 @@ fn dictation_rejects_unknown_operations_and_fields() {
     ] {
         assert!(serde_json::from_value::<crate::local::LocalDaemonRequest>(invalid).is_err());
     }
+}
+
+#[test]
+fn dictation_594_snapshot_remains_the_original_local_only_contract() {
+    let bytes = include_bytes!("dictation-594.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "a131c1d3aa3031fb91d89dfe54a01e21bf9f02bf0db07961262b791a4b3dcece"
+    );
+    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert!(value.get("service_openai_request").is_none());
 }
