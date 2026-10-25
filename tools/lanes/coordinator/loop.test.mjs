@@ -500,7 +500,7 @@ test('steer: a prompt the kernel accepted but whose reply was lost is replayed u
   const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\ndo X\n');
   await assert.rejects(coordinate('steer', ['lane', file], r.options), { code: 'local_transport_error' });
   const saved = JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8'));
-  assert.equal(saved.pending.operation, 'prompt', 'the operation is saved before it is sent');
+  assert.equal(Object.values(saved.pendingDeliveries)[0].operation, 'prompt', 'the operation is saved before it is sent');
   const retried = await coordinate('steer', ['lane', file], r.options);
   assert.equal(retried.mode, 'prompt-started');
   const prompts = r.calls.filter(c => c.op === 'prompt');
@@ -508,6 +508,30 @@ test('steer: a prompt the kernel accepted but whose reply was lost is replayed u
   assert.equal(prompts[1].input.commandId, prompts[0].input.commandId);
   assert.equal(r.calls.some(c => c.op === 'steer'), false, 'the now-running turn is not steered with the same text');
   const ledger = JSON.parse(await readFile(join(r.home, 'lane.direct.json'), 'utf8'));
-  assert.equal(ledger.pending, undefined);
+  assert.deepEqual(ledger.pendingDeliveries, {});
   assert.equal(ledger.sections.length, 1);
+});
+
+test('steer: unresolved A survives B and a new driver invocation replays A exactly once', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter;
+  const accepted = new Map(); let lose = true;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { state: accepted.size ? 'working' : 'idle', currentPrompt: accepted.size ? 'A-prompt' : null };
+    if (op === 'prompt' || op === 'steer') {
+      const id = input.commandId ?? input.steerId;
+      if (!accepted.has(id)) accepted.set(id, input.prompt);
+      if (lose) { lose = false; throw new LaneError('local_transport_error', 'A reply lost'); }
+      return op === 'prompt' ? { PromptSubmitted: { outcome: { Started: { prompt: { id: 'A-prompt' } } } } } : { ActivePromptSteered: { prompt: { id: 'B-steer' } } };
+    }
+    return adapter(op, input);
+  };
+  const a = join(r.home, 'A.md'), b = join(r.home, 'B.md');
+  await writeFile(a, '## A\nDo A\n'); await writeFile(b, '## B\nDo B\n');
+  await assert.rejects(coordinate('steer', ['lane', a], r.options), { code: 'local_transport_error' });
+  await coordinate('steer', ['lane', b], r.options);
+  // coordinate loads its state from disk on every invocation, as after a driver restart.
+  await coordinate('steer', ['lane', a], { ...r.options });
+  assert.deepEqual([...accepted.values()].sort(), ['## A\nDo A\n', '## B\nDo B\n']);
+  assert.equal(accepted.size, 2, 'A never acquires a fresh steer identity');
 });

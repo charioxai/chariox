@@ -141,7 +141,8 @@ export function createRound(options) {
       const findSent = () => direct.sections.find(item => item.sha256 === digest || item.parts?.includes(digest));
       // A direct note whose reply was lost may or may not have reached the worker: the same operation is replayed under its saved
       // identity, never a new steer built from the worker's current turn.
-      const replay = !findSent() && (direct.pending?.parts?.includes(digest) || direct.pending?.sha256 === digest) ? direct.pending : undefined;
+      const unresolved = [...Object.values(direct.pendingDeliveries ?? {}), ...(direct.pending ? [direct.pending] : [])];
+      const replay = !findSent() ? unresolved.find(item => item.parts?.includes(digest) || item.sha256 === digest) : undefined;
       const sent = findSent();
       if (sent) {
         const note = { heading: section.split('\n', 1)[0].slice(0, 120), sha256: sha256(section), at_ms: now(), delivered: true, mode: `direct-${sent.mode}` };

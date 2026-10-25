@@ -145,7 +145,9 @@ export async function coordinate(operation, args, options = {}) {
       if (sent) return { lane, mode: sent.mode, ...(sent.promptId !== undefined && { promptId: sent.promptId, agentStatus: sent.agentStatus }), repeated: true };
       // The operation and its identity are saved before anything is sent. If the kernel took the note but the reply was lost,
       // this call, a retry and loopd's inbox fallback all replay that same operation instead of choosing a new one.
-      let pending = ledger.pending?.sha256 === section ? ledger.pending : undefined;
+      ledger.pendingDeliveries ??= {};
+      if (ledger.pending) { ledger.pendingDeliveries[ledger.pending.sha256] = ledger.pending; delete ledger.pending; }
+      let pending = ledger.pendingDeliveries[section];
       let status, mode, answer;
       for (let attempt = 1; !mode; attempt++) {
         if (!pending) {
@@ -156,7 +158,7 @@ export async function coordinate(operation, args, options = {}) {
           // parts: the inbox consumer cuts the appended note at its headings, so each of those sections counts as delivered with it.
           pending = { sha256: section, ...operationFor, parts: newSections(prompt, 0).map(part => createHash('sha256').update(part.trim()).digest('hex')), prompt };
           status = undefined;
-          ledger.pending = pending; await save(ledgerPath, ledger);
+          ledger.pendingDeliveries[section] = pending; await save(ledgerPath, ledger);
         }
         try {
           if (pending.operation === 'prompt') {
@@ -168,7 +170,7 @@ export async function coordinate(operation, args, options = {}) {
           if (pending.operation === 'steer' && error.code === 'prompt_steer_event_unrecorded') { answer = { delivered: true, event: 'unrecorded' }; mode = 'steered'; }
           // The turn ended or changed between the read and the steer: nothing was taken, look once more, then say what is wrong.
           else if (pending.operation === 'steer' && error.code === 'prompt_steer_rejected' && attempt < 2) {
-            delete ledger.pending; pending = undefined; await save(ledgerPath, ledger);
+            delete ledger.pendingDeliveries[section]; pending = undefined; await save(ledgerPath, ledger);
             status = await adapter('status', { ...common, stateFile: record.input.stateFile });
           } else throw error; // any other failure may have been accepted: the pending operation stays for the replay
         }
@@ -177,7 +179,7 @@ export async function coordinate(operation, args, options = {}) {
       const taken = answer.ActivePromptSteered?.prompt ?? answer.PromptSubmitted?.outcome?.Started?.prompt ?? answer.PromptSubmitted?.outcome?.Queued?.prompt;
       const summary = { promptId: taken?.id ?? null, agentStatus: taken?.status ?? (answer.delivered ? 'delivered-event-unrecorded' : 'unknown') };
       ledger.sections.push({ sha256: section, parts: pending.parts, mode, at_ms: now(), ...summary });
-      delete ledger.pending;
+      delete ledger.pendingDeliveries[section];
       await save(ledgerPath, ledger);
       return { lane, mode, ...summary };
     });
