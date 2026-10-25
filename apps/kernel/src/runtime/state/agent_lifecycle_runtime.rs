@@ -758,7 +758,19 @@ impl KernelRuntimeState {
         self.dispatch_task_continuation_with_context(task, attachment, text, None)
             .await
     }
+    /// The continuation is the kernel's work for the task's owner, never the command that settled it.
     pub(super) async fn dispatch_task_continuation_with_context(
+        &self,
+        task: &AgentTaskExecution,
+        attachment: &str,
+        text: String,
+        hidden_system_context: Option<String>,
+    ) -> Result<(), DaemonError> {
+        self.as_kernel()
+            .dispatch_kernel_task_continuation(task, attachment, text, hidden_system_context)
+            .await
+    }
+    async fn dispatch_kernel_task_continuation(
         &self,
         task: &AgentTaskExecution,
         attachment: &str,

@@ -52,6 +52,18 @@ impl KernelRuntimeState {
         .await
     }
 
+    /// The kernel acting on its own account. Work it decides to do later (an owner's Resume, the
+    /// next turn of a task) never runs under the command that happened to raise it: that command's
+    /// sudo window or room origin may have ended by then.
+    pub(crate) fn as_kernel(&self) -> Self {
+        let mut state = self.with_external_command_authority(None);
+        state.room_provider_origin = None;
+        state.room_request_origin = None;
+        state.terminal_caller = false;
+        state.forwarded_peer_binding = None;
+        state
+    }
+
     pub(crate) fn with_external_command_authority(
         &self,
         authority: Option<(&str, &LocalDaemonRequest)>,

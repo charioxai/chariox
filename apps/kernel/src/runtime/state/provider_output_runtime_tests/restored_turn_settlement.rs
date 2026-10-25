@@ -388,3 +388,64 @@ async fn acknowledged_stop_cancels_the_task_with_its_open_work() {
     assert_eq!(task.state, ExecutionState::Cancelled, "{}", task.reason);
     assert!(task.wait.is_none());
 }
+
+// MP-08 / MP-10 / MP-11 A04-S04: the owner's Resume is the owner's own action. The blocked
+// decision may have been raised inside a sudo command whose window has since ended; answering it
+// must not run under that ended window.
+#[tokio::test]
+async fn owner_resume_does_not_depend_on_the_sudo_window_that_raised_the_decision() {
+    let turn = started_turn("a04-owner-resume-ended-sudo");
+    let runtime = owned_runtime_state(&turn.app).await;
+    let store = &runtime.owned.durable_state_store;
+    begin(&runtime, &turn);
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: turn.prompt.id().into(),
+            prompt: turn.prompt.id().into(),
+            reason: "Owner clarification required".into(),
+        })
+        .unwrap()
+    else {
+        panic!("blocked")
+    };
+    let ended_sudo =
+        crate::local::LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
+    runtime
+        .with_external_command_authority(Some(("sudo:ended", &ended_sudo)))
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    runtime
+        .owned
+        .resolve_runtime_interaction(
+            &turn.session_id,
+            &format!(
+                "task-blocked-{}-{}",
+                blocked.task_id, blocked.blocked_revision
+            ),
+            "resume",
+            None,
+            Some("local"),
+            false,
+        )
+        .unwrap();
+    let task = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let task = task_of(&runtime, &turn);
+            if task.state != ExecutionState::Blocked || task.reason.contains("Owner action failed")
+            {
+                return task;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owner's Resume must settle");
+    assert!(
+        !task.reason.contains("kernel access") && !task.reason.contains("sudo"),
+        "an ended sudo window must not fence the owner's Resume: {:?} {}",
+        task.state,
+        task.reason
+    );
+    assert_ne!(task.state, ExecutionState::Blocked, "{}", task.reason);
+}

@@ -92,7 +92,7 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
-        let state = self.clone();
+        let state = self.as_kernel();
         tokio::spawn(async move {
             if let Ok(answer) = rx.await {
                 if answer.status == "timed_out" {
