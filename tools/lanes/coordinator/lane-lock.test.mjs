@@ -29,3 +29,25 @@ test('a live holder is never stolen by another loopd or by advancing the clock',
   t.after(() => releaseLaneLock(lock));
   assert.equal(await tryLaneLock(home, 'lane', 'loopd', () => 1e12), undefined);
 });
+
+test('the OS releases a lock when its driver dies, without stealing a live lock', async t => {
+  const { spawn } = await import('node:child_process');
+  const { once } = await import('node:events');
+  const home = await mkdtemp(join(tmpdir(), 'lane-lock-death-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const script = `import { tryLaneLock } from ${JSON.stringify(new URL('./lane-lock.mjs', import.meta.url).href)};
+    await tryLaneLock(process.argv[1], 'lane', 'loopd'); console.log('acquired');`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, home]);
+  const exited = once(child, 'exit');
+  await once(child.stdout, 'data');
+  assert.equal(await tryLaneLock(home, 'lane', 'steer'), undefined);
+  assert.ok(Number.isSafeInteger(child.pid) && child.pid > 1);
+  child.kill('SIGKILL'); await exited;
+  let lock;
+  for (let attempt = 0; attempt < 50 && !lock; attempt++) {
+    lock = await tryLaneLock(home, 'lane', 'steer');
+    if (!lock) await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(lock, 'the dead driver does not leave the lane locked');
+  await releaseLaneLock(lock);
+});
