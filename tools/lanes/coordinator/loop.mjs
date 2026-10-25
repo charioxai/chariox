@@ -112,6 +112,41 @@ export async function coordinate(operation, args, options = {}) {
     else await confirmed({ mode: 'acknowledged-steer-status', status: await adapter('status', { ...common, stateFile: record.input.stateFile }) });
     return receipt.result;
   }
+  // The coordinator's direct note: steers the running turn, or becomes the next prompt when the worker is between turns.
+  // The kernel's own answer is the confirmation, so no inbox is read and loopd's events are left alone. The command id is the
+  // one loopd's inbox delivery would use, so a later fallback delivery of the same text is the same mutation to the kernel.
+  if (operation === 'steer') {
+    const reviewFile = args[1];
+    if (!reviewFile) throw new LaneError('missing_review_file');
+    const prompt = await readFile(reviewFile, 'utf8');
+    if (!prompt.trim()) throw new LaneError('empty_review');
+    const section = createHash('sha256').update(prompt.trim()).digest('hex');
+    const ledgerPath = join(home, `${lane}.direct.json`);
+    let ledger; try { ledger = await read(ledgerPath); } catch (error) { if (error.code !== 'ENOENT') throw error; ledger = { sections: [] }; }
+    const sent = ledger.sections.find(item => item.sha256 === section);
+    if (sent) return { lane, mode: sent.mode, repeated: true, answer: sent.answer };
+    let status = await adapter('status', { ...common, stateFile: record.input.stateFile });
+    let mode, answer;
+    for (let attempt = 1; !mode; attempt++) {
+      if (!status.currentPrompt) {
+        answer = await adapter('prompt', { ...common, prompt, commandId: `direct-${section}` });
+        mode = answer.PromptSubmitted?.outcome?.Started ? 'prompt-started' : 'prompt-queued';
+        break;
+      }
+      const steerId = `review-${createHash('sha256').update(status.currentPrompt).update(prompt).digest('hex')}`;
+      try { answer = await adapter('steer', { ...common, expectedPromptId: status.currentPrompt, prompt, steerId }); mode = 'steered'; }
+      catch (error) {
+        // The kernel took the note but could not record its event: it is delivered, and sending again would repeat it.
+        if (error.code === 'prompt_steer_event_unrecorded') { answer = { delivered: true, event: 'unrecorded' }; mode = 'steered'; }
+        // The turn ended or changed between the read and the steer: look once more, then say what is wrong.
+        else if (error.code === 'prompt_steer_rejected' && attempt < 2) status = await adapter('status', { ...common, stateFile: record.input.stateFile });
+        else throw error;
+      }
+    }
+    ledger.sections.push({ sha256: section, mode, at_ms: now(), answer });
+    await save(ledgerPath, ledger);
+    return { lane, mode, answer };
+  }
   if (operation === 'lanehealth') {
     const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
     const flags = [];

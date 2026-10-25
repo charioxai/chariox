@@ -344,3 +344,56 @@ test('stop retry confirms a removal another consumer archived and acknowledged',
   assert.equal(r.calls.filter(c => c.argv?.[1] === 'wait').length, waits);
   assert.equal(r.calls.filter(c => c.op === 'stop').length, stops);
 });
+
+test('steer: a running turn is steered with the kernel answer as the only confirmation, and the section is recorded once', async t => {
+  const r = await launched(t);
+  const status = r.options.adapter;
+  r.options.adapter = async (op, input) => { if (op === 'status') return { state: 'working', currentPrompt: 'turn-1', lastActivityMs: 1 }; return status(op, input); };
+  const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\nchange X\n');
+  const result = await coordinate('steer', ['lane', file], r.options);
+  assert.equal(result.mode, 'steered');
+  const steer = r.calls.find(c => c.op === 'steer');
+  assert.equal(steer.input.expectedPromptId, 'turn-1');
+  assert.match(steer.input.steerId, /^review-[0-9a-f]{64}$/, 'the id loopd would use for the same text');
+  assert.equal(r.calls.some(c => c.argv?.[0] === 'events'), false, 'no inbox is read');
+  const again = await coordinate('steer', ['lane', file], r.options);
+  assert.equal(again.repeated, true);
+  assert.equal(r.calls.filter(c => c.op === 'steer').length, 1, 'the same section is never sent twice');
+});
+
+test('steer: a worker between turns gets the text as its next prompt', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'prompt' ? (r.calls.push({ op, input }), { PromptSubmitted: { outcome: { Started: { prompt: { id: 'next' } } } } }) : adapter(op, input);
+  const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\nnext thing\n');
+  const result = await coordinate('steer', ['lane', file], r.options);
+  assert.equal(result.mode, 'prompt-started');
+  assert.equal(r.calls.filter(c => c.op === 'prompt').length, 1);
+  assert.match(r.calls.find(c => c.op === 'prompt').input.commandId, /^direct-[0-9a-f]{64}$/);
+  assert.equal(r.calls.some(c => c.op === 'steer'), false);
+});
+
+test('steer: a turn that ended between the read and the steer is read again once, then the note becomes the next prompt', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter; let reads = 0;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return reads++ === 0 ? { state: 'working', currentPrompt: 'turn-1', lastActivityMs: 1 } : { state: 'idle', currentPrompt: null, lastActivityMs: 1 };
+    if (op === 'steer') throw new LaneError('prompt_steer_rejected', 'stale');
+    if (op === 'prompt') return { PromptSubmitted: { outcome: { Queued: { prompt: { id: 'q' } } } } };
+    return adapter(op, input);
+  };
+  const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\nlate\n');
+  assert.equal((await coordinate('steer', ['lane', file], r.options)).mode, 'prompt-queued');
+});
+
+test('steer: a kernel that took the note but could not record its event counts as delivered', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return { state: 'working', currentPrompt: 'turn-1', lastActivityMs: 1 };
+    if (op === 'steer') throw new LaneError('prompt_steer_event_unrecorded', 'delivered');
+    return adapter(op, input);
+  };
+  const file = join(r.home, 'note.md'); await writeFile(file, '## 10:00Z coordinator\nx\n');
+  assert.equal((await coordinate('steer', ['lane', file], r.options)).mode, 'steered');
+});

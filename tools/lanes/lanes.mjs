@@ -254,6 +254,8 @@ export async function run(operation, input, dependencies = {}) {
     return receipt;
   }
   if (operation === 'steer') return request('SteerActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), expected_active_prompt_id: text(input.expectedPromptId, 'expectedPromptId'), prompt: text(input.prompt, 'prompt'), attachments: [] }, text(input.steerId, 'steerId'));
+  // A note for a worker between turns: it becomes the worker's next prompt (the kernel starts it at once when the worker is idle).
+  if (operation === 'prompt') return request('SubmitPrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), prompt: text(input.prompt, 'prompt'), attachments: [] }, text(input.commandId, 'commandId'));
   if (operation === 'message') {
     // The worker's final message: the last provider output of its latest finished turn.
     const outline = variant(await request('GetSessionHistoryOutline', { session_id: session(), agent_ids: [agent()], latest_prompt_count: 1 }, 'message-outline', false), 'SessionHistoryOutline');

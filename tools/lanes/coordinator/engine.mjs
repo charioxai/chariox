@@ -132,7 +132,20 @@ export function createRound(options) {
     const sections = newSections(text, lane.run.inboxOffset);
     const touched = new Set();
     let offset = lane.run.inboxOffset;
+    // The coordinator steers its notes itself and records them; the inbox file is then only the record, and what is
+    // in the ledger is never delivered a second time. Anything else in it (an older script, a failed steer) still is.
+    const direct = await read(join(home, `${lane.entry.lane}.direct.json`)).catch(error => { if (error.code === 'ENOENT') return { sections: [] }; throw error; });
     for (const section of sections) {
+      const sent = direct.sections.find(item => item.sha256 === sha256(section.trim()));
+      if (sent) {
+        const note = { heading: section.split('\n', 1)[0].slice(0, 120), sha256: sha256(section), at_ms: now(), delivered: true, mode: `direct-${sent.mode}` };
+        lane.run.notes.push(note);
+        offset += Buffer.byteLength(section);
+        lane.run.inboxOffset = offset;
+        log(lane, 'note', note);
+        await persist(lane);
+        continue;
+      }
       const file = join(roundDirectory, `${lane.entry.lane}.note-${lane.run.notes.length + 1}.md`);
       await writeFile(file, section, { mode: 0o600 });
       const note = { heading: section.split('\n', 1)[0].slice(0, 120), sha256: sha256(section), at_ms: now() };

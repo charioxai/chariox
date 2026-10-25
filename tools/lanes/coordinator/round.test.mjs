@@ -1,6 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: the multi-lane round against fake adapters.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile, mkdir, readFile, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -343,4 +344,19 @@ test('round: critical, credential and unreadable decisions are left for the coor
   const [alpha] = await runRound(r.spec, r.options);
   assert.deepEqual(r.calls.filter(c => c.op === 'respond').map(c => c.input.interactionId), ['ok'], 'only the routine one is answered');
   assert.deepEqual(alpha.unanswered.map(u => [u.interactionId, u.reason]), [['crit', 'critical'], ['cred', 'credential_related'], ['missing', 'unclassified']]);
+});
+
+test('round: a note the coordinator already steered directly is recorded, not delivered again; another one still is', async t => {
+  const r = await rig(t, ['alpha']);
+  const direct = '## 11:00Z coordinator\nsteered by the coordinator\n';
+  const fallback = '## 11:05Z coordinator\nonly appended\n';
+  await writeFile(join(r.home, 'alpha.direct.json'), JSON.stringify({ sections: [{ sha256: createHash('sha256').update(direct.trim()).digest('hex'), mode: 'steered', at_ms: 1 }] }));
+  r.waits.push({});
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const before = r.options.cli; let wakes = 0;
+  r.options.cli = async argv => { if (argv[1] === 'wait' && ++wakes === 1) await appendFile(join(r.home, 'alpha.inbox.md'), direct + fallback); if (argv[1] === 'wait' && wakes === 2) r.idle.add('alpha'); return before(argv); };
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.deepEqual(alpha.notes.map(n => [n.mode, n.delivered]), [['direct-steered', true], ['acknowledged-steer-status', true]]);
+  assert.equal(r.calls.filter(c => c.op === 'steer').length, 1, 'only the section that was not steered directly goes out');
+  assert.match(r.calls.find(c => c.op === 'steer').input.prompt, /only appended/);
 });
