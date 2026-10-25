@@ -3,7 +3,8 @@ use super::*;
 use crate::local::{AgentDeadline, AgentDeadlineState};
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_deadlines(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(room_id,agent_id));").map_err(sql)
+    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_deadlines(room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(room_id,agent_id));CREATE INDEX IF NOT EXISTS agent_deadlines_state ON agent_deadlines(json_extract(payload,'$.state'));").map_err(sql)?;
+    super::deadline_clock::initialize(db)
 }
 
 pub(super) fn get(
@@ -39,6 +40,12 @@ pub(super) fn set(
             message: "deadline must be a positive bounded epoch millisecond".into(),
         });
     }
+    super::deadline_clock::advance(
+        db,
+        crate::session::unix_epoch_ms(),
+        super::deadline_clock::instance_id(),
+        true,
+    )?;
     if let Some(mut old) = get(db, &room, &agent)? {
         if deadline > old.deadline_ms {
             return Err(DaemonError::MachineRequest {
@@ -91,16 +98,44 @@ impl DurableKernelStateStore {
         agent: &str,
     ) -> Result<Option<AgentDeadline>, DaemonError> {
         let db = self.lock_connection("agent.deadline")?;
-        get(&db, room, agent)
+        let deadline = get(&db, room, agent)?;
+        if deadline
+            .as_ref()
+            .is_none_or(|value| value.state != AgentDeadlineState::Armed)
+        {
+            return Ok(deadline);
+        }
+        let tx = db.unchecked_transaction().map_err(sql)?;
+        super::deadline_clock::advance(
+            &tx,
+            crate::session::unix_epoch_ms(),
+            super::deadline_clock::instance_id(),
+            false,
+        )?;
+        let deadline = get(&tx, room, agent)?;
+        tx.commit().map_err(sql)?;
+        Ok(deadline)
     }
     pub(crate) fn agent_deadlines(&self) -> Result<Vec<AgentDeadline>, DaemonError> {
         let db = self.lock_connection("agent.deadline")?;
-        let mut query = db
+        let tx = db.unchecked_transaction().map_err(sql)?;
+        super::deadline_clock::advance(
+            &tx,
+            crate::session::unix_epoch_ms(),
+            super::deadline_clock::instance_id(),
+            false,
+        )?;
+        let mut query = tx
             .prepare("SELECT payload FROM agent_deadlines ORDER BY room_id,agent_id")
             .map_err(sql)?;
         let rows = query
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(sql)?;
-        rows.map(|row| decode(&row.map_err(sql)?)).collect()
+        let deadlines = rows
+            .map(|row| decode(&row.map_err(sql)?))
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(query);
+        tx.commit().map_err(sql)?;
+        Ok(deadlines)
     }
 }

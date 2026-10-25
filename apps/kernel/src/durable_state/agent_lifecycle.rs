@@ -6,6 +6,7 @@ pub(crate) mod completion;
 mod continuations;
 #[cfg(test)]
 mod deadline_tests;
+mod deadline_clock;
 mod deadlines;
 mod delegation;
 mod delivery;
