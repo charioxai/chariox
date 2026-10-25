@@ -70,3 +70,60 @@ fn one_terminal_user_cannot_touch_the_recording_or_language_of_another() {
     };
     assert_eq!(status.language, None, "alice's language is not bob's");
 }
+
+#[test]
+fn remote_dictation_uses_owner_scoped_vault_handles_and_refuses_foreign_unlock_context() {
+    let harness = LocalRouterTestHarness::new();
+    let request = harness
+        .fixture_session_request("dictation-vault-context")
+        .with_owner_user_id("alice");
+    let session = harness.with_app_mut(|app| {
+        crate::app::KernelSessionService::new(app)
+            .create_session(request)
+            .unwrap()
+            .0
+    });
+    dictation(
+        &harness,
+        "alice",
+        DictationCommand::SetService {
+            service: crate::local::DictationProvider::Openai,
+        },
+    );
+    let DictationResult::Status { status: alice } =
+        dictation(&harness, "alice", DictationCommand::Status)
+    else {
+        panic!("alice's status")
+    };
+    let DictationResult::Status { status: bob } =
+        dictation(&harness, "bob", DictationCommand::Status)
+    else {
+        panic!("bob's status")
+    };
+    assert_eq!(
+        bob.service,
+        crate::local::DictationProvider::Openai,
+        "the choice belongs to the kernel"
+    );
+    assert_ne!(
+        alice.vault_key, bob.vault_key,
+        "the keys belong to their authenticated users"
+    );
+    let error = harness
+        .dispatch_as_user(
+            "bob",
+            LocalDaemonRequest::Dictation(DictationRequest {
+                command: DictationCommand::Transcribe {
+                    upload_id: "rec-1".into(),
+                    context: Some(crate::local::DictationContext {
+                        session_id: session.id().into(),
+                        agent_id: "foreign".into(),
+                    }),
+                },
+            }),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, crate::error::DaemonError::RelayTransport { code, .. } if code == "dictation_context_invalid")
+    );
+}

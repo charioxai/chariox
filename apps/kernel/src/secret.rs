@@ -505,6 +505,18 @@ impl RuntimeSecretService {
         })
     }
 
+    /// A kernel speech request resolves its owner-scoped handle just for this request.
+    /// Do not populate or consult the process cache: relocking/deleting a Vault entry applies immediately.
+    pub(crate) fn vault_secret_for_dictation(
+        &self,
+        key: &str,
+    ) -> Result<Option<Zeroizing<String>>, DaemonError> {
+        validate_vault_key(key)?;
+        self.vault_store
+            .find_secret(self.vault_service_name()?, key)
+            .map(|value| value.map(Zeroizing::new))
+    }
+
     pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         validate_vault_key(key)?;
         if value.is_empty() {

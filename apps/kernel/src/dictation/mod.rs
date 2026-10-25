@@ -1,11 +1,13 @@
 //! Kernel dictation: speech-to-text on the kernel the person is connected to.
 //!
-//! Recordings arrive as 16 kHz mono PCM, are transcribed by whisper.cpp and never
-//! stored. The speech model is not part of the kernel: it downloads on first use.
+//! Recordings arrive as 16 kHz mono PCM and are never stored. The kernel runs
+//! whisper.cpp locally or sends a WAV to the selected speech service using the
+//! authenticated user’s Vault key. The local model downloads only on first use.
 mod audio;
 mod catalog;
 mod download;
 mod engine;
+mod remote;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,21 +20,21 @@ use serde::{Deserialize, Serialize};
 use self::audio::{pcm16_to_f32, AudioError, AudioUploads};
 pub(crate) use self::catalog::ModelSpec;
 pub(crate) use self::engine::SpeechEngine;
-#[cfg(test)]
 use self::engine::Transcription;
 use self::engine::WhisperEngine;
 use crate::error::DaemonError;
 use crate::local::{
-    DictationCommand, DictationModelState, DictationResult, DictationStatus,
+    DictationCommand, DictationModelState, DictationProvider, DictationResult, DictationStatus,
     DICTATION_SAMPLE_RATE_HZ,
 };
 
 const RELEASE_MODEL_AFTER: Duration = Duration::from_secs(300);
 const MIN_SPEECH_BYTES: usize = DICTATION_SAMPLE_RATE_HZ as usize * 2 * 3 / 10;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    service: DictationProvider,
     /// The language each user chose; users without an entry get automatic detection.
     languages: HashMap<String, String>,
 }
@@ -53,6 +55,7 @@ pub(crate) struct DictationService {
     dir: PathBuf,
     spec: ModelSpec,
     engine: Arc<dyn SpeechEngine>,
+    services: remote::SpeechServices,
     inner: Mutex<Inner>,
     transcribing: tokio::sync::Semaphore,
     /// Changes whenever the model is touched, so only the newest idle timer releases it.
@@ -86,6 +89,7 @@ impl DictationService {
             dir,
             spec,
             engine,
+            services: remote::SpeechServices::default(),
             inner: Mutex::new(Inner {
                 download: Download::Idle,
                 settings,
@@ -102,10 +106,20 @@ impl DictationService {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    #[cfg(test)]
     pub(crate) async fn handle(
         self: &Arc<Self>,
         owner: &str,
         command: DictationCommand,
+    ) -> Result<DictationResult, DaemonError> {
+        self.handle_with_vault(owner, command, None).await
+    }
+
+    pub(crate) async fn handle_with_vault(
+        self: &Arc<Self>,
+        owner: &str,
+        command: DictationCommand,
+        vault: Option<crate::config::UserCredentialVaultConfig>,
     ) -> Result<DictationResult, DaemonError> {
         match command {
             DictationCommand::Status => Ok(DictationResult::Status {
@@ -114,6 +128,7 @@ impl DictationService {
             DictationCommand::DownloadModel => Ok(DictationResult::Status {
                 status: self.start_download(owner),
             }),
+            DictationCommand::SetService { service } => self.set_service(owner, service),
             DictationCommand::SetLanguage { language } => self.set_language(owner, language),
             DictationCommand::AppendAudio {
                 upload_id,
@@ -130,8 +145,14 @@ impl DictationService {
                     received_bytes,
                 })
             }
-            DictationCommand::Transcribe { upload_id } => self.transcribe(owner, &upload_id).await,
+            DictationCommand::Transcribe { upload_id, .. } => {
+                self.transcribe(owner, &upload_id, vault).await
+            }
         }
+    }
+
+    pub(crate) fn selected_service(&self) -> DictationProvider {
+        self.lock().settings.service
     }
 
     fn model_ready(&self) -> bool {
@@ -156,6 +177,8 @@ impl DictationService {
             }
         };
         DictationStatus {
+            service: inner.settings.service,
+            vault_key: vault_key(owner, inner.settings.service),
             model_id: self.spec.id.clone(),
             model_size_bytes: self.spec.size_bytes,
             model,
@@ -201,40 +224,57 @@ impl DictationService {
         }
         {
             let mut inner = self.lock();
+            let mut next = inner.settings.clone();
             match language {
-                Some(code) => inner.settings.languages.insert(owner.to_string(), code),
-                None => inner.settings.languages.remove(owner),
+                Some(code) => next.languages.insert(owner.to_string(), code),
+                None => next.languages.remove(owner),
             };
-            let bytes = serde_json::to_vec(&inner.settings).map_err(|error| {
-                refuse(
-                    "dictation_settings_failed",
-                    &format!("cannot save the dictation settings: {error}"),
-                    false,
-                )
-            })?;
-            std::fs::create_dir_all(&self.dir)
-                .and_then(|()| {
-                    crate::config::write_private_file(&self.dir.join("settings.json"), &bytes)
-                })
-                .map_err(|error| {
-                    refuse(
-                        "dictation_settings_failed",
-                        &format!("cannot save the dictation settings: {error}"),
-                        true,
-                    )
-                })?;
+            self.save_settings(&next)?;
+            inner.settings = next;
         }
         Ok(DictationResult::Status {
             status: self.status(owner),
         })
     }
 
+    fn set_service(
+        &self,
+        owner: &str,
+        service: DictationProvider,
+    ) -> Result<DictationResult, DaemonError> {
+        {
+            let mut inner = self.lock();
+            let mut next = inner.settings.clone();
+            next.service = service;
+            self.save_settings(&next)?;
+            inner.settings = next;
+        }
+        Ok(DictationResult::Status {
+            status: self.status(owner),
+        })
+    }
+
+    fn save_settings(&self, settings: &Settings) -> Result<(), DaemonError> {
+        let bytes = serde_json::to_vec(settings).map_err(|_| {
+            refuse(
+                "dictation_settings_failed",
+                "Cannot encode the dictation settings. Try again.",
+                false,
+            )
+        })?;
+        std::fs::create_dir_all(&self.dir)
+            .and_then(|()| crate::config::write_private_file(&self.dir.join("settings.json"), &bytes))
+            .map_err(|_| refuse("dictation_settings_failed", "Cannot save the dictation settings. Check the kernel's disk space and permissions, then try again.", true))
+    }
+
     async fn transcribe(
         self: &Arc<Self>,
         owner: &str,
         upload_id: &str,
+        vault: Option<crate::config::UserCredentialVaultConfig>,
     ) -> Result<DictationResult, DaemonError> {
-        if !self.model_ready() {
+        let provider = self.lock().settings.service;
+        if provider == DictationProvider::Local && !self.model_ready() {
             return Err(refuse(
                 "dictation_model_missing",
                 "The speech model is not downloaded. Download it, then dictate again.",
@@ -264,28 +304,51 @@ impl DictationService {
                 true,
             )
         })?;
-        self.model_use.fetch_add(1, Ordering::SeqCst);
+        if provider == DictationProvider::Local {
+            self.model_use.fetch_add(1, Ordering::SeqCst);
+        }
         let service = self.clone();
+        let key = vault_key(owner, provider);
         let attempt = tokio::task::spawn_blocking(move || {
-            service.engine.transcribe(
-                &service.spec.path(&service.dir),
-                &pcm16_to_f32(&pcm),
-                language.as_deref(),
-            )
+            if provider == DictationProvider::Local {
+                return service
+                    .engine
+                    .transcribe(
+                        &service.spec.path(&service.dir),
+                        &pcm16_to_f32(&pcm),
+                        language.as_deref(),
+                    )
+                    .map_err(|message| refuse("dictation_transcription_failed", &message, true));
+            }
+            let key = read_key(
+                vault.as_ref(),
+                key.as_deref().expect("remote service has a Vault handle"),
+            )?;
+            let text = service
+                .services
+                .transcribe(provider, &key, &pcm, language.as_deref())?;
+            Ok(Transcription {
+                text,
+                language: language.unwrap_or_default(),
+            })
         })
         .await;
-        self.release_model_when_idle();
-        let heard = attempt
-            .map_err(|_| {
-                refuse(
-                    "dictation_transcription_failed",
-                    "Transcription stopped unexpectedly. Try again.",
-                    true,
-                )
-            })?
-            .map_err(|message| refuse("dictation_transcription_failed", &message, true))?;
+        if provider == DictationProvider::Local {
+            self.release_model_when_idle();
+        }
+        let heard = attempt.map_err(|_| {
+            refuse(
+                "dictation_transcription_failed",
+                "Transcription stopped unexpectedly. Try again.",
+                true,
+            )
+        })??;
         Ok(DictationResult::Transcript {
-            text: spoken_text(&heard.text),
+            text: if provider == DictationProvider::Local {
+                spoken_text(&heard.text)
+            } else {
+                heard.text
+            },
             language: heard.language,
         })
     }
@@ -304,6 +367,48 @@ impl DictationService {
             }
         });
     }
+}
+
+/// Different authenticated users never share a speech credential, even on one kernel.
+fn vault_key(owner: &str, provider: DictationProvider) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let name = match provider {
+        DictationProvider::Local => return None,
+        DictationProvider::Openai => "openai",
+        DictationProvider::Elevenlabs => "elevenlabs",
+    };
+    let owner = Sha256::digest(owner.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some(format!("dictation-{owner}-{name}"))
+}
+
+fn read_key(
+    vault: Option<&crate::config::UserCredentialVaultConfig>,
+    key: &str,
+) -> Result<zeroize::Zeroizing<String>, DaemonError> {
+    let missing = || {
+        refuse("dictation_no_key", "Add your speech service API key through the Vault prompt in Settings → Dictation, then try again.", false)
+    };
+    let vault = vault.ok_or_else(missing)?;
+    let service = crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), vault)
+        .map_err(|_| missing())?;
+    service
+        .vault_secret_for_dictation(key)
+        .map_err(|error| {
+            if crate::secret::is_chariox_vault_locked_error(&error) {
+                refuse(
+                    "dictation_vault_locked",
+                    "Unlock your kernel's Vault, then try dictation again.",
+                    false,
+                )
+            } else {
+                missing()
+            }
+        })?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(missing)
 }
 
 /// Drops whisper's non-speech annotations such as `[BLANK_AUDIO]` and `(music)`.
