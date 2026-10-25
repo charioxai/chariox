@@ -10,6 +10,52 @@ async fn mk03_public_move_materializes_current_project_and_return_uses_fresh_roo
             .unwrap();
         let session = home.sessions().get_session(agent.session_id()).unwrap();
         let original = PathBuf::from(session.worktree_id());
+        let common = fixture.workspace_root.join("common");
+        std::fs::create_dir_all(&common).unwrap();
+        let git = |directory: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(directory)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Git fixture failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&common, &["init", "--quiet"]);
+        git(&common, &["config", "user.name", "Fixture"]);
+        git(
+            &common,
+            &["config", "user.email", "fixture@example.invalid"],
+        );
+        std::fs::write(common.join("input"), "home before move\n").unwrap();
+        git(&common, &["add", "input"]);
+        git(&common, &["commit", "--quiet", "-m", "fixture"]);
+        git(
+            &common,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked",
+                original.to_str().unwrap(),
+            ],
+        );
+        home.agents()
+            .update_agent_config(
+                agent.id(),
+                None,
+                None,
+                Some(Some(common.display().to_string())),
+                Some(Some(original.display().to_string())),
+            )
+            .unwrap();
         std::fs::write(original.join("input"), "home before move\n").unwrap();
         let notes = fixture.workspace_root.join("notes");
         std::fs::create_dir_all(notes.join("nested")).unwrap();

@@ -132,6 +132,10 @@ impl KernelRuntimeState {
                 self.owned.agent_moves.save_home(home)?;
             }
         }
+        let provider_worktree = latest
+            .as_ref()
+            .and_then(|run| run.working_directory())
+            .map(|path| path.display().to_string());
         let checkpoint = if let Some(run) = latest
             .filter(|run| run.provider_session_id().is_some() || !run.resume_state().is_empty())
         {
@@ -147,54 +151,35 @@ impl KernelRuntimeState {
         } else {
             pending_checkpoint
         };
-        let primary_workspace = agent.workspace_id().unwrap_or(session.workspace_id());
-        let primary_path = agent.worktree_id().unwrap_or(session.worktree_id());
+        let requested_workspace = agent.workspace_id().unwrap_or(session.workspace_id());
+        let primary_path = provider_worktree
+            .as_deref()
+            .or(agent.worktree_id())
+            .unwrap_or(session.worktree_id());
         let project = self.owned.session_store.get_project(session.project_id())?;
-        let (project_id, repositories): (String, Vec<DevelopmentRepositorySelection>) = if !project
-            .contains_workspace(primary_workspace)
-        {
-            let previous = self.owned.agent_moves.target_for_agent(session_id, agent_id)
-                .ok_or_else(|| move_error("The execution Project mapping is missing; restore the last materialization receipt"))?;
-            let receipt = previous
-                .receipt
-                .ok_or_else(|| move_error("The execution Project receipt is not ready"))?;
-            (
-                receipt.source_project_id.clone(),
-                receipt
-                    .repositories
-                    .iter()
-                    .map(|repository| DevelopmentRepositorySelection {
-                        workspace_id: repository.destination_path.display().to_string(),
-                        worktree_id: None,
-                        worktree_path: repository.destination_path.clone(),
-                        role: repository.role,
-                    })
-                    .collect(),
-            )
-        } else {
-            (
-                project.id().to_string(),
-                project
-                    .workspace_ids()
-                    .iter()
-                    .map(|workspace| DevelopmentRepositorySelection {
-                        workspace_id: workspace.clone(),
-                        worktree_id: (workspace == primary_workspace)
-                            .then(|| primary_path.to_string()),
-                        worktree_path: PathBuf::from(if workspace == primary_workspace {
-                            primary_path
-                        } else {
-                            workspace
-                        }),
-                        role: if workspace == primary_workspace {
-                            DevelopmentRepositoryRole::Primary
-                        } else {
-                            DevelopmentRepositoryRole::Supporting
-                        },
-                    })
-                    .collect(),
-            )
-        };
+        let primary_workspace = project.workspace_ids().iter()
+            .find(|workspace| workspace.as_str() == requested_workspace)
+            .or_else(|| project.workspace_ids().iter().find(|workspace| workspace.as_str() == primary_path))
+            .ok_or_else(|| move_error("The agent's execution Workspace is outside its selected Project. Add that Workspace to the Project or select a worktree in this Project, then retry"))?;
+        let project_id = project.id().to_string();
+        let repositories = project
+            .workspace_ids()
+            .iter()
+            .map(|workspace| DevelopmentRepositorySelection {
+                workspace_id: workspace.clone(),
+                worktree_id: (workspace == primary_workspace).then(|| primary_path.to_string()),
+                worktree_path: PathBuf::from(if workspace == primary_workspace {
+                    primary_path
+                } else {
+                    workspace
+                }),
+                role: if workspace == primary_workspace {
+                    DevelopmentRepositoryRole::Primary
+                } else {
+                    DevelopmentRepositoryRole::Supporting
+                },
+            })
+            .collect();
         let copied_project_id = format!(
             "move-{:x}",
             sha2::Sha256::digest(source.identity.operation_id.as_bytes())
