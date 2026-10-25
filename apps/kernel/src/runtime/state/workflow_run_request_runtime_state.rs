@@ -302,6 +302,7 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         let activity_mutation = owned.begin_managed_activity_mutation();
         let durable_state_store = owned.durable_state_store.clone();
+        let mut unsent_prompts = Vec::new();
         let (workflow_run, archived_runs) = durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 self.authorize_current_external_command()?;
@@ -338,6 +339,13 @@ impl KernelRuntimeState {
                     })
                     .map(|(agent_id, _)| agent_id.clone())
                     .collect::<Vec<_>>();
+                unsent_prompts = session_before_interrupt
+                    .prompt_states()
+                    .values()
+                    .flat_map(|state| state.queued_prompts().iter())
+                    .filter(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()))
+                    .cloned()
+                    .collect();
                 let workflow_run = if pause {
                     sessions.pause_workflow_run(session_id, workflow_run_ref)
                 } else {
@@ -369,9 +377,20 @@ impl KernelRuntimeState {
                 Ok((workflow_run, archived_runs))
             })?;
         let committed_session = owned.session_store.get_session(session_id)?;
-        let _ = owned
+        let removed = owned
             .prompt_state_owner
             .remove_queued_prompts_by_workflow_run(&committed_session, &workflow_run_id);
+        for prompt in removed {
+            if !unsent_prompts
+                .iter()
+                .any(|unsent| unsent.id() == prompt.id())
+            {
+                unsent_prompts.push(prompt);
+            }
+        }
+        if !pause {
+            owned.release_unsent_agent_events(session_id, &unsent_prompts);
+        }
         if !archived_runs.is_empty() {
             let recipient_attachment_ids = owned
                 .attachment_store

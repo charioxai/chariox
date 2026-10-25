@@ -167,6 +167,7 @@ async fn revoked_remote_operation(spawn: bool, discovery_wait: bool) {
     let grant = state.insert_access_grant_for_test(session.id());
     let request = if spawn {
         LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            no_subscribe: false,
             session_id: session.id().into(),
             alias: Some("remote-created".into()),
             provider: Some("dev-stub".into()),

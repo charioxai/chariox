@@ -11,7 +11,7 @@ fn append_native_provider_output_fans_out_and_records_history() {
         ))
         .expect("session should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -82,7 +82,7 @@ fn stale_terminal_sweep_removes_dead_attachment_before_fanout() {
         ))
         .expect("session should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let stale_attachment = match harness

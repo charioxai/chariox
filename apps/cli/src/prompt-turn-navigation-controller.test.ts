@@ -18,7 +18,7 @@ test("prompt turn navigation scrolls to the previous prompt anchor", () => {
 
   assert.deepEqual(harness.scrolls(), [{ x: 4, y: 0 }])
   assert.equal(harness.renderCount(), 1)
-  assert.equal(harness.lastScrollTop(), 0)
+  assert.equal(harness.lastScrollTop(), 30)
 })
 
 test("prompt turn navigation scrolls to the next prompt anchor", () => {
@@ -27,7 +27,7 @@ test("prompt turn navigation scrolls to the next prompt anchor", () => {
   assert.equal(harness.controller.handleKey({ name: "down", eventType: "press", shift: true }), true)
 
   assert.deepEqual(harness.scrolls(), [{ x: 4, y: 50 }])
-  assert.equal(harness.lastScrollTop(), 50)
+  assert.equal(harness.lastScrollTop(), 30)
 })
 
 test("prompt turn navigation consumes valid shortcuts even without a mounted scrollbox", () => {
@@ -75,3 +75,27 @@ function createHarness(options: {
     lastScrollTop: () => lastScrollTop,
   }
 }
+
+test("MP-08/MP-10/MP-11 jumping to the oldest turn loads the earlier history once", async () => {
+  const { createTranscriptHistoryAutoloadController } = await import("./transcript-history-autoload-controller.js")
+  let top = 40
+  let last = top
+  let loads = 0
+  const navigation = createPromptTurnNavigationController({
+    isAttached: () => true, getPromptText: () => "", getPromptOffsets: () => [0, 40],
+    getScrollState: () => ({ left: 0, top }),
+    scrollTo: ({ y }) => { top = y }, requestRender() {},
+    setLastTranscriptScrollTop: (value) => { last = value },
+  })
+  const history = createTranscriptHistoryAutoloadController({
+    scheduleTimer() {}, getScrollbox: () => ({ height: 20, scrollHeight: 100, scrollTop: top }),
+    isScrollRestoring: () => false, isAttached: () => true, isLoadingHistory: () => false,
+    hasMoreHistory: () => true, getLastScrollTop: () => last,
+    setLastScrollTop: (value) => { last = value }, loadOlderHistory: () => { loads += 1; return false },
+  })
+  navigation.handleKey({ name: "up", eventType: "press", shift: true })
+  history.monitorScroll()
+  assert.equal(loads, 1, "normal turn navigation must reach the earlier history page")
+  history.monitorScroll()
+  assert.equal(loads, 1, "the same top position must not repeatedly load history")
+})

@@ -30,6 +30,9 @@ pub(crate) struct WorkerPromptReceiptRecord {
     pub(crate) receipt: WorkerPromptReceipt,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) caller: Option<LeaseCallerBinding>,
+    /// Worker-local identity; never projected in the relay receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) backing_prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +126,9 @@ impl WorkerPromptReceiptStore {
             record.receipt.home_prompt_id.clone(),
         );
         if let Some(previous) = self.records.get(&key) {
+            if record.backing_prompt_id.is_none() {
+                record.backing_prompt_id = previous.backing_prompt_id.clone();
+            }
             validate_receipt_transition(previous, &record)?;
             if record.caller.is_none() {
                 record.caller = previous.caller.clone();
@@ -149,6 +155,10 @@ fn receipt_record_has_identity(record: &WorkerPromptReceiptRecord) -> bool {
     !record.leased_agent_id.trim().is_empty()
         && !receipt.home_prompt_id.trim().is_empty()
         && !receipt.execution_lease_id.trim().is_empty()
+        && record
+            .backing_prompt_id
+            .as_deref()
+            .is_none_or(|id| !id.trim().is_empty())
         && receipt
             .worker_provider_run_id
             .as_deref()
@@ -164,6 +174,11 @@ fn validate_receipt_transition(
     if previous.leased_agent_id != next.leased_agent_id
         || previous.receipt.home_prompt_id != next.receipt.home_prompt_id
         || previous.receipt.execution_lease_id != next.receipt.execution_lease_id
+        || previous
+            .backing_prompt_id
+            .as_ref()
+            .zip(next.backing_prompt_id.as_ref())
+            .is_some_and(|(old, new)| old != new)
         || previous
             .caller
             .as_ref()
@@ -226,7 +241,17 @@ mod tests {
                 phase,
             },
             caller: None,
+            backing_prompt_id: None,
         }
+    }
+
+    #[test]
+    fn worker_prompt_receipt_cannot_switch_its_backing_turn_while_dispatching() {
+        let mut before = receipt(WorkerPromptReceiptPhase::Dispatching);
+        before.backing_prompt_id = Some("backing-1".into());
+        let mut after = before.clone();
+        after.backing_prompt_id = Some("backing-2".into());
+        assert!(validate_receipt_transition(&before, &after).is_err());
     }
 
     #[test]
@@ -246,6 +271,7 @@ mod tests {
             .expect("dispatching receipt should persist");
         let mut accepted = receipt(WorkerPromptReceiptPhase::Accepted);
         accepted.receipt.worker_provider_run_id = Some("worker-run-1".to_string());
+        accepted.backing_prompt_id = Some("worker-prompt-1".into());
         store
             .persist(accepted.clone())
             .expect("acceptance should persist");

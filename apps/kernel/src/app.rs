@@ -137,7 +137,8 @@ pub(crate) use provider_liveness::{
     clear_active_provider_run_session_pointer, ProviderRunExitSessionSummary,
 };
 pub(crate) use provider_processes::{
-    ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
+    stop_processes_left_by_dead_kernels, ProviderLaunchProcessRuntime, ProviderProcessReapSummary,
+    ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
@@ -378,7 +379,6 @@ impl DaemonApp {
             pty: PtyManager::new(),
             room_terminals: crate::room_terminal::RoomTerminalService::new(
                 config.private_runtime_state_root().join("room-terminals"),
-                std::sync::Arc::new(crate::room_terminal::EventCoreNotWired),
             ),
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),

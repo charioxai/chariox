@@ -106,6 +106,15 @@ impl KernelRuntimeState {
                 Some(sequence),
             );
         }
+        // The provider already holds the steer, so a retry would deliver it twice.
+        owned
+            .publish_outside_steer(&request.session_id, &request.target_agent_id, prompt.id())
+            .map_err(|error| {
+                tracing::warn!(%error, steer_id = prompt.id(), "steer delivered but its outside event was not recorded");
+                DaemonError::SteerDeliveredEventUnrecorded {
+                    steer_id: prompt.id().to_string(),
+                }
+            })?;
         Ok(prompt)
     }
 

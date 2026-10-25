@@ -26,7 +26,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   {
     name: "request",
-    flags: [KERNEL, { name: "--command-id", value: "ID" }, TIMEOUT, SOCKET],
+    flags: [KERNEL, { name: "--command-id", value: "ID" }, { name: "--no-subscribe" }, TIMEOUT, SOCKET],
     summary: "send the one JSON request on stdin; prints the JSON response",
   },
   {
@@ -62,6 +62,14 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "files ls", flags: [KERNEL, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
   { name: "files get", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
   { name: "files put", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["LOCAL_PATH", "REMOTE_PATH"], summary: "upload a file, verified by sha256; prints size, bytes sent and resumed_from" },
+  { name: "events subscribe", flags: [{ ...KERNEL, required: true }, SESSION, { name: "--agent", value: "AGENT_ID" }, SOCKET], summary: "follow a session or one agent in the durable event inbox" },
+  { name: "events unsubscribe", flags: [KERNEL, { name: "--session", value: "SESSION_ID" }, { name: "--agent", value: "AGENT_ID" }, { name: "--all" }, SOCKET], summary: "remove targets, or end the subscription with --all" },
+  { name: "events subscription", flags: [SOCKET], summary: "show followed targets and per-kernel health" },
+  { name: "events list", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, SOCKET], summary: "read pending records, oldest first; save next_cursor" },
+  { name: "events wait", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records (default 540 s, at most 900 s); exit 5 on timeout" },
+  { name: "events watch", flags: [{ name: "--since", value: "CURSOR" }, SOCKET], summary: "print one JSON line per record until interrupted or the subscription ends" },
+  { name: "events ack", flags: [SOCKET], args: ["CURSOR"], summary: "acknowledge all records through CURSOR" },
+
 ]
 
 export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
@@ -85,17 +93,18 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   },
 ]
 
-const REFUSED = ["kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["events_refused", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
 const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
   { exit: 2, meaning: "usage error", codes: ["usage", "file_path_invalid"] },
-  { exit: 3, meaning: "refused: the user, the grant or the file permissions do not allow it", codes: [...REFUSED, "file_permission_denied"] },
+  { exit: 3, meaning: "refused: the user, the grant or the file permissions do not allow it", codes: [...REFUSED, "file_permission_denied", "subscription_ended"] },
   { exit: 4, meaning: "kernel unavailable", codes: KERNEL_UNAVAILABLE },
   { exit: 5, meaning: "timeout or unknown outcome", codes: TIMEOUT_OR_UNKNOWN },
   { exit: 6, meaning: "approval pending (access request --no-wait)", codes: [] },
+  { exit: 7, meaning: "event cursor expired: resync followed targets", codes: ["cursor_expired"] },
 ]
 
 export function exitCodeFor(code: string): number {
@@ -103,7 +112,7 @@ export function exitCodeFor(code: string): number {
 }
 
 export class CommandFailure extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: string, message: string, readonly details?: Record<string, unknown>) {
     super(message)
     this.name = "CommandFailure"
   }
@@ -167,13 +176,17 @@ export function guideText(): string {
     "   Terminals belong to the Room and keep running if you disconnect; read them later with --since.",
     "   They need a session: take one from ListSessions or make one with CreateSession (see Requests below).",
     "",
+    "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540",
+    "in the foreground or your harness background option, or poll chariox events list. Keep next_cursor.",
+    "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
+    "Show approval pointers to the user verbatim. A subscription lasts until its grant ends or you cancel it.",
     "Commands:",
     ...commands,
     "",
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
-    "Give every request that changes state (CreateSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
+    "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
     "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
     "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",

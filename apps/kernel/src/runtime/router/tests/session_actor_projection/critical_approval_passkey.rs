@@ -37,15 +37,20 @@ fn id(name: &str) -> String {
 impl Fixture {
     /// With `vault`, the encrypted vault exists (locked) with `PASSKEY`.
     fn new(vault: bool) -> Self {
-        Self::build(vault, None)
+        Self::build(vault, None, None)
+    }
+
+    /// The kernel is enrolled for `owner`; the session was made before that.
+    fn enrolled(owner: &str) -> Self {
+        Self::build(true, None, Some(owner))
     }
 
     /// The local owner hosts a session shared with `guest`.
     fn shared_with(guest: &str) -> Self {
-        Self::build(true, Some(guest))
+        Self::build(true, Some(guest), None)
     }
 
-    fn build(vault: bool, guest: Option<&str>) -> Self {
+    fn build(vault: bool, guest: Option<&str>, enrolled: Option<&str>) -> Self {
         let root = std::env::temp_dir().join(format!("passkey-{:016x}", rand::random::<u64>()));
         std::fs::create_dir_all(&root).unwrap();
         let vault_path = root.join("vault.json");
@@ -57,6 +62,10 @@ impl Fixture {
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path = vault_path.display().to_string();
         config.user_config_path = root.join("config.toml");
+        config.cloud_relay = enrolled.map(|user_id| crate::config::PersistedCloudRelayProfile {
+            user_id: user_id.to_owned(),
+            ..Default::default()
+        });
         let app = DaemonApp::bootstrap(config).unwrap();
         let mut session = RuntimeSession::new(
             format!("passkey-{:016x}", rand::random::<u64>()),
@@ -678,15 +687,45 @@ fn local_caller(class: KernelConnectionClass) -> KernelCaller {
 }
 
 fn relay_caller(subject_kind: RelaySubjectKind) -> KernelCaller {
+    relay_caller_of(subject_kind, DEFAULT_LOCAL_USER_ID)
+}
+
+fn relay_caller_of(subject_kind: RelaySubjectKind, user_id: &str) -> KernelCaller {
     KernelCaller::from_relay_identity(RelayCallerIdentity {
         realm_id: "realm-1".into(),
         subject: "subject-1".into(),
         subject_kind,
         expires_at_ms: u64::MAX,
         token_id: None,
-        user_id: Some(DEFAULT_LOCAL_USER_ID.into()),
+        user_id: Some(user_id.into()),
         public_key_thumbprint: None,
     })
+}
+
+// A session made before enrollment is owned by `local`; its owner, now enrolled
+// under their own user id, still approves its critical decisions with the passkey.
+#[tokio::test]
+async fn the_enrolled_owner_approves_a_pre_enrollment_critical_decision_with_the_passkey() {
+    let f = Fixture::enrolled("enrolled-owner");
+    let approved = f.critical("pre-enrollment").await;
+    let owner = || relay_caller_of(RelaySubjectKind::Client, "enrolled-owner");
+    let answer = |passkey| {
+        f.answer_as(
+            "pre-enrollment",
+            "approve",
+            passkey,
+            None,
+            KernelCommandSource::RelayClient,
+            owner(),
+        )
+    };
+    Fixture::refused_with(answer(None).await, "PASSKEY_REQUIRED");
+    Fixture::refused_with(answer(Some("wrong")).await, "PASSKEY_REJECTED");
+    answer(Some(PASSKEY)).await.unwrap();
+    assert_eq!(
+        approved.await.unwrap().choice_id.as_deref(),
+        Some("approve")
+    );
 }
 
 #[tokio::test]
@@ -755,7 +794,6 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
     let f = Fixture::new(true);
     let receiver = f.critical("guarded").await;
     let cli = KernelCommandSource::LocalCli;
-    // A04: kernel agents are refused before any passkey handling.
     // An external agent is refused by kernel access in its own words; every
     // other class by the passkey gate.
     let not_accepted = "PASSKEY_NOT_ACCEPTED";
@@ -789,7 +827,7 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
     // Far more wrong passkeys than the owner's free failures, and the right
     // one: none is verified, audited or counted.
     for _ in 0..2 {
-        for (source, caller, code) in &refused {
+        for (source, caller, reason) in &refused {
             for passkey in ["guess", PASSKEY] {
                 Fixture::refused_with(
                     f.answer_as(
@@ -801,7 +839,7 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
                         caller.clone(),
                     )
                     .await,
-                    code,
+                    reason,
                 );
             }
         }

@@ -401,6 +401,7 @@ mod tests {
             None,
             None,
             &LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                no_subscribe: false,
                 account_profile: None,
                 session_id: "session-1".to_string(),
                 alias: Some("reviewer".to_string()),

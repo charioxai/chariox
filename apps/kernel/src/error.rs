@@ -1,5 +1,9 @@
 use thiserror::Error;
+mod actionable_refusals;
+mod provider_profile_refusal;
 mod user_domain_refusal;
+pub(crate) use actionable_refusals::message as actionable_refusal_message;
+pub use provider_profile_refusal::ProviderProfileRefusal;
 pub(crate) use user_domain_refusal::HostFailure;
 pub use user_domain_refusal::UserDomainRefusalReason;
 
@@ -9,6 +13,9 @@ use crate::session::SessionStatus;
 // MP-08 / MP-11: code-based explanations contain no provider/parser values.
 // Keep executor, MCP and final socket/cache projections consistent.
 pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
+    if let Some(message) = actionable_refusal_message(code) {
+        return message;
+    }
     match code {
         "session_not_found" => "session not found; check its name or list available sessions",
         _ => "external request failed; details are available only in the host terminal",
@@ -23,8 +30,28 @@ pub(crate) fn is_session_alias_refusal(code: &str, message: &str) -> bool {
         && message.starts_with("session alias `")
 }
 
+const STEER_UNRECORDED_SUFFIX: &str =
+    "` was delivered but its event was not recorded; do not send it again";
+
+/// The steer a provider holds whose event was not recorded: the kernel's own sentence
+/// names only the steer id it generated. Only that exact shape qualifies.
+pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
+    code == "prompt_steer_event_unrecorded"
+        && message
+            .strip_prefix("steer `")
+            .and_then(|rest| rest.strip_suffix(STEER_UNRECORDED_SUFFIX))
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("{}", external_request_failure_message(.reason.code()))]
+    ProviderProfileRefused { reason: ProviderProfileRefusal },
     #[error("User-domain request refused")]
     UserDomainRefused { reason: UserDomainRefusalReason },
     #[error("invalid daemon configuration for `{field}`: {message}")]
@@ -341,6 +368,12 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
     },
+    /// The provider holds the steer, but the outside event for it was not recorded.
+    /// The caller must not send it again; the message carries only the kernel's own id.
+    #[error(
+        "steer `{steer_id}` was delivered but its event was not recorded; do not send it again"
+    )]
+    SteerDeliveredEventUnrecorded { steer_id: String },
     #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
     ProviderProtocol {
         provider_run_id: String,
@@ -463,11 +496,12 @@ impl DaemonError {
     }
 
     /// True when a worker reports that the prompt it was asked to settle is no
-    /// longer active. Relay peers carry that error as text, so the relay
-    /// transport message is matched as well as the local variants.
+    /// longer active. Prefer the stable relay code; retain text compatibility
+    /// for older peers that did not project a typed refusal.
     pub(crate) fn is_no_active_prompt(&self) -> bool {
         match self {
             Self::NoActivePrompt { .. } => true,
+            Self::RelayTransport { code, .. } if code == "no_active_prompt" => true,
             Self::LocalTransport { message, .. } | Self::RelayTransport { message, .. } => {
                 message.contains("no active prompt")
                     || message.contains("NoActivePrompt")

@@ -41,6 +41,12 @@ pub(crate) struct Grant {
 }
 
 impl Grant {
+    /// A grant that lasts until its holder exits has no deadline, so a kernel
+    /// restart does not end it while the holder lives.
+    pub(crate) fn survives_restart(&self) -> bool {
+        self.clock.is_none()
+    }
+
     /// Why the grant has ended at `now`, if it has: its deadline passed or
     /// its holder (or a process reusing its identity) is gone.
     pub(crate) fn ended_reason(&self, now: Instant) -> Option<&'static str> {
@@ -63,6 +69,8 @@ pub(crate) struct AccessState {
     pub(crate) grants: BTreeMap<String, Grant>,
     pub(crate) pending: BTreeMap<(u32, u64, String), KernelAccessGrant>,
     pub(crate) generation: u64,
+    /// The kernel has begun to stop: event waits end their poll.
+    pub(crate) stopping: bool,
     pub(crate) last_denial: Option<Instant>,
     pub(crate) suppressed_denials: u64,
     /// Holders whose grant lapsed or was revoked, so a later request from them
@@ -72,6 +80,19 @@ pub(crate) struct AccessState {
     /// their sudo entries carry. They live while their origin kernel keeps renewing the
     /// lease and until it says its grant ended; silence ends them here without it.
     pub(crate) remote_requesters: BTreeMap<String, RemoteRequester>,
+    /// Grants that ended in memory but whose durable end is not complete. They
+    /// authorize nothing; a revoke or the next sweep finishes them.
+    pub(crate) owed_ends: Vec<OwedEnd>,
+}
+
+/// A grant's end (`revoked` or `expired`) that still has to reach the store.
+#[derive(Debug, Clone)]
+pub(crate) struct OwedEnd {
+    pub(crate) grant: KernelAccessGrant,
+    pub(crate) outcome: String,
+    pub(crate) reason: String,
+    /// The end is already in the audit log; only the event inbox is left open.
+    pub(crate) recorded: bool,
 }
 
 /// Who asked from another kernel: shown in the popup, and the liveness of its sudo entries.
@@ -162,17 +183,24 @@ impl Refusal {
     /// Classifies a policy error. Only the lifecycle constants mean "ended";
     /// every other policy refusal is an owner-only action.
     pub(crate) fn of(error: &crate::error::DaemonError) -> Self {
-        Self::exact(error).unwrap_or(match error {
-            crate::error::DaemonError::LocalTransport { message, .. }
-                if matches!(
-                    message.as_str(),
-                    "grant revoked or expired" | "sudo turn ended or was revoked"
-                ) =>
+        Self::exact(error).unwrap_or(
+            if Self::grant_ended(error)
+                || matches!(error, crate::error::DaemonError::LocalTransport { message, .. }
+                    if message == "sudo turn ended or was revoked")
             {
                 Self::Ended
-            }
-            _ => Self::HumanOnly,
-        })
+            } else {
+                Self::HumanOnly
+            },
+        )
+    }
+
+    /// The grant was gone when a request that had already been admitted looked it
+    /// up: the person reading the error must see "ended", not a retryable failure.
+    pub(crate) fn grant_ended(error: &crate::error::DaemonError) -> bool {
+        Self::exact(error) == Some(Self::Ended)
+            || matches!(error, crate::error::DaemonError::LocalTransport { message, .. }
+                if message == "grant revoked or expired")
     }
 
     /// The reason an error already carries, when it came from `Refusal::error`.

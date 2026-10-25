@@ -1,9 +1,11 @@
 use super::*;
 
+mod approval;
 mod capability_room_authority;
 mod control_authority;
 mod credential_authority;
 mod gateway_authority;
+mod inherited_grants;
 mod inner_authority;
 mod input_control_authority;
 mod meta_authority;
@@ -139,6 +141,12 @@ impl KernelRuntimeState {
                 "expire" => {
                     if let Some(clock) = grant.clock.as_mut() {
                         clock.deadline = Instant::now() - Duration::from_millis(1);
+                    }
+                }
+                // The deadline arrives by itself; nothing sweeps on its behalf.
+                "expire-soon" => {
+                    if let Some(clock) = grant.clock.as_mut() {
+                        clock.deadline = Instant::now() + Duration::from_millis(1500);
                     }
                 }
                 "notice" => {
@@ -319,4 +327,518 @@ async fn until_exit_grant_outlives_every_deadline_but_not_its_holder() {
         .unwrap()
         .grants
         .contains_key("until-exit"));
+}
+
+// A grant that lasts until its holder exits goes through a kernel restart with
+// the same id and the same event inbox while the holder lives; a timed grant
+// and a grant whose holder is gone do not.
+#[tokio::test]
+async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
+    let root = crate::test_support::TestWorktree::new("access-restart");
+    let kernel = || {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+        config.user_config_path = root.path().join("config.toml");
+        let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+        crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            32,
+        )
+    };
+    let live_holder = process::inspect(std::process::id()).unwrap().0;
+    let mut child = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .unwrap();
+    let doomed_holder = process::inspect(child.id()).unwrap().0;
+    let summary = |id: &str, term, holder: &ProcessIdentity| KernelAccessGrant {
+        grant_id: id.into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term,
+        expires_at_ms: None,
+    };
+    let before = {
+        let router = kernel();
+        let state = router.runtime_state();
+        let grants = [
+            (
+                "kept",
+                KernelAccessTerm::UntilHolderExits,
+                None,
+                &live_holder,
+            ),
+            (
+                "timed",
+                KernelAccessTerm::Minutes(30),
+                Some(GrantClock::new(30, 5)),
+                &live_holder,
+            ),
+            (
+                "doomed",
+                KernelAccessTerm::UntilHolderExits,
+                None,
+                &doomed_holder,
+            ),
+        ];
+        for (id, term, clock, holder) in grants {
+            let mut access = state.owned.kernel_access.lock().unwrap();
+            state
+                .admit_grant(
+                    &mut access,
+                    id.into(),
+                    summary(id, term, holder),
+                    holder.clone(),
+                    clock,
+                )
+                .unwrap();
+        }
+        let inbox = state.outside_subscription_response("kept").unwrap();
+        // Stopping releases a waiting holder with an empty answer, not with
+        // the end of its subscription.
+        state.end_kernel_access_for_shutdown().unwrap();
+        let released = state
+            .outside_wait(
+                "kept",
+                &WaitEventsRequest {
+                    since: None,
+                    timeout_ms: 5_000,
+                    limit: 10,
+                },
+                Some("kept"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                released,
+                LocalDaemonResponse::EventsListed {
+                    timed_out: true,
+                    ..
+                }
+            ),
+            "{released:?}"
+        );
+        inbox
+    };
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let router = kernel();
+    let state = router.runtime_state();
+    assert_eq!(state.restore_kernel_access_grants().unwrap(), 1);
+    let mut live = state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    live.sort();
+    assert_eq!(live, ["kept"]);
+    assert_eq!(state.outside_subscription_response("kept").unwrap(), before);
+    assert!(state.outside_ended_response("doomed").unwrap().is_some());
+    assert!(state.outside_ended_response("timed").unwrap().is_some());
+}
+
+/// An until-exit grant whose revocation could not be written: the grant is
+/// gone from memory, the fault is still on, and its holder (this process) lives.
+fn failed_revocation(
+    root: &crate::test_support::TestWorktree,
+) -> (
+    crate::runtime::router::CommandRouter,
+    std::path::PathBuf,
+    crate::durable_state::agent_lifecycle::faults::TestFaultDir,
+) {
+    let faults = root.path().join("faults");
+    std::fs::create_dir(&faults).unwrap();
+    let guard = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&faults);
+    let router = reopen_kernel(root);
+    let state = router.runtime_state();
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    let summary = KernelAccessGrant {
+        grant_id: "kept".into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term: KernelAccessTerm::UntilHolderExits,
+        expires_at_ms: None,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+    }
+    std::fs::write(faults.join("writer-fail"), "").unwrap();
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    assert!(state.owned.kernel_access.lock().unwrap().grants.is_empty());
+    (router, faults, guard)
+}
+
+fn reopen_kernel(
+    root: &crate::test_support::TestWorktree,
+) -> crate::runtime::router::CommandRouter {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    config.user_config_path = root.path().join("config.toml");
+    let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+    crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        32,
+    )
+}
+
+// A revocation the kernel could not finish stays revoked: the next start, with
+// the holder still alive, must not bring the grant back.
+#[tokio::test]
+async fn a_revocation_that_failed_to_write_is_not_undone_by_a_restart() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-restart");
+    let (router, faults, _guard) = failed_revocation(&root);
+    drop(router);
+    std::fs::remove_file(faults.join("writer-fail")).unwrap();
+    let router = reopen_kernel(&root);
+    assert_eq!(
+        router
+            .runtime_state()
+            .restore_kernel_access_grants()
+            .unwrap(),
+        0
+    );
+}
+
+// The inbox of a revoked grant is ended as soon as the store takes writes again.
+#[tokio::test]
+async fn a_revoked_grants_inbox_is_ended_once_the_store_takes_writes_again() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-retry");
+    let (router, faults, _guard) = failed_revocation(&root);
+    let state = router.runtime_state();
+    assert!(state.outside_ended_response("kept").unwrap().is_none());
+    std::fs::remove_file(faults.join("writer-fail")).unwrap();
+    state.sweep_kernel_access();
+    assert!(state.outside_ended_response("kept").unwrap().is_some());
+}
+
+/// Makes the audit log refuse revocation records, as a full disk refuses them.
+fn refuse_revocation_records(root: &crate::test_support::TestWorktree, refuse: bool) {
+    let connection = rusqlite::Connection::open(root.path().join("state.db")).unwrap();
+    connection
+        .execute_batch(if refuse {
+            "CREATE TRIGGER refuse_revocation BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'kernel_access.grant' AND NEW.payload_json LIKE '%\"revoked\"%'
+             BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;"
+        } else {
+            "DROP TRIGGER refuse_revocation;"
+        })
+        .unwrap();
+}
+
+// The audit append itself fails: the revocation is kept, a retried revoke
+// writes it once storage recovers, and a restart with the holder alive does
+// not bring the until-exit grant back.
+#[tokio::test]
+async fn a_revocation_the_audit_could_not_append_is_written_by_the_retry() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-append");
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    let summary = KernelAccessGrant {
+        grant_id: "kept".into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term: KernelAccessTerm::UntilHolderExits,
+        expires_at_ms: None,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+    }
+    refuse_revocation_records(&root, true);
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    assert!(state.owned.kernel_access.lock().unwrap().grants.is_empty());
+    // Still refused: the retry fails too and the revocation stays owed.
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    refuse_revocation_records(&root, false);
+    assert_eq!(
+        state
+            .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+            .unwrap(),
+        1
+    );
+    assert!(state.outside_ended_response("kept").unwrap().is_some());
+    drop(state);
+    drop(router);
+    let router = reopen_kernel(&root);
+    assert_eq!(
+        router
+            .runtime_state()
+            .restore_kernel_access_grants()
+            .unwrap(),
+        0
+    );
+}
+
+// The sweep also finishes a revocation whose append failed, with no new revoke.
+#[tokio::test]
+async fn the_sweep_writes_a_revocation_the_audit_could_not_append() {
+    let root = crate::test_support::TestWorktree::new("access-revoke-append-sweep");
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    let summary = KernelAccessGrant {
+        grant_id: "kept".into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term: KernelAccessTerm::UntilHolderExits,
+        expires_at_ms: None,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+    }
+    refuse_revocation_records(&root, true);
+    assert!(state
+        .revoke_kernel_access(None, Some("kept"), "revoked_by_owner")
+        .is_err());
+    refuse_revocation_records(&root, false);
+    state.sweep_kernel_access();
+    drop(state);
+    drop(router);
+    let router = reopen_kernel(&root);
+    assert_eq!(
+        router
+            .runtime_state()
+            .restore_kernel_access_grants()
+            .unwrap(),
+        0
+    );
+}
+
+// A grant holder chooses among the choices a routine provider permission
+// carries, `allow_session` included; a critical decision stays terminal-only.
+#[tokio::test]
+async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
+    use crate::session::{
+        RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+        RuntimeInteractionLevel,
+    };
+    let workspace = crate::test_support::TestWorktree::new("allow-session-grant");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let second = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .unwrap();
+    let state =
+        crate::runtime::state::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+            app,
+        );
+    let grant = state.insert_access_grant_for_test(session.id());
+    let permission = |id: &str, agent_id: &str, level| {
+        RuntimeInteraction::new(
+            id,
+            agent_id,
+            RuntimeInteractionKind::Permission,
+            level,
+            Some("Approve Tool?".to_string()),
+            "A tool call",
+            vec![
+                RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
+                RuntimeInteractionChoice::new(
+                    "allow_session",
+                    "Allow for this session",
+                    "allow",
+                    None,
+                ),
+                RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+            ],
+            None,
+            Some(300),
+            Some("deny".to_string()),
+        )
+    };
+    let answer = |id: &str| {
+        LocalDaemonRequest::RespondToInteraction(
+            serde_json::from_value(serde_json::json!({
+                "session_id": session.id(), "interaction_id": id, "choice_id": "allow_session",
+            }))
+            .unwrap(),
+        )
+    };
+    for (id, agent_id, level) in [
+        (
+            "routine-permission",
+            agent.id(),
+            RuntimeInteractionLevel::Warning,
+        ),
+        (
+            "critical-permission",
+            second.id(),
+            RuntimeInteractionLevel::Critical,
+        ),
+    ] {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        state
+            .owned
+            .register_runtime_interaction(
+                session.id(),
+                permission(id, agent_id, level),
+                tx,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    state
+        .authorize_external_request(&grant, &answer("routine-permission"))
+        .expect("a holder may choose allow_session on a routine permission");
+    let refused = state
+        .authorize_external_request(&grant, &answer("critical-permission"))
+        .expect_err("a critical decision stays terminal-only");
+    assert_eq!(
+        crate::runtime::kernel_access::Refusal::of(&refused),
+        crate::runtime::kernel_access::Refusal::HumanOnly
+    );
+}
+
+// A decision raised while nobody follows its agent (a kernel restart gap) is
+// told to the holder that follows afterwards, once, and can then be answered.
+#[tokio::test]
+async fn a_decision_open_before_the_holder_subscribes_is_delivered_on_subscribe() {
+    use crate::session::{
+        RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+        RuntimeInteractionLevel,
+    };
+    let workspace = crate::test_support::TestWorktree::new("open-decision-replay");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let other = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .unwrap();
+    let state =
+        crate::runtime::state::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+            app,
+        );
+    let grant = state.insert_access_grant_for_test(session.id());
+    let _responders: Vec<_> = [
+        ("followed-permission", agent.id()),
+        ("other-permission", other.id()),
+    ]
+    .into_iter()
+    .map(|(id, agent_id)| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        state
+            .owned
+            .register_runtime_interaction(
+                session.id(),
+                RuntimeInteraction::new(
+                    id,
+                    agent_id,
+                    RuntimeInteractionKind::Permission,
+                    RuntimeInteractionLevel::Warning,
+                    Some("Approve Tool?".to_string()),
+                    "A tool call",
+                    vec![
+                        RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
+                        RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    ],
+                    None,
+                    Some(300),
+                    Some("deny".to_string()),
+                ),
+                tx,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        rx
+    })
+    .collect();
+    let target = EventTarget {
+        kernel: state.owned.config_projection.snapshot().daemon_id,
+        session_id: session.id().into(),
+        agent_id: Some(agent.id().into()),
+    };
+    let decisions = |state: &KernelRuntimeState| {
+        let batch = state
+            .outside_store()
+            .outside_list(&grant, None, 100)
+            .unwrap()
+            .unwrap();
+        batch
+            .events
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.value,
+                    OutsideEventValue::Interaction {
+                        state: EventInteractionState::Pending,
+                        ..
+                    }
+                )
+            })
+            .map(|event| (event.agent_id, event.refs.interaction_id))
+            .collect::<Vec<_>>()
+    };
+    state
+        .subscribe_outside_part(&grant, true, vec![target.clone()])
+        .unwrap();
+    assert_eq!(
+        decisions(&state),
+        [(
+            Some(agent.id().to_string()),
+            Some("followed-permission".to_string())
+        )],
+        "only the followed agent's open decision is told"
+    );
+    // Following the same target again must not tell it a second time.
+    state
+        .subscribe_outside_part(&grant, true, vec![target])
+        .unwrap();
+    assert_eq!(decisions(&state).len(), 1);
+    let answer = LocalDaemonRequest::RespondToInteraction(
+        serde_json::from_value(serde_json::json!({
+            "session_id": session.id(),
+            "interaction_id": "followed-permission",
+            "choice_id": "allow_once",
+        }))
+        .unwrap(),
+    );
+    state
+        .authorize_external_request(&grant, &answer)
+        .expect("the holder can answer the decision it was told about");
 }

@@ -427,3 +427,43 @@ async fn a_worker_lease_closes_the_room_to_terminals_before_sweeping_them() {
         .await;
     assert_eq!(left, 0, "a destroyed lease leaves no terminals");
 }
+
+// MP-08 / MP-09 / MP-11: managed terminal activity callbacks must not keep
+// the durable writer and exclusive state owner alive after runtime teardown.
+#[tokio::test]
+async fn dropping_managed_runtime_releases_durable_state_owner() {
+    let config = DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("managed daemon should boot");
+    app.managed_kernel_registration = Some(ConfirmedManagedKernelRegistration {
+        environment_id: "drop-test-environment".to_string(),
+        machine_id: "drop-test-machine".to_string(),
+        kernel_id: config.daemon_id.clone(),
+        context_plan: None,
+    });
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let runtime = router.runtime_state();
+    let survivor = runtime.clone();
+    drop(runtime);
+    drop(router);
+    drop(app);
+    assert!(
+        crate::durable_state::DurableKernelStateStore::open_owned(config.durable_state_path())
+            .is_err(),
+        "a surviving runtime clone must retain the durable state owner"
+    );
+    drop(survivor);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match DaemonApp::bootstrap(config.clone()) {
+            Ok(_) => break,
+            Err(crate::error::DaemonError::LocalTransport {
+                operation: "durable_state.acquire_owner",
+                ..
+            }) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("managed runtime retained its durable state owner: {error}"),
+        }
+    }
+}

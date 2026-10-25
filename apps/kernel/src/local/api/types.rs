@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod agent_deadline;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
@@ -32,6 +33,7 @@ mod managed_context;
 mod managed_environment;
 mod metaagent;
 mod notes;
+mod outside_events;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -56,6 +58,7 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use agent_deadline::*;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
@@ -78,6 +81,7 @@ pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use outside_events::*;
 pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
@@ -344,7 +348,13 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-/// Provisional 569 (the coordinator renumbers by landing order) carries the Room terminal
-/// service (`RoomTerminal`) and External agents v2: the typed access term
-/// (`until_holder_exits`) and the machine gateway.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 569;
+/// Agent-model line (537, relay peer 145) contracts were integrated in 570/178:
+/// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
+/// and owner-managed contexts (MP-08/MP-10/MP-11).
+/// Room terminal service (`RoomTerminal`, formerly provisional 569) is retained.
+/// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
+/// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
+/// MP-08/MP-10/MP-11: allocated 573/181 binds leased assessment wire identities to the home check.
+/// Allocated 585 adds outside event subscriptions and executor-local agent deadlines.
+/// Allocated 591 adds the outside `steer` event.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 604;

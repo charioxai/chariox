@@ -107,6 +107,17 @@ impl KernelRuntimeOwnedState {
         if message.is_empty() {
             return;
         }
+        if self.config_projection.snapshot().room_agent_tools
+            && crate::terminal::is_internal_dispatch_diagnostic(&message)
+        {
+            crate::logging::debug_with_fields(
+                "daemon.prompt_delivery",
+                "internal dispatch diagnostic",
+                serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id,
+                    "agent_id": agent_id, "diagnostic": message}),
+            );
+            return;
+        }
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
         let history_entry = crate::history::SessionHistoryEntry::provider_output(
@@ -717,6 +728,8 @@ impl KernelRuntimeOwnedState {
 
     fn apply_agent_output_sequence_update(&self, update: Option<AgentOutputSequenceUpdate>) {
         if let Some((session_id, agent_id, sequence)) = update {
+            self.agent_store
+                .note_agent_event_activity(&agent_id, crate::session::unix_epoch_ms());
             let _ = self
                 .session_store
                 .note_agent_output_sequence(&session_id, &agent_id, sequence);
@@ -1391,6 +1404,50 @@ mod tests {
             })
             .to_string(),
         )
+    }
+
+    // A worker in the middle of a long turn is alive: each recorded agent
+    // event moves its liveness, and a burst of events moves it only once.
+    #[tokio::test]
+    async fn recorded_agent_events_move_liveness_without_a_write_per_event() {
+        let workspace = crate::test_support::TestWorktree::new("agent-event-liveness");
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let liveness = || {
+            state
+                .owned
+                .agent_store
+                .get_agent(agent.id())
+                .unwrap()
+                .last_activity_at_ms()
+        };
+        let tool = |status: &str| {
+            SessionHistoryEntry::provider_output(
+                session.id(),
+                "liveness-run",
+                Some(agent.id()),
+                crate::terminal::TerminalOutputKind::ProviderTool,
+                Some(format!("liveness-tool-{status}")),
+                serde_json::json!({"id": format!("liveness-tool-{status}"), "status": status})
+                    .to_string(),
+            )
+        };
+        let created = liveness();
+        tokio::time::sleep(std::time::Duration::from_millis(3_100)).await;
+        state
+            .owned
+            .append_operational_history_entry(&tool("running"), None, None, None);
+        let moved = liveness();
+        assert!(moved >= created + 3_000, "{moved} vs {created}");
+        state
+            .owned
+            .append_operational_history_entry(&tool("completed"), None, None, None);
+        assert_eq!(liveness(), moved, "a burst of events is one stamp");
     }
 
     #[test]

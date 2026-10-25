@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::error::DaemonError;
 use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
 use crate::provider::{
@@ -14,12 +16,14 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct AgentService {
     store: AgentStore,
+    pub(super) outside_events: Option<crate::durable_state::DurableKernelStateStore>,
 }
 
 impl AgentService {
     pub fn new() -> Self {
         Self {
             store: AgentStore::new(),
+            outside_events: None,
         }
     }
 
@@ -115,6 +119,18 @@ impl AgentService {
             }
         }
 
+        // Allocate after validating every explicit alias, so unnamed members of
+        // one batch cannot collide with each other or a later named member.
+        for request in &mut requests {
+            if request.alias.is_none() {
+                let alias = self.next_automatic_alias(session.id(), &session_summary.aliases);
+                session_summary
+                    .aliases
+                    .insert(normalized_agent_alias_key(&alias));
+                request.alias = Some(alias);
+            }
+        }
+
         let agent_ids = self.store.next_agent_ids(new_count);
         let mut created_agents = Vec::with_capacity(new_count);
         for (agent_id, request) in agent_ids.into_iter().zip(requests.into_iter()) {
@@ -150,6 +166,9 @@ impl AgentService {
         );
         sessions.set_focused_agent(session.id(), focused_agent_id)?;
 
+        for agent in &created_agents {
+            self.publish_outside_membership(agent, crate::local::EventSessionState::AgentAdded)?;
+        }
         Ok(created_agents)
     }
 
@@ -185,6 +204,10 @@ impl AgentService {
                     alias: alias.clone(),
                 });
             }
+        }
+
+        if request.alias.is_none() {
+            request.alias = Some(self.next_automatic_alias(session.id(), &HashSet::new()));
         }
 
         // Calculate position for new agent
@@ -223,11 +246,13 @@ impl AgentService {
 
         self.store
             .apply_session_layout_and_focus(&session_id, Some(&agent_id));
-        Ok(self
+        let agent = self
             .store
             .get(&agent_id)
             .cloned()
-            .expect("new agent should be stored"))
+            .expect("new agent should be stored");
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentAdded)?;
+        Ok(agent)
     }
 
     pub(crate) fn restore_agent(&mut self, agent: AgentInstance) -> AgentInstance {
@@ -375,6 +400,7 @@ impl AgentService {
         let was_focused = agent.state() == AgentState::Focused
             || session_focused_agent_id.as_deref() == Some(agent_id);
 
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentRemoved)?;
         // Remove the agent
         self.store.remove(agent_id);
 
@@ -567,7 +593,8 @@ impl AgentService {
             })?;
 
         agent.set_state(state);
-        Ok(agent.clone())
+        let agent = agent.clone();
+        Ok(agent)
     }
 
     /// Set agent processing state
@@ -585,6 +612,14 @@ impl AgentService {
 
         agent.set_processing(is_processing);
         Ok(agent.clone())
+    }
+
+    /// An event the kernel recorded for the agent moves its liveness
+    /// (coalesced); false when it did not move or the agent is gone.
+    pub fn note_agent_event_activity(&mut self, agent_id: &str, at_ms: u64) -> bool {
+        self.store
+            .get_mut(agent_id)
+            .is_some_and(|agent| agent.note_event_activity(at_ms))
     }
 
     pub fn note_prompt_sent_at(
@@ -1108,6 +1143,18 @@ impl AgentService {
             .unwrap_or_else(|| GridPosition::new(0, 0, 1, 1))
     }
 
+    fn next_automatic_alias(&self, session_id: &str, reserved: &HashSet<String>) -> String {
+        // The kernel owns these display names. Public alias requests still
+        // reserve the numeric ID namespace, and actual legacy IDs always win.
+        (1..)
+            .map(|n| format!("agent-{n}"))
+            .find(|alias| {
+                !reserved.contains(alias)
+                    && !self.is_reference_taken_by_other(session_id, "", alias)
+            })
+            .expect("a finite session always has a free agent name")
+    }
+
     fn is_alias_taken(&self, session_id: &str, alias: &str) -> bool {
         self.is_alias_taken_by_other(session_id, "", alias)
     }
@@ -1122,6 +1169,11 @@ impl AgentService {
         }) {
             return true;
         }
+        self.is_reference_taken_by_other(session_id, agent_id, alias)
+    }
+
+    fn is_reference_taken_by_other(&self, session_id: &str, agent_id: &str, alias: &str) -> bool {
+        let normalized = normalized_agent_alias_key(alias);
         self.store.get_by_session(session_id).iter().any(|agent| {
             agent.id() != agent_id
                 && (normalized_agent_alias_key(agent.id()) == normalized
@@ -1558,5 +1610,97 @@ mod workflow_copy_alias_tests {
                 .state(),
             AgentState::Focused
         );
+    }
+}
+
+#[cfg(test)]
+mod r16_default_alias_tests {
+    use super::*;
+    use crate::{config::DaemonConfig, session::CreateSessionRequest};
+
+    #[test]
+    fn r16_session_snapshot_creation_assigns_the_initial_agent_name() {
+        let mut agents = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let agent = agents
+            .create_agent_for_session(CreateAgentRequest::new(session.id(), "codex"), &session)
+            .unwrap();
+        assert_eq!(agent.alias(), Some("agent-1"));
+        assert_eq!(
+            agents.get_agent(agent.id()).unwrap().alias(),
+            Some("agent-1")
+        );
+    }
+
+    #[test]
+    fn r16_bulk_creation_assigns_distinct_names_and_keeps_explicit_names() {
+        let mut agents = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let created = agents
+            .create_agents(
+                vec![
+                    CreateAgentRequest::new(session.id(), "codex"),
+                    CreateAgentRequest::new(session.id(), "codex"),
+                    CreateAgentRequest::new(session.id(), "codex").with_alias("reviewer"),
+                ],
+                &mut sessions,
+            )
+            .unwrap();
+        assert_eq!(
+            created.iter().map(|a| a.alias()).collect::<Vec<_>>(),
+            vec![Some("agent-1"), Some("agent-2"), Some("reviewer")]
+        );
+    }
+
+    // MP-08 / MP-10 / MP-11: a fresh Room's first agent gets its name from
+    // the kernel, regardless of the client that created the Room.
+    #[test]
+    fn r16_default_agent_has_a_collision_free_automatic_alias() {
+        for legacy_collision in [false, true] {
+            let mut agents = AgentService::new();
+            let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+            let session = sessions
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .unwrap();
+            if legacy_collision {
+                agents.store.insert(AgentInstance::new(
+                    "agent-1",
+                    "legacy-ref",
+                    session.id(),
+                    None,
+                    "codex",
+                    None,
+                    None,
+                    None,
+                    GridPosition::new(0, 0, 1, 1),
+                ));
+            }
+            let agent = agents
+                .create_default_agent(session.id(), "worktree", "codex", &mut sessions)
+                .unwrap();
+            let expected = if legacy_collision {
+                "agent-2"
+            } else {
+                "agent-1"
+            };
+            assert_eq!(agent.alias(), Some(expected));
+            assert_eq!(
+                agents.get_agent(agent.id()).unwrap().alias(),
+                Some(expected)
+            );
+            assert_eq!(
+                sessions
+                    .get_session(session.id())
+                    .unwrap()
+                    .focused_agent_id(),
+                Some(agent.id())
+            );
+        }
     }
 }

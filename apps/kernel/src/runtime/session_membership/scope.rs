@@ -166,6 +166,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -627,6 +633,12 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+        | LocalDaemonRequest::SubscribeEvents(_)
+        | LocalDaemonRequest::UnsubscribeEvents(_)
+        | LocalDaemonRequest::GetEventSubscription(_)
+        | LocalDaemonRequest::ListEvents(_)
+        | LocalDaemonRequest::WaitEvents(_)
+        | LocalDaemonRequest::AckEvents(_)
         | LocalDaemonRequest::ListGatewayKernels(_)
         | LocalDaemonRequest::HeartbeatAttachments(_)
         | LocalDaemonRequest::JoinKernelLink(_)

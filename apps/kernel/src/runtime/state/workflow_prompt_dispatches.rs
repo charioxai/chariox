@@ -8,6 +8,14 @@ pub(super) struct WorkflowPromptDispatches {
     pub(super) starting_provider_runs: Vec<String>,
     pub(super) provider_run_retirements: std::collections::BTreeMap<String, Vec<String>>,
     pub(super) starting_metaagent_tasks: Vec<crate::session::QueuedMetaagentTask>,
+    /// Tasks an acknowledged Stop cancelled; their owned work is cancelled next.
+    pub(super) stopped_task_settlements: Vec<(
+        (
+            crate::durable_state::agent_lifecycle::AgentTaskExecution,
+            bool,
+        ),
+        crate::session::PromptQueueItem,
+    )>,
     /// A prompt may be admitted to a busy provider queue without producing a dispatch yet.
     /// Keep this admission signal separate from the concrete work vectors.
     pub(super) admitted_workflow_prompt: bool,
@@ -26,6 +34,7 @@ impl WorkflowPromptDispatches {
             && self.starting_provider_runs.is_empty()
             && self.provider_run_retirements.is_empty()
             && self.starting_metaagent_tasks.is_empty()
+            && self.stopped_task_settlements.is_empty()
     }
 
     pub(super) fn extend(&mut self, other: Self) {
@@ -45,6 +54,8 @@ impl WorkflowPromptDispatches {
         }
         self.starting_metaagent_tasks
             .extend(other.starting_metaagent_tasks);
+        self.stopped_task_settlements
+            .extend(other.stopped_task_settlements);
         self.admitted_workflow_prompt |= other.admitted_workflow_prompt;
         self.queued_workflow_prompt |= other.queued_workflow_prompt;
     }

@@ -6,6 +6,7 @@
 use super::*;
 
 const PROMPT_SETTLEMENT_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+const FAILED_SETTLEMENT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 // Periodic observation only. Elapsed silence must never settle a turn.
 const QUIET_PROVIDER_RECHECK_MS: u64 = 10 * 60 * 1000;
 
@@ -383,6 +384,16 @@ impl KernelRuntimeOwnedState {
             } else {
                 // Some providers do not emit a terminal event after a successful
                 // abort; its acknowledgement settles only the interrupted prompt.
+                if let Some(settlement) = self.settle_stopped_agent_task(
+                    &finished.session_id,
+                    &agent_id,
+                    &prompt,
+                    &finished.provider_run_id,
+                ) {
+                    follow_ups
+                        .stopped_task_settlements
+                        .push((settlement, prompt.clone()));
+                }
                 let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
                 if let Ok(cancellation) = self
                     .finalize_local_prompt_cancellation_with_queued_advance(
@@ -773,6 +784,28 @@ impl KernelRuntimeOwnedState {
         if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
             state.observe_provider_tool(merge_key, bytes);
         }
+    }
+
+    /// G18: the provider's completion signal is consumed when its settlement
+    /// fails (a durable write refused). Keep the completed turn pending and
+    /// retry it, so the agent does not stay busy after the writer recovers.
+    pub(super) fn retry_failed_prompt_settlement(&self, provider_run_id: &str) {
+        self.active_turns.mark_settling(provider_run_id);
+        self.prompt_activity
+            .write()
+            .entry(provider_run_id.to_string())
+            .and_modify(|state| {
+                state.completion_recorded = true;
+                state.request_settlement();
+            })
+            .or_insert(crate::app::ActivePromptState {
+                last_output_at: Some(Instant::now()),
+                saw_response_content: true,
+                completion_recorded: true,
+                settlement_requested: true,
+                active_tool_ids: std::collections::BTreeSet::new(),
+            });
+        self.schedule_provider_output_check_after(provider_run_id, FAILED_SETTLEMENT_RETRY_DELAY);
     }
 
     pub(super) fn note_prompt_settlement_requested(&self, provider_run_id: &str) {

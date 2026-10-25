@@ -158,6 +158,17 @@ pub(super) fn fixture_with_run_endpoint(
     provider: &str,
     endpoint: Option<String>,
 ) -> Fixture {
+    fixture_for_owner(script, room_tools, adapter, provider, endpoint, "local")
+}
+
+pub(super) fn fixture_for_owner(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+    endpoint: Option<String>,
+    owner: &str,
+) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
@@ -168,13 +179,14 @@ pub(super) fn fixture_with_run_endpoint(
     config.user_config.credential_vault.path = vault.display().to_string();
     let mut app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
+        .create_session(worktree.session_request().with_owner_user_id(owner))
         .unwrap();
     let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(AttachRequest::new(
+        .attach(AttachRequest::for_user(
             session.id(),
             "sudo-terminal",
             ClientCapabilityLevel::FullTerminal,
+            owner,
         ))
         .unwrap();
     let launch = LaunchProviderRequest::new(session.id(), adapter, provider, "default", "default")
@@ -421,10 +433,14 @@ impl Drop for Fixture {
 }
 
 pub(super) async fn popup(state: &KernelRuntimeState) -> PasskeyPrompt {
+    popup_for(state, "local").await
+}
+
+pub(super) async fn popup_for(state: &KernelRuntimeState, owner: &str) -> PasskeyPrompt {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(prompt) = state
-                .passkey_prompts_for("local")
+                .passkey_prompts_for(owner)
                 .into_iter()
                 .find(|p| p.kind == PasskeyPromptKind::Sudo)
             {

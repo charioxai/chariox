@@ -132,7 +132,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+            LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
             other => panic!("unexpected response: {other:?}"),
         };
 
@@ -223,7 +223,7 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected response: {other:?}"),
     };
 
@@ -299,11 +299,12 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
             ))
             .expect("session create should succeed")
         {
-            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+            LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
             other => panic!("unexpected response: {other:?}"),
         };
         let second_agent = match harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                no_subscribe: false,
                 account_profile: None,
                 session_id: session.id().to_string(),
                 alias: Some("second".to_string()),
@@ -320,7 +321,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
             }))
             .expect("second agent should spawn")
         {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
             other => panic!("unexpected response: {other:?}"),
         };
         let workflow = match harness
@@ -453,11 +454,12 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
                 ))
                 .expect("session create should succeed")
             {
-                LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+                LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
                 other => panic!("unexpected response: {other:?}"),
             };
             let idle_agent = match harness
                 .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                    no_subscribe: false,
                     account_profile: None,
                     session_id: session.id().to_string(),
                     alias: Some("idle".to_string()),

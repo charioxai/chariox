@@ -17,7 +17,7 @@ never read or copy its credential files. Use a disposable lane-owned state root:
 ```bash
 mkdir -p "$HOME/.chariox/dev"
 export CHARIOX_HOME="$(mktemp -d "$HOME/.chariox/dev/am9-live.XXXXXX")"
-export CHARIOX_ROOM_AGENT_TOOLS=1 CHARIOX_KERNEL_HOST=127.0.0.1
+export CHARIOX_KERNEL_HOST=127.0.0.1
 export CHARIOX_KERNEL_PORT="$AM9_KERNEL_PORT" CHARIOX_MCP_PORT="$AM9_MCP_PORT"
 export CHARIOX_DAEMON_SOCKET="$CHARIOX_HOME/daemon.sock"
 "$AM9_KERNEL"

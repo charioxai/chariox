@@ -417,6 +417,10 @@ impl PtyManager {
         );
         env.insert("CHARIOX_PROVIDER_RUN_ID".to_string(), run.id().to_string());
         env.insert(
+            crate::provider::PROVIDER_OWNER_PID_ENV.to_string(),
+            std::process::id().to_string(),
+        );
+        env.insert(
             "CHARIOX_PROVIDER_PROCESS_KEY".to_string(),
             process_key.clone(),
         );

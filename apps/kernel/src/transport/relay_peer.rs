@@ -126,9 +126,11 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 160 carries the local 552 `parked_input` reply field.
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
 /// MP-08/MP-10/MP-11: allocated 175 carries the local 567 `fonts` op `absent`.
-/// Provisional 177 carries the local 569 Room terminal service, its peer forwards, and the
-/// gateway's `on_behalf_of` context.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 177;
+/// Agent-model (145) and event-core (169) contracts were integrated in 570/178.
+/// The Room terminal service (`RoomTerminal`, formerly provisional 177) and its peer forwards ride this number too.
+/// MP-08/MP-10/MP-11: allocated 181 adds exact-home-check assessment wire identities.
+/// Allocated 197 carries the outside `steer` event between peers.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 210;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2647,6 +2649,9 @@ mod mp08_transport_compatibility_tests {
             (Some(94), false),
             (Some(96), false),
             (Some(102), false),
+            (Some(114), false),
+            (Some(121), false),
+            (Some(128), false),
             (Some(super::RELAY_PEER_PROTOCOL_VERSION - 1), false),
             (Some(super::RELAY_PEER_PROTOCOL_VERSION), true),
             (Some(super::RELAY_PEER_PROTOCOL_VERSION + 1), true),

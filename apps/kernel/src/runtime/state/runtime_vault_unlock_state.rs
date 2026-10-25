@@ -1146,6 +1146,69 @@ mod tests {
         }
     }
 
+    // A session created before this kernel was enrolled is owned by `local`;
+    // after a restart its Vault decision must still be answered by the person
+    // the kernel is enrolled for, and by nobody else.
+    #[tokio::test]
+    async fn vault_decision_of_a_pre_enrollment_session_is_answered_by_the_enrolled_owner() {
+        let workspace = crate::test_support::TestWorktree::new("vault-legacy-owner");
+        let private_state = crate::test_support::TestWorktree::new("vault-legacy-owner-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "enrolled-owner".to_string(),
+            ..Default::default()
+        });
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        assert_eq!(
+            session.owner_user_id(),
+            crate::session::DEFAULT_LOCAL_USER_ID
+        );
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let call = state.manage_credential_vault_unlock(session.id(), agent.id());
+        tokio::pin!(call);
+        let interaction = tokio::select! {
+            result = &mut call => panic!("unlock must await reply: {result:?}"),
+            result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let snapshot = state.owned.session_store.get_session(session.id()).unwrap();
+                    if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
+                        break interaction.clone();
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            }) => result.expect("unlock interaction"),
+        };
+        assert!(interaction.id().starts_with("vault-unlock-"));
+        let answer = |caller: &str| {
+            state.owned.resolve_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "cancel",
+                None,
+                Some(caller),
+                false,
+            )
+        };
+        let refused = answer("intruder").expect_err("another identity cannot answer");
+        assert!(
+            refused.to_string().contains("Only the operation owner"),
+            "{refused}"
+        );
+        answer("enrolled-owner").expect("the enrolled owner answers the pre-enrollment decision");
+        let _ = call.await;
+        std::fs::remove_file(&path).unwrap();
+    }
+
     #[test]
     fn vault_passphrase_prompt_cannot_encode_an_unlock_lease_as_the_secret() {
         let interaction = vault_passphrase_interaction("session-1", "agent-1", "test");

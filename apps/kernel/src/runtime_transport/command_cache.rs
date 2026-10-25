@@ -153,6 +153,9 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    if crate::runtime::state::is_outside_event_request(request) {
+        return false;
+    }
     if matches!(request, LocalDaemonRequest::GetSliceDisplayEndpoint(request) if request.shared_display.is_some())
     {
         return false;

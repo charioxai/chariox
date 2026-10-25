@@ -57,6 +57,17 @@ impl SessionStateStore {
         self.read().get_session(session_id)
     }
 
+    pub(crate) fn try_get_session_for_projection(
+        &self,
+        session_id: &str,
+    ) -> Option<Result<RuntimeSession, DaemonError>> {
+        match self.inner.try_read() {
+            Ok(service) => Some(service.get_session(session_id)),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("session state rwlock poisoned"),
+        }
+    }
+
     pub(crate) fn has_session(&self, session_id: &str) -> bool {
         self.read().has_session(session_id)
     }
