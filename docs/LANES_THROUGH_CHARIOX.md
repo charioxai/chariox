@@ -29,26 +29,18 @@ saved before acknowledgement; timeouts simply wake the coordinator.
 | Acceptance merge | Fetch validates a present acceptance update; verified bundle HEAD is independent | Mac coordinator merges central acceptance by design | A02 ledger can carry readiness, not acceptance authority. |
 | Review lookup | Receive already supplied review text | Mac GitHub lookup by design | A03 could supervise lookup; no built-in GitHub policy is claimed. |
 
-## Two shapes
+## The design: a flat org (shape B dropped)
 
-**A — outside coordinator.** The coordinator remains in its official provider
-harness. An owner-approved until-exit grant admits the public CLI on its local
-kernel; hosted WSS routes to the executor. The six scripts replace launch,
-steer, event wait, health, collect and stop without SSH. This gets lanes running
-through Chariox first because it preserves existing policy/accounting and the
-publication boundary. The r5 grant/inbox drift is fixed upstream in the r6
-runtime pin; watcher receipts additionally refuse a changed subscription id.
+The coordinator stays in its official provider harness, outside Chariox, and talks to each worker directly. An
+owner-approved until-exit grant admits the public CLI on its local kernel; hosted WSS routes to the executor. The coordinator
+receives events straight from the workers' kernel (`lanewait`) and steers each worker itself (`deliver.sh`,
+`laneanswer.sh`). loopd keeps launch, the brief, bundle and notes collection, and the routine permission answers. The r5
+grant/inbox drift is fixed upstream in the r6 runtime pin; watcher receipts additionally refuse a changed subscription id.
 
-**B — Room coordinator and leased workers.** Chariox agents coordinate in a Room,
-with workers leased onto b3 and woken by the ledger/watchers. The source map is
-`amint/c2` @`4bea22d440d792ba9e866020bcfb8408a6deb7d6`,
-`AGENT_MODEL_OVERHAUL_PLAN.md`: A01 Room delegation, A02 inbox/wakes and goal
-assessment, A03 process/terminal/timer producers, A04 elevation and A10 leases.
-These pieces are built in that source; this dogfood round does not validate its
-separate A01–A10 matrix or combine the branches. B still needs the coordinator
-policy/brief/accounting bridge and owned-resource cleanup. Both shapes can
-combine: an outside coordinator observes and steers the same Room workers through
-§14. Do not implement a parallel ledger, watcher service or delegation engine.
+The earlier "shape B", a coordinator agent inside a Chariox Room with workers leased onto b3 (`amint/c2`
+@`4bea22d440d792ba9e866020bcfb8408a6deb7d6`, A01-A10), is dropped. Miguel, in the r13 brief: "I'd rather you talk directly and
+receive the events directly from the agents, as a flat org like now." Do not build a coordinator agent, a parallel ledger,
+a watcher service or a delegation engine for lanes.
 
 ## Evidence and acceptance boundary
 
@@ -359,3 +351,39 @@ Permission answers per hour on the real rounds, 60 min before the upgrade agains
 - `allow_session` is exact-command only; a per-round reduction needs a kernel rule or a non-root worker.
 - loopd cannot tell a stranded worker from a long silent tool call; `health.flags` is the signal.
 - Rounds queued before r12 do not carry `worker-session.md`.
+
+## dogfood r13: the flat org, with events and steers going straight to the coordinator
+
+Direction (Miguel): talk to the agents and receive their events directly, as a flat org; no coordinator agent in a Room
+(see "The design" above). loopd is no longer the coordinator's only view of the workers.
+
+### What was built
+
+| Piece | What it does |
+| --- | --- |
+| **Second holder and grant** | `lanes-kernel.mjs` runs two holder seats: `loopd` and `coordinator` (own socket, pid, log, `exec --seat coordinator`, `grant coordinator`). Access grants are per holder pid, and each grant has its own event inbox, so the coordinator's inbox never takes events from loopd's. `start` grants both seats, `stop` and `status` handle both. |
+| **`lanewait`** (`coordinator/lanewait.mjs`, Mac: `mac/lanewait.sh`) | One long `chariox events wait` beneath the coordinator seat over a single multiplexed SSH connection, no file polling. It follows the Room and operations sessions of every running lane, prints one line per event (`HH:MM:SSZ lane round kind summary`) and returns on a turn end, a finish (with head and bundle state from loopd's result), an error, a cancel, a decision loopd does not answer, or silence / round limit. Events are archived before they are acknowledged, so an interrupted call repeats nothing; `--replay N` lists the last lines. A new grant (kernel restart) has a new inbox: the old state is set aside and every lane is followed again. |
+| **Direct steer** (`mac/deliver.sh`, `coordinator/steer.mjs`) | The review section is steered to the running worker with the public CLI (`SteerActivePrompt`); a worker between turns gets it as its next prompt (`SubmitPrompt`). The kernel's answer is printed. The section is then appended to `REVIEW_INBOX.md` for the record. The steer is recorded in `<key>.direct.json` first, and loopd skips ledgered sections, so nothing is delivered twice; loopd's inbox watch remains the fallback for a steer that failed (same text, same command id, so a late fallback is the same mutation). |
+| **Decisions** (`coordinator/decisions.mjs`, `mac/laneanswer.sh`, `coordinator/answer.mjs`) | loopd answers a routine permission (an ordinary `Approve Claude Code <tool>?` that offers allow: `allow_session`, else `allow_once`). Everything else is left pending and listed by `lanewait` as `decision`, with the reason: `critical`, `owner_only` (hand-off, provider login, sudo, requester), `credential_related` (passkey, vault, token, password, payment, ...), `question`, `not_a_claude_permission`, `no_allow_choice`, `unclassified`. The coordinator answers with `laneanswer.sh <lane> <decision> <choice>`; the kernel itself still refuses owner-only decisions for a non-owner grant. |
+| **Acceptance while the worker runs** | `ACCEPTANCE_UPDATE.json` is checked on every loopd wake after the first minute (a file write raises no event); problems are steered to the worker (running turn) or queued as its next prompt (between turns), once per distinct content mid-round and at most 3 times per round; after that the problems are reported with the collection as before. |
+| **Worker PATH** | The role environment adds `/usr/local/sbin:/usr/sbin:/sbin`. |
+| **`scout` for workers** | `ensureClaudeProfile` copies `agents/scout.md` from the account HOME's source into the lanes Claude profile at every `start` (`worker-agents.mjs`). |
+
+### Gaps found
+
+| Gap | Cause | Fix and proof |
+| --- | --- | --- |
+| The coordinator saw workers only by polling files (`watch.sh`) | loopd was the single consumer of the single grant's inbox. | Second grant and `lanewait` (above). Drill: `turn_end` 134-644 ms after the worker's `idle`, `finished` 0.8 s after loopd's finish, `decision` 0.7 s after the permission was raised. |
+| Review notes reached the worker only at loopd's next wake | `deliver.sh` only appended to the inbox file. | Direct steer. Drill: a working worker returned `steered`; an idle one started its next prompt (`Started`); a note delivered through `deliver.sh` was recorded once as `direct-steered`, with no second delivery. |
+| loopd answered every permission | The answer rule had no notion of critical or credential decisions. | Classification above; unit tests for each reason, the round engine leaves them in `unanswered` with the reason. |
+| **Found live: `Approve Claude Code AskUserQuestion?` was answered as a routine permission** | Allowing the tool answers nothing: the worker got an unanswered question and ended its turn guessing. | Classified as `question`, listed by `lanewait`, answered by the coordinator (then steer the answer text: `deliver.sh`). Fail-first test. |
+| **Found live: `lanewait` missed the first events of a lane launched while it was waiting** | It re-read the running set only every 30 s slice; a worker's first turn can end sooner. | 5 s slices and a re-read when the running set changes; a lane first seen in the middle of a wait also forces an early health read for a finish it missed. Fail-first test with the default slice. |
+| **Found live: an invalid `ACCEPTANCE_UPDATE.json` was not nudged for minutes** | loopd read a quiet worker only on events or every 5 minutes, and a file write is not an event. | Checked on every wake. Drill: nudged 73 s after launch (60 s gate), the worker corrected the file. Fail-first test. |
+| Workers could not run `ldconfig` and other `/usr/sbin` tools | The kernel's role PATH lacked the sbin directories. | Fixed in `roleEnv`; effective after a kernel restart. Drill: `path.txt` of a worker before the restart had no sbin; after `stop`/`start` it has `/usr/local/sbin`, `/usr/sbin`, `/sbin`. |
+| The `scout` agent was missing for workers | The lanes account HOME was created without the shared agent definitions. | `syncWorkerAgents` at `start`. Drill: a worker's Agent call to `scout` listed the worktree's files. |
+| A bundle that fails its head guard says only `terminal_command_failed` | Acceptance `head` names one commit, the bundle step requires HEAD to equal it; a worker that commits after writing the file fails the guard. Seen in a drill (`finished_collect_failed`). | Open: the error should say `head differs from ACCEPTANCE_UPDATE.json`. Workers must write the file last. |
+
+### Still open
+
+- The answer to a worker's `AskUserQuestion` cannot travel through the permission: allowing the tool gives the worker no answer, so the coordinator allows it and sends the answer as a steer. A kernel interaction that carries the question's text and options would let `laneanswer.sh` answer it.
+- `lanewait` and loopd both read a lane's state; if a third reader is added, make `lanehealth` cheap first.
