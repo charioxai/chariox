@@ -571,12 +571,14 @@ pub(super) fn may_include_descendant(patterns: &[String], path: &str) -> bool {
             if !rule.contains('/') {
                 return true;
             }
-            let prefix = rule
-                .split('*')
-                .next()
-                .unwrap_or_default()
-                .trim_end_matches('/');
-            prefix == path
+            // A wildcard can complete a directory component. Only whole literal
+            // ancestors can prove that an ignored directory has no selected child.
+            let prefix = match rule.split_once('*') {
+                Some((literal, _)) => literal.rsplit_once('/').map_or("", |(parent, _)| parent),
+                None => rule,
+            };
+            prefix.is_empty()
+                || prefix == path
                 || prefix.starts_with(&format!("{path}/"))
                 || path.starts_with(&format!("{prefix}/"))
         })

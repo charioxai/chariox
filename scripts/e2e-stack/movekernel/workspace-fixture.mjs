@@ -48,6 +48,11 @@ async function fixture() {
     await mkdir(notes + '/nested/empty', { recursive: true });
     await writeFile(notes + '/nested/document', Buffer.from('notes\0\x81\n', 'latin1'));
     await writeFile(notes + '/run.sh', '#!/bin/sh\nprintf notes\n', { mode: 0o755 });
+    await mkdir(notes + '/private-data');
+    await writeFile(notes + '/.gitignore', 'private-data/\n');
+    await writeFile(notes + '/.charioxignore', '!**/needed.txt\n!private*/explicit.txt\n');
+    await writeFile(notes + '/private-data/needed.txt', 'globstar-selected notes\n');
+    await writeFile(notes + '/private-data/explicit.txt', 'component-glob-selected notes\n');
     return { primary, notes };
 }
 async function collision(target) {

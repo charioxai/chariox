@@ -313,3 +313,83 @@ fn mk02_rejects_deleted_or_replaced_committed_symlinks() {
         assert_no_export_temporaries(&root);
     }
 }
+
+fn directory_glob_inclusion_roundtrips(pattern: &str) {
+    let root = test_root("move-directory-glob-inclusion");
+    let _cleanup = PlainWorkspaceCleanup(root.clone());
+    let directory = root.join("notes");
+    fs::create_dir_all(directory.join("private-extra/nested")).unwrap();
+    fs::write(directory.join(".gitignore"), "private-extra/\n").unwrap();
+    fs::write(directory.join(".charioxignore"), format!("!{pattern}\n")).unwrap();
+    for path in [
+        "private-extra/needed.txt",
+        "private-extra/nested/needed.txt",
+    ] {
+        fs::write(directory.join(path), b"requested file\n").unwrap();
+    }
+    fs::write(directory.join("private-extra/stays.txt"), b"stay home\n").unwrap();
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "move-project".into(),
+        repositories: vec![selection(&directory, true)],
+        archive_path: root.join("selected.tar.gz"),
+    })
+    .unwrap();
+    assert!(
+        exported.manifest.repositories[0]
+            .overlay
+            .iter()
+            .any(|entry| { entry.path == "private-extra/needed.txt" }),
+        "glob inclusion must reach the requested file below an ignored directory"
+    );
+    let imported = import_development_context(DevelopmentContextImportRequest {
+        archive_path: exported.archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: "move-project".into(),
+        expected_source_repositories: None,
+        destination_root: root.join("selected-target"),
+    })
+    .unwrap();
+    let restored = &imported.repositories[0].destination_path;
+    assert_eq!(
+        fs::read(restored.join("private-extra/needed.txt")).unwrap(),
+        b"requested file\n"
+    );
+    assert!(!restored.join("private-extra/stays.txt").exists());
+    if pattern.starts_with("**/") {
+        assert_eq!(
+            fs::read(restored.join("private-extra/nested/needed.txt")).unwrap(),
+            b"requested file\n"
+        );
+    }
+}
+
+#[test]
+fn mk02_directory_globstar_inclusion_below_ignored_directory() {
+    directory_glob_inclusion_roundtrips("**/needed.txt");
+}
+
+#[test]
+fn mk02_directory_partial_component_inclusion_below_ignored_directory() {
+    directory_glob_inclusion_roundtrips("private*/needed.txt");
+}
+
+#[test]
+fn mk02_directory_glob_inclusion_reaches_vault_review() {
+    for pattern in ["**/.env", "private*/.env"] {
+        let root = test_root("move-directory-glob-review");
+        let _cleanup = PlainWorkspaceCleanup(root.clone());
+        let directory = root.join("notes");
+        fs::create_dir_all(directory.join("private-extra")).unwrap();
+        fs::write(directory.join(".gitignore"), "private-extra/\n").unwrap();
+        fs::write(directory.join(".charioxignore"), format!("!{pattern}\n")).unwrap();
+        fs::write(directory.join("private-extra/.env"), b"APP_TITLE=fixture\n").unwrap();
+        let items =
+            vault_artifacts::review_items(&BTreeMap::from([("notes".into(), directory)])).unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|item| item.path == "notes/private-extra/.env"),
+            "glob-selected protected files must reach the source Vault review"
+        );
+    }
+}
