@@ -351,32 +351,33 @@ async fn full_attach_run_visibility() {
         realm_id: "test-realm".into(),
         ..Default::default()
     });
-    let app = DaemonApp::bootstrap(config).unwrap();
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let room = app
         .sessions_mut()
         .create_session(root.session_request())
         .unwrap();
     let id = room.id().to_string();
+    let agent = spawn_test_agent(&mut app, &id, "owner", "dev-stub");
+    let run = launch_test_provider(
+        &mut app,
+        &id,
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "test-model",
+    );
+    let run_id = run.id().to_string();
     let mut snapshot = app.session_state_store().get_session(&id).unwrap();
     snapshot.add_member(
         "collaborator",
         None,
         crate::session::CollaborationLevel::Full,
     );
-    snapshot.set_active_provider_run(Some("owner-run".into()));
     app.session_state_store().write().restore_session(snapshot);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-    router
-        .provider_run_projection
-        .update(RuntimeProviderRun::from_control_capability_inference(
-            "owner-run",
-            id.clone(),
-            None,
-            "dev-stub".into(),
-        ));
     for (user, expected) in [
-        (DEFAULT_LOCAL_USER_ID, Some("owner-run")),
-        ("enrolled-owner", Some("owner-run")),
+        (DEFAULT_LOCAL_USER_ID, Some(run_id.as_str())),
+        ("enrolled-owner", Some(run_id.as_str())),
         ("collaborator", None),
     ] {
         let requests = [
@@ -413,11 +414,11 @@ async fn full_attach_run_visibility() {
             assert_eq!(
                 session.active_provider_run_id(),
                 expected,
-                "fast session reads must not direct collaborators to unreadable runs"
+                "fast session reads must not direct collaborators to unreadable runs for {user}"
             );
         }
         let request = LocalDaemonRequest::GetProviderRun(crate::local::GetProviderRunRequest {
-            provider_run_id: "owner-run".into(),
+            provider_run_id: run_id.clone(),
         });
         let command = super::historical_workflows::terminal_command(&request, Some(user));
         let result = router.dispatch(command, request).await;
