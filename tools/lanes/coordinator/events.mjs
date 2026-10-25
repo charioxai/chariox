@@ -53,9 +53,27 @@ export async function openInbox(home, cli, settleMs = 1000) {
     current = (await cli(['events', 'subscription'])).subscription;
   }
   const refused = refusal();
+  if (refused) {
+    for (const r of records.filter(r => r.launch && !r.stopped && r.launch.kernel === refused.kernel)) await requireWorker(cli, r.launch);
+  }
   if (refused) throw new LaneError('subscription_unhealthy', `Kernel ${refused.kernel} refuses the event stream (${refused.error.message}); unsubscribe the removed target it names, then resume.`);
   await save(statePath, { subscription_id: subscription.subscription_id });
   return current;
+}
+
+function workerLost(launch) {
+  const error = new LaneError('worker_lost', `Worker ${launch.agentId} no longer exists in ${launch.sessionId}; collect its work without calling it finished.`);
+  error.launch = launch;
+  return error;
+}
+async function requireWorker(cli, launch) {
+  let response;
+  try { response = await cli(['request', '--kernel', launch.kernel], JSON.stringify({ GetSessionState: { session_id: launch.sessionId } })); }
+  catch (error) { if (error.code === 'session_not_found') throw workerLost(launch); throw error; }
+  const state = response.SessionState;
+  const agents = state?.agents ?? state?.session?.agents;
+  if (!Array.isArray(agents)) throw new LaneError('invalid_session_state', 'Cannot verify the refused target; retry after the kernel is ready.');
+  if (!agents.some(agent => agent.id === launch.agentId)) throw workerLost(launch);
 }
 
 // A new grant needs both Room and agent targets; the routed agent stream is admitted separately.
@@ -63,10 +81,9 @@ export async function followLaunch(cli, launch) {
   for (const session of [launch.sessionId, launch.operationsSessionId].filter(Boolean)) await cli(['events', 'subscribe', '--kernel', launch.kernel, '--session', session]);
   try { await cli(['events', 'subscribe', '--kernel', launch.kernel, '--session', launch.sessionId, '--agent', launch.agentId]); }
   catch (error) {
+    if (error.code === 'events_refused') { await requireWorker(cli, launch); throw error; }
     if (!['agent_not_found', 'agent_not_in_session', 'session_not_found'].includes(error.code)) throw error;
-    const lost = new LaneError('worker_lost', `Worker ${launch.agentId} no longer exists in ${launch.sessionId}; collect its work without calling it finished.`);
-    lost.launch = launch;
-    throw lost;
+    throw workerLost(launch);
   }
 }
 

@@ -31,3 +31,16 @@ test('a confirmed missing agent is identified as worker_lost', async () => {
     if (argv.includes('--agent')) throw Object.assign(new Error('missing'), { code: 'agent_not_in_session' });
   }, launch), error => error.code === 'worker_lost' && error.launch.agentId === 'agent');
 });
+
+test('a refused inbox whose removed agent target still exists is classified from the real session', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'inbox-lost-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await writeFile(join(home, 'lane.json'), JSON.stringify({ lane: 'lane-r1', launch }));
+  const cli = async (argv, body) => {
+    if (argv[0] === 'request') { assert.deepEqual(JSON.parse(body), { GetSessionState: { session_id: 'room' } }); return { SessionState: { session: {}, agents: [] } }; }
+    return { subscription: { subscription_id: 'grant', targets: [
+      { kernel: 'executor', session_id: 'room' }, { kernel: 'executor', session_id: 'room', agent_id: 'agent' }, { kernel: 'executor', session_id: 'ops' },
+    ], kernels: [{ kernel: 'executor', error: { code: 'events_refused', message: 'target missing' } }] } };
+  };
+  await assert.rejects(openInbox(home, cli, 0), error => error.code === 'worker_lost' && error.launch.agentId === 'agent');
+});

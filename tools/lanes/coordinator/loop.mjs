@@ -14,7 +14,7 @@ const validLane = lane => {
   return lane;
 };
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
-export const defaultCli = argv => execute(argv, '', process.env.CHARIOX_BIN || 'chariox', false, argv[0] === 'events' && argv[1] === 'wait' ? [0, 3, 5] : [0]);
+export const defaultCli = (argv, stdin = '') => execute(argv, stdin, process.env.CHARIOX_BIN || 'chariox', false, argv[0] === 'events' && argv[1] === 'wait' ? [0, 3, 5] : [0]);
 // The coordinator names a lane (`panebuild`), the receipts name its round (`panebuild-r5`): a lane name resolves to the
 // round loopd is running for it, and a round key is taken as it is.
 async function runningKey(home, name, options) {
