@@ -143,3 +143,91 @@ fn failed_reply_start_does_not_complete_the_owned_delegate() {
         DelegateGoneReason::FailedStart.answer("child")
     );
 }
+
+#[test]
+fn failed_reply_start_retires_rejected_and_waiting_requests_across_restart() {
+    let mut f = Fixture::new();
+    f.begin("p");
+    let rejected = send(&f, "rejected");
+    let waiting = send(&f, "waiting");
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: rejected.sequence,
+        prompt: format!("agent-event-child-{}", rejected.sequence),
+        target: None,
+        run: None,
+        now: 2,
+        work: None,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: rejected.sequence,
+        state: "rejected".into(),
+        now: 3,
+    });
+    f.apply(Operation::DelegateUnavailable {
+        room: "room".into(),
+        agent: "child".into(),
+        reason: DelegateGoneReason::FailedStart,
+        now: 4,
+    });
+    let replies = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(replies.len(), 2);
+    assert!(replies
+        .iter()
+        .all(|event| event.payload["public_answer"]
+            == DelegateGoneReason::FailedStart.answer("child")));
+    assert!(
+        f.store
+            .agent_delivery_front("room", "child")
+            .unwrap()
+            .is_none(),
+        "terminal failed-start replies must remove pending delivery eligibility"
+    );
+
+    let temporary = DurableKernelStateStore::open_owned(f.root.join("temporary.sqlite")).unwrap();
+    drop(std::mem::replace(&mut f.store, temporary));
+    f.store = DurableKernelStateStore::open_owned(f.root.join("state.sqlite")).unwrap();
+    f.apply(Operation::Sweep {
+        now: 10,
+        busy_recipients: vec![],
+        held_work: vec![],
+    });
+    assert!(f
+        .store
+        .agent_pending_inbox_recipients()
+        .unwrap()
+        .iter()
+        .all(|(_, agent)| agent != "child"));
+    for request in [rejected, waiting] {
+        assert!(
+            f.store
+                .agent_lifecycle(Operation::Attempt {
+                    room: "room".into(),
+                    agent: "child".into(),
+                    sequence: request.sequence,
+                    prompt: format!("recovered-{}", request.sequence),
+                    target: None,
+                    run: None,
+                    now: 11,
+                    work: None,
+                })
+                .is_err(),
+            "recovered launch must reject terminally failed requests"
+        );
+    }
+    let replacement = send(&f, "replacement");
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "child".into(),
+        sequence: replacement.sequence,
+        prompt: format!("agent-event-child-{}", replacement.sequence),
+        target: None,
+        run: None,
+        now: 12,
+        work: None,
+    });
+    assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap(), replies);
+}
