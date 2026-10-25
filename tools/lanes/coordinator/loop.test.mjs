@@ -488,16 +488,6 @@ test('steer waits for a collection in progress, then refuses a lane whose round 
   assert.equal(r.calls.some(c => c.op === 'prompt' || c.op === 'steer'), false);
 });
 
-test('a stale lock from a dead holder is taken over, loopd retakes its own, and a steer lock is not taken from a live steer', async t => {
-  const r = await launched(t);
-  const { tryLaneLock } = await import('./lane-lock.mjs');
-  let clock = 1_000;
-  assert.ok(await tryLaneLock(r.home, 'lane', 'steer', () => clock));
-  assert.equal(await tryLaneLock(r.home, 'lane', 'steer', () => clock + 60_000), undefined);
-  assert.ok(await tryLaneLock(r.home, 'lane', 'loopd', () => clock + 4 * 60_000), 'a steer lock older than its limit is stale');
-  assert.ok(await tryLaneLock(r.home, 'lane', 'loopd', () => clock + 4 * 60_000 + 1), 'the previous loopd incarnation left it');
-});
-
 test('steer: a prompt the kernel accepted but whose reply was lost is replayed under the same command id, never as a new steer', async t => {
   const r = await launched(t);
   const adapter = r.options.adapter;

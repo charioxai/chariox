@@ -1,32 +1,43 @@
-// MP-08 / MP-09 / MP-10 / MP-11: one lock per lane between the coordinator's direct prompts and loopd's collection of that lane.
-// A prompt admitted while loopd reads the worker idle, bundles it and stops it would be destroyed by that stop, so both sides
-// take this lock for the whole of their step. The lock is a directory (mkdir is atomic) in the coordinator home.
-import { mkdir, stat, writeFile, readFile, rm } from 'node:fs/promises';
+// MP-08 / MP-09 / MP-10 / MP-11: serialize direct prompts with collection for the entire operation.
+import { stat, readFile, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { LaneError } from '../lanes.mjs';
 
-// A holder that died leaves its lock behind: a steer's lock is short, a collection's can take minutes, and loopd (the only
-// collector) may take over its own lock from a previous incarnation.
-const STALE_MS = { steer: 3 * 60_000, loopd: 15 * 60_000 };
-
+// flock owns the lock until its stdin closes, including when this process dies. Never unlink the
+// file: replacing its inode would let two holders enter. The returned handle releases only its fd.
 export async function tryLaneLock(home, name, owner, now = Date.now) {
-  const dir = join(home, `${name}.admission.lock`);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try { await mkdir(dir); await writeFile(join(dir, 'owner'), JSON.stringify({ owner, atMs: now() }), { mode: 0o600 }); return dir; }
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const held = await stat(join(dir, 'owner')).catch(() => stat(dir).catch(() => undefined));
-      if (!held) continue;
-      const holder = await readFile(join(dir, 'owner'), 'utf8').then(JSON.parse, () => ({ owner: 'unknown', atMs: held.mtimeMs }));
-      const stale = now() - holder.atMs > (STALE_MS[holder.owner] ?? STALE_MS.steer);
-      if (!stale && !(owner === 'loopd' && holder.owner === 'loopd')) return undefined;
+  const child = spawn('flock', ['--exclusive', '--nonblock', join(home, `${name}.admission.flock`),
+    'sh', '-c', 'printf "locked\\n"; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  child.stdin.on('error', () => {});
+  const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', code => resolve(code)); });
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const acquired = await Promise.race([
+    new Promise(resolve => child.stdout.once('data', () => resolve(true))),
+    exited.then(code => { if (code === 1) return false; throw new Error(`lane lock failed (${code}): ${stderr.trim()}`); }),
+  ]);
+  if (!acquired) return undefined;
+  const handle = { child, exited };
+  try {
+    // Bridge directory locks left by the previous driver. Migration is itself under flock.
+    const dir = join(home, `${name}.admission.lock`);
+    const held = await stat(dir).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    if (held) {
+      const holder = await readFile(join(dir, 'owner'), 'utf8').then(JSON.parse, () => ({ atMs: held.mtimeMs }));
+      if (now() - holder.atMs <= (holder.owner === 'loopd' ? 15 : 3) * 60_000) {
+        await releaseLaneLock(handle); return undefined;
+      }
       await rm(dir, { recursive: true, force: true });
     }
-  }
-  return undefined;
+    return handle;
+  } catch (error) { await releaseLaneLock(handle); throw error; }
 }
 
-export const releaseLaneLock = dir => rm(dir, { recursive: true, force: true });
+export async function releaseLaneLock(handle) {
+  handle.child.stdin.end();
+  await handle.exited;
+}
 
 // Waits for a busy lock (a collection in progress) up to waitMs, then says what to do.
 export async function withLaneLock(home, name, owner, fn, { now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), waitMs = 5 * 60_000 } = {}) {
