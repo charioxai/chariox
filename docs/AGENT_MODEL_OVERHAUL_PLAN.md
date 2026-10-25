@@ -1263,9 +1263,22 @@ security-anchor reviews. Fixture-seeded history is supplementary only.
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
 | S01 | 1. Open real persisted legacy meta tasks/subscriptions and goal history. 2. Drain/migrate cursors idempotently, restart twice. 3. Ordinary agent delegates → yields → wakes → searches → browser → hand-off, sudo does typed Vault/login/payment. | Preserved event/history IDs, regular identity and zero-open final ledger. | BLOCKED(B0) |
-| S02 | 1. Attach old/minimum-version web/native/TUI clients. 2. Attempt dependent protected operations. 3. Upgrade/reconnect mixed clients. Correct upgrade diagnostic, no protected input fallback or protocol drift. | Rust/TS snapshot/hash checks and minimum-version screens. | BLOCKED(B0) |
+| S02 | 1. Attach retired and minimum-supported web/native/TUI clients. A frozen protocol-520 TUI must display `Update Chariox: relay requires chunks-v2 (protocol 532 / peer 140)` and disconnect before registration. 2. Supported clients attempt dependent protected operations; retired clients cannot reach them. 3. Upgrade/reconnect mixed clients. Correct upgrade diagnostic, no protected input fallback or protocol drift. | Rust/TS snapshot/hash checks, retired-client refusal and upgraded-client reconnect screens. | BLOCKED(B0) |
 | S03 | 1. Retire obsolete meta/task entry points only after replacement acceptance; keep `/goal` on the hybrid runtime. 2. Exercise old aliases/raw/native bridges. 3. Inspect unknown legacy lineage. No elevation/approval/destructive bypass; legacy history remains readable. | Removed-tool catalog, denial logs and immutable lineage migration receipts. | BLOCKED(B0) |
 | S04 | 1. Run full final expected cell manifest and security-anchor review on exact integrated head. 2. Compare ordinary/managed MP-09 activity/shutdown scenarios. 3. Verify every temporary owned resource and evidence leak scan. Any omitted cell, FAIL or unreviewed security anchor holds retirement/MP acceptance. | Complete manifest and current security review, paired results and exact cleanup. | BLOCKED(B0) |
+
+S02 distinguishes retired transports from supported client versions. The
+protocol-520 TUI predates the chunks-v2 relay transport introduced at local
+protocol 532 / peer 140. Its upgrade refusal is the intended product result,
+including against a newer kernel: those numbers identify the transport's
+minimum generation, not the connected kernel's current protocol. The relay
+completes the WebSocket handshake only to send a readable policy-close reason,
+then refuses registration and all operations. The frozen TUI discards HTTP 426
+response bodies, so an HTTP-only refusal would lose that diagnostic. Retiring
+this predecessor does not require a legacy transport or protected-input
+fallback. The live check must also reconnect with the current real TUI and
+verify that ordinary authorized work remains usable; it does not establish
+the web/native or managed-placement cells by itself.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A12 goal acceptance matrix
 
