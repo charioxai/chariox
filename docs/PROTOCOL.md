@@ -4984,3 +4984,13 @@ identity, history and provider-run records across restart. Clients hide their
 active panes; prompting, workflow admission and focus cannot select them.
 Scheduled work and task continuations remain paused until unarchive. Older
 agent records default to active; clients gate this request on protocol 592.
+
+### Staging new UI union (599/205)
+
+MP-08 / MP-09 / MP-10 / MP-11: this union combines Room stars (588/194),
+usage (589/195), agent archive (592/198), dictation (594/200), and session
+snapshot state (596/202). It keeps protocol 567 and each feature predecessor
+reciprocal for managed upgrade and rollback. The 32-entry validator limit
+requires retiring unshipped branch protocols 371–375; released 376/377/411,
+Apps 416, main 472/520, display 552, and staging 567 remain admitted.
+The general web minimum remains 567; clients gate additive requests separately.

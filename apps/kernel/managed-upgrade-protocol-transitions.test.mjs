@@ -36,7 +36,7 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
     assert.ok(list.includes(567), "the protocol before dictation (567) must stay reciprocal for upgrade and rollback")
     assert.ok(list.includes(localProtocolVersion), "new protocol must include itself")
     // Signed releases F/G/G2 (376, 377, 411), the Apps release (416), main (472, 520) and the display union (552) can be on a machine.
-    for (const predecessor of [376, 377, 411, 416, 472, 490, 491, 493, 520, 552, 567]) assert.ok(list.includes(predecessor), `shipped version ${predecessor} must stay reciprocal`)
+    for (const predecessor of [376, 377, 411, 416, 472, 490, 491, 493, 520, 552, 567, 588, 589, 592, 594, 596]) assert.ok(list.includes(predecessor), `shipped version ${predecessor} must stay reciprocal`)
   }
   assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, localProtocolVersion])
   assert.deepEqual(policy.rollbackTo, [...admittedPredecessorProtocols, localProtocolVersion])

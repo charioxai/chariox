@@ -340,4 +340,4 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
 /// MP-08/MP-10/MP-11: allocated 596 reads a session state's revision before the state, so a state is never
 /// older than its `agent_activity_revision`, and lets `AttachSessionView` ask for `latest_prompt_count` turns.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 596;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 599;

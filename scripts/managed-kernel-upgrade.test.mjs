@@ -1,3 +1,4 @@
+import { admittedPredecessorProtocols } from "./lib/protocol-versions.mjs"
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign } from "node:crypto"
 import { spawnSync } from "node:child_process"
@@ -145,7 +146,7 @@ test("repository release policy admits reviewed predecessors and matches the run
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   // MP-07/MP-10: reviewed predecessors retained by the 32-entry policy in 9699c3776 and the current union.
-  const admittedProtocols = [343, 367, ...Array.from({ length: 8 }, (_, index) => 371 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 520, 525, 528, 552, 556, 567, runtimeProtocol]
+  const admittedProtocols = [...admittedPredecessorProtocols, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
