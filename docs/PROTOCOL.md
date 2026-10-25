@@ -4841,6 +4841,8 @@ subscription, so a client draws from events instead of reading again. Fixture: `
   take the field: the subscription that follows it does.
   Repeating a client subscription applies the new interval; omitting it restores the default. A relay
   client retires the old binding before replacing it when the interval changes, keeping the event cursor.
+  Direct and relay subscriptions continue emitting heartbeats while turn revisions, history outlines,
+  and audit feed rows are read; a slow history writer or database query does not suspend the schedule.
 Older kernels send neither event; clients feature-detect 596 and keep the read-after-event path below it.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and

@@ -45,6 +45,7 @@ mod outgoing;
 mod socket_options;
 mod subscription_projection;
 mod subscriptions;
+pub(crate) use subscriptions::await_subscription_work_with_heartbeats;
 
 pub(crate) use subscription_projection::session_projection_events;
 

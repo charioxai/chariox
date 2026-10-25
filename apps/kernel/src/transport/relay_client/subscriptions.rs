@@ -708,18 +708,45 @@ pub(super) async fn run_relay_subscription_loop(
                         break;
                     }
                 }
+                let Some(feed_events) =
+                    crate::runtime_transport::await_subscription_work_with_heartbeats(
+                        async {
+                            let mut events = agent_turns.flush(&router, &session_id).await;
+                            events.extend(
+                                home_audit
+                                    .next_events(
+                                        &router,
+                                        &session_id,
+                                        &attachment_id,
+                                        agent_turns.session_agents(),
+                                    )
+                                    .await,
+                            );
+                            events
+                        },
+                        &mut next_heartbeat_at,
+                        subscriber.heartbeat_interval,
+                        || async {
+                            emit_relay_event(
+                                &router,
+                                &outgoing_tx,
+                                &subscription_id,
+                                &client_public_key,
+                                &event_runtime,
+                                &event_stream_id,
+                                KernelEvent::Heartbeat {
+                                    session_id: session_id.clone(),
+                                },
+                            )
+                            .await
+                            .is_ok()
+                        },
+                    )
+                    .await
+                else {
+                    break;
+                };
                 let mut turn_event_failed = false;
-                let mut feed_events = agent_turns.flush(&router, &session_id).await;
-                feed_events.extend(
-                    home_audit
-                        .next_events(
-                            &router,
-                            &session_id,
-                            &attachment_id,
-                            agent_turns.session_agents(),
-                        )
-                        .await,
-                );
                 for event in feed_events {
                     if emit_relay_event(
                         &router,

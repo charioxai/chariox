@@ -297,17 +297,42 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
-                let mut feed_events = agent_turns.flush(&router, &subscription.session_id).await;
-                feed_events.extend(
-                    home_audit
-                        .next_events(
-                            &router,
-                            &subscription.session_id,
-                            &subscription.attachment_id,
-                            agent_turns.session_agents(),
+                let Some(feed_events) = await_subscription_work_with_heartbeats(
+                    async {
+                        let mut events = agent_turns.flush(&router, &subscription.session_id).await;
+                        events.extend(
+                            home_audit
+                                .next_events(
+                                    &router,
+                                    &subscription.session_id,
+                                    &subscription.attachment_id,
+                                    agent_turns.session_agents(),
+                                )
+                                .await,
+                        );
+                        events
+                    },
+                    &mut next_heartbeat_at,
+                    subscription.heartbeat_interval,
+                    || {
+                        emit_kernel_event(
+                            &runtime,
+                            &outgoing_tx,
+                            &close_tx,
+                            &close_requested,
+                            KernelEvent::Heartbeat {
+                                session_id: subscription.session_id.clone(),
+                            },
+                            Some(&event_stream_id),
+                            Some(&subscription.session_id),
+                            Some(&subscription.attachment_id),
                         )
-                        .await,
-                );
+                    },
+                )
+                .await
+                else {
+                    break;
+                };
                 for event in feed_events {
                     if !emit_kernel_event(
                         &runtime,
@@ -430,7 +455,7 @@ fn advance_subscription_deadline(mut deadline: Instant, interval: Duration) -> I
     deadline
 }
 
-async fn await_subscription_work_with_heartbeats<F, T, Emit, EmitFuture>(
+pub(crate) async fn await_subscription_work_with_heartbeats<F, T, Emit, EmitFuture>(
     work: F,
     next_heartbeat_at: &mut Instant,
     heartbeat_interval: Duration,

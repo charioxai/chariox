@@ -1445,3 +1445,109 @@ async fn relay_subscription_heartbeats_follow_the_requested_interval() {
         );
     }
 }
+
+// MP-08 / MP-10 / MP-11: exercise the encrypted relay loop, including the real history reader.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relay_slow_turn_history_reads_keep_subscription_heartbeats_running() {
+    let mut config = DaemonConfig::for_tests();
+    config.operational_history_read_delay_ms = 1_600;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "slow-history",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let agent_id = crate::app::KernelSessionReadService::new(&mut app)
+        .session_snapshot(&session_id)
+        .unwrap()
+        .agents()[0]
+        .id()
+        .to_string();
+    let history = app.operational_history_store();
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+    let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(64);
+    let private_key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+    let task = tokio::spawn(run_relay_subscription_loop(
+        router.clone(),
+        outgoing_tx,
+        "slow-history-subscription".into(),
+        public_key,
+        session_id.clone(),
+        attachment_id.clone(),
+        None,
+        Arc::new(RelayEventRuntime::for_tests(64)),
+        false,
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+            heartbeat_interval: Duration::from_millis(500),
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (_, event) = decrypt_relay_event_from_channel(&mut event_rx, &private_key).await;
+            if event["event"] == "session_snapshot" {
+                break;
+            }
+        }
+        history
+            .append_many(&[crate::history::HistoryEvent::transcript(
+                history.reserve_sequence(),
+                &crate::history::SessionHistoryEntry::user_prompt(
+                    &session_id,
+                    &attachment_id,
+                    &agent_id,
+                    "read this turn",
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(session_id.clone()),
+                    agent_id: Some(agent_id.clone()),
+                    turn_id: Some("slow-turn".into()),
+                    prompt_id: Some("slow-turn".into()),
+                    ..Default::default()
+                },
+            )])
+            .unwrap();
+        app.lock().await.terminal_mut().fan_out_output(
+            &session_id,
+            "run-1",
+            Some(&agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("wake".into()),
+            vec![attachment_id.clone()],
+            b"wake",
+        );
+        loop {
+            let (_, event) = decrypt_relay_event_from_channel(&mut event_rx, &private_key).await;
+            if event["event"] == "terminal_output" {
+                break;
+            }
+        }
+        let mut last = std::time::Instant::now();
+        loop {
+            let (_, event) = decrypt_relay_event_from_channel(&mut event_rx, &private_key).await;
+            if event["event"] != "heartbeat" && event["event"] != "agent_turn_changed" {
+                continue;
+            }
+            let gap = last.elapsed();
+            assert!(
+                gap <= Duration::from_millis(850),
+                "history read starved relay heartbeats for {gap:?}"
+            );
+            if event["event"] == "agent_turn_changed" {
+                break;
+            }
+            last = std::time::Instant::now();
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    result.expect("slow history never reached the relay client");
+}

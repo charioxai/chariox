@@ -33,7 +33,11 @@ impl Watched {
     }
 
     async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        Self::start_with_config(heartbeat_interval, DaemonConfig::for_tests()).await
+    }
+
+    async fn start_with_config(heartbeat_interval: Duration, config: DaemonConfig) -> Self {
+        let mut app = DaemonApp::bootstrap(config).unwrap();
         let session = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .unwrap()
@@ -577,6 +581,46 @@ async fn a_subscription_that_asks_gets_heartbeats_at_its_interval() {
             *gap >= Duration::from_millis(450) && *gap <= Duration::from_millis(800),
             "heartbeat gaps {gaps:?}"
         );
+    }
+    watched.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_turn_history_reads_keep_subscription_heartbeats_running() {
+    let mut config = DaemonConfig::for_tests();
+    config.operational_history_read_delay_ms = 1_600;
+    let mut watched = Watched::start_with_config(Duration::from_millis(500), config).await;
+    watched
+        .append(vec![watched.prompt("slow-turn", "read this turn")])
+        .await;
+    watched
+        .next_event(|event| matches!(event, KernelEvent::TerminalOutput { .. }))
+        .await;
+    let mut last = std::time::Instant::now();
+    let deadline = last + Duration::from_secs(30);
+    // The slow revision read and outline read both have to finish while heartbeats continue.
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slow turn never arrived"
+        );
+        let event = watched
+            .next_event(|event| {
+                matches!(
+                    event,
+                    KernelEvent::Heartbeat { .. } | KernelEvent::AgentTurnChanged { .. }
+                )
+            })
+            .await;
+        let gap = last.elapsed();
+        assert!(
+            gap <= Duration::from_millis(850),
+            "history read starved the subscription for {gap:?}"
+        );
+        if matches!(event, KernelEvent::AgentTurnChanged { .. }) {
+            break;
+        }
+        last = std::time::Instant::now();
     }
     watched.stop().await;
 }

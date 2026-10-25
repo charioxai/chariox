@@ -21,9 +21,18 @@ impl CommandRouter {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Option<AgentTurnRead>, DaemonError> {
-        let history_revision = self
-            .operational_history_store
-            .latest_session_agent_sequence(session_id, agent_id)?;
+        let history = self.operational_history_store.clone();
+        let revision_session_id = session_id.to_string();
+        let revision_agent_id = agent_id.to_string();
+        // A revision query can wait on SQLite too; it must yield just like the outline read.
+        let history_revision = tokio::task::spawn_blocking(move || {
+            history.latest_session_agent_sequence(&revision_session_id, &revision_agent_id)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "read agent history revision",
+            message: format!("history revision worker failed: {error}"),
+        })??;
         let response = execute_history_request(
             self.history_store.clone(),
             self.operational_history_store.clone(),
