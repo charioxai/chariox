@@ -207,7 +207,11 @@ impl KernelRuntimeState {
         turns.iter().any(|turn| {
             turn.agent_id == agent_id
                 && turn.session_id == session_id
-                && turn.owner_user_id == session.owner_user_id()
+                && self.owned.acts_for_owner_in(
+                    session.owner_user_id(),
+                    &turn.owner_user_id,
+                    session.owner_user_id(),
+                )
                 && turn.placement == placement
                 && turn.deadline.is_some()
                 && self.sudo_live(turn)
