@@ -499,3 +499,19 @@ test('a missing worker is collected as worker_lost and never as a successful rou
   r.waits.push({}); await engine.step(1);
   assert.equal(lane.run.finishReason, 'worker_lost');
 });
+
+test('a kernel outage is excluded from a carried round hard-stop budget', async t => {
+  const { createRound } = await import('./engine.mjs');
+  const r = await rig(t, ['alpha']);
+  r.spec.lanes[0].hardStopMinutes = 5;
+  const first = createRound(r.options); await first.add(r.spec.lanes[0]);
+  r.waits.push({}); await first.step(1); // one minute of real kernel uptime
+  r.clock.ms += 600_000; // ten-minute kernel outage
+  r.options.config.kernelStartedAtMs = r.clock.ms;
+  const resumed = createRound(r.options); const lane = await resumed.add(r.spec.lanes[0]);
+  r.waits.push({}); await resumed.step(1);
+  assert.equal(lane.finished, false, 'only two minutes of the five-minute budget elapsed');
+  assert.equal(lane.run.pausedMs, 600_000);
+  r.clock.ms += 180_000; r.waits.push({}); await resumed.step(1);
+  assert.equal(lane.run.finishReason, 'hard_stop');
+});

@@ -116,7 +116,8 @@ async function startKernel(role) {
     detached: true, stdio: ['ignore', log, log],
   });
   if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error('invalid kernel pid');
-  writeFileSync(file(role, 'kernel.pid'), String(child.pid)); child.unref();
+  writeFileSync(file(role, 'kernel.pid'), String(child.pid));
+  writeFileSync(file(role, 'kernel-started-at'), String(Date.now())); child.unref();
   const status = await relayStatus(role);
   writeFileSync(file(role, 'ids.json'), JSON.stringify({ kernel_id: status.daemon_id, machine_id: status.machine_id }));
   return { role, pid: child.pid, started: true, kernel_id: status.daemon_id };
@@ -249,6 +250,7 @@ async function ensureCodexProfile() {
 function writeLoopConfig() {
   const path = join(STATE, 'loop', 'config.json');
   const loop = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  if (existsSync(file('executor', 'kernel-started-at'))) loop.kernelStartedAtMs = Number(readText(file('executor', 'kernel-started-at')));
   loop.kernel = JSON.parse(readFileSync(file('executor', 'ids.json'), 'utf8')).kernel_id;
   loop.repository ??= join(STATE, 'loop', 'imported.git');
   loop.providers ??= {};

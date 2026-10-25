@@ -56,6 +56,12 @@ export function createRound(options) {
     if (run && run.round !== entry.round) run = undefined; // another round's file: loopd has kept its copy
     const restored = Boolean(run?.launchedAtMs && !run.finishReason);
     run ??= { lane: entry.name ?? entry.lane, key: entry.lane, round: entry.round, effort: entry.effort, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
+    if (restored && options.config?.kernelStartedAtMs > (run.lastKernelSeenAtMs ?? run.health?.atMs ?? run.launchedAtMs)) {
+      const downMs = options.config.kernelStartedAtMs - (run.lastKernelSeenAtMs ?? run.health?.atMs ?? run.launchedAtMs);
+      run.pausedMs = (run.pausedMs ?? 0) + downMs;
+      run.lastKernelSeenAtMs = options.config.kernelStartedAtMs;
+      log({ run }, 'kernel_downtime', { pausedMs: downMs });
+    }
     if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
     const lane = { entry, run, restored, recoveryStartedAtMs: now(), finished: Boolean(run.finishReason), needsRead: true };
     if (!lane.finished) {
@@ -321,7 +327,8 @@ export function createRound(options) {
     if (rereadAll) { rereadAll = false; for (const lane of pending()) touched.add(lane); }
     for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
     for (const lane of pending()) {
-      if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collectUnderLock(lane, 'hard_stop'); continue; }
+      lane.run.lastKernelSeenAtMs = now();
+      if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000 + (lane.run.pausedMs ?? 0)) { await collectUnderLock(lane, 'hard_stop'); continue; }
       // A change seen in a lane's first minute is read at the next wake, not lost.
       // Events can be missed (a worker that finishes before the inbox sees it), so every lane is also read once in its
       // first minute and then every `reconcileMs`; a change seen earlier than that is read at the next wake.
