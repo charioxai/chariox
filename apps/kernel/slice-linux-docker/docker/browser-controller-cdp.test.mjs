@@ -1744,3 +1744,27 @@ test('MP-08/MP-10/MP-11 cached mirror frames follow navigation and retire with t
  browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId}});
  assert.equal(browser.currentPageFrame('target-a'),null);await browser.close();
 });
+
+test('MP-08/MP-09/MP-10/MP-11 temporary measurement detach preserves the controller session',async()=>{
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ try{
+  await browser.ensureConnection();await browser.reconcile(viewport);
+  const session=browser.sessionsByTarget.get('target-a');assert(session);
+  const applied=browser.appliedViewport,focus=browser.focusWorldsByTarget.get('target-a');
+  browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId:'temporary-measurement',targetId:'target-a'}});
+  assert.equal(browser.sessionsByTarget.get('target-a'),session,'only the detached session can retire its owned target');
+  assert.equal(browser.appliedViewport,applied);assert.equal(browser.focusWorldsByTarget.get('target-a'),focus);
+  browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId:session,targetId:'target-a'}});
+  assert.equal(browser.sessionsByTarget.has('target-a'),false,'an actual controller detach still retires the binding');
+ }finally{await browser.close();}
+});
+
+test('MP-08/MP-09/MP-10/MP-11 a protection-session detach cannot retire an in-flight page observation',async()=>{
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ try{
+  await browser.ensureConnection();await browser.reconcile(viewport);
+  const send=connection.send.bind(connection);let detached=false;
+  connection.send=async(method,params,...rest)=>{const value=await send(method,params,...rest);if(!detached&&method==='Runtime.evaluate'&&params.expression==="document.visibilityState === 'visible'"){detached=true;browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId:'protection-measurement',targetId:'target-a'}})}return value};
+  await assert.doesNotReject(browser.inspectPage(connection,{targetId:'target-a'},{}));assert(detached);
+ }finally{await browser.close();}
+});

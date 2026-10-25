@@ -1202,7 +1202,9 @@ export class BrowserCdpClient {
         this.networkRequestsBySession.delete(sessionId);
         this.responseBodies.drop(sessionId);
       }
-      if (typeof targetId === "string") {
+      // Protection measurements attach their own temporary sessions. Only the
+      // controller session that owns this target may retire its observation.
+      if (typeof sessionId === "string" && typeof targetId === "string" && this.sessionsByTarget.get(targetId) === sessionId) {
         this.appliedViewport = null;
         this.sessionsByTarget.delete(targetId);
         this.viewportByTarget.delete(targetId);
