@@ -37,6 +37,8 @@ impl SourceSnapshot {
             Ok(_) => {
                 ensure_worktree_root(worktree)?;
                 let before = export::repository_source_state(worktree)?;
+                // Preserve repository-level refusals before examining dirty paths.
+                inspect_export_repository(worktree)?;
                 budget.consume(
                     before.head_sha.len()
                         + before.branch.as_ref().map_or(0, String::len)
