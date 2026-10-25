@@ -185,6 +185,9 @@ pub(crate) struct KernelRuntimeState {
     provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
+    /// behind it any more, so restart recovery may supersede it instead of waiting for it.
+    restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
@@ -950,6 +953,7 @@ impl KernelRuntimeState {
             provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             terminal_wake_driver: None,
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
