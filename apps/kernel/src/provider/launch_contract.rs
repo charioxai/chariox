@@ -174,14 +174,6 @@ impl ProviderResumeState {
         }
     }
 
-    pub(crate) fn without_checkpoint_binding(&self) -> Self {
-        let mut state = self.clone();
-        if let Some(required) = state.required_native_session.as_mut() {
-            required.checkpoint = None;
-        }
-        state
-    }
-
     fn required_without_provider(&self, provider: &str) -> Option<super::RequiredNativeSession> {
         self.required_native_session
             .as_ref()
