@@ -7,7 +7,7 @@ import { createCliCommandActionComposition, type CliCommandActionCompositionDeps
 import { CloudClient } from "./cloud-client.js"
 import type { CloudClientCredentialStore, CloudClientCredential } from "./cloud-client-credential-store.js"
 import { cloudClientCallerScope } from "./cloud-client-collaboration-scope.js"
-import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
+import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 // MP-08 / MP-11: actual composition + slash handler, with both authority profiles.
 for (const resume of [false, true]) {
@@ -254,3 +254,34 @@ for (const caller of ["owner", "relay-owner", "collaborator"] as const) {
     assert.match(text, /kernel=offline in Cloud/)
   })
 }
+
+// MP-08 / MP-10 / MP-11 G01: a paired TUI may have a different startup provider.
+test("agent spawn uses the focused agent provider with its account and model", async () => {
+  const focused = makeAgent({provider: "codex", model: "gpt-6-luna", account_profile: "codex-account"})
+  const session = makeSession({agents: [focused]})
+  let submitted: Record<string, unknown> | undefined
+  const base = {
+    ...makeCommandDeps(),
+    options: {provider: "opencode"},
+    preferencesState: () => ({}),
+    initialWorkspaceTarget: "/workspace",
+    initialWorktreeTarget: "/workspace",
+    sessionState: () => session,
+    focusedAgentId: () => focused.id,
+    currentModelId: () => focused.model,
+    currentVariantId: () => "low",
+    currentAccountProfileId: () => focused.account_profile,
+    client: {send: async (request: Record<string, Record<string, unknown>>) => {
+      assert.ok(request.SpawnAgent)
+      submitted = request.SpawnAgent
+      throw new Error("request captured before provider launch")
+    }},
+  }
+  const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+  await createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+    .handleAgentCommand({kind: "agent", raw: "/agent spawn peer gpt-6-luna", args: ["spawn", "peer", "gpt-6-luna"]})
+  assert.ok(submitted)
+  assert.equal(submitted.provider, "codex")
+  assert.equal(submitted.account_profile, "codex-account")
+  assert.equal(submitted.model, "gpt-6-luna")
+})
