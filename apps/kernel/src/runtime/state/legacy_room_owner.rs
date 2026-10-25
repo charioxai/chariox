@@ -1,8 +1,8 @@
 //! MP-08/MP-11 F4: the enrolled owner and the `local` owner are one person in a room that was
 //! made before enrollment. Nothing is rewritten: the caller keeps its authenticated identity and
-//! the stored owners and members keep theirs. This is the single place that relates the two.
+//! the stored owners and members keep theirs. The config projection supplies the shared room-member identity rule.
 use super::*;
-use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
+use crate::session::RuntimeSession;
 
 impl KernelRuntimeOwnedState {
     /// The identity a room owned by `room_owner_user_id` stores for `user_id`: `local` when
@@ -13,14 +13,8 @@ impl KernelRuntimeOwnedState {
         room_owner_user_id: &str,
         user_id: &str,
     ) -> String {
-        // Cheap alias test first: this runs for every command of a terminal.
-        if room_owner_user_id == DEFAULT_LOCAL_USER_ID
-            && self.owner_context_review_owner(DEFAULT_LOCAL_USER_ID) == user_id
-        {
-            DEFAULT_LOCAL_USER_ID.to_string()
-        } else {
-            user_id.to_string()
-        }
+        self.config_projection
+            .room_member_user_id_in(room_owner_user_id, user_id)
     }
 
     /// Takes the session store's read lock: never call it while holding that lock, pass the

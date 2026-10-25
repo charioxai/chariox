@@ -73,6 +73,25 @@ impl DurableKernelStateStore {
             .is_some_and(|config| config.is_kernel_owner(kernel_id, user_id))
     }
 
+    pub(crate) fn workflow_invoker_matches(
+        &self,
+        kernel_id: &str,
+        room_owner: &str,
+        user_id: &str,
+        invoker: &str,
+    ) -> bool {
+        user_id == invoker
+            || self
+                .workflow_history_authority
+                .0
+                .lock()
+                .expect("workflow history authority lock")
+                .as_ref()
+                .is_some_and(|config| {
+                    config.workflow_invoker_matches(kernel_id, room_owner, user_id, invoker)
+                })
+    }
+
     pub(crate) fn workflow_run_predates_ownership_tracking(
         &self,
         kernel_id: &str,
@@ -123,6 +142,35 @@ impl DurableKernelStateStore {
 mod tests {
     use super::*;
     use crate::session::{CollaborationLevel, RuntimeSession, WorkflowRun};
+
+    #[test]
+    fn mp11_invoker_alias_is_bound_to_the_kernel_and_pre_enrollment_room() {
+        let root = crate::test_support::TestWorktree::new("workflow-invoker-alias");
+        let store = DurableKernelStateStore::open(root.path().join("state.sqlite")).unwrap();
+        assert!(!store.workflow_invoker_matches("daemon-test", "local", "local", "cloud-owner"));
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".into(),
+            ..Default::default()
+        });
+        store.attach_workflow_history_authority(
+            crate::runtime::projection::DaemonConfigProjectionStore::new(config),
+        );
+        for (room, viewer, invoker, expected) in [
+            ("local", "local", "cloud-owner", true),
+            ("local", "cloud-owner", "local", true),
+            ("local", "bob", "cloud-owner", false),
+            ("local", "local", "bob", false),
+            ("cloud-owner", "local", "cloud-owner", false),
+            ("other-owner", "cloud-owner", "local", false),
+        ] {
+            assert_eq!(
+                store.workflow_invoker_matches("daemon-test", room, viewer, invoker),
+                expected
+            );
+        }
+        assert!(!store.workflow_invoker_matches("foreign-kernel", "local", "local", "cloud-owner"));
+    }
 
     #[test]
     fn mp11_user_invoker_provenance_is_private_immutable_scoped_and_durable() {
