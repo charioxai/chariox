@@ -128,6 +128,17 @@ fn recipient_unavailable(
         params![event.room_id, source], |row| row.get(0),
     ).map_err(sql)?;
     if !settled {
+        if event.state == "pending" {
+            // A terminal reply and removal from automatic retry must commit together.
+            super::delivery::apply(
+                tx,
+                Operation::Expire {
+                    room: event.room_id.clone(),
+                    agent: event.agent_id.clone(),
+                    sequence: event.sequence,
+                },
+            )?;
+        }
         super::supervision::apply(
             tx,
             Operation::SourceOutcome {

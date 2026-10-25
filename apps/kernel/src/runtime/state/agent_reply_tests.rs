@@ -177,6 +177,20 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .replies()
         .iter()
         .all(|event| event.payload["public_answer"]["reason"] == "failed_start"));
+    assert!(
+        f.runtime
+            .owned
+            .durable_state_store
+            .agent_delivery_front(&f.room, &f.child)
+            .unwrap()
+            .is_none(),
+        "terminal failures must retire every affected request"
+    );
+    // Another delivery pass must not even try the still-unverified profile.
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
