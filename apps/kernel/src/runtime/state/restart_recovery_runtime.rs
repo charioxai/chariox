@@ -29,6 +29,7 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) failed_reconciliations: usize,
     pub(crate) unrecoverable_local_prompts_cancelled: usize,
     failed_local_prompts: Vec<DurableRestartRecoveryTarget>,
+    unidentified_local_prompts: Vec<DurableRestartRecoveryTarget>,
     agents_awaiting_vault: BTreeSet<(String, String)>,
 }
 
@@ -58,6 +59,7 @@ type DurableRestartRecoveryTarget = (String, String, String);
 // Wall clock, not attempts: one attempt can take seconds (a launch that waits on a locked Vault).
 const RESTART_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart (the provider could not start, for example because the Chariox Vault stayed locked)";
+const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart (no provider session or transcript identified the interrupted turn)";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct DurableRestartRecoveryTask(tokio::task::JoinHandle<()>);
@@ -204,13 +206,21 @@ impl KernelRuntimeState {
     }
 
     /// A prompt restart recovery still cannot redeliver after its whole retry window (a locked
-    /// Vault nobody unlocked, a provider that will not launch) must not hold its agent's queue
-    /// forever: settle it Cancelled with the reason, so the person can resend.
+    /// Vault nobody unlocked, a provider that will not launch, a turn no provider session or
+    /// transcript identifies) must not hold its agent's queue forever, nor leave the agent
+    /// `working` with no provider run: settle it Cancelled with the reason, so the person can
+    /// resend.
     async fn cancel_unrecoverable_local_prompts_after_restart(
         &self,
         summary: &mut DurableRestartRecoverySummary,
     ) {
-        for (session_id, agent_id, prompt_id) in std::mem::take(&mut summary.failed_local_prompts) {
+        let unrecoverable = std::mem::take(&mut summary.failed_local_prompts)
+            .into_iter()
+            .map(|target| (target, UNRECOVERABLE_PROMPT_REASON));
+        let unidentified = std::mem::take(&mut summary.unidentified_local_prompts)
+            .into_iter()
+            .map(|target| (target, UNIDENTIFIED_PROMPT_REASON));
+        for ((session_id, agent_id, prompt_id), reason) in unrecoverable.chain(unidentified) {
             let cancelled = async {
                 let session = self.owned.session_store.get_session(&session_id)?;
                 let Some(prompt) = self
@@ -243,7 +253,7 @@ impl KernelRuntimeState {
                         &agent_id,
                         &prompt_id,
                         None,
-                        UNRECOVERABLE_PROMPT_REASON,
+                        reason,
                     ) {
                         log_restart_recovery_failure(&session_id, &agent_id, &prompt_id, &error);
                     }
@@ -256,7 +266,7 @@ impl KernelRuntimeState {
                         None,
                         Some(&agent_id),
                         recipients,
-                        UNRECOVERABLE_PROMPT_REASON,
+                        reason,
                     );
                 }
                 Ok(false) => {}
@@ -510,6 +520,11 @@ impl KernelRuntimeState {
                             UncertainLocalRecoveryOutcome::TranscriptPending,
                         )) => {
                             summary.transcript_recovery_pending += 1;
+                            summary.unidentified_local_prompts.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
                         }
                         Err(error) => {
                             summary.failed_reconciliations += 1;
@@ -577,6 +592,11 @@ impl KernelRuntimeState {
                         }
                         Ok(UncertainLocalRecoveryOutcome::TranscriptPending) => {
                             summary.transcript_recovery_pending += 1;
+                            summary.unidentified_local_prompts.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
                         }
                         Err(error) => {
                             summary.failed_reconciliations += 1;
@@ -1921,6 +1941,84 @@ mod tests {
         );
         assert!(
             task.reason.contains("could not be restored"),
+            "{}",
+            task.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_recovery_ends_a_turn_no_provider_session_identifies() {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+            config,
+        );
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: "local".into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt_id.clone(),
+                run: None,
+                now: 1,
+            })
+            .expect("task should begin");
+        // The turn may have reached its provider, but nothing names a session to resume.
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("claude".into()), None, None)
+            .expect("agent provider should change");
+        let targets = runtime.durable_restart_recovery_targets();
+
+        let summary = runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        assert_eq!(
+            summary.unrecoverable_local_prompts_cancelled, 1,
+            "{summary:?}"
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_none_or(|prompt| prompt.id() != prompt_id),
+            "a turn that stays unidentified must not stay active with no provider run"
+        );
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .expect("tasks should load")
+            .into_iter()
+            .find(|task| task.prompt_id == prompt_id)
+            .expect("task should exist");
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Blocked,
+            "the holder must see the definitive outcome: {task:?}"
+        );
+        assert!(
+            task.reason.contains("could not be resumed"),
             "{}",
             task.reason
         );
