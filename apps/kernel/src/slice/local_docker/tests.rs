@@ -3349,5 +3349,38 @@ fn screen_start_tells_the_desktop_about_a_bound_room() {
     assert_eq!(calls.len(), 2);
     assert!(!calls[0].contains("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID"));
     assert!(calls[1].contains("-e CHARIOX_ROOM_ENVIRONMENT_SESSION_ID=room-1 "));
+    // The managed broker validates the same command before running it.
+    for call in calls {
+        use std::io::Write;
+        let request = serde_json::json!({
+            "kind": "docker",
+            "args": call.split_whitespace().collect::<Vec<_>>(),
+        });
+        let mut broker = std::process::Command::new("node")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/slice-linux-docker/managed-docker-broker.mjs"
+            ))
+            .arg("--validate-request")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("broker validator should start");
+        broker
+            .stdin
+            .take()
+            .expect("broker validator stdin")
+            .write_all(request.to_string().as_bytes())
+            .expect("broker validator request should write");
+        let result = broker
+            .wait_with_output()
+            .expect("broker validator should finish");
+        assert!(
+            result.status.success(),
+            "broker rejected `{call}`: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
     let _ = std::fs::remove_dir_all(root);
 }
