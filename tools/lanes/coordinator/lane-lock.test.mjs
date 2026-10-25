@@ -52,17 +52,19 @@ test('the OS releases a lock when its driver dies, without stealing a live lock'
   await releaseLaneLock(lock);
 });
 
-test('lock acquisition and release need no external flock utility', async t => {
-  const home = await mkdtemp(join(tmpdir(), 'lane-portable-lock-'));
-  t.after(() => rm(home, { recursive: true, force: true }));
-  const { spawn } = await import('node:child_process');
-  const script = `import { tryLaneLock, releaseLaneLock } from ${JSON.stringify(new URL('./lane-lock.mjs', import.meta.url).href)};
-    const lock = await tryLaneLock(process.argv[1], 'portable', 'steer');
-    if (!lock) throw new Error('not acquired'); await releaseLaneLock(lock);`;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script, home], { env: { ...process.env, PATH: home } });
-  let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
-  const code = await new Promise(resolve => child.once('close', resolve));
-  assert.equal(code, 0, stderr);
+test('the macOS lock path uses the native exclusive-open flag without spawning flock', async () => {
+  const { constants } = await import('node:fs');
+  const { tryProcessFileLock } = await import('./process-file-lock.mjs');
+  let closed = 0;
+  const lock = await tryProcessFileLock('/lane/admission.flock', { platform: 'darwin',
+    openFile: async (path, flags, mode) => {
+      assert.equal(path, '/lane/admission.flock');
+      assert.equal(flags, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | 0x20);
+      assert.equal(mode, 0o600); return { fd: 42, close: async () => { closed++; } };
+    }, spawnProcess: () => { throw new Error('macOS must not spawn flock'); },
+  });
+  await releaseLaneLock(lock); await releaseLaneLock(lock); assert.equal(closed, 1);
+  assert.equal(await tryProcessFileLock('/lane/admission.flock', { platform: 'darwin', openFile: async () => { throw Object.assign(new Error('busy'), { code: 'EAGAIN' }); } }), undefined);
 });
 
 test('the portable lock also excludes an already running legacy Linux flock holder', { skip: process.platform !== 'linux' }, async t => {
@@ -77,4 +79,19 @@ test('the portable lock also excludes an already running legacy Linux flock hold
   const lock = await tryLaneLock(home, 'lane', 'steer');
   if (lock) t.after(() => releaseLaneLock(lock));
   assert.equal(lock, undefined, 'a live pre-upgrade collector still owns the lane');
+});
+
+test('an unrelated listener cannot block a lane admission', async t => {
+  const { createServer } = await import('node:net');
+  const { createHash } = await import('node:crypto');
+  const { realpath } = await import('node:fs/promises');
+  const home = await mkdtemp(join(tmpdir(), 'lane-listener-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const digest = createHash('sha256').update(await realpath(home)).update('\0').update('lane').digest();
+  const server = createServer(socket => socket.destroy());
+  await new Promise((resolve, reject) => { server.once('error', error => error.code === 'EADDRINUSE' ? resolve() : reject(error)); server.listen(10000 + digest.readUInt32BE(0) % 20000, '127.0.0.1', resolve); });
+  t.after(() => server.listening ? new Promise(resolve => server.close(resolve)) : undefined);
+  const lock = await tryLaneLock(home, 'lane', 'loopd');
+  if (lock) t.after(() => releaseLaneLock(lock));
+  assert.ok(lock, 'lane admission must depend only on the lane lock file');
 });

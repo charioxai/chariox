@@ -469,12 +469,17 @@ establish this). A new executor-start timestamp pauses the loopd hard-stop
 budget across downtime; the runtime's separate absolute deadline remains an
 explicit dependency for long outages.
 
-Lane admission now uses a portable Node loopback listener owned by the process.
-Death releases it and an old handle cannot release its successor. Hash
-collisions conservatively report busy. On Linux, an existing legacy flock inode
-is also locked while pre-upgrade frozen collectors can still be running;
-macOS and fresh installations need no flock utility. Account token replacement
-uses Node's portable atomic rename instead of GNU `mv -T`.
+Lane admission uses process-owned locks on one persistent file inode. Linux
+keeps its `flock` helper, including exclusion against frozen pre-upgrade
+collectors. macOS uses native `O_EXLOCK | O_NONBLOCK` through Node's numeric open
+flags and requires no `flock` executable. Release closes only the holder's own
+resource; the inode is never unlinked. Apple defines the exclusive-open flag in
+[XNU](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/fcntl.h),
+and [libuv passes it to open with close-on-exec](https://github.com/libuv/libuv/blob/v1.51.0/src/unix/fs.c),
+so child providers do not retain the descriptor. A listener-collision regression
+rejected the earlier loopback-lock approach; that path has been deleted.
+Account token replacement uses Node's portable atomic rename instead of GNU
+`mv -T`.
 
 `start` enters `lanes.slice` automatically. `install-service` enables the
 boot-time `chariox-lanes.service` without restarting existing workers; see

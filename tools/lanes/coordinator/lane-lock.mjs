@@ -1,40 +1,15 @@
 // MP-08 / MP-09 / MP-10 / MP-11: serialize direct prompts with collection for the entire operation.
-import { stat, readFile, rm, realpath } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
-import { createServer } from 'node:net';
-import { createHash } from 'node:crypto';
+import { stat, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LaneError } from '../lanes.mjs';
+import { tryProcessFileLock } from './process-file-lock.mjs';
 
-// A loopback listener is an OS-owned lock on Linux and macOS: process death releases it.
-// Hash collisions conservatively report busy; they can never admit two holders. No pathname is
-// unlinked on release, so an old handle cannot release its successor's lock.
+// Never unlink the persistent lock inode. Release closes only this holder's resource.
 export async function tryLaneLock(home, name, owner, now = Date.now) {
-  const digest = createHash('sha256').update(await realpath(home)).update('\0').update(name).digest();
-  const port = 10000 + digest.readUInt32BE(0) % 20000;
-  const server = createServer(socket => socket.destroy());
-  const acquired = await new Promise((resolve, reject) => {
-    server.once('error', error => { if (error.code === 'EADDRINUSE') resolve(false); else reject(error); });
-    server.listen({ host: '127.0.0.1', port, exclusive: true }, () => resolve(true));
-  });
-  if (!acquired) return undefined;
-  const handle = { server };
+  const handle = await tryProcessFileLock(join(home, `${name}.admission.flock`));
+  if (!handle) return undefined;
   try {
-    // A frozen pre-upgrade Linux collector can still own its persistent flock inode.
-    // Bridge it only while that legacy inode exists; fresh installs and macOS use Node alone.
-    const legacy = join(home, `${name}.admission.flock`);
-    if (process.platform === 'linux' && await stat(legacy).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; })) {
-      const child = spawn('flock', ['--exclusive', '--nonblock', legacy, 'sh', '-c', 'printf "locked\\n"; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
-      child.stdin.on('error', () => {});
-      const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
-      const acquired = await Promise.race([
-        new Promise(resolve => child.stdout.once('data', () => resolve(true))),
-        exited.then(code => { if (code === 1) return false; throw new Error(`legacy lane lock failed (${code}); finish the old loopd upgrade before retrying`); }),
-      ]);
-      if (!acquired) { await releaseLaneLock(handle); return undefined; }
-      handle.legacy = { child, exited };
-    }
-    // Bridge directory locks left by the previous driver. Migration is itself under the listener lock.
+    // Bridge directory locks left by the previous driver. Migration is itself under the file lock.
     const dir = join(home, `${name}.admission.lock`);
     const held = await stat(dir).catch(error => { if (error.code !== 'ENOENT') throw error; });
     if (held) {
@@ -49,10 +24,7 @@ export async function tryLaneLock(home, name, owner, now = Date.now) {
 }
 
 export async function releaseLaneLock(handle) {
-  handle.release ??= (async () => {
-    if (handle.legacy) { handle.legacy.child.stdin.end(); await handle.legacy.exited; }
-    await new Promise((resolve, reject) => handle.server.close(error => error ? reject(error) : resolve()));
-  })();
+  handle.release ??= handle.unlock();
   await handle.release;
 }
 
