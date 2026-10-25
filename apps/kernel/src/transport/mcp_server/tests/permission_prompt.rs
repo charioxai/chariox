@@ -780,6 +780,10 @@ fn claude_print_fixture_with_app() -> (
                 }),
         )
         .expect("session should be created");
+    // Creating the primary agent copies defaults into overrides; exercise inheritance here.
+    app.agents_mut()
+        .update_agent_config(agent.id(), Some(None), Some(None), None, None)
+        .expect("the fixture agent should inherit session defaults");
     insert_claude_run(
         &mut app,
         session.id(),
@@ -1097,5 +1101,249 @@ async fn an_allow_for_session_grant_outlives_the_claude_process() {
             "{id}"
         );
     }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Grants `cargo test` for the session through the real prompt and answer.
+async fn grant_cargo_test(router: &Arc<CommandRouter>, session_id: &str, tool_use_id: &str) {
+    let (call, interaction) = start_tool_prompt(
+        router,
+        CLAUDE_TOKEN,
+        session_id,
+        tool_use_id,
+        "Bash",
+        serde_json::json!({"command": "cargo test -p x"}),
+    )
+    .await;
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session_id, interaction.id(), "allow_session", None)
+        .await
+        .expect("allow_session should resolve");
+    decision(&call.await.expect("grant prompt should join"));
+}
+
+/// Whether `cargo test` is answered without asking the person.
+async fn cargo_test_is_covered(
+    router: &Arc<CommandRouter>,
+    session_id: &str,
+    tool_use_id: &str,
+) -> bool {
+    let call = rpc(
+        router,
+        CLAUDE_TOKEN,
+        "tools/call",
+        serde_json::json!({
+            "name": "chariox.permission_prompt",
+            "arguments": {
+                "tool_name": "Bash",
+                "input": {"command": "cargo test -p x"},
+                "tool_use_id": tool_use_id,
+            }
+        }),
+    );
+    tokio::pin!(call);
+    loop {
+        tokio::select! {
+            response = &mut call => {
+                assert_eq!(decision(&response)["behavior"], "allow");
+                return true;
+            }
+            _ = tokio::task::yield_now() => {
+                if let Some(interaction) = active_interactions(router, session_id)
+                    .into_iter()
+                    .find(|interaction| interaction.id().ends_with(tool_use_id))
+                {
+                    router
+                        .runtime_state()
+                        .resolve_runtime_interaction(session_id, interaction.id(), "deny", None)
+                        .await
+                        .expect("deny should resolve");
+                    call.await;
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+/// Starts the next turn, as the person's next prompt does. A config change ends the Claude
+/// process of a mode it cannot change in place, so a new one stands in for it then.
+async fn next_turn(app: &Arc<Mutex<DaemonApp>>, session_id: &str, agent_id: &str, turn: usize) {
+    let mut app = app.lock().await;
+    let live = app
+        .providers()
+        .get_run_for_agent(session_id, agent_id)
+        .filter(|run| run.state() != crate::provider::ProviderRunState::Ended);
+    let run_id = match live {
+        Some(run) => run.id().to_string(),
+        None => {
+            let run_id = format!("provider-run-claude-print-{turn}");
+            insert_claude_run(
+                &mut app,
+                session_id,
+                agent_id,
+                &run_id,
+                CLAUDE_TOKEN,
+                crate::provider::ProviderClientInterface::Chariox,
+            );
+            run_id
+        }
+    };
+    app.active_turn_store()
+        .start(crate::app::ActiveTurnState::new(
+            session_id.into(),
+            agent_id.into(),
+            format!("fixture-print-turn-{turn}"),
+            run_id,
+        ));
+}
+
+/// Ends the turn of the fixture run, so the agent can be configured.
+fn end_turns(app: &DaemonApp) {
+    let session_runs = app.active_turn_store().snapshot();
+    for run_id in session_runs.keys() {
+        app.active_turn_store().clear(run_id);
+    }
+}
+
+/// A person who changes what the agent may do has ended what they granted, even when they change
+/// it back: Plan and Yolo runs never ask Claude about a tool, so only the change itself shows it.
+#[tokio::test]
+async fn an_allow_for_session_grant_ends_when_the_agent_config_changes_and_changes_back() {
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    let (router, session, agent_id, root, app) = claude_print_fixture_with_app();
+    grant_cargo_test(&router, session.id(), "toolu_grant").await;
+    assert!(cargo_test_is_covered(&router, session.id(), "toolu_covered").await);
+
+    for (round, (mode, level)) in [
+        (AgentExecutionMode::Plan, AgentPermissionLevel::Required),
+        (AgentExecutionMode::Build, AgentPermissionLevel::Yolo),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        end_turns(&*app.lock().await);
+        for (execution_mode, permission_level) in [
+            (Some(Some(mode)), Some(Some(level))),
+            (Some(None), Some(None)),
+        ] {
+            router
+                .runtime_state()
+                .update_agent_config(
+                    session.id(),
+                    &agent_id,
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    execution_mode,
+                    permission_level,
+                    None,
+                    None,
+                )
+                .await
+                .expect("the config should update");
+        }
+        next_turn(&app, session.id(), &agent_id, round + 1).await;
+        assert!(
+            !cargo_test_is_covered(&router, session.id(), &format!("toolu_after_{round}")).await,
+            "round {round}"
+        );
+        grant_cargo_test(&router, session.id(), &format!("toolu_regrant_{round}")).await;
+        assert!(
+            cargo_test_is_covered(&router, session.id(), &format!("toolu_again_{round}")).await
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The same holds when the session's own configuration decides the agent's mode.
+#[tokio::test]
+async fn an_allow_for_session_grant_ends_when_the_session_config_changes_and_changes_back() {
+    let (router, session, agent_id, root, app) = claude_print_fixture_with_app();
+    let attachment = crate::app::KernelSessionService::new(&mut *app.lock().await)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "cli-permission-prompt",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    grant_cargo_test(&router, session.id(), "toolu_grant").await;
+
+    for (round, (key, intermediate, original)) in [
+        ("agents.mode", "plan", "build"),
+        ("agents.permissions", "yolo", "required"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        end_turns(&*app.lock().await);
+        for value in [intermediate, original] {
+            router
+                .runtime_state()
+                .update_session_config(
+                    session.id(),
+                    attachment.id(),
+                    std::collections::BTreeMap::from([(key.to_string(), value.to_string())]),
+                    false,
+                )
+                .await
+                .expect("the session config should update");
+        }
+        assert!(
+            app.lock()
+                .await
+                .providers()
+                .get_run_for_agent(session.id(), &agent_id)
+                .is_none_or(|run| run.state() == crate::provider::ProviderRunState::Ended),
+            "session config changes must also end rules held by the provider process"
+        );
+        next_turn(&app, session.id(), &agent_id, round + 1).await;
+        assert!(
+            !cargo_test_is_covered(&router, session.id(), &format!("toolu_after_{round}")).await
+        );
+        grant_cargo_test(&router, session.id(), &format!("toolu_regrant_{round}")).await;
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn an_allow_for_session_grant_ends_when_the_working_directory_changes_back() {
+    let (router, session, agent_id, root, app) = claude_print_fixture_with_app();
+    grant_cargo_test(&router, session.id(), "toolu_grant").await;
+    end_turns(&*app.lock().await);
+    let original = app
+        .lock()
+        .await
+        .agents()
+        .get_agent(&agent_id)
+        .unwrap()
+        .worktree_id()
+        .map(str::to_string);
+    let other = root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    for worktree in [Some(other.to_string_lossy().into_owned()), original] {
+        router
+            .runtime_state()
+            .update_agent_config(
+                session.id(),
+                &agent_id,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                None,
+                None,
+                None,
+                Some(worktree),
+            )
+            .await
+            .expect("working directory should update");
+    }
+    assert!(
+        app.lock()
+            .await
+            .providers()
+            .get_run_for_agent(session.id(), &agent_id)
+            .is_none_or(|run| run.state() == crate::provider::ProviderRunState::Ended),
+        "directory changes must also end rules held by the provider process"
+    );
+    next_turn(&app, session.id(), &agent_id, 1).await;
+    assert!(!cargo_test_is_covered(&router, session.id(), "toolu_after_directory_change").await);
     let _ = std::fs::remove_dir_all(root);
 }

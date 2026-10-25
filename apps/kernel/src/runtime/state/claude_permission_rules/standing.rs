@@ -63,6 +63,14 @@ impl StandingGrants {
         standing.ask.extend(grant.ask.iter().cloned());
     }
 
+    /// Ends this agent's grant: its scope changed, even if it later changes back.
+    pub(crate) fn forget(&self, agent_id: &str) {
+        self.agents
+            .lock()
+            .expect("standing grants lock")
+            .remove(agent_id);
+    }
+
     /// The whole standing grant when it already covers every rule `wanted` needs.
     pub(crate) fn covering(
         &self,
