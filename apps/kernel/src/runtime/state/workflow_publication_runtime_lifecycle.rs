@@ -54,6 +54,10 @@ const PACKAGE_DIGEST_MISMATCH: &str =
 pub(crate) struct WorkflowPublicationRuntimeProcessStore {
     inner: Arc<Mutex<BTreeMap<String, WorkflowPublicationRuntimeProcess>>>,
     launching: Arc<Mutex<BTreeSet<String>>>,
+    /// A free port is found by probing, so two launches probing at once would
+    /// pick the same one. A launch without a requested port holds this from
+    /// its probe until its gateway listens.
+    port_search: Arc<Mutex<()>>,
     recoveries: Arc<Mutex<BTreeMap<String, WorkflowPublicationRuntimeRecovery>>>,
 }
 
@@ -805,6 +809,16 @@ async fn start_publication_runtime_claimed(
         .unwrap_or(DEFAULT_PUBLICATION_RUNTIME_HOST)
         .to_string();
     let no_ingress = !publication_has_ingress(&publication);
+    let _port_search = match (request.port, no_ingress) {
+        (None, false) => Some(
+            runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .hold_port_search()
+                .await,
+        ),
+        _ => None,
+    };
     let port = publication_runtime_port(&host, request.port, no_ingress)?;
     if let Some(existing) = runtime_state
         .owned
@@ -2143,6 +2157,10 @@ impl WorkflowPublicationRuntimeProcessStore {
         self.launching.lock().await.insert(key.to_string())
     }
 
+    async fn hold_port_search(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.port_search).lock_owned().await
+    }
+
     async fn launching(&self, key: &str) -> bool {
         self.launching.lock().await.contains(key)
     }
@@ -2281,7 +2299,6 @@ mod tests {
         validate_bound_release, validate_publication_runtime_bind_address,
         validated_deployment_binding, write_publication_caller_claims_config, BoundReleaseDigests,
         PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore,
-        DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -2343,6 +2360,36 @@ mod tests {
             .collect::<Vec<_>>();
         let found = super::first_free_runtime_port("127.0.0.1", busy[0]).expect("free port");
         assert!(!busy.contains(&found));
+    }
+
+    #[tokio::test]
+    async fn publications_started_together_each_get_their_own_free_port() {
+        let store = WorkflowPublicationRuntimeProcessStore::default();
+        let probe = TcpListener::bind(("127.0.0.1", 0)).expect("probe listener should bind");
+        let first = probe.local_addr().expect("local address").port();
+        drop(probe);
+        // The gateway binds a moment after the kernel chose its port, as a spawned process does.
+        let launch = |store: WorkflowPublicationRuntimeProcessStore| async move {
+            let _search = store.hold_port_search().await;
+            let port = super::first_free_runtime_port("127.0.0.1", first).expect("free port");
+            let gateway = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                TcpListener::bind(("127.0.0.1", port)).expect("the chosen port is still free")
+            });
+            while tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            (port, gateway)
+        };
+
+        let ((a, gateway_a), (b, gateway_b)) = tokio::join!(launch(store.clone()), launch(store));
+
+        assert_ne!(a, b);
+        gateway_a.await.expect("first gateway bound");
+        gateway_b.await.expect("second gateway bound");
     }
 
     #[test]
