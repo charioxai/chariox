@@ -128,7 +128,7 @@ impl CommandRouter {
             }
         };
         let view_user_id =
-            request_room_member_user_id(&self.runtime_state, &request, &caller_user_id);
+            request_room_member_user_id(&self.runtime_state, &command, &request, &caller_user_id);
         if command.caller.connection_class == Some(crate::local::KernelConnectionClass::Terminal) {
             if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
                 if self

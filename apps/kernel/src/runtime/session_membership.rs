@@ -69,13 +69,26 @@ pub(crate) async fn authorize_session_membership(
     match scope {
         SessionMembershipScope::AllSessions => Ok(user_id),
         SessionMembershipScope::SessionId(session_id) => {
-            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
+            ensure_session_member(
+                runtime_state,
+                session_projection,
+                command,
+                &session_id,
+                &user_id,
+            )
+            .await?;
             Ok(user_id)
         }
         SessionMembershipScope::SessionIds(session_ids) => {
             for session_id in session_ids {
-                ensure_session_member(runtime_state, session_projection, &session_id, &user_id)
-                    .await?;
+                ensure_session_member(
+                    runtime_state,
+                    session_projection,
+                    command,
+                    &session_id,
+                    &user_id,
+                )
+                .await?;
             }
             Ok(user_id)
         }
@@ -90,7 +103,7 @@ pub(crate) async fn authorize_session_membership(
                 workspace_id.as_deref(),
             )
             .await?;
-            if !runtime_state.is_room_member(&session, &user_id) {
+            if !is_member(runtime_state, command, &session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id: session.id().to_string(),
                     user_id,
@@ -106,7 +119,7 @@ pub(crate) async fn authorize_session_membership(
                 .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
                 .await?;
             let session = runtime_state.session_snapshot(&session_id).await?;
-            if !runtime_state.is_room_member(&session, &user_id) {
+            if !is_member(runtime_state, command, &session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id,
                     user_id,
@@ -122,7 +135,14 @@ pub(crate) async fn authorize_session_membership(
             } else {
                 runtime_state.attachment_session_id(&attachment_id).await?
             };
-            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
+            ensure_session_member(
+                runtime_state,
+                session_projection,
+                command,
+                &session_id,
+                &user_id,
+            )
+            .await?;
             Ok(user_id)
         }
     }
@@ -133,9 +153,13 @@ pub(crate) async fn authorize_session_membership(
 /// they keep the authenticated identity and relate it to the owner with `acts_for_owner`.
 pub(crate) fn request_room_member_user_id(
     runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
     request: &LocalDaemonRequest,
     user_id: &str,
 ) -> String {
+    if !command.is_terminal_caller() {
+        return user_id.to_string();
+    }
     // A provider run carries no session scope of its own; it belongs to the room it ran in.
     if let LocalDaemonRequest::GetProviderRun(run_request) = request {
         return runtime_state
@@ -180,14 +204,30 @@ fn hosted_service_request_is_authorized(
     }
 }
 
+/// Membership of the room as the caller's own identity, or as the room's `local` member when the
+/// caller is the enrolled owner's terminal: other connection classes never take the alias.
+fn is_member(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    session: &crate::session::RuntimeSession,
+    user_id: &str,
+) -> bool {
+    if command.is_terminal_caller() {
+        runtime_state.is_room_member(session, user_id)
+    } else {
+        session.has_member(user_id)
+    }
+}
+
 async fn ensure_session_member(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
+    command: &KernelCommand,
     session_id: &str,
     user_id: &str,
 ) -> Result<(), DaemonError> {
     if let Some(session) = session_projection.get(session_id) {
-        if runtime_state.is_room_member(&session, user_id) {
+        if is_member(runtime_state, command, &session, user_id) {
             return Ok(());
         }
         return Err(DaemonError::SessionAccessDenied {
@@ -196,7 +236,7 @@ async fn ensure_session_member(
         });
     }
     let session = runtime_state.session_snapshot(session_id).await?;
-    if runtime_state.is_room_member(&session, user_id) {
+    if is_member(runtime_state, command, &session, user_id) {
         Ok(())
     } else {
         Err(DaemonError::SessionAccessDenied {
