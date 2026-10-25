@@ -139,6 +139,7 @@ impl KernelRuntimeState {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &task.agent_id)
                 .is_some()
+                && self.blocked_turn_has_executor(task)
             {
                 return true;
             }

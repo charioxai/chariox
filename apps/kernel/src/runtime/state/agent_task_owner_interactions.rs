@@ -71,7 +71,19 @@ impl KernelRuntimeState {
                     .terminal_stream
                     .notify_terminal_projection_change(&task.room_id);
             }
-            return Ok(());
+            // The card is durable; its response channel is process-local. A restored
+            // card must be superseded by a fresh registration for the same subject.
+            if self
+                .owned
+                .pending_interactions
+                .write()
+                .get(&id)
+                .is_some_and(|pending| {
+                    pending.belongs_to(&self.owned.session_store) && !pending.nobody_waits()
+                })
+            {
+                return Ok(());
+            }
         }
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &id,

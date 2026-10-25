@@ -523,6 +523,7 @@ mod remote_prompt_worker_submission_runtime;
 mod remote_provider_failure_runtime;
 #[cfg(test)]
 mod remote_queue_advance_tests;
+mod restart_recovery_blocked;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;

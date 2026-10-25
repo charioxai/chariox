@@ -15,6 +15,7 @@ impl KernelRuntimeState {
                     .prompt_state_owner
                     .active_prompt_for_agent(&session, &task.agent_id)
                     .is_some()
+                    && self.blocked_turn_has_executor(task)
                 {
                     self.record_agent_task_owner_failure(
                         task,
@@ -45,6 +46,7 @@ impl KernelRuntimeState {
         };
         let result = if resume {
             async {
+                self.retire_blocked_prompt_without_executor(task)?;
                 let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
                 let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
                 let context = self.owned.goal_continuation_context(&next)?.unwrap_or_else(||

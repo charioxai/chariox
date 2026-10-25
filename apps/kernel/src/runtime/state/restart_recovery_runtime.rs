@@ -2,6 +2,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "restart_recovery_blocked_tests.rs"]
+mod blocked_tests;
+
 /// Prefix stamped onto the `source_attachment_id` of every kernel-internal
 /// restart-recovery dispatch. It identifies an envelope that carries provider
 /// resume text (not user input) so downstream fanout can suppress it.
@@ -23,6 +27,7 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) provider_continuations_in_flight: usize,
     pub(crate) remote_reconciliations_started: usize,
     pub(crate) uncertain_local_prompts_preserved: usize,
+    pub(crate) blocked_local_prompts_preserved: usize,
     pub(crate) transcript_recovery_pending: usize,
     pub(crate) queued_local_prompts_started: usize,
     pub(crate) orphaned_workflow_prompts_finalized: usize,
@@ -117,6 +122,7 @@ impl KernelRuntimeState {
                     "provider_continuations_in_flight": summary.provider_continuations_in_flight,
                     "remote_reconciliations_started": summary.remote_reconciliations_started,
                     "uncertain_local_prompts_preserved": summary.uncertain_local_prompts_preserved,
+                    "blocked_local_prompts_preserved": summary.blocked_local_prompts_preserved,
                     "transcript_recovery_pending": summary.transcript_recovery_pending,
                     "queued_local_prompts_started": summary.queued_local_prompts_started,
                     "orphaned_workflow_prompts_finalized": summary.orphaned_workflow_prompts_finalized,
@@ -543,6 +549,26 @@ impl KernelRuntimeState {
                         }
                     }
                     continue;
+                }
+                // Blocked is an owner disposition, not a failed provider launch. Keep the
+                // interrupted prompt until that disposition changes; replaying it would both
+                // bypass the owner and repeat work that may already have reached the provider.
+                match self
+                    .restore_blocked_prompt_owner_decision(session.id(), agent_id, &prompt)
+                    .await
+                {
+                    Ok(true) => {
+                        summary.blocked_local_prompts_preserved += 1;
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        // Projection failures retry, but cannot authorize cancelling the task
+                        // when the provider recovery window expires.
+                        summary.failed_reconciliations += 1;
+                        log_restart_recovery_failure(session.id(), agent_id, prompt.id(), &error);
+                        continue;
+                    }
                 }
                 match delivery_phase {
                     Some(crate::session::DurablePromptDeliveryPhase::Accepted) => match self
@@ -1360,7 +1386,7 @@ mod tests {
         runtime_with_active_prompt_config(delivery_phase, worktree, DaemonConfig::for_tests())
     }
 
-    fn runtime_with_active_prompt_config(
+    pub(super) fn runtime_with_active_prompt_config(
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
         worktree: &str,
         config: DaemonConfig,

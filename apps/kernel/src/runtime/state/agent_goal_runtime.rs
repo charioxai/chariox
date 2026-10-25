@@ -479,6 +479,7 @@ impl KernelRuntimeState {
             .find(|t| t.goal.as_ref().is_some_and(|g| g.id == id))
             .ok_or_else(|| ledger::error("goal unavailable in this room"))?;
         if action == "resume"
+            && self.blocked_turn_has_executor(&task)
             && goal_resume_has_unsettled_turn(
                 &task,
                 self.owned
@@ -509,6 +510,7 @@ impl KernelRuntimeState {
         };
         let committed = std::time::Instant::now();
         if action == "resume" {
+            self.retire_blocked_prompt_without_executor(&task)?;
             let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
             let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
             Box::pin(
