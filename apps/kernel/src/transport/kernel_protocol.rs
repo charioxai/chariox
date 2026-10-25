@@ -970,6 +970,12 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        DaemonError::RelayTransport {
+            operation: "dictation",
+            code,
+            retryable,
+            ..
+        } => kernel_error(code, error, *retryable),
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {
