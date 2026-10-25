@@ -262,6 +262,8 @@ async fn registered_native_value_allows_ordinary_agent_input_on_authenticated_wo
         std::fs::read_to_string(receipt).unwrap().trim(),
         "pointer-click\npointer-click\npointer-click"
     );
+    config.room_environment_worker_binding = None;
+    room.runtime.owned.config_projection.update(config);
     room.stop_browser_controller().await;
 }
 
