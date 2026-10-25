@@ -178,6 +178,11 @@ export async function coordinate(operation, args, options = {}) {
     // The kernel's answer carries the whole session and the note text: the coordinator needs only which prompt took it and its status.
       const taken = answer.ActivePromptSteered?.prompt ?? answer.PromptSubmitted?.outcome?.Started?.prompt ?? answer.PromptSubmitted?.outcome?.Queued?.prompt;
       const summary = { promptId: taken?.id ?? null, agentStatus: taken?.status ?? (answer.delivered ? 'delivered-event-unrecorded' : 'unknown') };
+      if (mode === 'prompt-started' || mode === 'prompt-queued') {
+        const current = await load();
+        current.latestPromptId = summary.promptId;
+        await save(path, current);
+      }
       ledger.sections.push({ sha256: section, parts: pending.parts, mode, at_ms: now(), ...summary });
       delete ledger.pendingDeliveries[section];
       await save(ledgerPath, ledger);
@@ -201,7 +206,7 @@ export async function coordinate(operation, args, options = {}) {
     if (now() >= record.input.deadlineMs) flags.push('LONG-ROUND');
     if (status.state === 'working' && Number.isFinite(status.lastActivityMs) && now() - status.lastActivityMs > 15 * 60_000) flags.push('SILENT');
     if (status.state === 'error') flags.push('ERROR');
-    return { lane, ...status, flags, limitation: 'Activity/deadline flags are signals; working state alone does not prove progress.' };
+    return { lane, ...status, admittedPromptId: record.latestPromptId ?? record.launch.promptId, flags, limitation: 'Activity/deadline flags are signals; working state alone does not prove progress.' };
   }
   if (operation === 'lanefin') {
     // A stopped worker is gone from its Room; its worktree and bundle are still collectable.

@@ -531,3 +531,37 @@ test('an unconfirmed stop keeps the round and lane reserved until the kernel con
   assert.equal(lane.run.finishReason, 'hard_stop');
   assert.equal(lane.finished, true);
 });
+
+for (const note of ['acceptance repair', 'direct note']) test(`a restored round finishes after a ${note} starts and completes a second prompt`, async t => {
+  const { createRound } = await import('./engine.mjs');
+  const r = await rig(t, ['alpha']);
+  const first = createRound(r.options); await first.add(r.spec.lanes[0]);
+  r.idle.add('alpha');
+  const resumed = createRound(r.options); const lane = await resumed.add(r.spec.lanes[0]);
+  const adapter = r.options.adapter;
+  let repaired = false;
+  r.options.adapter = async (op, input) => {
+    if (op === 'prompt') {
+      repaired = true;
+      return { PromptSubmitted: { outcome: { Started: { prompt: { id: 'second-prompt' } } } } };
+    }
+    const value = await adapter(op, input);
+    if (op === 'status' && repaired) value.completedTurn = { promptId: 'second-prompt', status: 'completed' };
+    return value;
+  };
+  if (note === 'acceptance repair') {
+    await writeFile(join(r.home, 'runs', 'ACCEPTANCE_UPDATE.json'), '{broken');
+    r.waits.push({}); await resumed.step(1);
+    await rm(join(r.home, 'runs', 'ACCEPTANCE_UPDATE.json'));
+  } else {
+    const file = join(r.home, 'direct-note.md');
+    await writeFile(file, '## follow-up\nComplete this note.\n');
+    await coordinate('steer', ['alpha', file], r.options);
+  }
+  assert.equal(repaired, true);
+  r.clock.ms += 420_000; // recovery must not mistake a later prompt for the interrupted one
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  await resumed.step(1);
+  assert.equal(lane.run.finishReason, 'finished');
+  assert.equal(lane.run.completedTurn.promptId, 'second-prompt');
+});

@@ -63,7 +63,7 @@ export function createRound(options) {
       log({ run }, 'kernel_downtime', { pausedMs: downMs });
     }
     if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
-    const lane = { entry, run, restored, recoveryStartedAtMs: now(), finished: Boolean(run.finishReason), needsRead: true };
+    const lane = { entry, run, recovering: restored, recoveryStartedAtMs: now(), finished: Boolean(run.finishReason), needsRead: true };
     if (!lane.finished) {
       if (!run.launchedAtMs) {
         const brief = await readFile(entry.brief, 'utf8');
@@ -361,14 +361,16 @@ export function createRound(options) {
       lane.run.health = { atMs: now(), state: status.state, flags: status.flags, lastActivityMs: status.lastActivityMs };
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
       for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
+      lane.run.currentPromptId = status.currentPrompt || status.admittedPromptId || lane.run.currentPromptId || lane.receipt.promptId;
       if (status.completedTurn) lane.run.completedTurn = status.completedTurn;
       if (status.state === 'idle' && !status.currentPrompt) {
-        if (lane.restored && !(status.completedTurn?.promptId === lane.receipt.promptId && status.completedTurn.status === 'completed')) {
+        if (lane.recovering && !(status.completedTurn?.promptId === lane.run.currentPromptId && status.completedTurn.status === 'completed')) {
           if (now() - lane.recoveryStartedAtMs >= 360_000 || ['cancelled', 'failed'].includes(status.completedTurn?.status)) {
             await collectUnderLock(lane, 'worker_lost');
           } else { lane.needsRead = true; log(lane, 'recovery_pending', {}); }
           continue;
         }
+        lane.recovering = false;
         lane.settled = true;
         if (!await nudgeAcceptance(lane)) await collectUnderLock(lane, 'finished', readsIdle(lane));
         lane.settled = false;
