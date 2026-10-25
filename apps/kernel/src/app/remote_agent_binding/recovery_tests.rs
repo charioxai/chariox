@@ -47,6 +47,15 @@ impl Fixture {
         hostile_alias: bool,
         only_second_slice: bool,
     ) -> Self {
+        Self::with_relay_fixture(slice_identity, hostile_alias, only_second_slice, true).await
+    }
+
+    async fn with_relay_fixture(
+        slice_identity: bool,
+        hostile_alias: bool,
+        only_second_slice: bool,
+        with_slices: bool,
+    ) -> Self {
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".into(),
             port: 0,
@@ -145,71 +154,73 @@ impl Fixture {
                 ),
             ));
             shutdown.push(tx);
-            let slice = home
-                .slices()
-                .create(
-                    &config.daemon_id,
-                    &config.host_machine_id,
-                    crate::slice::CreateSliceInput {
-                        source_slice_ref: None,
-                        name: format!("room-{index}"),
-                        backend: crate::slice::SliceBackendKind::LocalDocker,
-                        os: "linux".into(),
-                        display_mode: crate::slice::SliceDisplayMode::Headed,
-                        display_backend: Default::default(),
-                        workspace_id: None,
-                        worktree_id: None,
-                        workspace_mount: Some("/workspace".into()),
-                        development: None,
-                        worker_kernel_ref: Some(presence.kernel_id.clone()),
-                        display_url: None,
-                        provider_auth: Vec::new(),
-                        from_saved_state: None,
-                        now_ms: 1,
-                    },
-                )
-                .unwrap();
-            home.slices()
-                .set_worker_presence(
-                    &slice.id,
-                    Some(presence.kernel_id.clone()),
-                    Some(config.host_machine_id.clone()),
-                    vec![agent.provider().into()],
-                    2,
-                )
-                .unwrap();
-            home.slices()
-                .set_relay_endpoint(
-                    &slice.id,
-                    Some(crate::slice::SliceRelayEndpoint {
-                        url: relay_url.clone(),
-                        private: false,
-                    }),
-                    2,
-                )
-                .unwrap();
-            home.slices()
-                .set_development_publication(
-                    &slice.id,
-                    crate::slice::SliceDevelopmentPublication {
-                        publication_id: format!("recovery-{index}"),
-                        destination_root: workspace_root.display().to_string(),
-                        primary_repository_path: if index == 0 {
-                            workspace_a.display().to_string()
-                        } else {
-                            workspace_b.display().to_string()
+            if with_slices {
+                let slice = home
+                    .slices()
+                    .create(
+                        &config.daemon_id,
+                        &config.host_machine_id,
+                        crate::slice::CreateSliceInput {
+                            source_slice_ref: None,
+                            name: format!("room-{index}"),
+                            backend: crate::slice::SliceBackendKind::LocalDocker,
+                            os: "linux".into(),
+                            display_mode: crate::slice::SliceDisplayMode::Headed,
+                            display_backend: Default::default(),
+                            workspace_id: None,
+                            worktree_id: None,
+                            workspace_mount: Some("/workspace".into()),
+                            development: None,
+                            worker_kernel_ref: Some(presence.kernel_id.clone()),
+                            display_url: None,
+                            provider_auth: Vec::new(),
+                            from_saved_state: None,
+                            now_ms: 1,
                         },
-                        repository_paths: Vec::new(),
-                    },
-                    2,
-                )
-                .unwrap();
-            home.slices()
-                .bind_environment(room, &slice.id, 3, |_| Ok(()))
-                .unwrap();
+                    )
+                    .unwrap();
+                home.slices()
+                    .set_worker_presence(
+                        &slice.id,
+                        Some(presence.kernel_id.clone()),
+                        Some(config.host_machine_id.clone()),
+                        vec![agent.provider().into()],
+                        2,
+                    )
+                    .unwrap();
+                home.slices()
+                    .set_relay_endpoint(
+                        &slice.id,
+                        Some(crate::slice::SliceRelayEndpoint {
+                            url: relay_url.clone(),
+                            private: false,
+                        }),
+                        2,
+                    )
+                    .unwrap();
+                home.slices()
+                    .set_development_publication(
+                        &slice.id,
+                        crate::slice::SliceDevelopmentPublication {
+                            publication_id: format!("recovery-{index}"),
+                            destination_root: workspace_root.display().to_string(),
+                            primary_repository_path: if index == 0 {
+                                workspace_a.display().to_string()
+                            } else {
+                                workspace_b.display().to_string()
+                            },
+                            repository_paths: Vec::new(),
+                        },
+                        2,
+                    )
+                    .unwrap();
+                home.slices()
+                    .bind_environment(room, &slice.id, 3, |_| Ok(()))
+                    .unwrap();
+                slices.push(slice);
+            }
             workers.push(worker);
             presences.push(presence);
-            slices.push(slice);
         }
         for presence in &presences {
             tokio::time::timeout(Duration::from_secs(3), async {
@@ -1012,3 +1023,5 @@ async fn slice_machine_selection_reserved_worker_without_local_record_is_exclude
     drop(home);
     fixture.assert_foreign_worker_untouched().await;
 }
+
+mod move_tests;

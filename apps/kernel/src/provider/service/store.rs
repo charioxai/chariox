@@ -18,6 +18,7 @@ use super::{
 #[derive(Clone)]
 pub struct ProviderProcessServiceStore {
     inner: Arc<Mutex<ProviderProcessService>>,
+    agent_move_admission: Arc<Mutex<Option<crate::agent_move::AgentMoveStore>>>,
     managed_admission_gate:
         Arc<Mutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
 }
@@ -33,7 +34,33 @@ impl ProviderProcessServiceStore {
     pub fn new(service: ProviderProcessService) -> Self {
         Self {
             inner: Arc::new(Mutex::new(service)),
+            agent_move_admission: Default::default(),
             managed_admission_gate: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn set_agent_move_admission(&self, store: crate::agent_move::AgentMoveStore) {
+        *self
+            .agent_move_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
+    }
+
+    fn with_agent_move_admission<T>(
+        &self,
+        session: &str,
+        agent: Option<&str>,
+        preparation: Option<&str>,
+        action: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let store = self
+            .agent_move_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match store {
+            Some(store) => store.with_admission(session, agent, preparation, action),
+            None => action(),
         }
     }
 
@@ -237,14 +264,34 @@ impl ProviderProcessServiceStore {
         &self,
         request: LaunchProviderRequest,
     ) -> Result<ProviderRunStartedOutcome, DaemonError> {
-        self.with_managed_admission(|| self.write().start_run_provider_only(request))
+        let session = request.session_id.clone();
+        let agent = request.agent_id.clone();
+        let preparation = request.agent_move_preparation.clone();
+        self.with_managed_admission(|| {
+            self.with_agent_move_admission(
+                &session,
+                agent.as_deref(),
+                preparation.as_deref(),
+                || self.write().start_run_provider_only(request),
+            )
+        })
     }
 
     pub(crate) fn launch_run_detached(
         &self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.with_managed_admission(|| self.write().launch_run_detached(request))
+        let session = request.session_id.clone();
+        let agent = request.agent_id.clone();
+        let preparation = request.agent_move_preparation.clone();
+        self.with_managed_admission(|| {
+            self.with_agent_move_admission(
+                &session,
+                agent.as_deref(),
+                preparation.as_deref(),
+                || self.write().launch_run_detached(request),
+            )
+        })
     }
 
     pub(crate) fn park_run_provider_only(
@@ -260,11 +307,21 @@ impl ProviderProcessServiceStore {
         session_id: &str,
         run_id: &str,
     ) -> Result<ProviderRunResumedOutcome, DaemonError> {
-        self.with_managed_admission(|| self.write().resume_run_provider_only(session_id, run_id))
+        self.with_managed_admission(|| {
+            let run = self.read().get_run(run_id)?;
+            self.with_agent_move_admission(session_id, run.agent_instance_id(), None, || {
+                self.write().resume_run_provider_only(session_id, run_id)
+            })
+        })
     }
 
     pub fn resume_run_detached(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
-        self.with_managed_admission(|| self.write().resume_run_detached(run_id))
+        self.with_managed_admission(|| {
+            let run = self.read().get_run(run_id)?;
+            self.with_agent_move_admission(run.session_id(), run.agent_instance_id(), None, || {
+                self.write().resume_run_detached(run_id)
+            })
+        })
     }
 
     pub(crate) fn terminate_run_provider_only(
@@ -530,20 +587,24 @@ impl ProviderProcessServiceStore {
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
     ) -> Result<(), DaemonError> {
-        self.write().enqueue_structured_prompt_submit(
-            session_id,
-            provider_run_id,
-            agent_id,
-            prompt_id,
-            origin_prompt_id,
-            run,
-            prompt,
-            hidden_system_context,
-            attachments,
-            mode,
-            private_assessment_evidence,
-            steering,
-        )
+        let move_session = session_id.clone();
+        let move_agent = agent_id.clone();
+        self.with_agent_move_admission(&move_session, Some(&move_agent), None, || {
+            self.write().enqueue_structured_prompt_submit(
+                session_id,
+                provider_run_id,
+                agent_id,
+                prompt_id,
+                origin_prompt_id,
+                run,
+                prompt,
+                hidden_system_context,
+                attachments,
+                mode,
+                private_assessment_evidence,
+                steering,
+            )
+        })
     }
 
     pub(crate) fn run_structured_utility_prompt(

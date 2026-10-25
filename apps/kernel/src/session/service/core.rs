@@ -102,6 +102,20 @@ impl SessionService {
         Ok(session)
     }
 
+    pub(crate) fn restore_ephemeral_session(
+        &mut self,
+        session: RuntimeSession,
+    ) -> Result<RuntimeSession, DaemonError> {
+        if !session.is_hidden() {
+            return Err(DaemonError::LocalTransport {
+                operation: "restore moved execution",
+                message: "Move backing Room must remain hidden".into(),
+            });
+        }
+        self.ephemeral_session_ids.insert(session.id().to_string());
+        Ok(self.store.insert(session))
+    }
+
     pub(crate) fn is_ephemeral_session(&self, session_id: &str) -> bool {
         self.ephemeral_session_ids.contains(session_id)
     }

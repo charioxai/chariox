@@ -242,6 +242,11 @@ impl KernelRuntimeOwnedState {
             crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
         request = self.prepare_provider_launch_account(request)?;
         let session = self.session_store.get_session(&request.session_id)?;
+        let session = request
+            .agent_id
+            .as_deref()
+            .map(|agent| self.agent_moves.execution_session(&session, agent))
+            .unwrap_or(session);
         let config = self.config_projection.snapshot();
         let agent = request
             .agent_id
@@ -366,6 +371,9 @@ impl KernelRuntimeOwnedState {
             mcp_servers,
         )?);
         request = crate::app::apply_metaagent_launch_policy(request, agent.as_ref());
+        if let Some(checkpoint) = self.agent_moves.checkpoint_for_launch(&request)? {
+            request = request.with_native_checkpoint(checkpoint);
+        }
         Ok(request)
     }
 
@@ -374,6 +382,11 @@ impl KernelRuntimeOwnedState {
         request: crate::provider::LaunchProviderRequest,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         let session = self.session_store.get_session(&request.session_id)?;
+        let session = request
+            .agent_id
+            .as_deref()
+            .map(|agent| self.agent_moves.execution_session(&session, agent))
+            .unwrap_or(session);
         let agent = request
             .agent_id
             .as_deref()

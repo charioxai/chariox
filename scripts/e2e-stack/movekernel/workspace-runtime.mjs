@@ -108,6 +108,25 @@ async function runtime(name) {
     }
     throw Error(name + ' readiness timeout');
 }
+// Restart only this harness's kernel and reconnect the same real TUI Room.
+async function restart(r, workspace, sessionId) {
+    await r.tui?.close();
+    await r.client?.close();
+    await stop(r.child);
+    r.child = spawnOwned(kernel, [], { cwd: r.path, env: r.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const stream = createWriteStream(r.path + '/kernel-restart.private.log', { mode: 0o600 });
+    r.child.stdout.pipe(stream); r.child.stderr.pipe(stream);
+    let ready = false;
+    for (let n = 0; n < 120; n++) {
+        const client = new LocalIpcClient(r.url, { timeoutMs: 10000, localAuthEnvironment: r.env });
+        try { await client.send({ ListSessions: null }); r.client = client; ready = true; break; }
+        catch { await client.close(); if (r.child.exitCode !== null) throw Error('Restarted kernel exited'); await sleep(250); }
+    }
+    assert.ok(ready, 'Restarted kernel readiness');
+    r.tui = await openTui({ tree: workspace, env: r.env, url: r.url, profile: r.accountProfile.profile_id, root: r.path, binary, provider: 'codex', model: 'gpt-6-luna', session: sessionId, clientId: 'movekernel-restarted-' + r.name });
+    await unlock(r);
+    await record(r.name + '-restart', { pid: r.child.pid, sameRoom: sessionId });
+}
 async function enroll(r) {
     const context = await browser.newContext(), page = await context.newPage();
     try {
@@ -287,4 +306,4 @@ async function launchBrowser() {
     const { chromium } = await import('/w/valenv/tools/node_modules/playwright-core/index.mjs');
     browser = await chromium.launch({ headless: true, executablePath: '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 }
-export { root, out, kernel, binary, origin, relay, sha, record, runtime, enroll, project, selection, copy, launchTarget, launchBrowser, close, release };
+export { root, out, kernel, binary, origin, relay, sha, record, runtime, enroll, project, selection, copy, launchTarget, launchBrowser, close, release, restart, cli };

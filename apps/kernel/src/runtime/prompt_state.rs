@@ -146,6 +146,7 @@ impl Drop for PromptDeliverySettlementClaim {
 struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
     profile_transitions: BTreeMap<PromptStateKey, Arc<()>>,
+    agent_move_admission: Option<crate::agent_move::AgentMoveStore>,
     queue_promotions: BTreeSet<PromptStateKey>,
     archived_agents: BTreeSet<PromptStateKey>,
 }
@@ -492,9 +493,8 @@ impl PromptStateOwner {
                 return Ok(outcome);
             }
         }
-        let profile_transition_pending = owner
-            .profile_transitions
-            .contains_key(&PromptStateKey::new(session.id(), &agent_id));
+        let profile_transition_pending =
+            owner.execution_transition_pending(&PromptStateKey::new(session.id(), &agent_id));
         // A paused task parks its notes on purpose; they resume with the task and
         // must not hold back the owner's own prompt.
         let backlog_parked = session
@@ -1060,9 +1060,14 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
-        self.state
+        let mut owner = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id)) {
+            return None;
+        }
+        owner
             .ensure_agent_state(session, agent_id)
             .queued_prompts
             .front()
@@ -1211,10 +1216,7 @@ impl PromptStateOwner {
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
-        if owner
-            .profile_transitions
-            .contains_key(&PromptStateKey::new(session.id(), agent_id))
-        {
+        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id)) {
             return Ok(None);
         }
         let state = owner.ensure_agent_state(session, agent_id);
@@ -1237,10 +1239,7 @@ impl PromptStateOwner {
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
-        if owner
-            .profile_transitions
-            .contains_key(&PromptStateKey::new(session.id(), agent_id))
-        {
+        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id)) {
             return Ok(None);
         }
         let state = owner.ensure_agent_state(session, agent_id);
@@ -3017,3 +3016,21 @@ mod tests {
 #[cfg(test)]
 #[path = "prompt_state/dispatch_intent_tests.rs"]
 mod dispatch_intent_tests;
+
+impl PromptStateOwner {
+    pub(crate) fn set_agent_move_admission(&self, store: crate::agent_move::AgentMoveStore) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .agent_move_admission = Some(store);
+    }
+}
+impl PromptStateOwnerState {
+    fn execution_transition_pending(&self, key: &PromptStateKey) -> bool {
+        self.profile_transitions.contains_key(key)
+            || self
+                .agent_move_admission
+                .as_ref()
+                .is_some_and(|store| store.dispatch_fenced(&key.session_id, &key.agent_id))
+    }
+}

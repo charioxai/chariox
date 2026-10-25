@@ -1277,3 +1277,18 @@ impl RuntimeSession {
 
 #[cfg(test)]
 mod tests;
+
+impl RuntimeSession {
+    pub(crate) fn for_execution_project(
+        &self,
+        project_id: &str,
+        workspace: &str,
+        worktree: &str,
+    ) -> Self {
+        let mut execution = self.clone();
+        execution.project_id = project_id.to_string();
+        execution.workspace_id = workspace.to_string();
+        execution.worktree_id = worktree.to_string();
+        execution
+    }
+}

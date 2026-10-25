@@ -17,3 +17,13 @@ systemd-run --scope -p MemoryMax=4G node scripts/e2e-stack/movekernel/workspace-
 The origin must have normal validation device approval and support the current kernel enrollment contract. The harness links the existing profile through the product API to satisfy terminal admission; it submits no provider turn. Copy selects an empty kernel context and transfers only the selected Project development setup.
 
 The divergence check observes only archive filenames in its own configured transfer store, then occupies the generated destination before import. It never calls private import helpers or constructs admission tickets. The target must refuse publication and preserve the existing inode, Git state and file tree. Runtime processes and disposable state are cleaned up; value-free JSON results and real TUI review captures remain in the evidence directory.
+
+`durable-move.mjs` uses the same environment with a protocol608/214 kernel and
+its real built TUI. It runs three short official Codex gpt-6-luna/low turns,
+Moves forward, Returns, and restarts the home kernel after each source capture.
+The same Room recalls the original marker and the intervening target turn;
+completed shell output proves execution at each receipt's primary path. The
+drill checks the supporting directory, latest target files, and preservation
+of divergent original home work. It uses the public Move requests while the
+route action UI remains a separate work item. Journal observation selects the
+restart moment; it never changes a record, artifact, receipt, or provider state.

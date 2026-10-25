@@ -717,6 +717,9 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
     reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
 )]
 pub enum RelayPeerRequest {
+    AgentMove {
+        request: crate::agent_move::peer::AgentMovePeerRequest,
+    },
     ListWorkflowNotificationSources {
         protocol_version: u32,
     },
@@ -1221,6 +1224,9 @@ impl RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    AgentMove {
+        response: crate::agent_move::peer::AgentMovePeerResponse,
+    },
     LeasedWatchedProcess {
         receipt: Option<crate::durable_state::agent_lifecycle::LeasedProcessReceipt>,
     },

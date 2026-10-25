@@ -76,3 +76,41 @@ MK01 acceptance.
 No managed-only provider branch or shutdown policy is added. Integrated ordinary
 and managed lifecycle parity, peer fencing, Mac directions, full workspace
 transfer, UI and sustained Move drills remain separate acceptance cells.
+
+## Durable Move and Return
+
+MP-08 / MP-09 / MP-10 / MP-11: protocol 608/214 composes this adapter with
+Project transfer. The home kernel journals one generation per agent. It fences
+prompt and provider admission, confirms source teardown, and captures the native
+checkpoint together with the current Project. Encrypted peer requests carry
+bounded private chunks; clients receive no native payload.
+
+The target imports into a new unused root and returns a receipt identifying the
+primary workspace and all supporting workspaces, including directories. Its
+agent must use that primary path. Native import and the official session probe
+finish before the home operation commits and retires its source. A readiness
+probe admits no user turn. The next real provider launch retains the complete
+checkpoint binding until native continuity is accepted.
+
+Return captures the current target Project again. It creates another Project
+identity and another unused root, including a separate product-materialized
+provider profile where native history could otherwise conflict. The original
+home checkout and previous materializations remain available; Return never
+resets, merges, or overwrites them. Home Room identity, history, and authority
+stay at home. Only its agent's execution workspace changes.
+
+Private journals recover independently of periodic Room snapshots. An
+acknowledged worker backing restores idle with its original lease timestamps
+and caller bindings, without starting a provider run. An unacknowledged empty
+lease can be recreated from the same materialization receipt. Home recovery
+retries the same generation under the admission fence. Before binding, a
+recoverable failure can release the source and roll back. After commitment,
+recovery finishes target activation and source retirement. An unavailable peer
+leaves the operation fenced for retry after reconnection.
+
+A source with active provider work or a live leased process wake must finish or
+cancel that work first. If a restart lost the source run before its checkpoint
+was captured, the operation rolls back; resume the source for one completed
+turn before retrying. A stored, still-required checkpoint also supports an
+immediate Return before the first target turn. Scope remains the managed Codex
+adapter's supported CLI version and platform contract.

@@ -3327,3 +3327,88 @@ mod cleanup_tests {
             .unwrap());
     }
 }
+
+impl DaemonApp {
+    pub(crate) fn resolve_agent_move_kernel(
+        &self,
+        agent: &AgentInstance,
+        kernel_id: &str,
+    ) -> Result<(RelayKernelPresence, Option<DaemonConfig>), DaemonError> {
+        let relay_override = self.slice_relay_config_for_kernel_ref(kernel_id);
+        let relay = relay_override
+            .clone()
+            .unwrap_or_else(|| self.config.clone());
+        let discovery = self.remote_worker_discovery_config(kernel_id, relay)?;
+        let worker =
+            self.select_remote_kernel_by_ref_with_config(kernel_id, agent.provider(), &discovery)?;
+        Ok((worker, relay_override))
+    }
+
+    pub(crate) fn resolve_agent_move_destination(
+        &self,
+        agent: &AgentInstance,
+        reference: &str,
+    ) -> Result<(RelayKernelPresence, Option<DaemonConfig>), DaemonError> {
+        let (_, projected) = self.remote_relay_inventory_projection_store().snapshot();
+        if slice_recovery::recorded_slice_worker_id(&self.slices, reference)?.is_some()
+            || projected
+                .iter()
+                .any(|kernel| kernel_presence_matches_ref(kernel, reference))
+        {
+            return self.resolve_agent_move_kernel(agent, reference);
+        }
+        let relay_override = self.slice_relay_config_for_kernel_ref(reference);
+        let relay = relay_override
+            .clone()
+            .unwrap_or_else(|| self.config.clone());
+        let discovery = self.remote_worker_discovery_config(reference, relay)?;
+        let worker = self.select_remote_kernel_for_machine_with_config(
+            reference,
+            agent.provider(),
+            &discovery,
+        )?;
+        Ok((worker, relay_override))
+    }
+
+    pub(crate) fn bind_materialized_agent_move(
+        &mut self,
+        agent: &AgentInstance,
+        identity: &crate::agent_move::AgentMoveIdentity,
+        primary: &std::path::Path,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        let (worker, relay) = self.resolve_agent_move_kernel(agent, &identity.target_kernel_id)?;
+        if worker.kernel_id != identity.target_kernel_id
+            || crate::runtime::terminal_pairings::public_key_thumbprint(&worker.public_key)
+                != identity.target_key_thumbprint
+        {
+            return Err(crate::agent_move::error(
+                "Target kernel identity changed after the Project was imported",
+            ));
+        }
+        let mut execution = agent.clone();
+        execution.set_worktree_id(Some(primary.display().to_string()));
+        self.bind_remote_agent_to_worker_authorized(
+            &execution,
+            &worker,
+            Some(primary.display().to_string()),
+            None,
+            relay,
+            authorize,
+            false,
+        )?;
+        let moved = self.agents.update_agent_config(
+            agent.id(),
+            None,
+            None,
+            None,
+            Some(Some(primary.display().to_string())),
+        )?;
+        self.durable_state_store().append_event(
+            "agent.updated",
+            Some(moved.id().to_string()),
+            serde_json::json!({"agent":moved,"source":"agent_move_workspace"}),
+        )?;
+        Ok(moved)
+    }
+}

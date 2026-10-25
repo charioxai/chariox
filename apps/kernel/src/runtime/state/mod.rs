@@ -34,6 +34,11 @@ mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
+mod agent_move_peer;
+mod agent_move_runtime;
+mod agent_move_source;
+mod agent_move_target;
+mod agent_move_transport;
 mod context_handoff;
 mod failed_request_owned_state;
 mod native_prompt_handoff;
@@ -226,6 +231,7 @@ struct KernelRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    agent_moves: crate::agent_move::AgentMoveStore,
     pending_provider_launch_credentials: Arc<
         std::sync::Mutex<
             BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
@@ -758,6 +764,7 @@ impl KernelRuntimeState {
             sudo_windows,
             pending_agent_context_handoffs,
             room_terminals,
+            agent_moves,
         ) = {
             let started = Instant::now();
             loop {
@@ -779,6 +786,7 @@ impl KernelRuntimeState {
                         app.sudo_window_projection(),
                         app.pending_agent_context_handoff_store(),
                         app.room_terminals(),
+                        app.agent_moves.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -992,6 +1000,7 @@ impl KernelRuntimeState {
                 agent_store,
                 attachment_store,
                 provider_store,
+                agent_moves,
                 pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
                     BTreeMap::new(),
                 )),

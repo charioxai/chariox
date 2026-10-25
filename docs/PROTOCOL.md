@@ -5654,3 +5654,15 @@ The Web dialog presentation depends on 630 and feature-detects the optional
 field; older kernels keep their existing behavior and the overall Web minimum
 does not rise. Both native-window and mirror/video viewers use this shared
 state. The relay remains an opaque encrypted carrier.
+### Durable agent Move peer carrier (608/214)
+
+MP-08 / MP-09 / MP-10 / MP-11: `AgentMove` peer messages identify the home,
+source, target, owner, operation generation, and pinned kernel keys. They
+prepare source capture, transfer bounded workspace/native chunks, publish a
+Project receipt, attach a backing, and activate or retire execution. The
+ordinary encrypted peer admission and lease caller checks apply. Temporary
+peer connection suffixes identify the same canonical home kernel.
+
+The home owns commitment and retries. Publishing files or probing native state
+does not authorize a prompt. Native bytes stay in protected artifacts and peer
+transport; the public client protocol gains no native-history projection.

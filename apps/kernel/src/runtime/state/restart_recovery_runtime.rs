@@ -382,6 +382,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return summary;
         }
+        summary.failed_reconciliations += self.recover_agent_moves_after_restart().await;
         let sessions = self.owned.session_store.list_all_sessions();
         // Publication work is autonomous and already durably admitted. Resume it before
         // transcript reconciliation for unrelated interactive sessions, which may require slow
