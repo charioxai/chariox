@@ -3,6 +3,8 @@
 //! Provider CLIs continue to own credential formats. This registry stores only
 //! stable Chariox selection metadata and host-local provider root locators.
 
+#[path = "account_profile_copy.rs"]
+mod account_copy;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
@@ -921,6 +923,8 @@ struct ReplacedProviderAccountProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryDocument {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    account_copies: Vec<account_copy::InstalledAccountCopy>,
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
@@ -941,6 +945,7 @@ struct PendingReplicaCleanup {
 impl Default for RegistryDocument {
     fn default() -> Self {
         Self {
+            account_copies: Vec::new(),
             version: REGISTRY_VERSION,
             credential_copy_notices: Vec::new(),
             profiles: Vec::new(),

@@ -123,6 +123,12 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
     },
+    #[error("provider account copy failed: {message}")]
+    ProviderAccountCopy {
+        code: &'static str,
+        message: &'static str,
+        retryable: bool,
+    },
     #[error("managed context `{operation}` failed: {message}")]
     ManagedContext {
         code: &'static str,

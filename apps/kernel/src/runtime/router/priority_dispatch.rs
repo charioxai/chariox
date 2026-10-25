@@ -596,6 +596,15 @@ impl CommandRouter {
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
+            LocalDaemonRequest::CopyProviderAccountToKernel(request) => {
+                boxed_handler(|| async move {
+                    let caller = command_caller_user_id(&command);
+                    self.runtime_state
+                        .copy_provider_account_to_kernel(&caller, request)
+                        .await
+                        .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
+                })
+            }
             request @ (LocalDaemonRequest::ListProviderAccountProfiles(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::CreateProviderAccountProfile(_)

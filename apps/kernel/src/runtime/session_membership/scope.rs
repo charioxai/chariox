@@ -714,6 +714,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RefreshProviderAccountProfile(_)
         | LocalDaemonRequest::RemoveProviderAccountProfile(_)
         | LocalDaemonRequest::DeleteProviderAccountProfileData(_)
+        | LocalDaemonRequest::CopyProviderAccountToKernel(_)
         | LocalDaemonRequest::SetProviderAccountCredential(_)
         | LocalDaemonRequest::InstallMcpServer(_)
         | LocalDaemonRequest::UpdateMcpServer(_)

@@ -963,6 +963,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         return crate::runtime::kernel_access::Refusal::Ended.transport_error();
     }
     match error {
+        DaemonError::ProviderAccountCopy {
+            code, retryable, ..
+        } => kernel_error(code, error, *retryable),
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
         }

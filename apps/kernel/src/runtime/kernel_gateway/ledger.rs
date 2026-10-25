@@ -232,6 +232,8 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
     match request {
         // The answer comes when the person has answered the popup there.
         LocalDaemonRequest::RequestKernelSudo(_) => super::REQUEST_DEADLINE + SUDO_ANSWER_WAIT,
+        // Owner discovery, the protocol probe and the official verification turn are bounded independently.
+        LocalDaemonRequest::CopyProviderAccountToKernel(_) => std::time::Duration::from_secs(150),
         _ => super::REQUEST_DEADLINE + wait,
     }
 }

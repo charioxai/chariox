@@ -108,6 +108,13 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::RelayPeerCleanupAbsent { code, .. } => {
             relay_error(code, &error.to_string(), false)
         }
+        DaemonError::ProviderAccountCopy {
+            code, retryable, ..
+        } => relay_error(
+            code,
+            crate::provider_account_copy::failure_message(code),
+            *retryable,
+        ),
         DaemonError::ManagedContext {
             code, retryable, ..
         } => relay_error(code, &error.to_string(), *retryable),

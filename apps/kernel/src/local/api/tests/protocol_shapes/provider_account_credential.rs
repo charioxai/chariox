@@ -64,18 +64,80 @@ fn account_copy_public_and_encrypted_peer_requests_are_admitted() {
         "target_kernel_id":"target", "target_key_thumbprint":"a".repeat(64), "replace":false
     }});
     let parsed = serde_json::from_value::<LocalDaemonRequest>(source.clone());
-    assert!(parsed.is_ok(), "MP-08/MP-09/MP-10/MP-11 source request must be supported");
-    assert_eq!(serde_json::to_value(parsed.unwrap()).unwrap(), source);
+    assert!(
+        parsed.is_ok(),
+        "MP-08/MP-09/MP-10/MP-11 source request must be supported"
+    );
+    let parsed = parsed.unwrap();
+    assert!(
+        crate::runtime::kernel_gateway::ledger::deadline_for(&parsed)
+            >= std::time::Duration::from_secs(150)
+    );
+    assert_eq!(serde_json::to_value(parsed).unwrap(), source);
     let private = crate::transport::relay_crypto::generate_private_key_base64();
-    let public = crate::transport::relay_crypto::public_key_from_private_key_base64(&private).unwrap();
+    let public =
+        crate::transport::relay_crypto::public_key_from_private_key_base64(&private).unwrap();
     let peer = serde_json::json!({"kind":"install_provider_account_copy", "binding": {
         "operation_id":"op-1", "provider":"claude", "source_profile_id":"work-exact",
         "source_kernel_id":"source", "source_key_thumbprint":"b".repeat(64),
         "target_kernel_id":"target", "target_key_thumbprint":"a".repeat(64), "replace":false
     }, "credential":"synthetic-copy-canary"});
-    let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(&private, &public, &serde_json::to_vec(&peer).unwrap()).unwrap();
-    let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key(&private, &encrypted).unwrap();
-    let request = serde_json::from_slice::<crate::transport::relay_peer::RelayPeerRequest>(&plaintext.plaintext);
-    assert!(request.is_ok(), "encrypted account install must be supported");
+    let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &private,
+        &public,
+        &serde_json::to_vec(&peer).unwrap(),
+    )
+    .unwrap();
+    let plaintext =
+        crate::transport::relay_crypto::decrypt_payload_for_private_key(&private, &encrypted)
+            .unwrap();
+    let request = serde_json::from_slice::<crate::transport::relay_peer::RelayPeerRequest>(
+        &plaintext.plaintext,
+    );
+    assert!(
+        request.is_ok(),
+        "encrypted account install must be supported"
+    );
     assert!(!format!("{:?}", request.unwrap()).contains("synthetic-copy-canary"));
+}
+
+#[test]
+fn account_copy_protocol_609_peer_215_snapshot_and_hash() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let request:LocalDaemonRequest=serde_json::from_value(serde_json::json!({"CopyProviderAccountToKernel":{
+        "provider":"claude","account_profile":"work","operation_id":"op-1","target_kernel_id":"target",
+        "target_key_thumbprint":"a".repeat(64),"replace":false
+    }})).unwrap();
+    let receipt = crate::provider_account_copy::ProviderAccountCopyReceipt {
+        operation_id: "op-1".into(),
+        provider: "claude".into(),
+        source_profile_id: "work".into(),
+        target_kernel_id: "target".into(),
+        account_profile: "copy-target".into(),
+    };
+    let snapshot = serde_json::json!([
+        request,
+        LocalDaemonResponse::ProviderAccountCopied {
+            receipt: receipt.clone()
+        },
+        crate::transport::relay_peer::RelayPeerResponse::ProviderAccountCopyInstalled { receipt },
+        crate::transport::relay_peer::RelayPeerResponse::ProviderAccountCopyFailed {
+            code: "provider_account_copy_conflict".into()
+        }
+    ]);
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+    );
+    assert_eq!(
+        hash,
+        "d92c0ee16c13a2c607d978b1dc4d41bb3dc151d3538ecd6ba76fa24492a5def7"
+    );
 }
