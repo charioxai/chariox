@@ -17,7 +17,7 @@ if(root===repo||root.startsWith(repo+path.sep)||evidence===repo||evidence.starts
 const protocol=Number(execFileSync(kernel,['--print-local-daemon-protocol-version'],{encoding:'utf8'}).trim());
 if(protocol<601)throw Error('Required native resume needs kernel protocol 601');
 const head=execFileSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).trim();
-const summary={MP:['MP-08','MP-09','MP-10','MP-11'],head,protocol,scope:'Codex Chariox Linux/Linux native adapter; no Move orchestration',started:new Date().toISOString(),processes:[],steps:[]};
+const summary={stateRoot:root,MP:['MP-08','MP-09','MP-10','MP-11'],head,protocol,scope:'Codex Chariox Linux/Linux native adapter; no Move orchestration',started:new Date().toISOString(),processes:[],steps:[]};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const save=()=>writeFile(evidence+'/summary.json',JSON.stringify(summary,null,2)+'\n',{mode:0o600});
 const children=[],clients=[],tuis=[];let sourceRun,sourceStack,marker,ownsRoot=false,driverSerial=0;const owned=new Map();
@@ -84,7 +84,8 @@ try{
  const sourceTui=await openTui({tree:source.dir+'/workspace',env:source.env,url:'ws://127.0.0.1:'+source.env.CHARIOX_KERNEL_PORT+'/kernel',profile:linked.profile_id,root:source.dir,provider:'codex',model:'gpt-6-luna',binary:tuiBinary});sourceTui.child.charioxStart=processes().find(p=>p.pid===sourceTui.child.pid)?.start;tuis.push(sourceTui);
  await command(sourceTui,'permissions required');await command(sourceTui,'agent variant '+await focus(sourceTui)+' low');
  marker='orchid-'+randomBytes(12).toString('hex');
- await turn(sourceTui,'Remember this marker for our next task: '+marker+'. Reply only ACK. Do not use tools or create agents.');
+ const sourceTurn=await turn(sourceTui,'Remember this marker for our next task: '+marker+'. Reply only ACK. Do not use tools or create agents.');
+ if(sourceTurn.snapshot.session.agents.find(a=>a.id===sourceTurn.snapshot.session.focusedAgentId)?.state==='Error'||!entries(sourceTurn.snapshot).some(r=>r.role==='assistant'&&(r.text??'').includes('ACK')))throw Error('The real source provider turn did not succeed');
  sourceRun=await run(source,sourceTui);if(!sourceRun.provider_session_id)throw Error('Source has no real native thread');
  summary.steps.push({sourceRealTurn:true,model:sourceRun.model,variant:sourceRun.variant});await save();
  const session=(await request(target.client,{CreateSession:{workspace_id:target.dir+'/workspace',worktree_id:target.dir+'/workspace',alias:'Target resume proof',agent_defaults:{provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',effort:'low',permission_level:'required'}}},'SessionCreated'));
@@ -99,17 +100,18 @@ try{
  if(targetPrompt.includes(marker))throw Error('Drill must not send the earlier marker to the target');
  const first=await turn(targetTui,targetPrompt);
  const rendered=JSON.stringify(entries(first.snapshot)),targetRun=await run(target,targetTui);
- const positive={sameNativeId:targetRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:rendered.includes(marker),relocatedWorkspaceExecuted:rendered.includes(target.dir+'/workspace'),model:targetRun.model,variant:targetRun.variant,state:first.snapshot.session.agents.find(a=>a.id===first.snapshot.session.focusedAgentId)?.state,observedRoles:[...new Set(entries(first.snapshot).map(row=>row.role))]};
+ const positive={sameNativeId:targetRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:entries(first.snapshot).some(row=>row.role==='assistant'&&(row.text??'').includes(marker)),relocatedWorkspaceExecuted:rendered.includes(target.dir+'/workspace'),model:targetRun.model,variant:targetRun.variant,state:first.snapshot.session.agents.find(a=>a.id===first.snapshot.session.focusedAgentId)?.state,observedRoles:[...new Set(entries(first.snapshot).map(row=>row.role))]};
  summary.positive=positive;await save();
  if(!positive.sameNativeId||!positive.contextRecalled||!positive.relocatedWorkspaceExecuted||positive.state==='Error')throw Error('Native continuity or relocated workspace failed');
  const endedTarget=await terminate(target,targetRun);
  await adapter('delete',target,endedTarget,targetHome);
+ const nativeBeforeFailure=new Set(await readdir(targetHome+'/sessions',{recursive:true}).catch(()=>[]));
  await request(target.client,{LaunchProviderRun:{session_id:session.session.id,agent_id:session.agent.id,adapter_key:'codex',provider:'codex',account_profile:linked.profile_id,model:'gpt-6-luna',variant:'low',provider_session_id:sourceRun.provider_session_id,native_tui:false,native_checkpoint_binding:binding}},'ProviderRunLaunched');
  const failed=await turn(targetTui,'Reply only ACK. Do not use tools or create agents.');
  const failedAgain=await turn(targetTui,'Reply only ACK. Do not use tools or create agents.');
  const retained=await run(target,targetTui);
  const files=await readdir(targetHome+'/sessions',{recursive:true}).catch(()=>[]);
- summary.negative={firstError:failed.snapshot.session.agents.find(a=>a.id===failed.snapshot.session.focusedAgentId)?.state==='Error',secondError:failedAgain.snapshot.session.agents.find(a=>a.id===failedAgain.snapshot.session.focusedAgentId)?.state==='Error',sameNativeIdRetained:retained.provider_session_id===sourceRun.provider_session_id,noFreshNativeArtifacts:!files.some(name=>name.endsWith('.jsonl'))};await save();
+ summary.negative={firstError:failed.snapshot.session.agents.find(a=>a.id===failed.snapshot.session.focusedAgentId)?.state==='Error',secondError:failedAgain.snapshot.session.agents.find(a=>a.id===failedAgain.snapshot.session.focusedAgentId)?.state==='Error',sameNativeIdRetained:retained.provider_session_id===sourceRun.provider_session_id,noFreshNativeArtifacts:!files.some(name=>name.endsWith('.jsonl')&&!nativeBeforeFailure.has(name))};await save();
  if(Object.values(summary.negative).some(value=>value!==true))throw Error('Required resume silently recovered or lost its native identity');
  summary.passed=true;
 
