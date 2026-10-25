@@ -19,6 +19,7 @@ impl CommandRouter {
                 LocalDaemonRequest::KernelBrowser(_)
                     | LocalDaemonRequest::RespondToHandoff(_)
                     | LocalDaemonRequest::Notes(_)
+                    | LocalDaemonRequest::Dictation(_)
                     | LocalDaemonRequest::CaptureVisibleRegion(_)
                     | LocalDaemonRequest::OpenUserAppView(_)
                     | LocalDaemonRequest::ListUserAppViews(_)

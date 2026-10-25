@@ -804,6 +804,7 @@ async fn dispatch_relay_client_request(
         &request,
         LocalDaemonRequest::KernelBrowser(_)
             | LocalDaemonRequest::Notes(_)
+            | LocalDaemonRequest::Dictation(_)
             | LocalDaemonRequest::RespondToHandoff(_)
     ) && !command.is_terminal_caller()
     {

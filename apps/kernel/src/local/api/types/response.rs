@@ -31,6 +31,7 @@ pub enum LocalDaemonResponse {
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
     Notes { result: NoteResult, },
+    Dictation { result: DictationResult, },
     VisibleRegionCaptured { capture: VisibleRegionCapture },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },

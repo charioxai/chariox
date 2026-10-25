@@ -76,6 +76,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("room.pin", Interactive).session(&request.session_id)
         }
         LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
+        LocalDaemonRequest::Dictation(_) => LocalRequestMetadata::new("dictation", Normal),
         LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
         LocalDaemonRequest::CaptureVisibleRegion(_) => {
             LocalRequestMetadata::new("screenshot.capture", Normal)
@@ -619,6 +620,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
         LocalDaemonRequest::Notes(_) => "notes",
+        LocalDaemonRequest::Dictation(_) => "dictation",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
         LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",

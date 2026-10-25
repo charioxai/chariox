@@ -4799,6 +4799,21 @@ clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust has
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
 
+Allocated 594/200 adds the `Dictation` request (terminal callers only, like `Notes`): kernel
+dictation, speech-to-text on the kernel the person is connected to. `status` reports the model as
+`not_downloaded`, `downloading` (`received_bytes` of `total_bytes`), `ready` or `failed` (`reason`)
+and the saved `language`; `download_model` starts or resumes the pinned download (it never starts
+without this explicit request); `set_language` saves an ISO 639-1 code or `null` (detect);
+`append_audio` adds 16 kHz mono 16-bit little-endian PCM at the `offset` the kernel already holds
+(chunks of at most 256 KiB, a recording of at most 120 s, four recordings at a time, discarded after
+120 s idle); `transcribe` returns `{ text, language }` and discards the recording. Refusals use the
+relay error codes `dictation_model_missing`, `dictation_audio_invalid`,
+`dictation_audio_out_of_order`, `dictation_audio_too_long`, `dictation_audio_unknown`,
+`dictation_language_invalid`, `dictation_settings_failed`, `dictation_busy` and
+`dictation_transcription_failed`. `dictation-594.json` pins the shape (Rust hash test
+`dictation_594_snapshot`). Older kernels refuse the request; clients feature-detect 594. See
+`docs/DICTATION.md`.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that

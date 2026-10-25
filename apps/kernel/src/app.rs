@@ -165,6 +165,7 @@ pub struct DaemonApp {
     pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
     // MP-08 / MP-10 / MP-11: one authority across independently built runtime actors.
     pub(crate) kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    pub(crate) dictation: Arc<crate::dictation::DictationService>,
     pub(crate) private_assessment_dispatch:
         Option<crate::runtime::state::PrivateAssessmentDispatch>,
     pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
@@ -382,6 +383,9 @@ impl DaemonApp {
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
             kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
                 config.private_runtime_state_root(),
+            ),
+            dictation: crate::dictation::DictationService::new(
+                config.private_runtime_state_root().join("dictation"),
             ),
             room_computer_revoked: Default::default(),
             private_assessment_dispatch: None,

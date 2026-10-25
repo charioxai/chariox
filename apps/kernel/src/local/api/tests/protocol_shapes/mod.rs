@@ -19,6 +19,7 @@ mod cloud_relay;
 mod computer_hold;
 mod core;
 mod credential_enrollment;
+mod dictation;
 mod display_resumption;
 mod disposable_worker;
 mod event_publication;

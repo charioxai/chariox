@@ -96,6 +96,13 @@ impl CommandRouter {
         // Select the handler before polling. A single async match reserves
         // stack space for unrelated arms throughout every nested handler poll.
         match request {
+            LocalDaemonRequest::Dictation(request) => boxed_handler(|| async move {
+                let result = self
+                    .runtime_state
+                    .dictation_request(&command_caller_user_id(&command), request.command)
+                    .await?;
+                Ok(LocalDaemonResponse::Dictation { result })
+            }),
             LocalDaemonRequest::Notes(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state

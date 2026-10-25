@@ -592,6 +592,7 @@ pub(crate) fn request_session_scope(
         ),
         // MD-stack: user-domain admission lives in each authenticated service.
         LocalDaemonRequest::Notes(_)
+        | LocalDaemonRequest::Dictation(_)
         | LocalDaemonRequest::KernelBrowser(_)
         | LocalDaemonRequest::OpenUserAppView(_)
         | LocalDaemonRequest::ListUserAppViews(_)

@@ -557,15 +557,14 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "eedc73fd9762238251c414e50244d8190ae0fbbb56ba0538edd515d57e762676"
+        "adac6b6fdb1abb34f8c0aa942f4cc43f63405f165743fe817f4f4353831c79c7"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    assert_eq!(value["local_protocol"], 567);
-    const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 567);
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 175)
-    };
-    assert_eq!(value["peer_protocol"], 175);
+    assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        value["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
     for name in ["completion_delta", "inherited_delta"] {
         let wire = serde_json::json!({"KernelBrowser": {"result": value[name]}});
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();

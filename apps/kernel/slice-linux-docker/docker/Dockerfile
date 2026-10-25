@@ -9,6 +9,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && rm -f /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
+    cmake \
+    libclang-dev \
     libdbus-1-dev \
     libavcodec-dev \
     libavutil-dev \
