@@ -10,8 +10,10 @@ use crate::session::unix_epoch_ms;
 
 use super::state::ClaudeRuntimeState;
 use super::ProviderPromptSignalBatch;
+use crate::provider::RuntimeProviderRun;
 
 pub(super) fn apply_claude_usage_capture(
+    run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
     batch: &mut ProviderPromptSignalBatch,
 ) {
@@ -33,11 +35,41 @@ pub(super) fn apply_claude_usage_capture(
     let Ok(value) = serde_json::from_str::<Value>(contents) else {
         return;
     };
-    let Some(snapshot) = claude_status_line_usage_snapshot(&value) else {
-        return;
-    };
     state.last_usage_file_contents = Some(contents.to_string());
-    merge_claude_account_usage(&mut batch.account_usage, snapshot);
+    if let Some(snapshot) = claude_status_line_usage_snapshot(&value) {
+        merge_claude_account_usage(&mut batch.account_usage, snapshot);
+    }
+    if let Some((used, limit)) = claude_status_line_context_usage(&value) {
+        let mut usage = batch.resolved_usage.unwrap_or_else(|| run.usage());
+        usage.context_tokens = Some(used);
+        usage.context_window = Some(limit);
+        state.last_context_tokens = Some(used);
+        state.last_context_window = Some(limit);
+        batch.resolved_usage = Some(usage);
+    }
+}
+
+/// The status line describes the current API context, independently of billed turn totals.
+pub(crate) fn claude_status_line_context_usage(value: &Value) -> Option<(u64, u64)> {
+    let window = value.get("context_window")?;
+    let limit = window
+        .get("context_window_size")?
+        .as_u64()
+        .filter(|limit| *limit > 0)?;
+    let current = window.get("current_usage")?.as_object()?;
+    let fields = [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ];
+    if !fields.iter().any(|field| current.contains_key(*field)) {
+        return None;
+    }
+    let used = fields.into_iter().try_fold(0_u64, |sum, field| {
+        let tokens = current.get(field).map_or(Some(0), Value::as_u64)?;
+        sum.checked_add(tokens)
+    })?;
+    Some((used, limit))
 }
 
 pub(super) fn merge_claude_account_usage(
@@ -186,6 +218,35 @@ fn meter_state(used_percent: f64) -> ProviderAccountUsageMeterState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provusage_claude_context_requires_observed_counts_and_a_valid_limit() {
+        use serde_json::json;
+        assert_eq!(
+            super::claude_status_line_context_usage(
+                &json!({"context_window":{"context_window_size":4000,"current_usage":{}}})
+            ),
+            None
+        );
+        assert_eq!(
+            super::claude_status_line_context_usage(
+                &json!({"context_window":{"context_window_size":0,"current_usage":{"input_tokens":100}}})
+            ),
+            None
+        );
+        assert_eq!(
+            super::claude_status_line_context_usage(
+                &json!({"context_window":{"context_window_size":4000,"current_usage":{"input_tokens":u64::MAX,"cache_read_input_tokens":1}}})
+            ),
+            None
+        );
+        assert_eq!(
+            super::claude_status_line_context_usage(
+                &json!({"context_window":{"context_window_size":4000,"current_usage":{"input_tokens":0}}})
+            ),
+            Some((0, 4000))
+        );
+    }
 
     #[test]
     fn parses_both_official_claude_subscription_windows() {

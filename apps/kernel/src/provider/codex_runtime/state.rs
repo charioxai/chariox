@@ -17,6 +17,7 @@ pub struct CodexPollResult {
     pub terminal_failure: Option<String>,
     pub notices: Vec<String>,
     pub resolved_usage: Option<ProviderRunTokenUsage>,
+    pub account_rate_limits: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
