@@ -10,6 +10,8 @@ export function classifyDecision(interaction) {
   if (interaction.kind !== 'permission') return { routine: false, reason: 'question' };
   const title = String(interaction.title ?? '');
   if (OWNER_WORDS.test(title)) return { routine: false, reason: 'credential_related' };
+  // Allowing the tool answers nothing: the worker's question stays open until a person replies.
+  if (/^Approve Claude Code AskUserQuestion\b/.test(title)) return { routine: false, reason: 'question' };
   if (!/^Approve Claude Code /.test(title)) return { routine: false, reason: 'not_a_claude_permission' };
   if (!(interaction.choices ?? []).some(choice => choice === 'allow_once' || choice === 'allow_session')) return { routine: false, reason: 'no_allow_choice' };
   return { routine: true };
