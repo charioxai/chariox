@@ -101,7 +101,7 @@ impl KernelRuntimeState {
             .room_member_user_id_in(room_owner_user_id, user_id)
     }
 
-    pub(in crate::runtime) fn acts_for_owner(
+    pub(crate) fn acts_for_owner(
         &self,
         session_id: &str,
         user_id: &str,

@@ -60,10 +60,29 @@ async fn f4_legacy_agents_inner() {
         assert_eq!(attached.is_ok(), owner, "attach as {user}: {attached:?}");
         let attachment_id =
             if let Ok(LocalDaemonResponse::SessionAttached { attachment }) = attached {
+                // The attachment belongs to the room member the caller is, so the pushed room
+                // snapshots show the owner everything its room's `local` member sees.
+                assert_eq!(attachment.owner_user_id(), DEFAULT_LOCAL_USER_ID);
                 attachment.id().to_string()
             } else {
                 "unattached".to_string()
             };
+        if owner {
+            let state = LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+                session_id: id.clone(),
+            });
+            let Ok(LocalDaemonResponse::SessionState { session, .. }) = router
+                .dispatch(terminal_command(&state, Some(user)), state)
+                .await
+            else {
+                panic!("session state as {user}");
+            };
+            assert_eq!(
+                session.agents().len(),
+                agent_ids.len(),
+                "the owner sees the local-made and the Cloud-made agent"
+            );
+        }
 
         for agent_id in &agent_ids {
             let requests = [

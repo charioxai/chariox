@@ -45,7 +45,9 @@ pub(super) async fn admit_frame(
                 && runtime_state
                     .attachment_owner_user_id(attachment_id)
                     .await
-                    .is_ok_and(|owner| owner == turn.owner_user_id)
+                    .is_ok_and(|owner| {
+                        runtime_state.acts_for_owner(session_id, &turn.owner_user_id, &owner)
+                    })
                 && kernel_subscription_scope(subscription_scope.as_deref())
                     != KernelSubscriptionScope::WaitingRoomInventory
                 && router

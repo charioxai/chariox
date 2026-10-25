@@ -733,11 +733,16 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        // An attachment belongs to the room member the caller is, so its projections show the
+        // caller what that member may see.
+        let member_user_id = self
+            .state
+            .room_member_user_id(&request.session_id, &caller_user_id);
         let attach_request = crate::attachment::AttachRequest::for_user(
             request.session_id,
             request.client_id,
             request.capability_level,
-            caller_user_id,
+            member_user_id,
         );
         let result = match self
             .state
