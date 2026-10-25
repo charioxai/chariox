@@ -2,6 +2,152 @@
 use super::tests::{fixture_with_options, popup, PASSKEY};
 use super::*;
 
+fn enroll_fixture(f: &super::tests::Fixture) {
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolled-owner".into(),
+        ..Default::default()
+    });
+    f.state.owned.config_projection.update(config);
+}
+
+// MP-08/MP-10/MP-11 G06: enrollment preserves the host's existing attachment.
+#[tokio::test]
+async fn enrolled_host_can_authorize_sudo_in_its_pre_enrollment_room() {
+    let f = fixture_with_options(None, true);
+    enroll_fixture(&f);
+    assert!(f
+        .state
+        .submit_sudo_prompt(f.request.clone(), "another-user", "sudo-terminal")
+        .await
+        .is_err());
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let mut starting = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, "enrolled-owner", "sudo-terminal")
+            .await
+    });
+    let consent = tokio::select! {
+        consent = super::tests::popup_for(&f.state, "enrolled-owner") => consent,
+        result = &mut starting => panic!("enrolled host could not authorize sudo: {result:?}"),
+    };
+    f.state
+        .answer_terminal_runtime_interaction(
+            &consent.session_id,
+            &consent.interaction_id,
+            "approve",
+            None,
+            Some("enrolled-owner"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    starting.await.unwrap().unwrap();
+    let turn = f.state.list_sudo_turns("enrolled-owner").pop().unwrap();
+    assert_eq!(turn.owner_user_id, "enrolled-owner");
+    assert!(f.state.sudo_task_authorizes_run(&f.run).await);
+    let result = f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"AliasSession":{
+                "session_id":turn.session_id,"alias":"enrolled-sudo-work"
+            }}}),
+        )
+        .await
+        .unwrap();
+    assert!(result.ok, "{result:?}");
+    assert_eq!(
+        f.state
+            .revoke_sudo(
+                Some("enrolled-owner"),
+                Some(&turn.entry_id),
+                "owner_revoked"
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn enrolled_host_can_list_and_revoke_its_existing_sudo_window() {
+    let f = fixture_with_options(None, true);
+    let turn = super::window_tests::open(&f, None).await;
+    enroll_fixture(&f);
+    assert!(f.state.list_sudo_turns("another-user").is_empty());
+    assert_eq!(f.state.list_sudo_turns("enrolled-owner").len(), 1);
+    assert_eq!(
+        f.state
+            .revoke_sudo(Some("another-user"), Some(&turn.entry_id), "owner_revoked")
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        f.state
+            .revoke_sudo(
+                Some("enrolled-owner"),
+                Some(&turn.entry_id),
+                "owner_revoked"
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn enrolled_host_can_extend_its_existing_sudo_window() {
+    let f = fixture_with_options(None, true);
+    let turn = super::window_tests::open(&f, None).await;
+    enroll_fixture(&f);
+    let request = ExtendKernelSudoRequest {
+        session_id: turn.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        entry_id: turn.entry_id.clone(),
+        revision: turn.revision,
+    };
+    assert!(f
+        .state
+        .extend_sudo_window(request.clone(), "another-user")
+        .await
+        .is_err());
+    let state = f.state.clone();
+    let mut extending =
+        tokio::spawn(async move { state.extend_sudo_window(request, "enrolled-owner").await });
+    let consent = tokio::select! {
+        consent = super::tests::popup_for(&f.state, "enrolled-owner") => consent,
+        result = &mut extending => panic!("enrolled host could not extend sudo: {result:?}"),
+    };
+    f.state
+        .answer_terminal_runtime_interaction(
+            &consent.session_id,
+            &consent.interaction_id,
+            "approve",
+            Some("120"),
+            Some("enrolled-owner"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    extending.await.unwrap().unwrap();
+    let extended = f.state.list_sudo_turns("enrolled-owner").pop().unwrap();
+    assert_eq!(extended.entry_id, turn.entry_id);
+    assert_eq!(extended.duration_minutes, 120);
+    assert!(extended.revision > turn.revision);
+    f.state
+        .revoke_sudo(
+            Some("enrolled-owner"),
+            Some(&turn.entry_id),
+            "fixture_cleanup",
+        )
+        .unwrap();
+}
+
 #[tokio::test]
 async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
     let f = fixture_with_options(None, true);

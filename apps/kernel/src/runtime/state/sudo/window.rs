@@ -407,7 +407,14 @@ impl KernelRuntimeState {
             .cloned()
             .filter(|turn| turn.session_id == request.session_id && turn.deadline.is_some())
             .ok_or_else(|| error("no live sudo window with that id; enter /sudo again"))?;
-        if attachment.owner_user_id() != owner || turn.owner_user_id != owner {
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        if !self
+            .owned
+            .acts_for_owner_in(session.owner_user_id(), owner, attachment.owner_user_id())
+            || !self
+                .owned
+                .acts_for_owner_in(session.owner_user_id(), owner, &turn.owner_user_id)
+        {
             return Err(error("only the session host can extend sudo"));
         }
         if turn.revision != request.revision {
