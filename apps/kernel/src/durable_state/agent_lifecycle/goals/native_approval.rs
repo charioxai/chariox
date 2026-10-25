@@ -16,6 +16,8 @@ pub(in crate::durable_state::agent_lifecycle) fn begin(
         return Ok(Outcome::Saved);
     }
     clock(&mut t, now);
+    // The owner's wait is not service time of a completion check that asked.
+    pause_check_clock(&mut t, &prompt, now);
     t.state = ExecutionState::Blocked;
     t.reason = "Waiting for the owner to answer the native approval".into();
     t.revision += 1;
@@ -43,6 +45,7 @@ pub(in crate::durable_state::agent_lifecycle) fn answer(
         return Ok(Outcome::Saved);
     }
     clock(&mut t, now);
+    resume_check_clock(&mut t, &prompt, now);
     t.state = ExecutionState::Working;
     t.blocked_revision = 0;
     t.reason = "Owner answered the native approval; continuing the same turn".into();
