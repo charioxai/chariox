@@ -1459,7 +1459,7 @@ async fn relay_slow_turn_history_reads_keep_subscription_heartbeats_running() {
         "slow-history",
         ClientCapabilityLevel::MessageTransport,
     );
-    let agent_id = crate::app::KernelSessionReadService::new(&mut app)
+    let agent_id = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(&session_id)
         .unwrap()
         .agents()[0]
