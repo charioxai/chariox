@@ -132,6 +132,21 @@ impl KernelRuntimeState {
         window: std::time::Duration,
         retry_delay: std::time::Duration,
     ) -> DurableRestartRecoverySummary {
+        // The interrupted turns' commands may still be running: end them before any provider
+        // resumes, or the resumed turn runs the same command beside them.
+        match tokio::task::spawn_blocking(crate::app::stop_processes_left_by_dead_kernels).await {
+            Ok(stopped) if stopped > 0 => crate::logging::warn_with_fields(
+                "durable_state.recovery",
+                "ended processes a dead kernel left behind",
+                serde_json::json!({ "processes": stopped }),
+            ),
+            Ok(_) => {}
+            Err(error) => crate::logging::error_with_fields(
+                "durable_state.recovery",
+                "failed to end processes a dead kernel left behind",
+                serde_json::json!({ "error": error.to_string() }),
+            ),
+        }
         let started = std::time::Instant::now();
         // The unlock is held across the next attempt so the redelivery never needs to prompt.
         let mut vault_unlocks = Vec::new();
@@ -2638,6 +2653,100 @@ mod tests {
                 .state(),
             crate::provider::ProviderRunState::Running,
         );
+    }
+
+    /// A process that names `owner` as the kernel that launched it, as every provider process and
+    /// the tool processes it starts do.
+    fn process_launched_by(owner: u32) -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("300")
+            .env(crate::provider::PROVIDER_OWNER_PID_ENV, owner.to_string())
+            .spawn()
+            .expect("fixture process should start")
+    }
+
+    fn exited_within(child: &mut std::process::Child, timeout: std::time::Duration) -> bool {
+        let started = std::time::Instant::now();
+        while started.elapsed() < timeout {
+            if child
+                .try_wait()
+                .expect("fixture process should poll")
+                .is_some()
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn restart_recovery_ends_only_the_processes_a_dead_kernel_launched() {
+        crate::test_support::isolated_env_test!();
+        let mut dead_kernel = std::process::Command::new("true")
+            .spawn()
+            .expect("fixture kernel should start");
+        let dead_kernel_pid = dead_kernel.id();
+        dead_kernel.wait().expect("fixture kernel should exit");
+        // The interrupted turn's tool process, and a copy from a second tool call of the same run.
+        let mut tool = process_launched_by(dead_kernel_pid);
+        let mut second_tool = process_launched_by(dead_kernel_pid);
+        // Another kernel that is still alive, and a tool process it launched.
+        let mut live_kernel = std::process::Command::new("sleep")
+            .arg("300")
+            .spawn()
+            .expect("fixture kernel should start");
+        let mut live_kernel_tool = process_launched_by(live_kernel.id());
+        // A process no kernel launched, and one this kernel launched in this life.
+        let mut unrelated = std::process::Command::new("sleep")
+            .arg("300")
+            .spawn()
+            .expect("fixture process should start");
+        let mut own_tool = process_launched_by(std::process::id());
+        let (runtime, _session_id, _agent_id, _prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
+        let targets = runtime.durable_restart_recovery_targets();
+
+        runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        let gone = std::time::Duration::from_secs(5);
+        assert!(
+            exited_within(&mut tool, gone),
+            "the dead kernel's tool process must be ended"
+        );
+        assert!(
+            exited_within(&mut second_tool, gone),
+            "every process of the dead kernel must be ended"
+        );
+        let survives = std::time::Duration::from_millis(300);
+        assert!(
+            !exited_within(&mut live_kernel_tool, survives),
+            "a live kernel's process survives"
+        );
+        assert!(
+            !exited_within(&mut unrelated, survives),
+            "an unrelated process survives"
+        );
+        assert!(
+            !exited_within(&mut own_tool, survives),
+            "this kernel's own process survives"
+        );
+        for survivor in [
+            &mut live_kernel_tool,
+            &mut unrelated,
+            &mut own_tool,
+            &mut live_kernel,
+        ] {
+            let _ = survivor.kill();
+            let _ = survivor.wait();
+        }
     }
 
     /// One life of a kernel: boot from the durable state, give the agent the provider run a

@@ -56,6 +56,10 @@ pub(crate) use account_credential::{
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
 pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
+
+/// Names the launching kernel's pid in every process it starts for a provider run, and so in the
+/// tool processes that run starts. A restored kernel ends those of a kernel that is gone.
+pub(crate) const PROVIDER_OWNER_PID_ENV: &str = "CHARIOX_PROVIDER_OWNER_PID";
 pub(crate) use claude::{
     claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
     fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
