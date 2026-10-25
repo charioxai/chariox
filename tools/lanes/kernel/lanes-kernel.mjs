@@ -225,7 +225,7 @@ const holderPid = () => {
 
 // The holder is the long-lived ancestor an until-exit access grant binds to; exec runs commands beneath it.
 function runHolder() {
-  const env = { ...roleEnv('coordinator'), CHARIOX_BIN: join(STATE, 'bin/chariox'), CHARIOX_COORDINATOR_HOME: join(STATE, 'loop'), CHARIOX_CLI_ACCESS_HOLDER_PID: String(process.pid) };
+  const env = { ...roleEnv('coordinator'), CHARIOX_BIN: join(STATE, 'bin/chariox'), CHARIOX_COORDINATOR_HOME: join(STATE, 'loop'), CHARIOX_CLI_ACCESS_HOLDER_PID: String(process.pid), ...(config.agents && { LOOPD_AGENTS: config.agents }) };
   try { unlinkSync(holderSocket); } catch {}
   const server = createServer(socket => {
     let buffer = '';

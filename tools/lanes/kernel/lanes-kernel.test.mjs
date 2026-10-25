@@ -10,9 +10,9 @@ import { once } from 'node:events';
 
 const script = new URL('./lanes-kernel.mjs', import.meta.url).pathname;
 
-async function holder(t) {
+async function holder(t, extraConfig = {}) {
   const state = await mkdtemp(join(tmpdir(), 'lanes-kernel-')); t.after(() => rm(state, { recursive: true, force: true }));
-  await writeFile(join(state, 'config.json'), JSON.stringify({ toolchain: state }));
+  await writeFile(join(state, 'config.json'), JSON.stringify({ toolchain: state, ...extraConfig }));
   const env = { PATH: process.env.PATH, HOME: state, LANES_KERNEL_STATE: state };
   const child = spawn(process.execPath, [script, 'holder'], { env, stdio: 'ignore' });
   const exited = once(child, 'exit');
@@ -39,4 +39,10 @@ test('exec --detach fails with the reason when the command cannot start', async 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /ENOENT/);
   assert.equal(result.stdout.includes('"pid"'), false);
+});
+
+test('a state dir with its own agents directory hands it to the commands it runs, so a drill loopd cannot read the real queue', async t => {
+  const { exec } = await holder(t, { agents: '/drill/agents' });
+  const result = exec('--', '/bin/sh', '-c', 'echo "$LOOPD_AGENTS"');
+  assert.equal(result.stdout.trim(), '/drill/agents');
 });
