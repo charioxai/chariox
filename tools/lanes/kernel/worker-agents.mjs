@@ -20,3 +20,9 @@ export function syncWorkerAgents({ source, target, names = ['scout'] }) {
   }
   return { written, missing };
 }
+
+// Meta-dispatch resolves an omitted child account through the kernel default, independently
+// of the parent's explicit profile. Select the verified product profile, never a provider auth file.
+export async function setWorkerProfileDefault({ rpc, profileId }) {
+  await rpc({ SetDefaultProviderAccountProfile: { provider: 'claude', account_profile: profileId } });
+}

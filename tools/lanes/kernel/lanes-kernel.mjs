@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { serviceUnit, sliceInvocation } from './service.mjs';
 import { restartWithSandbox } from './restart.mjs';
-import { syncWorkerAgents } from './worker-agents.mjs';
+import { syncWorkerAgents, setWorkerProfileDefault } from './worker-agents.mjs';
 import { probeClaudeToken, readToken, replaceClaudeCredential } from './claude-account.mjs';
 
 const STATE = process.env.LANES_KERNEL_STATE || '/root/.chariox/dev/lanes-kernel';
@@ -206,6 +206,7 @@ async function ensureClaudeProfile() {
     await replaceClaudeCredential({ rpc: request => rpc('executor', request), profileId: profile.profile_id, token: readToken(config.claudeToken) });
     auth = JSON.stringify(await authStatus());
   }
+  await setWorkerProfileDefault({ rpc: request => rpc('executor', request), profileId: profile.profile_id });
   writeFileSync(file('executor', 'claude-profile.id'), profile.profile_id);
   // Workers use the profile's config directory as their HOME for Claude: the shared subagent definitions go there.
   const profileConfig = file('executor', `chariox/state/provider-accounts/local/claude/${profile.profile_id}/claude`);

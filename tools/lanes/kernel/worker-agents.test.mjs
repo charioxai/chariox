@@ -17,3 +17,10 @@ test('the scout definition is copied under the profile config directory once, an
   assert.deepEqual(syncWorkerAgents({ source, target, names: ['scout', 'reviewer'] }), { written: [], missing: ['reviewer'] });
   assert.throws(() => syncWorkerAgents({ source, target, names: ['../x'] }), /invalid agent name/);
 });
+
+test('lane child agents use the verified lanes Claude profile by default', async () => {
+  const { setWorkerProfileDefault } = await import('./worker-agents.mjs');
+  const calls = [];
+  await setWorkerProfileDefault({ rpc: async request => calls.push(request), profileId: 'lanes-claude-own' });
+  assert.deepEqual(calls, [{ SetDefaultProviderAccountProfile: { provider: 'claude', account_profile: 'lanes-claude-own' } }]);
+});
