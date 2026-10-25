@@ -8,7 +8,8 @@ import path from 'node:path';
 import {createWriteStream,createReadStream,readFileSync,readdirSync} from 'node:fs';
 import {randomBytes,createHash} from 'node:crypto';
 import net from 'node:net';
-const repo=fileURLToPath(new URL('../../../',import.meta.url));
+import {gzipSync} from 'node:zlib';
+const repo=path.resolve(fileURLToPath(new URL('../../../',import.meta.url)));
 function required(name){const value=process.env[name];if(!value||!path.isAbsolute(value))throw Error('Set an absolute '+name);return value;}
 const kernel=required('CHARIOX_CHECKPOINT_KERNEL'),relay=required('CHARIOX_CHECKPOINT_RELAY'),tuiBinary=required('CHARIOX_CHECKPOINT_TUI'),testBinary=required('CHARIOX_CHECKPOINT_TEST_BINARY');
 const root=required('CHARIOX_CHECKPOINT_STATE'),evidence=required('CHARIOX_CHECKPOINT_EVIDENCE'),profile=required('CHARIOX_CHECKPOINT_SOURCE_PROFILE');
@@ -19,7 +20,7 @@ const head=execFileSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).t
 const summary={MP:['MP-08','MP-09','MP-10','MP-11'],head,protocol,scope:'Codex Chariox Linux/Linux native adapter; no Move orchestration',started:new Date().toISOString(),processes:[],steps:[]};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const save=()=>writeFile(evidence+'/summary.json',JSON.stringify(summary,null,2)+'\n',{mode:0o600});
-const children=[],clients=[],tuis=[];let sourceRun,sourceStack,driverSerial=0;const owned=new Map();
+const children=[],clients=[],tuis=[];let sourceRun,sourceStack,marker,ownsRoot=false,driverSerial=0;const owned=new Map();
 async function port(){const s=net.createServer();await new Promise((r,j)=>{s.once('error',j);s.listen(0,'127.0.0.1',r)});const p=s.address().port;await new Promise(r=>s.close(r));return p;}
 function start(binary,env,label){const c=spawn(binary,[],{env,cwd:root,stdio:['ignore','pipe','pipe']});children.push(c);c.charioxStart=processes().find(p=>p.pid===c.pid)?.start;summary.processes.push({pid:c.pid,label});const log=createWriteStream(root+'/'+label+'.private.log',{mode:0o600});c.stdout.pipe(log);c.stderr.pipe(log);return c;}
 async function stop(c){if(c.exitCode!==null||c.signalCode!==null)return;const exited=new Promise(r=>c.once('exit',r));if(!Number.isInteger(c.pid)||c.pid<=1||!processes().some(p=>p.pid===c.pid&&p.start===c.charioxStart))throw Error('Invalid owned PID');c.kill('SIGINT');await Promise.race([exited,sleep(15000)]);if(c.exitCode===null&&c.signalCode===null){c.kill('SIGKILL');await exited;}}
@@ -32,7 +33,7 @@ async function terminate(stack,providerRun){const before=(await request(stack.cl
 async function request(c,req,key){const result=await c.send(req);if(!result[key])throw Error('Unexpected response for '+Object.keys(req)[0]+': '+Object.keys(result).join(','));return result[key];}
 try{
  await mkdir(evidence,{recursive:true,mode:0o700});
- await mkdir(root,{recursive:false,mode:0o700});
+ await mkdir(root,{recursive:false,mode:0o700});ownsRoot=true;
  summary.binarySha256={};for(const [name,binary] of Object.entries({kernel,relay,tui:tuiBinary,driver:testBinary}))summary.binarySha256[name]=await binaryHash(binary);
  const relayPort=await port(),secret=randomBytes(32).toString('base64url');
  start(relay,{PATH:process.env.PATH,CHARIOX_RELAY_HOST:'127.0.0.1',CHARIOX_RELAY_PORT:String(relayPort),CHARIOX_RELAY_TOKEN:secret},'relay');
@@ -76,11 +77,13 @@ try{
  await writeFile(evidence+'/kernel-target-selector.json',JSON.stringify({CODEX_HOME:targetHome})+'\n',{mode:0o600});
  async function command(tui,text){await tui.type('\x15/'+text+'\r');await sleep(700);}
  async function focus(tui){const s=await tui.send('snapshot');return s.session.focusedAgentId;}
- async function turn(tui,prompt){await tui.send('submit_prompt',{prompt});let saw=false;for(let n=0;n<180;n++){const s=await tui.send('snapshot'),a=s.session.agents.find(a=>a.id===s.session.focusedAgentId);if(a?.isProcessing||a?.state==='Working')saw=true;if(n>3&&a&&!a.isProcessing&&a.state!=='Working'){return {snapshot:s,sawWorking:saw};}await sleep(500)}throw Error('TUI turn deadline');}
+ function entries(snapshot){return snapshot.agentPanes?.[snapshot.session.focusedAgentId]??[];}
+ async function turn(tui,prompt){const before=new Set(entries(await tui.send('snapshot')).map(r=>r.id));await tui.send('submit_prompt',{prompt});let saw=false,settledAt;for(let n=0;n<240;n++){const s=await tui.send('snapshot'),a=s.session.agents.find(a=>a.id===s.session.focusedAgentId),busy=a?.isProcessing||a?.state==='Working';if(busy){saw=true;settledAt=undefined;}const terminal=entries(s).some(r=>!before.has(r.id)&&['assistant','error'].includes(r.role)&&(r.text??'').trim());if(a&&!busy&&(saw||terminal)){settledAt??=Date.now();if(Date.now()-settledAt>=1500)return {snapshot:s,sawWorking:saw};}await sleep(250)}throw Error('TUI turn deadline');}
+
  async function run(stack,tui){const s=await tui.send('snapshot');const core=(await request(stack.client,{GetSessionState:{session_id:s.session.id}},'SessionState'));const a=core.session.agents.find(a=>a.id===s.session.focusedAgentId);const id=a.active_provider_run_id??core.agent_activity?.[a.id]?.last_completed_turn?.provider_run_id;if(!id)throw Error('No real provider run identity');return (await request(stack.client,{GetProviderRun:{provider_run_id:id}},'ProviderRun')).provider_run;}
  const sourceTui=await openTui({tree:source.dir+'/workspace',env:source.env,url:'ws://127.0.0.1:'+source.env.CHARIOX_KERNEL_PORT+'/kernel',profile:linked.profile_id,root:source.dir,provider:'codex',model:'gpt-6-luna',binary:tuiBinary});sourceTui.child.charioxStart=processes().find(p=>p.pid===sourceTui.child.pid)?.start;tuis.push(sourceTui);
  await command(sourceTui,'permissions required');await command(sourceTui,'agent variant '+await focus(sourceTui)+' low');
- const marker='orchid-'+randomBytes(12).toString('hex');
+ marker='orchid-'+randomBytes(12).toString('hex');
  await turn(sourceTui,'Remember this marker for our next task: '+marker+'. Reply only ACK. Do not use tools or create agents.');
  sourceRun=await run(source,sourceTui);if(!sourceRun.provider_session_id)throw Error('Source has no real native thread');
  summary.steps.push({sourceRealTurn:true,model:sourceRun.model,variant:sourceRun.variant});await save();
@@ -95,8 +98,8 @@ try{
  const targetPrompt='Use a shell command to print your working directory, then repeat the marker from our earlier conversation. Do not use any other tools.';
  if(targetPrompt.includes(marker))throw Error('Drill must not send the earlier marker to the target');
  const first=await turn(targetTui,targetPrompt);
- const rendered=JSON.stringify(first.snapshot.transcript??{}),targetRun=await run(target,targetTui);
- const positive={sameNativeId:targetRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:rendered.includes(marker),relocatedWorkspaceExecuted:rendered.includes(target.dir+'/workspace'),model:targetRun.model,variant:targetRun.variant,state:first.snapshot.session.agents.find(a=>a.id===first.snapshot.session.focusedAgentId)?.state};
+ const rendered=JSON.stringify(entries(first.snapshot)),targetRun=await run(target,targetTui);
+ const positive={sameNativeId:targetRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:rendered.includes(marker),relocatedWorkspaceExecuted:rendered.includes(target.dir+'/workspace'),model:targetRun.model,variant:targetRun.variant,state:first.snapshot.session.agents.find(a=>a.id===first.snapshot.session.focusedAgentId)?.state,observedRoles:[...new Set(entries(first.snapshot).map(row=>row.role))]};
  summary.positive=positive;await save();
  if(!positive.sameNativeId||!positive.contextRecalled||!positive.relocatedWorkspaceExecuted||positive.state==='Error')throw Error('Native continuity or relocated workspace failed');
  const endedTarget=await terminate(target,targetRun);
@@ -127,7 +130,8 @@ finally{
  if(sourceRun&&sourceStack)try{await adapter('delete',sourceStack,sourceRun,profile);summary.sourceNativeSessionRemoved=true;}catch{summary.sourceNativeSessionRemoved=false;summary.passed=false;}
  summary.cleanup={remainingOwnedProcesses:processes().filter(p=>owned.has(p.pid)&&owned.get(p.pid).start===p.start&&p.state!=='Z').map(p=>p.pid)};
  if(summary.cleanup.remainingOwnedProcesses.length)summary.passed=false;
- if(summary.sourceNativeSessionRemoved!==false){await rm(root,{recursive:true,force:true});summary.cleanup.stateRemoved=true;}
+ for(const name of ['source','target'])try{const raw=await readFile(root+'/'+name+'/tui.ansi','utf8'),safe=marker?raw.split(marker).join('<native-context-marker>'):raw;const plain=safe.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'');if(/Bearer\s+[A-Za-z0-9._-]{12,}|sk-[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{20,}|-----BEGIN.*PRIVATE KEY/.test(plain)){summary.cleanup.captureRefused=true;}else await writeFile(evidence+'/'+name+'-tui.ansi.gz',gzipSync(safe),{mode:0o600});}catch{}
+ if(ownsRoot&&summary.sourceNativeSessionRemoved!==false){await rm(root,{recursive:true,force:true});summary.cleanup.stateRemoved=true;}
  summary.finished=new Date().toISOString();await save();console.log(JSON.stringify(summary,null,2));
  if(!summary.passed)process.exitCode=1;
 }

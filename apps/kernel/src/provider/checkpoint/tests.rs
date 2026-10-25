@@ -27,7 +27,13 @@ fn checkpoint() -> ProviderNativeCheckpoint {
 #[test]
 fn native_checkpoint_refuses_corruption_and_unsupported_formats() {
     let original = checkpoint();
+    #[cfg(target_os = "linux")]
     assert_eq!(original.validate(), Ok(()));
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(
+        original.validate(),
+        Err(NativeCheckpointFailure::UnsupportedPlatform)
+    );
     let mut corrupt = original.clone();
     corrupt.contents.push(0);
     assert_eq!(
@@ -103,6 +109,7 @@ fn required_native_session_survives_storage_and_blocks_all_resume_recovery() {
     assert!(changed.codex_thread_id().is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn required_native_session_rejects_wrong_session_and_unverified_interfaces() {
     let checkpoint = checkpoint();
@@ -290,4 +297,22 @@ fn required_native_session_blocks_durable_clearing_until_a_real_resume_ack() {
             .unwrap(),
         ProviderResumeClearOutcome::Cleared
     ));
+}
+
+#[test]
+fn native_checkpoint_launch_601_round_trip_and_hash_preserve_the_constraint() {
+    use sha2::Digest;
+    let binding = serde_json::to_value(checkpoint().binding).unwrap();
+    let wire = serde_json::json!({"LaunchProviderRun": {
+        "session_id":"session", "agent_id":null, "adapter_key":"codex", "provider":"codex",
+        "account_profile":"profile", "model":"gpt-6-luna", "variant":"low",
+        "provider_session_id":SESSION, "native_tui":false, "native_checkpoint_binding":binding
+    }});
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    let encoded = serde_json::to_value(request).unwrap();
+    assert_eq!(encoded, wire);
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(encoded.to_string().as_bytes())),
+        "e3f3777e36db3f245f27af77f5d076dd51e1c7ac00032a4188e4f4bfb17cdd9a"
+    );
 }

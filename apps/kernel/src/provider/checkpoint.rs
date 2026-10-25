@@ -21,7 +21,7 @@ pub const MAX_NATIVE_CHECKPOINT_BYTES: usize = 128 * 1024 * 1024;
 pub enum NativeCheckpointFailure {
     #[error("This provider session cannot move to this target yet: native checkpoint support is unavailable for this provider.")]
     UnsupportedProvider,
-    #[error("This provider session cannot move to this target yet: only the Chariox Codex interface has been verified.")]
+    #[error("This provider session cannot move to this target yet: only the managed Chariox Codex interface has been verified.")]
     UnsupportedInterface,
     #[error("This provider session cannot move to this target yet: this operating-system pair has not been verified.")]
     UnsupportedPlatform,
@@ -101,6 +101,9 @@ impl fmt::Debug for ProviderNativeCheckpoint {
 impl ProviderNativeCheckpoint {
     pub fn export(run: &RuntimeProviderRun) -> Result<Self, NativeCheckpointFailure> {
         supported_interface(run.adapter_key(), run.client_interface())?;
+        if run.endpoint_mode() != super::AgentEndpointMode::Managed {
+            return Err(NativeCheckpointFailure::UnsupportedInterface);
+        }
         if run.state() != super::ProviderRunState::Ended {
             return Err(NativeCheckpointFailure::NotQuiescent);
         }
@@ -116,6 +119,9 @@ impl ProviderNativeCheckpoint {
         launch: &super::ProviderLaunchResult,
     ) -> Result<super::ProviderResumeState, NativeCheckpointFailure> {
         supported_interface(&request.adapter_key, request.client_interface)?;
+        if launch.endpoint_mode != super::AgentEndpointMode::Managed {
+            return Err(NativeCheckpointFailure::UnsupportedInterface);
+        }
         self.validate()?;
         codex::import(self, request, launch)
     }
@@ -197,6 +203,9 @@ impl RequiredNativeSession {
         request: &super::LaunchProviderRequest,
     ) -> Result<(), NativeCheckpointFailure> {
         supported_interface(&request.adapter_key, request.client_interface)?;
+        if request.structured_endpoint.is_some() {
+            return Err(NativeCheckpointFailure::UnsupportedInterface);
+        }
         if self.provider != request.adapter_key || self.session_id.is_empty() {
             return Err(NativeCheckpointFailure::MissingSession);
         }

@@ -12,9 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::ProviderNativeCheckpoint;
-use crate::provider::{
-    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
-};
+use crate::provider::{LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +71,16 @@ fn live_codex_native_checkpoint_driver() {
         field(public, "account_profile"),
         field(public, "model"),
     );
+    request = request.with_owner_user_id(field(public, "owner_user_id"));
+    request = request.with_execution_mode(
+        serde_json::from_value(public["execution_mode"].clone()).expect("real execution mode"),
+    );
+    request = request.with_permission_level(
+        serde_json::from_value(public["permission_level"].clone()).expect("real permission level"),
+    );
+    request = request.with_client_interface(
+        serde_json::from_value(public["client_interface"].clone()).expect("real client interface"),
+    );
     request = request.with_variant(
         public
             .get("variant")
@@ -85,7 +93,8 @@ fn live_codex_native_checkpoint_driver() {
     let directory = PathBuf::from(field(public, "working_directory"));
     request = request.with_working_directory(directory.clone());
     let launch = ProviderLaunchResult {
-        endpoint_mode: AgentEndpointMode::Managed,
+        endpoint_mode: serde_json::from_value(public["endpoint_mode"].clone())
+            .expect("real endpoint mode"),
         process_label: "native-checkpoint-drill".to_string(),
         pty_target: None,
         pty_program: None,
@@ -139,7 +148,7 @@ fn live_codex_native_checkpoint_driver() {
         }
         "delete" => {
             let endpoint = crate::provider::ensure_codex_account_endpoint(
-                "local",
+                &request.owner_user_id,
                 &request.account_profile,
                 BTreeMap::from([(
                     "CODEX_HOME".to_string(),
