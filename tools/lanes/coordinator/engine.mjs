@@ -377,7 +377,7 @@ export function createRound(options) {
       if (status.completedTurn) lane.run.completedTurn = status.completedTurn;
       if (status.state === 'idle' && !status.currentPrompt) {
         if (lane.recovering && !(status.completedTurn?.promptId === lane.run.currentPromptId && status.completedTurn.status === 'completed')) {
-          if (now() - lane.recoveryStartedAtMs >= 360_000 || ['cancelled', 'failed'].includes(status.completedTurn?.status)) {
+          if (now() - lane.recoveryStartedAtMs >= 360_000 || (status.completedTurn?.promptId === lane.run.currentPromptId && ['cancelled', 'failed'].includes(status.completedTurn.status))) {
             await collectUnderLock(lane, 'worker_lost');
           } else { lane.needsRead = true; log(lane, 'recovery_pending', {}); }
           continue;

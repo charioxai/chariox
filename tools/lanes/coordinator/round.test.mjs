@@ -565,3 +565,21 @@ for (const note of ['acceptance repair', 'direct note']) test(`a restored round 
   assert.equal(lane.run.finishReason, 'finished');
   assert.equal(lane.run.completedTurn.promptId, 'second-prompt');
 });
+
+for (const status of ['failed', 'cancelled']) test(`a restored round ignores an older ${status} completion while its current prompt recovers`, async t => {
+  const { createRound } = await import('./engine.mjs');
+  const r = await rig(t, ['alpha']);
+  const first = createRound(r.options); await first.add(r.spec.lanes[0]);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => {
+    const value = await adapter(op, input);
+    if (op === 'status') value.completedTurn = { promptId: 'older-prompt', status };
+    return value;
+  };
+  r.idle.add('alpha');
+  const resumed = createRound(r.options); const lane = await resumed.add(r.spec.lanes[0]);
+  r.waits.push({}); await resumed.step(1);
+  assert.equal(lane.finished, false, 'an earlier failed turn does not settle the interrupted prompt');
+  assert.equal(r.calls.some(c => c.op === 'stop'), false);
+  assert.equal(lane.run.events.at(-1).kind, 'recovery_pending');
+});
