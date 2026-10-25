@@ -5,6 +5,27 @@ use crate::runtime::provider_process_control::provider_processes_visible_to_user
 use crate::runtime::session_projection_refresh::redact_agent_activity_for_session;
 use crate::session::RuntimeSession;
 
+/// Full trace visibility does not authorize reading another user's provider run.
+/// Attach must not direct the client to a run the provider API will refuse.
+pub(crate) fn redact_unreadable_active_provider_run(
+    session: &mut RuntimeSession,
+    caller_user_id: &str,
+    authenticated_user_id: &str,
+    provider_run_projection: &ProviderRunProjectionStore,
+) {
+    if session.active_provider_run_id().is_some_and(|id| {
+        provider_run_projection.get(id).map_or_else(
+            || {
+                session.owner_user_id() != caller_user_id
+                    && session.owner_user_id() != authenticated_user_id
+            },
+            |run| !run.owned_by(caller_user_id) && !run.owned_by(authenticated_user_id),
+        )
+    }) {
+        session.set_active_provider_run(None);
+    }
+}
+
 /// `caller_user_id` is the identity the room stores for the caller (what the caller may see);
 /// `authenticated_user_id` is who the caller authenticated as. They differ only for the enrolled
 /// owner in a room that predates enrollment, and each owns the resources stored under it.
@@ -23,19 +44,12 @@ pub(crate) fn redact_response_for_user(
             }
             None => session.redacted_for_user(caller_user_id),
         };
-        // Full trace visibility does not authorize reading another user's provider run.
-        // Attach must not direct the client to a run the provider API will refuse.
-        if session.active_provider_run_id().is_some_and(|id| {
-            provider_run_projection.get(id).map_or_else(
-                || {
-                    session.owner_user_id() != caller_user_id
-                        && session.owner_user_id() != authenticated_user_id
-                },
-                |run| !run.owned_by(caller_user_id) && !run.owned_by(authenticated_user_id),
-            )
-        }) {
-            session.set_active_provider_run(None);
-        }
+        redact_unreadable_active_provider_run(
+            &mut session,
+            caller_user_id,
+            authenticated_user_id,
+            provider_run_projection,
+        );
         Ok(session)
     };
     Ok(match response {

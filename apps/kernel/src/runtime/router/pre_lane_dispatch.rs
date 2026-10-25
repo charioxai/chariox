@@ -59,13 +59,11 @@ impl CommandRouter {
             &self.provider_run_projection,
             &self.provider_launch_pending,
             request,
-            view_user_id,
+            caller_user_id,
         )
         .await
         {
-            return self
-                .redact_result_for_user(response, view_user_id, caller_user_id)
-                .map(Some);
+            return response.map(Some);
         }
         if let LocalDaemonRequest::RemoveEventConnection(removal) = request {
             let _connection_guard = self

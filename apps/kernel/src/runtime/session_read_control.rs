@@ -180,7 +180,14 @@ pub(crate) async fn projected_session_read_response(
                 request,
                 caller_user_id,
             ) {
-                return Some(response);
+                return Some(response.map(|response| {
+                    redact_projected_session_provider_runs(
+                        response,
+                        runtime_state,
+                        provider_run_projection,
+                        caller_user_id,
+                    )
+                }));
             }
         }
     }
@@ -191,16 +198,62 @@ pub(crate) async fn projected_session_read_response(
             request,
             caller_user_id,
         ) {
-            return Some(response);
+            return Some(response.map(|response| {
+                redact_projected_session_provider_runs(
+                    response,
+                    runtime_state,
+                    provider_run_projection,
+                    caller_user_id,
+                )
+            }));
         }
     }
     if matches!(request, LocalDaemonRequest::ListSessions(_)) {
         return Some(
             projected_list_sessions_response(runtime_state, session_projection, caller_user_id)
-                .await,
+                .await
+                .map(|response| {
+                    redact_projected_session_provider_runs(
+                        response,
+                        runtime_state,
+                        provider_run_projection,
+                        caller_user_id,
+                    )
+                }),
         );
     }
     None
+}
+
+// Reads already project each room for its canonical member. Preserve that
+// projection and only remove run pointers the authenticated caller cannot read.
+fn redact_projected_session_provider_runs(
+    mut response: LocalDaemonResponse,
+    runtime_state: &KernelRuntimeState,
+    provider_run_projection: &ProviderRunProjectionStore,
+    authenticated_user_id: &str,
+) -> LocalDaemonResponse {
+    let redact = |session: &mut RuntimeSession| {
+        let member =
+            runtime_state.room_member_user_id_in(session.owner_user_id(), authenticated_user_id);
+        crate::runtime::response_redaction::redact_unreadable_active_provider_run(
+            session,
+            &member,
+            authenticated_user_id,
+            provider_run_projection,
+        );
+    };
+    match &mut response {
+        LocalDaemonResponse::SessionResolved { session }
+        | LocalDaemonResponse::SessionState { session, .. } => redact(session),
+        LocalDaemonResponse::SessionsListed { sessions } => {
+            for session in sessions {
+                redact(session);
+            }
+        }
+        _ => unreachable!("unexpected projected session read response"),
+    }
+    response
 }
 
 pub(crate) fn projected_session_inspection_response(
