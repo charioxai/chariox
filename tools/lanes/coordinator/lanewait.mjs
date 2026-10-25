@@ -28,7 +28,7 @@ function describe(event) {
 }
 
 export async function lanewait(options) {
-  const { home, receipts, agents, cli = defaultCli, adapter, now = Date.now, minutes = 15, sliceSeconds = 30, healthMs = 5 * 60_000, settleMs = 10_000, log = () => {} } = options;
+  const { home, receipts, agents, cli = defaultCli, adapter, now = Date.now, minutes = 15, sliceSeconds = 5, healthMs = 5 * 60_000, settleMs = 10_000, log = () => {} } = options;
   const sleep = options.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
   await mkdir(join(home, 'events'), { recursive: true });
   const statePath = join(home, 'state.json');
@@ -48,6 +48,7 @@ export async function lanewait(options) {
   // The lanes loopd has launched and not stopped; their Room sessions are what this inbox follows.
   const running = async () => (await records()).filter(r => !r.stopped && !state.tracked[r.lane]?.finished);
 
+  let synced = { at: 0, keys: '' };
   // An inbox starts empty and follows nothing: subscribe to every running lane's sessions, and start over when the grant is new.
   const sync = async () => {
     let { subscription } = await cli(['events', 'subscription']);
@@ -58,7 +59,10 @@ export async function lanewait(options) {
       log('inbox_reset', {});
     }
     state.subscriptionId = subscription.subscription_id;
-    for (const record of await running()) {
+    const launched = await running();
+    synced = { at: now(), keys: launched.map(r => r.lane).sort().join() };
+    for (const record of launched) {
+      if (!state.tracked[record.lane]) state.lastHealthMs = 0; // a round that ended before it was followed shows in the next read
       state.tracked[record.lane] ??= { startedMs: now() };
       for (const session of [record.launch.sessionId, record.launch.operationsSessionId].filter(Boolean)) {
         if (subscription.targets?.some(t => t.kernel === record.launch.kernel && t.session_id === session && !t.agent_id)) continue;
@@ -162,7 +166,8 @@ export async function lanewait(options) {
       await persist();
       await cli(['events', 'ack', String(batch.next_cursor)]);
     } else if (!batch.timed_out) continue;
-    if (!lines.length) await sync(); // a lane that started meanwhile is followed from here on
+    // A lane that started meanwhile is followed from here on; the slice is short so its first events are not missed.
+    if (!lines.length && (now() - synced.at >= 30_000 || (await running()).map(r => r.lane).sort().join() !== synced.keys)) await sync();
   }
   await persist();
   return lines;

@@ -130,3 +130,18 @@ test('a gap in the inbox is reported and every lane is read again', async t => {
   assert.equal(lines[0].kind, 'attention');
   assert.match(lines[0].summary, /events were lost/);
 });
+
+test('a lane launched while the wait is blocked is followed within one slice, not after the next full sync', async t => {
+  const r = await rig(t, []);
+  delete r.options.sliceSeconds; // the default slice
+  const run = async (key) => writeFile(join(r.receipts, `${key}.json`), JSON.stringify({ lane: key, launch: { kernel: 'executor', taskId: key, sessionId: `room-${key}`, operationsSessionId: `ops-${key}`, agentId: `agent-${key}`, attachmentId: 'a' }, input: { deadlineMs: r.clock.ms + 3_600_000 } }));
+  const cli = r.options.cli; let waits = 0;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait') { waits += 1; if (waits === 1) await run('late-r1'); if (waits === 2) return { events: [r.event('late-r1', { type: 'agent', summary: 'idle', value: {} })], next_cursor: 3, timed_out: false }; }
+    return cli(argv);
+  };
+  const lines = await lanewait({ ...r.options, minutes: 10 });
+  assert.deepEqual(lines.map(l => [l.lane, l.kind]), [['late', 'turn_end']]);
+  assert.ok(r.kernel.targets.some(x => x.session_id === 'room-late-r1'));
+  assert.ok(r.clock.ms - 10_000_000 <= 10_000, 'the lane was followed after one 5 s slice');
+});
