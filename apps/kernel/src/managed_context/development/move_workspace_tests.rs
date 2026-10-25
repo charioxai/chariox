@@ -272,12 +272,15 @@ fn mk02_directory_uses_project_private_file_choices() {
         expected_project_id: "move-project".into(),
         expected_source_repositories: None,
         destination_root: root.join("selected-target"),
-    }).unwrap();
+    })
+    .unwrap();
     let restored = &imported.repositories[0].destination_path;
-    assert_eq!(fs::read(restored.join("private/needed.bin")).unwrap(), b"selected\0bytes\n");
+    assert_eq!(
+        fs::read(restored.join("private/needed.bin")).unwrap(),
+        b"selected\0bytes\n"
+    );
     assert!(!restored.join("private/stays.txt").exists());
     assert!(!restored.join("unselected").exists());
-
 }
 
 #[test]
