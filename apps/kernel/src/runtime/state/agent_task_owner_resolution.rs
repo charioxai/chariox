@@ -8,6 +8,24 @@ impl KernelRuntimeState {
         task: &AgentTaskExecution,
         resume: bool,
     ) {
+        // Archive keeps the agent out of work. Refusing before the decision is
+        // committed leaves the task blocked, and the sweep offers the same
+        // decision again once the agent is unarchived.
+        if resume
+            && self
+                .owned
+                .agent_store
+                .get_agent(&task.agent_id)
+                .is_ok_and(|agent| agent.archived())
+        {
+            self.record_agent_task_owner_failure(
+                task,
+                &crate::durable_state::agent_lifecycle::error(
+                    "unarchive this agent before resuming its task",
+                ),
+            );
+            return;
+        }
         if resume && task.goal.is_some() {
             if let Ok(session) = self.owned.session_store.get_session(&task.room_id) {
                 if self

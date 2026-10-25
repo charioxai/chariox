@@ -3,6 +3,8 @@ use super::*;
 enum AgentPromptScheduleDispatchOutcome {
     Admitted,
     Coalesced,
+    /// The agent is archived and the one-shot wait stays pending for it.
+    Deferred,
 }
 
 impl KernelRuntimeState {
@@ -52,11 +54,12 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn dispatch_due_agent_prompt_schedules(&self, now_ms: u64) {
+        let archived_agent_ids = self.owned.archived_agent_ids();
         let dispatches = self
             .owned
             .session_store
             .write()
-            .claim_due_agent_prompt_schedules(now_ms)
+            .claim_due_agent_prompt_schedules(now_ms, &archived_agent_ids)
             .dispatches;
         for dispatch in dispatches {
             let result = self.dispatch_agent_prompt_schedule(&dispatch).await;
@@ -69,6 +72,14 @@ impl KernelRuntimeState {
                         &dispatch.session_id,
                         &dispatch.schedule_id,
                         now_ms,
+                    ),
+                Ok(AgentPromptScheduleDispatchOutcome::Deferred) => self
+                    .owned
+                    .session_store
+                    .write()
+                    .release_agent_prompt_schedule_claim(
+                        &dispatch.session_id,
+                        &dispatch.schedule_id,
                     ),
                 Ok(AgentPromptScheduleDispatchOutcome::Coalesced) => self
                     .owned
@@ -129,12 +140,28 @@ impl KernelRuntimeState {
         dispatch: &crate::session::AgentPromptScheduleDispatch,
     ) -> Result<AgentPromptScheduleDispatchOutcome, DaemonError> {
         let session = self.owned.session_store.get_session(&dispatch.session_id)?;
-        if !session
+        let Some(schedule) = session
             .agent_prompt_schedules()
             .iter()
-            .any(|schedule| schedule.id() == dispatch.schedule_id)
-        {
+            .find(|schedule| schedule.id() == dispatch.schedule_id)
+        else {
             return Ok(AgentPromptScheduleDispatchOutcome::Coalesced);
+        };
+        if self
+            .owned
+            .agent_store
+            .get_agent(&dispatch.agent_id)?
+            .archived()
+        {
+            // The agent can be archived between the claim and this check.
+            return Ok(match schedule.kind() {
+                crate::session::AgentPromptScheduleKind::Once => {
+                    AgentPromptScheduleDispatchOutcome::Deferred
+                }
+                crate::session::AgentPromptScheduleKind::Recurring => {
+                    AgentPromptScheduleDispatchOutcome::Coalesced
+                }
+            });
         }
         let (active, queued) = self
             .owned
@@ -205,6 +232,15 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn archived_agent_ids(&self) -> std::collections::BTreeSet<String> {
+        self.agent_store
+            .list_agents()
+            .into_iter()
+            .filter(|agent| agent.archived())
+            .map(|agent| agent.id().to_string())
+            .collect()
+    }
+
     fn ensure_agent_prompt_schedule_attachment(
         &self,
         session_id: &str,

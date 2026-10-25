@@ -150,18 +150,14 @@ impl KernelRuntimeState {
                 prepared.prompt.id(),
                 target_home_prompt_id,
                 worker_kernel_id,
-                worker_provider_run_id
-                    .as_deref()
-                    .unwrap_or("unknown"),
+                worker_provider_run_id.as_deref().unwrap_or("unknown"),
             ),
             Err(persist_error) => format!(
                 "queued prompt `{}` remote steer outcome is uncertain for home prompt `{}` on worker `{}` run `{}`; durable hold could not be confirmed, so do not retry or advance this item: {persist_error}",
                 prepared.prompt.id(),
                 target_home_prompt_id,
                 worker_kernel_id,
-                worker_provider_run_id
-                    .as_deref()
-                    .unwrap_or("unknown"),
+                worker_provider_run_id.as_deref().unwrap_or("unknown"),
             ),
         };
         if persisted_ok {
@@ -669,6 +665,18 @@ impl KernelRuntimeState {
         };
         authorize()?;
         self.owned.require_publication_activation()?;
+        if self
+            .owned
+            .agent_store
+            .get_agent(prepared.prompt.target_agent_id())?
+            .archived()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "submit prompt",
+                message: "Unarchive this agent before sending it work.".into(),
+            });
+        }
+
         if self.owned.config_projection.snapshot().room_agent_tools {
             prepared
                 .prepare_task_prompt_identity(|| self.owned.session_store.reserve_prompt_id())?;

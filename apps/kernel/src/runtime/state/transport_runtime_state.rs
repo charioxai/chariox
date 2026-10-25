@@ -369,6 +369,7 @@ impl KernelRuntimeState {
         idle_interval_ms: u64,
         now_ms: u64,
     ) -> u64 {
+        let archived_agent_ids = self.owned.archived_agent_ids();
         let next_runtime_due_at_ms = [
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
@@ -383,7 +384,7 @@ impl KernelRuntimeState {
             self.owned
                 .session_store
                 .read()
-                .next_scheduled_runtime_wake_at_ms(),
+                .next_scheduled_runtime_wake_at_ms(&archived_agent_ids),
             now_ms,
             active_interval_ms,
             idle_interval_ms,

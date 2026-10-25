@@ -125,9 +125,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 158 carries the local 550 mirror v2 wire contract.
 /// Allocated 160 carries the local 552 `parked_input` reply field.
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
-/// MP-08/MP-10/MP-11: allocated 175 carries the local 567 `fonts` op `absent`.
-/// MP-08/MP-10/MP-11: allocated 195 carries local 589 usage snapshots.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 195;
+/// MP-08/MP-10: allocated 198 accompanies the local 592 agent archive contract.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 198;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

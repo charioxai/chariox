@@ -93,3 +93,5 @@ mod workflow_run_control;
 mod workspace_capabilities;
 
 mod usage_snapshot;
+
+mod agent_archive;

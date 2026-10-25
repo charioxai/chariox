@@ -109,9 +109,7 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
 // MP-08/MP-11: keep the typed desktop grant separate from Room browser packets.
 #[test]
 fn mp11_leased_computer_protocol_507_115_snapshot() {
-    use crate::transport::relay_peer::{
-        RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
-    };
+    use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("leased-computer-507.json")).unwrap();
     assert_eq!(expected["local_protocol"], 567);

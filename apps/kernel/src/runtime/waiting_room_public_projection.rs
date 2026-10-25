@@ -948,6 +948,7 @@ fn waiting_room_public_agent_summaries(
     let mut agents = session
         .agents()
         .iter()
+        .filter(|agent| !agent.archived())
         .map(|agent| {
             let effective_config =
                 crate::session::effective_agent_execution_config(session, Some(agent));
@@ -1736,6 +1737,44 @@ mod tests {
                 .session_count,
             1
         );
+    }
+
+    #[test]
+    fn archive_agent_disappears_from_waiting_room_rows_and_activity() {
+        let mut session =
+            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let make = |id| {
+            crate::agent::AgentInstance::new(
+                id,
+                id,
+                "room",
+                None,
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            )
+        };
+        let mut archived = make("archived");
+        archived.set_archived(true);
+        archived.set_state(crate::agent::AgentState::Error);
+        session.set_agents(vec![make("active"), archived]);
+        let rows = waiting_room_session_summaries(
+            vec![session],
+            &MetaagentEventStore::default(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert_eq!(
+            rows[0]
+                .agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["active"]
+        );
+        assert_eq!(rows[0].activity.agent_count, 1);
+        assert_eq!(rows[0].activity.error_agent_count, 0);
     }
 
     #[test]
