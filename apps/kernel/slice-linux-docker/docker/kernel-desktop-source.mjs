@@ -238,9 +238,9 @@ export class DesktopSource {
       // A step starts when a readback arrives, alongside its AT-SPI binding.
       // A withheld kernel-browser window may come from a stale measurement on a
       // still desktop (no readbacks): re-measure calmly until it binds.
-      if(!this.pending.length&&!this.next&&!this.inflight&&!this.withheld&&this.gate.protectionSerial!==0){await delay(4);continue;}
       const fill=this.binding.browser?.()?.connection?.fillPresentationFence;
-      if(fill)await fill.recoverFailed().catch(()=>{});
+      if(fill?.intervals.some(interval=>interval.restore))await fill.recoverFailed().catch(()=>{});
+      if(!this.pending.length&&!this.next&&!this.inflight&&!this.withheld&&this.gate.protectionSerial!==0){await delay(4);continue;}
       this.stepStarted=Date.now();
       const {started,verified,changed}=await this.gate.step();
       this.stepStarted=null;this.verifiedStep=verified===null?null:{started,serial:verified};

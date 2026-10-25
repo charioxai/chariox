@@ -202,3 +202,14 @@ test('MP-08/MP-10/MP-11 Vault fill holds guest readbacks without stalling the ow
  f.advance(2);f.source.offer({raw:f.raw(3,f.now())},0,f.now());
  assert.equal(f.published.length,1,'guest resumes after completion');
 });
+
+test('MP-08/MP-10/MP-11 failed fill presentation recovers on an idle desktop',async()=>{
+ const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');const f=fixture();let restores=0;
+ const fence=new CapturePresentationFence();
+ await assert.rejects(fence.run(async()=>{},async()=>{if(++restores===1)throw Error('temporary presentation failure')}));
+ f.source.binding={...binding,browser:()=>({connection:{fillPresentationFence:fence}})};
+ f.source.gate={protectionSerial:1};
+ const loop=f.source.verify();
+ try{await until(()=>restores===2);assert(fence.stable(Date.now()+5));}
+ finally{f.source.closed=true;await loop;}
+});
