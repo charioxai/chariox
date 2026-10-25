@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { coordinate, defaultCli, save } from './loop.mjs';
 import { followLaunch } from './events.mjs';
 import { classifyDecision } from './decisions.mjs';
-import { execute, acceptanceIssues } from '../lanes.mjs';
+import { execute, acceptanceIssues, LaneError } from '../lanes.mjs';
 import { newSections } from './sections.mjs';
 import { tryLaneLock, releaseLaneLock } from './lane-lock.mjs';
 
@@ -253,6 +253,7 @@ export function createRound(options) {
   const stopLane = async lane => {
     try {
       lane.run.stop = await coordinator('stop', [lane.entry.lane]);
+      if (!lane.run.stop?.stopped) throw new LaneError('stop_not_confirmed', 'The kernel did not confirm the worker stopped; retain its lane.');
       // Stopping waits on the shared inbox; other lanes' events in those batches are handled here.
       await archived(lane.run.stop?.removal?.archives);
     } catch (error) {
@@ -286,6 +287,17 @@ export function createRound(options) {
         try { await stopLane(lane); } catch (stopError) { lane.run.stopError = stopError.code || 'stop_failed'; }
       }
     }
+    if (!lane.run.stopped) {
+      delete lane.run.finishReason;
+      lane.run.stopPending = true;
+      lane.run.driverError = { code: 'stop_unconfirmed', message: 'Worker stop is unconfirmed; lane and receipts retained for retry.', at_ms: now() };
+      lane.needsRead = true;
+      log(lane, 'stop_pending', { reason: lane.run.stopError || lane.run.collectError?.code });
+      await persist(lane);
+      return;
+    }
+    delete lane.run.stopPending;
+    if (lane.run.driverError?.code === 'stop_unconfirmed') { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }
     lane.run.finishedAtMs = now();
     lane.finished = true;
     log(lane, 'finished', { reason: lane.run.finishReason, head: lane.run.head });
@@ -362,7 +374,7 @@ export function createRound(options) {
         lane.settled = false;
       } else if (status.currentPrompt) await nudgeAcceptance(lane);
     }
-    for (const lane of pending()) if (lane.run.driverError) { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }
+    for (const lane of pending()) if (lane.run.driverError && !lane.run.stopPending) { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }
     for (const lane of lanes) await persist(lane);
   };
   // The round is resumable: a rerun reuses every receipt. Say why this driver stopped.

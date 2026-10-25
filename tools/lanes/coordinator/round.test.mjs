@@ -515,3 +515,19 @@ test('a kernel outage is excluded from a carried round hard-stop budget', async 
   r.clock.ms += 180_000; r.waits.push({}); await resumed.step(1);
   assert.equal(lane.run.finishReason, 'hard_stop');
 });
+
+test('an unconfirmed stop keeps the round and lane reserved until the kernel confirms it', async t => {
+  const { createRound } = await import('./engine.mjs');
+  const { LaneError } = await import('../lanes.mjs');
+  const r = await rig(t, ['alpha']); const adapter = r.options.adapter; let refuse = true;
+  r.options.adapter = async (op, input) => { if (op === 'stop' && refuse) throw new LaneError('kernel_connection_lost'); return adapter(op, input); };
+  const engine = createRound(r.options); const lane = await engine.add(r.spec.lanes[0]);
+  r.clock.ms += 4_000_000; r.waits.push({}); await engine.step(1);
+  assert.equal(lane.finished, false, 'a worker which might still run cannot free its worktree');
+  assert.equal(lane.run.finishedAtMs, undefined);
+  assert.equal(lane.run.finishReason, undefined);
+  assert.equal(lane.run.driverError.code, 'stop_unconfirmed');
+  refuse = false; r.waits.push({}); await engine.step(1);
+  assert.equal(lane.run.finishReason, 'hard_stop');
+  assert.equal(lane.finished, true);
+});
