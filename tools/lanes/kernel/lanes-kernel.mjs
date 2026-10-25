@@ -479,6 +479,7 @@ try {
   } else if (command === 'stop') {
     out(await stopLanes());
   } else if (command === 'restart-yolo') {
+    let stoppingLoopdPid;
     const check = await restartWithSandbox({
       state: STATE, agents: config.agents || '/root/.chariox/dev/browser-resume-20260930/agents',
       preflight: async () => {
@@ -497,7 +498,16 @@ try {
         if (!named) throw new Error('active Claude account name could not be resolved; no restart performed');
         return `${named.split(' ')[0].replace('oauth-token.', '')}(org=…${org})`;
       },
-      stopLoopd, startLoopd, stop: stopLanes, start: startLanes,
+      loopdRunning: async () => Boolean(loopdPid()),
+      stopLoopd: async () => { stoppingLoopdPid = loopdPid(); return stopLoopd(); },
+      startLoopd: async () => {
+        // A timeout can leave loopd finishing its current collection with SIGTERM pending.
+        // Wait for that exact process before starting its replacement, or it could exit just after this returns.
+        for (let i = 0; stoppingLoopdPid && pidAlive(stoppingLoopdPid) && i < 600; i++) await delay(500);
+        if (stoppingLoopdPid && pidAlive(stoppingLoopdPid)) throw new Error(`loopd ${stoppingLoopdPid} is still stopping; kernels left running`);
+        return startLoopd();
+      },
+      stop: stopLanes, start: startLanes,
       inspect: async run => {
         const response = await rpc('executor', { GetSessionState: { session_id: run.launch.sessionId } });
         const session = response.SessionState.session;

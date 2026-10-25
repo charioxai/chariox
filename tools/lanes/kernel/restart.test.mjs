@@ -112,3 +112,12 @@ test('replayed pending decisions do not count as fresh provider activity', async
   await assert.rejects(restartWithSandbox(r.options), /rounds did not resume/);
   assert.equal(r.lines.length, 0);
 });
+
+test('a stop timeout after loopd begins stopping restores the prior running service', async t => {
+  const r = await rig(t);
+  r.options.loopdRunning = async () => true;
+  r.options.stopLoopd = async () => { r.calls.push('stopLoopd'); throw new Error('stop timed out'); };
+  r.options.startLoopd = async () => r.calls.push('startLoopd');
+  await assert.rejects(restartWithSandbox(r.options), /stop timed out.*loopd restored/);
+  assert.deepEqual(r.calls, ['stopLoopd', 'startLoopd']);
+});
