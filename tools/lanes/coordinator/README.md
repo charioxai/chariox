@@ -98,3 +98,8 @@ waiting up to 120 seconds for the exact kernel/session/agent removal event. Its
 is saved before acknowledgement and reused on retry. Gap/end/timeout refuses
 confirmation without repeating destruction; a stopped receipt is not proof that
 the event was observed. Keep the holder alive until this command returns.
+
+Flat org (dogfood r13): the coordinator gets worker events straight from the lanes kernel with `lanewait.mjs`
+(beneath the `coordinator` holder seat, its own inbox), steers a worker with `steer.mjs` (`mac/deliver.sh`), and answers
+decisions loopd leaves pending with `answer.mjs` (`mac/laneanswer.sh`). `decisions.mjs` is the single routine/other
+split. See docs/LANES_KERNEL.md "The coordinator's seat".

@@ -10,7 +10,7 @@ rebuilding a rig. Everything lives under `/root/.chariox/dev/lanes-kernel/` (out
 | --- | --- |
 | **executor kernel** | Runs the lane workers (Room agents). Own Vault, own product-created Claude profile `lanes-claude`. |
 | **coordinator kernel** | The kernel the loop's CLI talks to (the Mac's local kernel in production). It holds the access grant and routes `--kernel <executor>` over the hosted relay. |
-| **holder** | A long-lived process the `until-exit` access grant binds to. Loop commands run beneath it with `exec`. |
+| **holder** | A long-lived process the `until-exit` access grant binds to. Loop commands run beneath it with `exec`. There are two seats, each with its own grant and so its own event inbox: `loopd` (the round service) and `coordinator` (the coordinator's own `lanewait`, `steer` and `answer`, run with `exec --seat coordinator`). |
 | **hosted stack** | `pr1080-dogfoodr6` (own Cloud web + own relay, WSS). Kept running (`KEEP` file is empty). |
 
 Both kernels are the exact OSS #1080 build `b53e3f4704` (upgraded from `e46dcc0ce6` on 2026-10-25 with five coordinator rounds
@@ -55,7 +55,9 @@ lanes-kernel/
     chariox/             CHARIOX_HOME (vault.json, config.toml, identities) — never copy it
     passphrase           disposable Vault passphrase, mode 600, never printed or logged
     kernel.pid  ids.json  logs/  home/  tmp/
-  holder.pid  holder.sock  holder.log
+  holder.pid  holder.sock  holder.log                          the loopd seat
+  coordinator-holder.pid  coordinator-holder.sock  coordinator-holder.log   the coordinator seat
+  watch/                 lanewait state: state.json, events/ archive, emitted.jsonl (LANEWAIT_HOME of the coordinator seat)
   loop/                  CHARIOX_COORDINATOR_HOME: config.json, receipts, events/ journal, round.json
   run/                   frozen copy of tools/lanes used by a live round or by loopd (see "Rounds", "loopd")
   loopd.pid  loopd.log   the standing round service
@@ -68,9 +70,9 @@ export TMPDIR=/root/.chariox/dev/lanes-kernel/tmp
 node tools/lanes/kernel/lanes-kernel.mjs status   # JSON: pids, relay, vault, holder, stack readiness
 node tools/lanes/kernel/lanes-kernel.mjs start    # idempotent: kernels, Vault unlock, relay, Claude profile, grant
 node tools/lanes/kernel/lanes-kernel.mjs stop     # holder and both kernels, by exact verified pid
-node tools/lanes/kernel/lanes-kernel.mjs grant    # only the access grant (headless owner popup)
+node tools/lanes/kernel/lanes-kernel.mjs grant [coordinator]   # only an access grant (headless owner popup), default the loopd seat
 node tools/lanes/kernel/lanes-kernel.mjs loopd install|start|stop   # the round service (see "loopd")
-node tools/lanes/kernel/lanes-kernel.mjs exec [--detach --log FILE] -- CMD...   # run beneath the holder
+node tools/lanes/kernel/lanes-kernel.mjs exec [--seat coordinator] [--detach --log FILE] -- CMD...   # run beneath a holder
 ```
 
 **After a restart** (`stop` then `start`, about 15 s): the Vault relocks, and `start` unlocks it from the
@@ -96,7 +98,7 @@ copy `bin/chariox-relay` into `/w/valenv/prs/pr1080-dogfoodr6/bin/` and run `pr-
 through `SetProviderAccountCredential`, read from its file inside the process and never printed. The
 profile never logs in or out of the shared account. Claude as root cannot run `yolo`, so workers use
 `permission: required` and the round driver answers each `Approve Claude Code …?` decision
-(`allow_once`) through the public CLI.
+(`allow_session` when offered, else `allow_once`) through the public CLI, except critical, credential-related and question decisions, which stay pending for the coordinator (see "The coordinator's seat").
 
 ## Rounds
 
@@ -112,6 +114,26 @@ git archive HEAD tools/lanes | tar -x -C /root/.chariox/dev/lanes-kernel/run
 node tools/lanes/kernel/lanes-kernel.mjs exec --detach --log loop/round.log -- \
   /usr/bin/node /root/.chariox/dev/lanes-kernel/run/tools/lanes/coordinator/round.mjs loop/round.json
 ```
+
+## The coordinator's seat: events and steers without loopd
+
+The coordinator (a Claude or Codex session on the Mac, reaching b3 over one multiplexed SSH connection) works beneath its
+own holder, so its inbox is independent of loopd's. The Mac scripts in `tools/lanes/coordinator/mac/` wrap these:
+
+```sh
+lanewait.sh [--minutes N] [--json] [--replay N]   # blocks; one line per event: HH:MM:SSZ lane round kind summary; exit 0 lines printed, 3 none
+deliver.sh <lane> <file|->                        # steers the running worker (or queues the next prompt), prints the kernel's answer, then appends to REVIEW_INBOX.md
+laneanswer.sh <lane> <decision-id> <choice>       # answers a decision lanewait listed
+```
+
+`lanewait` kinds: `turn_end`, `finished` (head and bundle state), `error`, `cancelled`, `decision` (with its reason and the
+choices), `silent`, `long_round`, `attention` (events lost, grant ended). A routine permission is never listed: loopd answers it
+(`allow_session` when offered, else `allow_once`). The decision reasons are `critical`, `owner_only`, `credential_related`,
+`question` (including `AskUserQuestion`), `not_a_claude_permission`, `no_allow_choice` and `unclassified`.
+
+After a kernel restart the coordinator grant is new too: `start` requests both grants (loopd's first, one popup at a time), and
+the next `lanewait` sets the old state aside and follows every running lane again. Workers get `/usr/sbin` on PATH and the shared
+`scout` agent (copied into the lanes Claude profile at `start`).
 
 ## loopd: the standing round service
 

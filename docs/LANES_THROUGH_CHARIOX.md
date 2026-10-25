@@ -386,4 +386,3 @@ Direction (Miguel): talk to the agents and receive their events directly, as a f
 ### Still open
 
 - The answer to a worker's `AskUserQuestion` cannot travel through the permission: allowing the tool gives the worker no answer, so the coordinator allows it and sends the answer as a steer. A kernel interaction that carries the question's text and options would let `laneanswer.sh` answer it.
-- `lanewait` and loopd both read a lane's state; if a third reader is added, make `lanehealth` cheap first.
