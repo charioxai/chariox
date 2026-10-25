@@ -257,7 +257,10 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
-        if agent.owner_user_id() != caller_user_id {
+        if !self
+            .owned
+            .acts_for_owner(agent.session_id(), caller_user_id, agent.owner_user_id())
+        {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: caller_user_id.to_string(),
                 owner_user_id: agent.owner_user_id().to_string(),

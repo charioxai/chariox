@@ -536,12 +536,11 @@ impl KernelRuntimeState {
             }
             _ => return Err(denied()),
         };
-        if !self
+        let session = self
             .session_snapshot(session_id)
             .await
-            .map_err(|_| denied())?
-            .has_member(user_id)
-        {
+            .map_err(|_| denied())?;
+        if !self.is_room_member(&session, user_id) {
             return Err(denied());
         }
         let attachment = self

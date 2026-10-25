@@ -913,6 +913,12 @@ impl SessionService {
         Ok(session.create_workflow_publication(publication, source_snapshot))
     }
 
+    pub fn session_owner_user_id(&self, session_id: &str) -> Option<String> {
+        self.store
+            .get(session_id)
+            .map(|session| session.owner_user_id().to_owned())
+    }
+
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.store
             .get(session_id)

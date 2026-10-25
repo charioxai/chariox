@@ -56,11 +56,12 @@ pub(crate) fn projected_provider_run_response(
     provider_run_projection: &ProviderRunProjectionStore,
     request: &GetProviderRunRequest,
     caller_user_id: &str,
+    authenticated_user_id: &str,
 ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
     let Some(provider_run) = provider_run_projection.get(&request.provider_run_id) else {
         return Ok(None);
     };
-    ensure_provider_run_visible_to_user(&provider_run, caller_user_id)?;
+    ensure_provider_run_visible_to_user(&provider_run, caller_user_id, authenticated_user_id)?;
     // Leased runs have no local provider registry entry to refresh.
     // Their selection is owned by the worker and delivered in this projection.
     let leased_run = provider_run.id().starts_with("leased:");
@@ -108,8 +109,9 @@ pub(crate) fn invalidate_provider_catalog_caches(
 pub(crate) fn ensure_provider_run_visible_to_user(
     provider_run: &crate::provider::RuntimeProviderRun,
     caller_user_id: &str,
+    authenticated_user_id: &str,
 ) -> Result<(), DaemonError> {
-    if provider_run.owned_by(caller_user_id) {
+    if provider_run.owned_by(caller_user_id) || provider_run.owned_by(authenticated_user_id) {
         Ok(())
     } else {
         Err(DaemonError::OwnershipAccessDenied {
@@ -156,7 +158,7 @@ mod mp11_f7_tests {
             let request = GetProviderRunRequest {
                 provider_run_id: run.id().into(),
             };
-            let response = projected_provider_run_response(&projection, &request, "local")
+            let response = projected_provider_run_response(&projection, &request, "local", "local")
                 .unwrap()
                 .expect("worker-owned selection must come from the worker projection");
             let LocalDaemonResponse::ProviderRun { provider_run } = &response else {
@@ -167,7 +169,12 @@ mod mp11_f7_tests {
                 .unwrap()
                 .contains("mp11-private-sentinel"));
             assert!(matches!(
-                projected_provider_run_response(&projection, &request, "foreign-user"),
+                projected_provider_run_response(
+                    &projection,
+                    &request,
+                    "foreign-user",
+                    "foreign-user"
+                ),
                 Err(DaemonError::OwnershipAccessDenied { .. })
             ));
             assert_eq!(projection.get(run.id()).unwrap(), run);
@@ -184,6 +191,7 @@ mod mp11_f7_tests {
             &GetProviderRunRequest {
                 provider_run_id: local_run.id().into()
             },
+            "local",
             "local"
         )
         .unwrap()
@@ -205,14 +213,14 @@ mod mp11_f7_tests {
         let request = GetProviderRunRequest {
             provider_run_id: run.id().into(),
         };
-        let response = projected_provider_run_response(&projection, &request, "local")
+        let response = projected_provider_run_response(&projection, &request, "local", "local")
             .unwrap()
             .unwrap();
         let bytes = serde_json::to_string(&response).unwrap();
         assert!(!bytes.contains("mp11-private-sentinel"));
         assert!(!bytes.contains("runtime_mcp_auth_token"));
         assert!(matches!(
-            projected_provider_run_response(&projection, &request, "foreign-user"),
+            projected_provider_run_response(&projection, &request, "foreign-user", "foreign-user"),
             Err(DaemonError::OwnershipAccessDenied { .. })
         ));
         assert_eq!(projection.get(run.id()).unwrap(), run);

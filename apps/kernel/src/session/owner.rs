@@ -57,6 +57,10 @@ impl SessionStateStore {
         self.read().get_session(session_id)
     }
 
+    pub(crate) fn session_owner_user_id(&self, session_id: &str) -> Option<String> {
+        self.read().session_owner_user_id(session_id)
+    }
+
     pub(crate) fn has_session(&self, session_id: &str) -> bool {
         self.read().has_session(session_id)
     }

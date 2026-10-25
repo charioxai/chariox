@@ -21,7 +21,9 @@ impl KernelRuntimeOwnedState {
                 agent_id: request.agent_id,
             });
         };
-        if agent.is_metaagent() || agent.owner_user_id() != caller_user_id {
+        if agent.is_metaagent()
+            || !self.acts_for_owner(agent.session_id(), caller_user_id, agent.owner_user_id())
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "workflow.create_from_agent",
                 message: "only the owner of an ordinary agent can give it a trigger or deployment"

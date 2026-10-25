@@ -694,7 +694,11 @@ impl AgentRuntimeStore {
                         .to_string(),
                     });
                 };
-                if !session.can_prompt_agent_owned_by(caller_user_id, agent.owner_user_id()) {
+                if !self.state.can_prompt_agent_owned_by(
+                    session,
+                    caller_user_id,
+                    agent.owner_user_id(),
+                ) {
                     return Some(BatchOperationFailure {
                         index,
                         agent_id: Some(prompt.target_agent_id.clone()),

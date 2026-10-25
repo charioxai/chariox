@@ -55,22 +55,6 @@ pub(crate) async fn authorize_session_membership(
         );
     }
 
-    // MP-08/MP-11: attaching to its OS-local session reads that session's run.
-    if let LocalDaemonRequest::GetProviderRun(run_request) = request {
-        if let (Some(user_id), true) = (
-            command_session_user_id(command),
-            command.is_terminal_caller(),
-        ) {
-            if let Some(session_id) =
-                runtime_state.provider_run_session_id(&run_request.provider_run_id)
-            {
-                let member = runtime_state.room_member_user_id(&session_id, &user_id);
-                if member != user_id {
-                    return Ok(member);
-                }
-            }
-        }
-    }
     let Some(scope) = request_session_scope(request) else {
         return Ok(
             command_session_user_id(command).unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
@@ -81,16 +65,6 @@ pub(crate) async fn authorize_session_membership(
             operation: command.command_type.clone(),
         }
     })?;
-
-    // MP-08/MP-11: the enrolled terminal is the `local` member of its pre-enrollment rooms.
-    if command.is_terminal_caller() {
-        if let SessionMembershipScope::SessionId(session_id) = &scope {
-            let member = runtime_state.room_member_user_id(session_id, &user_id);
-            if member != user_id {
-                return Ok(member);
-            }
-        }
-    }
 
     match scope {
         SessionMembershipScope::AllSessions => Ok(user_id),
@@ -116,7 +90,7 @@ pub(crate) async fn authorize_session_membership(
                 workspace_id.as_deref(),
             )
             .await?;
-            if !session.has_member(&user_id) {
+            if !runtime_state.is_room_member(&session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id: session.id().to_string(),
                     user_id,
@@ -132,7 +106,7 @@ pub(crate) async fn authorize_session_membership(
                 .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
                 .await?;
             let session = runtime_state.session_snapshot(&session_id).await?;
-            if !session.has_member(&user_id) {
+            if !runtime_state.is_room_member(&session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id,
                     user_id,
@@ -151,6 +125,31 @@ pub(crate) async fn authorize_session_membership(
             ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
             Ok(user_id)
         }
+    }
+}
+
+/// The identity the addressed room stores for an admitted caller, for the projections that
+/// show the room to its member (what that member may see). Ownership checks never use it:
+/// they keep the authenticated identity and relate it to the owner with `acts_for_owner`.
+pub(crate) fn request_room_member_user_id(
+    runtime_state: &KernelRuntimeState,
+    request: &LocalDaemonRequest,
+    user_id: &str,
+) -> String {
+    // A provider run carries no session scope of its own; it belongs to the room it ran in.
+    if let LocalDaemonRequest::GetProviderRun(run_request) = request {
+        return runtime_state
+            .provider_run_session_id(&run_request.provider_run_id)
+            .map_or_else(
+                || user_id.to_string(),
+                |session_id| runtime_state.room_member_user_id(&session_id, user_id),
+            );
+    }
+    match request_session_scope(request) {
+        Some(SessionMembershipScope::SessionId(session_id)) => {
+            runtime_state.room_member_user_id(&session_id, user_id)
+        }
+        _ => user_id.to_string(),
     }
 }
 
@@ -188,7 +187,7 @@ async fn ensure_session_member(
     user_id: &str,
 ) -> Result<(), DaemonError> {
     if let Some(session) = session_projection.get(session_id) {
-        if session.has_member(user_id) {
+        if runtime_state.is_room_member(&session, user_id) {
             return Ok(());
         }
         return Err(DaemonError::SessionAccessDenied {
@@ -197,7 +196,7 @@ async fn ensure_session_member(
         });
     }
     let session = runtime_state.session_snapshot(session_id).await?;
-    if session.has_member(user_id) {
+    if runtime_state.is_room_member(&session, user_id) {
         Ok(())
     } else {
         Err(DaemonError::SessionAccessDenied {

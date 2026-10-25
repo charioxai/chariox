@@ -504,11 +504,17 @@ impl KernelRuntimeState {
             // was being serialized.
             let mut sessions = self.owned.session_store.write();
             let mut session = sessions.get_session(session_id)?;
+            let member_user_id = self
+                .owned
+                .room_member_user_id_in(session.owner_user_id(), caller_user_id);
             let collaboration_level = session
-                .collaboration_level_for_user(caller_user_id)
+                .collaboration_level_for_user(&member_user_id)
                 .unwrap_or(crate::session::CollaborationLevel::Private);
-            if agent.owner_user_id() != caller_user_id
-                && !collaboration_level.can_view_agent_trace()
+            if !self.owned.acts_for_owner_in(
+                session.owner_user_id(),
+                caller_user_id,
+                agent.owner_user_id(),
+            ) && !collaboration_level.can_view_agent_trace()
             {
                 return Err(DaemonError::OwnershipAccessDenied {
                     user_id: caller_user_id.to_string(),
@@ -517,7 +523,7 @@ impl KernelRuntimeState {
                     operation: "acknowledge agent output",
                 });
             }
-            let changed = session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+            let changed = session.acknowledge_agent_output_seen(&member_user_id, agent_id);
             if changed {
                 session.touch();
                 sessions.restore_session(session.clone());

@@ -18,6 +18,7 @@ impl CommandRouter {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
         caller_user_id: &str,
+        view_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
         super::retired_cloud_controls::require_kernel_authority(request)?;
         if let Some(actor) = command.caller.metaagent_id.as_deref() {
@@ -58,7 +59,7 @@ impl CommandRouter {
             &self.provider_run_projection,
             &self.provider_launch_pending,
             request,
-            caller_user_id,
+            view_user_id,
         )
         .await
         {
@@ -140,7 +141,7 @@ impl CommandRouter {
         if let Some(response) = projected_session_inspection_response(
             &self.session_projection,
             request,
-            caller_user_id,
+            view_user_id,
             command
                 .caller
                 .metaagent_id
@@ -160,7 +161,7 @@ impl CommandRouter {
                 .dispatch_prompt_complete(command, request.clone())
                 .await?;
             return self
-                .redact_result_for_user(Ok(response), caller_user_id)
+                .redact_result_for_user(Ok(response), view_user_id, caller_user_id)
                 .map(Some);
         }
         if is_workflow_command(request) {
@@ -170,13 +171,19 @@ impl CommandRouter {
                 .dispatch_workflow_command(command.clone(), request.clone())
                 .await?;
             return self
-                .redact_workflow_result_for_user(Ok(response), caller_user_id, request)
+                .redact_workflow_result_for_user(
+                    Ok(response),
+                    view_user_id,
+                    caller_user_id,
+                    request,
+                )
                 .map(Some);
         }
         if let LocalDaemonRequest::GetProviderRun(request) = request {
             if let Some(response) = projected_provider_run_response(
                 &self.provider_run_projection,
                 request,
+                view_user_id,
                 caller_user_id,
             )? {
                 return Ok(Some(response));

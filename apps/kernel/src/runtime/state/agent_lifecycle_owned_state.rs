@@ -160,7 +160,7 @@ impl KernelRuntimeOwnedState {
         operation: &'static str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
-        if agent.owner_user_id() == user_id {
+        if self.acts_for_owner(agent.session_id(), user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
             Err(DaemonError::OwnershipAccessDenied {
@@ -180,7 +180,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         let session = self.session_store.get_session(agent.session_id())?;
-        if session.can_prompt_agent_owned_by(user_id, agent.owner_user_id()) {
+        if self.can_prompt_agent_owned_by(&session, user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
             Err(DaemonError::OwnershipAccessDenied {
@@ -202,7 +202,7 @@ impl KernelRuntimeOwnedState {
             .agent_store
             .get_agent(agent_ref)
             .or_else(|_| self.agent_store.get_agent_by_ref(agent_ref))?;
-        if agent.owner_user_id() == user_id {
+        if self.acts_for_owner(agent.session_id(), user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
             Err(DaemonError::OwnershipAccessDenied {
@@ -341,7 +341,7 @@ impl KernelRuntimeOwnedState {
             .or_else(|_| self.agent_store.get_agent_by_ref(agent_ref))?;
         if agent.remote_execution().is_some() {
             let session = self.session_store.get_session(agent.session_id())?;
-            if session.owner_user_id() == user_id {
+            if self.acts_for_owner(session.id(), user_id, session.owner_user_id()) {
                 return Ok(agent);
             }
             return Err(DaemonError::OwnershipAccessDenied {

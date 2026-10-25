@@ -502,6 +502,7 @@ async fn get_provider_run_uses_warmed_projection_without_app_lock_inner() {
             &provider_command,
             &provider_request,
             crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::session::DEFAULT_LOCAL_USER_ID,
         ),
     )
     .await
@@ -543,6 +544,7 @@ async fn get_provider_run_projection_does_not_serve_opencode_chariox_runs() {
     let projected = crate::runtime::provider_run_control::projected_provider_run_response(
         &router.provider_run_projection,
         &provider_request,
+        crate::session::DEFAULT_LOCAL_USER_ID,
         crate::session::DEFAULT_LOCAL_USER_ID,
     )
     .expect("projection visibility check should not fail");
@@ -646,6 +648,7 @@ async fn provider_run_projection_tracks_async_launch_completion_inner() {
         router.dispatch_pre_lane(
             &provider_command,
             &provider_request,
+            crate::session::DEFAULT_LOCAL_USER_ID,
             crate::session::DEFAULT_LOCAL_USER_ID,
         ),
     )
@@ -779,6 +782,7 @@ fn ended_projected_opencode_run_remains_readable_without_local_selection_sync() 
             provider_run_id: run.id().into(),
         },
         crate::session::DEFAULT_LOCAL_USER_ID,
+        crate::session::DEFAULT_LOCAL_USER_ID,
     )
     .expect("ended projection should retain ownership checks")
     .expect("ended projection must not fall through to a missing local provider run");
@@ -807,6 +811,7 @@ fn ended_local_opencode_run_keeps_local_selection_sync_read_path() {
         &GetProviderRunRequest {
             provider_run_id: run.id().into(),
         },
+        crate::session::DEFAULT_LOCAL_USER_ID,
         crate::session::DEFAULT_LOCAL_USER_ID,
     )
     .expect("local projection should retain ownership checks");

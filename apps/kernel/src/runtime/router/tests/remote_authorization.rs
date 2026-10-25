@@ -224,3 +224,4 @@ mod ownership;
 mod projection_redaction;
 
 mod historical_workflows;
+mod legacy_room_agents;

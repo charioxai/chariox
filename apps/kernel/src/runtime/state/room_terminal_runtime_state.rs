@@ -310,7 +310,10 @@ impl KernelRuntimeState {
             .as_deref()
             .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
         let session = self.owned.session_store.get_session(&request.session_id)?;
-        if session.owner_user_id() != user_id {
+        if !self
+            .owned
+            .acts_for_owner(session.id(), user_id, session.owner_user_id())
+        {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: user_id.to_string(),
                 owner_user_id: session.owner_user_id().to_string(),

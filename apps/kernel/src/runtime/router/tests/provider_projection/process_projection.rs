@@ -72,6 +72,7 @@ async fn list_provider_processes_uses_warmed_projection_without_app_lock_inner()
             &projected_list_command,
             &projected_list_request,
             crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::session::DEFAULT_LOCAL_USER_ID,
         ),
     )
     .await

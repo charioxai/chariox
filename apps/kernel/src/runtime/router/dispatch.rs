@@ -5,7 +5,9 @@ use crate::runtime::command_latency::{log_command_completed, log_command_receive
 use crate::runtime::command_response_refresh::{
     refresh_command_response_state, CommandResponseRefreshContext,
 };
-use crate::runtime::session_membership::authorize_session_membership;
+use crate::runtime::session_membership::{
+    authorize_session_membership, request_room_member_user_id,
+};
 use crate::runtime::session_projection_refresh::{
     focus_projection_refresh, session_projection_refresh,
 };
@@ -125,6 +127,8 @@ impl CommandRouter {
                 return result;
             }
         };
+        let view_user_id =
+            request_room_member_user_id(&self.runtime_state, &request, &caller_user_id);
         if command.caller.connection_class == Some(crate::local::KernelConnectionClass::Terminal) {
             if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
                 if self
@@ -218,15 +222,10 @@ impl CommandRouter {
                 "submit /sudo individually so each entry has its own popup",
             ));
         }
-        // From here on the command acts as the room member it was admitted as.
-        // An interaction answer keeps the authenticated identity: it is the owner's decision.
-        let command = if matches!(&request, LocalDaemonRequest::RespondToInteraction(_)) {
-            command
-        } else {
-            command.acting_as(&caller_user_id)
-        };
         // MD-4: keep transport callers independent of unrelated pre-lane futures.
-        match Box::pin(self.dispatch_pre_lane(&command, &request, &caller_user_id)).await {
+        match Box::pin(self.dispatch_pre_lane(&command, &request, &caller_user_id, &view_user_id))
+            .await
+        {
             Ok(Some(response)) => {
                 if let Some((session_id, attachment_id)) =
                     projected_terminal_output_attachment(&request)
@@ -275,7 +274,7 @@ impl CommandRouter {
             &result,
         )
         .await;
-        let result = self.redact_result_for_user(result, &caller_user_id);
+        let result = self.redact_result_for_user(result, &view_user_id, &caller_user_id);
         log_command_completed(&command_trace, &result);
         result
     }

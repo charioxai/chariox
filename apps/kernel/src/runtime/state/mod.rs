@@ -101,6 +101,7 @@ pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
+mod legacy_room_owner;
 mod native_catalog_refresh;
 mod owner_context_review;
 mod project_environment_export;
