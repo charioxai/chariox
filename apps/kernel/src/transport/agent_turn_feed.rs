@@ -53,6 +53,11 @@ impl AgentTurnFeed {
         );
     }
 
+    /// The agents of the session as of the last snapshot; `None` before the first.
+    pub(crate) fn session_agents(&self) -> Option<&BTreeSet<String>> {
+        self.visible.as_ref()
+    }
+
     pub(crate) fn observe_snapshot(&mut self, snapshot: &SessionSnapshotProjection) {
         self.visible = Some(
             snapshot

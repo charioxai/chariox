@@ -1,5 +1,7 @@
-//! MP-08 / MP-10 / MP-11: `agent_turn_changed` is the history outline's latest turn, as the kernel
-//! answers it at that moment, for text, tool calls, blobs, cancel and failure.
+//! MP-08 / MP-10 / MP-11: the events a session subscription carries so a client need not read again.
+//! `agent_turn_changed` is the history outline's latest turn, as the kernel answers it at that
+//! moment, for text, tool calls, blobs, cancel and failure. `home_extension_audit_appended` is a
+//! row `ListHomeExtensionAudit` returns.
 use super::*;
 use crate::history::OperationalHistoryStore;
 use crate::history::{
@@ -371,5 +373,76 @@ async fn turn_events_are_coalesced_to_one_per_window() {
         panic!("a burst must end with its latest turn");
     };
     assert_eq!(*turn, watched.outline_turn().await);
+    watched.stop().await;
+}
+
+#[tokio::test]
+async fn audit_rows_arrive_as_the_list_returns_them() {
+    let mut watched = Watched::start().await;
+    let store = watched.app.lock().await.durable_state_store();
+    for index in 0..3 {
+        store
+            .append_event(
+                "home_extension.grant.created",
+                Some(watched.agent_id.clone()),
+                serde_json::json!({ "name": format!("tool-{index}") }),
+            )
+            .unwrap();
+    }
+    // Not audit rows: another kind, and another agent's.
+    store
+        .append_event(
+            "agent.task.begun",
+            Some(watched.agent_id.clone()),
+            serde_json::json!({}),
+        )
+        .unwrap();
+    store
+        .append_event(
+            "home_extension.grant.created",
+            Some("agent-elsewhere".into()),
+            serde_json::json!({}),
+        )
+        .unwrap();
+    let mut appended = Vec::new();
+    for _ in 0..3 {
+        let KernelEvent::HomeExtensionAuditAppended {
+            session_id,
+            agent_id,
+            audit_event,
+        } = watched
+            .next_event(|event| matches!(event, KernelEvent::HomeExtensionAuditAppended { .. }))
+            .await
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (session_id, agent_id),
+            (watched.session_id.clone(), watched.agent_id.clone())
+        );
+        appended.push(*audit_event);
+    }
+    let request =
+        LocalDaemonRequest::ListHomeExtensionAudit(crate::local::ListHomeExtensionAuditRequest {
+            agent_ref: watched.agent_id.clone(),
+            limit: Some(25),
+        });
+    let command = KernelCommand::from_local_request_with_caller(
+        "audit-oracle",
+        KernelCommandSource::LocalCli,
+        KernelCaller::for_source(&KernelCommandSource::LocalCli)
+            .with_connection_class(KernelConnectionClass::Terminal),
+        None,
+        None,
+        &request,
+    );
+    let LocalDaemonResponse::HomeExtensionAuditListed { mut events } =
+        watched.router.dispatch(command, request).await.unwrap()
+    else {
+        panic!("expected the audit list");
+    };
+    events.sort_by_key(|event| event.sequence);
+    assert_eq!(appended, events);
+    assert_eq!(appended.len(), 3);
     watched.stop().await;
 }

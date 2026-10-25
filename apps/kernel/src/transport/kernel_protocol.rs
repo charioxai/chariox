@@ -109,6 +109,13 @@ pub(crate) enum KernelEvent {
         history_revision: u64,
         turn: Box<crate::local::SessionHistoryOutlineTurn>,
     },
+    /// Protocol 596: a row `ListHomeExtensionAudit` returns for the agent was appended. The row is
+    /// `audit_event`: `event` is the tag of every kernel event.
+    HomeExtensionAuditAppended {
+        session_id: String,
+        agent_id: String,
+        audit_event: Box<crate::durable_state::DurableStateEvent>,
+    },
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
     },
@@ -310,6 +317,18 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "history_revision": history_revision,
             "turn_id": turn.turn_id,
             "lifecycle": turn.lifecycle,
+        }),
+        KernelEvent::HomeExtensionAuditAppended {
+            session_id,
+            agent_id,
+            audit_event: audit,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "home_extension_audit_appended",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "kind": audit.kind,
+            "sequence": audit.sequence,
         }),
         KernelEvent::AgentTaskUpdated { session_id, task } => serde_json::json!({
             "event_id": event_id, "event": "agent_task_updated", "session_id": session_id,
@@ -774,6 +793,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
         KernelEvent::AgentTurnChanged { .. } => "agent_turn_changed",
+        KernelEvent::HomeExtensionAuditAppended { .. } => "home_extension_audit_appended",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
@@ -809,6 +829,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         }
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentTurnChanged { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::HomeExtensionAuditAppended { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
@@ -874,6 +895,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
             .iter()
             .any(|id| id == attachment_id),
         KernelEvent::AgentTurnChanged { .. }
+        | KernelEvent::HomeExtensionAuditAppended { .. }
         | KernelEvent::RoomWorkflowsChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }

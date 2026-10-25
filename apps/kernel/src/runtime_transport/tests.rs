@@ -1,8 +1,8 @@
 use super::*;
 
-mod agent_turn_changed;
 #[cfg(unix)]
 mod kernel_browser_terminals;
+mod session_feed_events;
 mod task_subscriptions;
 
 use std::path::{Path, PathBuf};

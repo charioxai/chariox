@@ -23,6 +23,7 @@ use crate::transport::kernel_protocol::{
 };
 
 use crate::transport::agent_turn_feed::AgentTurnFeed;
+use crate::transport::home_audit_feed::HomeAuditFeed;
 use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 
 use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
@@ -61,6 +62,7 @@ pub(super) async fn run_subscription_loop(
     let mut next_snapshot_reconciliation_at = Instant::now();
     let mut next_heartbeat_at = Instant::now();
     let mut agent_turns = AgentTurnFeed::default();
+    let mut home_audit = HomeAuditFeed::new(&router);
     let event_stream_id =
         subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
 
@@ -294,7 +296,18 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
-                for event in agent_turns.flush(&router, &subscription.session_id).await {
+                let mut feed_events = agent_turns.flush(&router, &subscription.session_id).await;
+                feed_events.extend(
+                    home_audit
+                        .next_events(
+                            &router,
+                            &subscription.session_id,
+                            &subscription.attachment_id,
+                            agent_turns.session_agents(),
+                        )
+                        .await,
+                );
+                for event in feed_events {
                     if !emit_kernel_event(
                         &runtime,
                         &outgoing_tx,
@@ -382,6 +395,7 @@ pub(super) async fn run_subscription_loop(
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
+                    _ = home_audit.changed() => {}
                 }
             },
         )
