@@ -162,7 +162,7 @@ impl KernelRuntimeState {
             .or_else(|| project.workspace_ids().iter().find(|workspace| workspace.as_str() == primary_path))
             .ok_or_else(|| move_error("The agent's execution Workspace is outside its selected Project. Add that Workspace to the Project or select a worktree in this Project, then retry"))?;
         let project_id = project.id().to_string();
-        let repositories = project
+        let repositories: Vec<DevelopmentRepositorySelection> = project
             .workspace_ids()
             .iter()
             .map(|workspace| DevelopmentRepositorySelection {
