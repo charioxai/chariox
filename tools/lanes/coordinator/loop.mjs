@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execute, LaneError, save } from '../lanes.mjs';
+import { newSections } from './sections.mjs';
 import { openInbox, waitBatch, confirmSteer, confirmRemoval, dropAgentTarget } from './events.mjs';
 export { save };
 
@@ -158,7 +159,8 @@ export async function coordinate(operation, args, options = {}) {
     // The kernel's answer carries the whole session and the note text: the coordinator needs only which prompt took it and its status.
     const taken = answer.ActivePromptSteered?.prompt ?? answer.PromptSubmitted?.outcome?.Started?.prompt ?? answer.PromptSubmitted?.outcome?.Queued?.prompt;
     const summary = { promptId: taken?.id ?? null, agentStatus: taken?.status ?? (answer.delivered ? 'delivered-event-unrecorded' : 'unknown') };
-    ledger.sections.push({ sha256: section, mode, at_ms: now(), ...summary });
+    // parts: the inbox consumer cuts the appended note at its headings, so each of those sections counts as delivered with it.
+    ledger.sections.push({ sha256: section, parts: newSections(prompt, 0).map(part => createHash('sha256').update(part.trim()).digest('hex')), mode, at_ms: now(), ...summary });
     await save(ledgerPath, ledger);
     return { lane, mode, ...summary };
   }

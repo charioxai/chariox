@@ -6,6 +6,7 @@ import { coordinate, defaultCli, save } from './loop.mjs';
 import { followLaunch } from './events.mjs';
 import { classifyDecision } from './decisions.mjs';
 import { execute, acceptanceIssues } from '../lanes.mjs';
+import { newSections } from './sections.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const sha256 = text => createHash('sha256').update(text).digest('hex');
@@ -18,10 +19,7 @@ const target = event => `${event.kernel}/${event.session_id}/${event.agent_id}`;
 const compact = e => ({ cursor: e.cursor, at_ms: e.at_ms, type: e.type, state: e.value?.state, summary: e.summary, agent_id: e.agent_id });
 
 // Notes the coordinator appended to REVIEW_INBOX.md after launch, one per `## ` section.
-export function newSections(text, offset) {
-  const tail = Buffer.from(text).subarray(offset).toString('utf8');
-  return tail.split(/^(?=## )/m).filter(s => s.trim());
-}
+export { newSections };
 
 // One engine, one inbox: lanes can join while the round runs (the standing loopd service) or all
 // at once (runRound). Every lane keeps its own receipts, so a restarted driver resumes, never relaunches.
@@ -137,7 +135,8 @@ export function createRound(options) {
     // in the ledger is never delivered a second time. Anything else in it (an older script, a failed steer) still is.
     const direct = await read(join(home, `${lane.entry.lane}.direct.json`)).catch(error => { if (error.code === 'ENOENT') return { sections: [] }; throw error; });
     for (const section of sections) {
-      const sent = direct.sections.find(item => item.sha256 === sha256(section.trim()));
+      const digest = sha256(section.trim());
+      const sent = direct.sections.find(item => item.sha256 === digest || item.parts?.includes(digest));
       if (sent) {
         const note = { heading: section.split('\n', 1)[0].slice(0, 120), sha256: sha256(section), at_ms: now(), delivered: true, mode: `direct-${sent.mode}` };
         lane.run.notes.push(note);

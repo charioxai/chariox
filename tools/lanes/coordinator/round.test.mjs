@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile, mkdir, readFile, appendFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runRound, newSections } from './round.mjs';
-import { save } from './loop.mjs';
+import { save, coordinate } from './loop.mjs';
 const head = 'b'.repeat(40);
 
 async function rig(t, lanes = ['alpha', 'beta']) {
@@ -359,6 +359,23 @@ test('round: a note the coordinator already steered directly is recorded, not de
   assert.deepEqual(alpha.notes.map(n => [n.mode, n.delivered]), [['direct-steered', true], ['acknowledged-steer-status', true]]);
   assert.equal(r.calls.filter(c => c.op === 'steer').length, 1, 'only the section that was not steered directly goes out');
   assert.match(r.calls.find(c => c.op === 'steer').input.prompt, /only appended/);
+});
+
+test('round: a note with several headings steered directly is not delivered again section by section from the inbox', async t => {
+  const r = await rig(t, ['alpha']);
+  const note = '## 11:00Z coordinator\nfirst part\n## 11:01Z coordinator\nsecond part\n';
+  const file = join(r.home, 'note.src.md'); await writeFile(file, note);
+  r.waits.push({});
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  const before = r.options.cli; let wakes = 0;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait' && ++wakes === 1) { await coordinate('steer', ['alpha', file], r.options); await appendFile(join(r.home, 'alpha.inbox.md'), note); }
+    if (argv[1] === 'wait' && wakes === 2) r.idle.add('alpha');
+    return before(argv);
+  };
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(r.calls.filter(c => c.op === 'steer').length, 1, 'only the direct steer reached the worker');
+  assert.deepEqual(alpha.notes.map(n => [n.mode, n.delivered]), [['direct-steered', true], ['direct-steered', true]]);
 });
 
 test('round: an invalid ACCEPTANCE_UPDATE.json is steered while the worker runs, and a worker that ends its turn with one gets the problems as its next prompt', async t => {
