@@ -4,9 +4,9 @@
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
+mod deadline_clock;
 #[cfg(test)]
 mod deadline_tests;
-mod deadline_clock;
 mod deadlines;
 mod delegation;
 mod delivery;
