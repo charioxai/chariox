@@ -397,12 +397,19 @@ pub(super) fn validate_relative_path(path: &str) -> Result<(), DaemonError> {
 }
 
 fn excluded_for_export(path: &str, vault_enabled: bool) -> bool {
-    context_force_excluded_path(path)
-        || (!vault_enabled
-            && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path))
+    context_force_excluded_path(path) || (!vault_enabled && plain_context_force_excluded_path(path))
+}
+
+pub(super) fn plain_context_force_excluded_path(path: &str) -> bool {
+    path != ".charioxignore"
+        && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path)
 }
 
 pub(super) fn context_force_excluded_path(path: &str) -> bool {
+    // A copied Project needs its selection policy for subsequent exports.
+    if path == ".charioxignore" {
+        return false;
+    }
     if path.split('/').any(is_portable_git_admin_component) {
         return true;
     }
@@ -467,7 +474,10 @@ fn is_portable_git_admin_component(component: &str) -> bool {
 pub(super) fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
     // Keep strict validation of the optional expert file at the import/export boundary.
     read_expert_context_ignore_patterns(worktree)?;
-    Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree))
+    let mut patterns =
+        crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree);
+    patterns.push("!.charioxignore".into());
+    Ok(patterns)
 }
 
 fn read_expert_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {

@@ -355,6 +355,19 @@ fn directory_glob_inclusion_roundtrips(pattern: &str) {
         b"requested file\n"
     );
     assert!(!restored.join("private-extra/stays.txt").exists());
+    let returned = export_development_context(DevelopmentContextExportRequest {
+        project_id: "move-project".into(),
+        repositories: vec![selection(restored, true)],
+        archive_path: root.join("return.tar.gz"),
+    })
+    .unwrap();
+    assert!(
+        returned.manifest.repositories[0]
+            .overlay
+            .iter()
+            .any(|entry| { entry.path == "private-extra/needed.txt" }),
+        "a copied Project must retain inclusion rules for the next export"
+    );
     if pattern.starts_with("**/") {
         assert_eq!(
             fs::read(restored.join("private-extra/nested/needed.txt")).unwrap(),

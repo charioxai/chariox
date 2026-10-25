@@ -124,10 +124,7 @@ pub(super) fn snapshot(
                 .to_string();
             validate_relative_path(&path_text)?;
             if overlay::context_force_excluded_path(&path_text)
-                || (vault.is_none()
-                    && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(
-                        &path_text,
-                    ))
+                || (vault.is_none() && overlay::plain_context_force_excluded_path(&path_text))
             {
                 continue;
             }
