@@ -4,6 +4,7 @@ import { BrowserSnapshotError } from './browser-controller-snapshot.mjs';
 import { createHash } from 'node:crypto';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 const FRAME_TIMEOUT_MS = 500;
+class FillProtectionChanged extends Error {}
 const retired = new WeakMap();
 // Keep the completed lifecycle until its target is pruned: a measurement may
 // still hold a field read from before completion across a CDP release await.
@@ -75,14 +76,14 @@ export async function finishBrowserFill(connection,target) {
 }
 async function stableFieldState(connection,entry,document,backendNodeId,target,lifecycle) {
   const key=fillKey(target),check=()=>{
-    if(lifecycle!==filling.get(connection)?.get(key)||lifecycle&&((target.fill_revision!==undefined&&target.fill_revision!==lifecycle.target.fill_revision)||target.value_hash&&target.value_hash!==lifecycle.target.value_hash))throw Error('MP-11: fill changed during protection measurement');
+    if(lifecycle!==filling.get(connection)?.get(key)||lifecycle&&((target.fill_revision!==undefined&&target.fill_revision!==lifecycle.target.fill_revision)||target.value_hash&&target.value_hash!==lifecycle.target.value_hash))throw new FillProtectionChanged('MP-11: fill changed during protection measurement');
   };
   for(let attempt=0;attempt<2;attempt++) {
     check();const pending=lifecycle?.pending;
     const state=await fieldState(connection,entry,document,backendNodeId);
     check();if(pending===lifecycle?.pending)return {state,inFlight:pending===true};
   }
-  throw Error('MP-11: fill changed during protection measurement');
+  throw new FillProtectionChanged('MP-11: fill changed during protection measurement');
 }
 async function fieldState(connection,entry,document,backendNodeId) {
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:document.frameId,worldName:'chariox-fill-target'},entry.sessionId);
@@ -279,7 +280,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         }
       }
     }
-    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
+    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw new FillProtectionChanged('MP-11: fill changed during protection measurement');if(pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
     await assertBrowserFramesUnchanged(connection,frames);
   });
   return page;
@@ -302,7 +303,13 @@ export async function measureBrowserProtection(browser,policy,options={}) {
       const tracked=[...(browser.fillTargets?.values()??[])].filter(t=>t.target_id===info.targetId);
       const targets=supplied.map(t=>tracked.find(own=>own.node_ref===t.node_ref&&own.document_id===t.document_id)??t);
       for(const target of tracked)if(!targets.includes(target))targets.push(target);
-      const measured=await measurePageProtection(connection,sessionId,info.targetId,{...policy,targets},options);
+      let measured;
+      // A repeated fill can replace the lifecycle while CDP is reading it.
+      // Retry that observation before changing the stream's protection state.
+      for(let attempt=0;attempt<2;attempt++){
+        try{measured=await measurePageProtection(connection,sessionId,info.targetId,{...policy,targets},options);break;}
+        catch(error){if(!(error instanceof FillProtectionChanged)||attempt===1)throw error;}
+      }
       if(measured)pages.push({target_id:info.targetId,window_id:windowId,window:[bounds.left,bounds.top,bounds.width,bounds.height],chrome:false,...measured});
     } finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
   }

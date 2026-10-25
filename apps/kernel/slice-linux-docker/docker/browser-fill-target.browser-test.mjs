@@ -82,6 +82,21 @@ async function setup(dpr, run) {
   }
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-10/MP-11 DPR${dpr}: a refill racing a field measurement retains coverage`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,policy,fill,evaluate,url})=>{
+   await fill('#password');await evaluate("document.querySelector('#password').type='text'");
+   const nodeRef=await ref('#password'),send=connection.send.bind(connection);let raced=false;
+   connection.send=async(method,params,...rest)=>{
+     const result=await send(method,params,...rest);
+     if(!raced&&method==='Runtime.callFunctionOn'&&params.functionDeclaration?.includes('const editable=this.localName')){
+       raced=true;
+       await assert.rejects(browser.performAction({target_id:targetId,document_id:documentId,node_ref:nodeRef,
+         action:{kind:'fill',text:value,expected_document_url:url}}),error=>error.code==='browser_secret_target_not_masked');
+     }
+     return result;
+   };
+   try{const measurement=await measureBrowserProtection(browser,policy,{maskPasswords:true});assert(raced);assert.equal(measurement.pages.find(p=>p.target_id===targetId).regions.length,1,'same exact field stays covered across a repeated fill');}
+   finally{connection.send=send;}
+ }));
  test(`MP-08/MP-10/MP-11 DPR${dpr}: guest stream keeps the Vault target covered across Show/Hide`,()=>setup(dpr,async({browser,policy,fill,evaluate,collect})=>{
    await fill('#password');
    const protectedRegions=async()=> (await measureBrowserProtection(browser,policy,{maskPasswords:true})).pages.find(page=>page.regions.length)?.regions??[];
