@@ -2,7 +2,8 @@
 # loopbrief.sh <lane> <worktree> <claude|codex> < brief.md — the drop-in replacement for brief.sh once rounds run through Chariox.
 # Copies the brief to agents/<lane>/BRIEF-<round>.md on b3, drops one queue entry for loopd and waits until loopd has picked it up.
 # Env: MODEL (default claude-sonnet-5-5 / gpt-6.1-sol), EFFORT (high), HARD_STOP_MIN (240), ROUND (default: the next rN),
-#      EXTRA_WORKTREES="/path /path" (more repositories the lane changes), B3 (the b3.sh helper), WAIT_SECONDS (120).
+#      EXTRA_WORKTREES="/path /path" (more repositories the lane changes), PREAMBLE="/path /path" (shared rules loopd appends
+#      to the brief; default: agents/common.md when it exists), B3 (the b3.sh helper), WAIT_SECONDS (120).
 set -euo pipefail
 L=${1:?lane} W=${2:?worktree} K=${3:?claude or codex}
 case $K in
@@ -10,7 +11,7 @@ case $K in
   codex) M=${MODEL:-gpt-6.1-sol};;
   *) echo "kind must be claude or codex" >&2; exit 2;;
 esac
-E=${EFFORT:-high} H=${HARD_STOP_MIN:-240} R=${ROUND:-} X=${EXTRA_WORKTREES:-} T=${WAIT_SECONDS:-120}
+E=${EFFORT:-high} H=${HARD_STOP_MIN:-240} R=${ROUND:-} X=${EXTRA_WORKTREES:-} P=${PREAMBLE:-} T=${WAIT_SECONDS:-120}
 [[ $L =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}$ ]] || { echo "invalid lane name: $L" >&2; exit 2; }
 [[ $W == /* && $W != *[[:space:]]* ]] || { echo "worktree must be an absolute path without spaces" >&2; exit 2; }
 [[ $H =~ ^[0-9]+$ && $H -ge 1 && $H -le 1440 ]] || { echo "HARD_STOP_MIN must be 1..1440" >&2; exit 2; }
@@ -32,11 +33,13 @@ fi
 [ ! -e "$D/BRIEF-$R.md" ] || { echo "round $R of $L already has a brief; pass ROUND=<new id>" >&2; exit 3; }
 [ ! -e "$Q/$L-$R.json" ] && [ ! -e "$Q/done/$L-$R.json" ] || { echo "queue already has $L-$R; pass ROUND=<new id>" >&2; exit 3; }
 cat > "$D/BRIEF-$R.md"
-export L R W K M E H X D
+[ -n "$P" ] || { [ ! -f "$A/common.md" ] || P=$A/common.md; }
+export L R W K M E H X P D
 node -e '
 const e = process.env;
 const worktrees = [e.W, ...(e.X || "").split(/\s+/).filter(Boolean)];
-process.stdout.write(JSON.stringify({ lane: e.L, round: e.R, provider: e.K, model: e.M, effort: e.E, hardStopMinutes: Number(e.H), brief: `${e.D}/BRIEF-${e.R}.md`, worktrees }, null, 2) + "\n");
+const preamble = (e.P || "").split(/\s+/).filter(Boolean);
+process.stdout.write(JSON.stringify({ lane: e.L, round: e.R, provider: e.K, model: e.M, effort: e.E, hardStopMinutes: Number(e.H), brief: `${e.D}/BRIEF-${e.R}.md`, ...(preamble.length && { preamble }), worktrees }, null, 2) + "\n");
 ' > "$Q/.$L-$R.json.tmp"
 mv "$Q/.$L-$R.json.tmp" "$Q/$L-$R.json"
 for ((i = 0; i < T; i += 2)); do
@@ -49,5 +52,5 @@ done
 echo "loopd has not picked up $L-$R within ${T}s; is it running? node tools/lanes/kernel/lanes-kernel.mjs status (loopd.pid)" >&2
 exit 4
 REMOTE
-VARS=$(printf 'L=%q K=%q W=%q M=%q E=%q H=%q R=%q X=%q T=%q LOOP_AGENTS=%q ' "$L" "$K" "$W" "$M" "$E" "$H" "$R" "$X" "$T" "${LOOP_AGENTS:-/root/.chariox/dev/browser-resume-20260930/agents}")
+VARS=$(printf 'L=%q K=%q W=%q M=%q E=%q H=%q R=%q X=%q P=%q T=%q LOOP_AGENTS=%q ' "$L" "$K" "$W" "$M" "$E" "$H" "$R" "$X" "$P" "$T" "${LOOP_AGENTS:-/root/.chariox/dev/browser-resume-20260930/agents}")
 "$B3" "$VARS bash -c $(printf %q "$BODY")" < "$F"

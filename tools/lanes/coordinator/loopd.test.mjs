@@ -59,6 +59,8 @@ test('parseEntry accepts a complete entry and normalizes worktrees', () => {
   assert.equal(entry.key, 'integ2-r35');
   assert.deepEqual(entry.worktrees, [{ path: '/a', base: undefined }, { path: '/b', base: sha }]);
   assert.equal(entry.notes, '/n.md');
+  assert.deepEqual(entry.preamble, []);
+  assert.deepEqual(parseEntry('integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { preamble: ['/common.md'] }))).preamble, ['/common.md']);
 });
 
 test('parseEntry names the exact field it rejects', () => {
@@ -72,6 +74,8 @@ test('parseEntry names the exact field it rejects', () => {
     ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { worktrees: [] })), 'worktrees'],
     ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { worktrees: ['/a', { path: '/b', base: 'abc' }] })), 'worktrees[1].base'],
     ['../x-r1.json', JSON.stringify(entryFile('../x', 'r1')), 'lane'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { preamble: 'common.md' })), 'preamble'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { preamble: ['/ok.md', 'relative.md'] })), 'preamble[1]'],
   ];
   for (const [name, text, field] of bad) assert.throws(() => parseEntry(name, text), error => error.code === 'invalid_queue_entry' && error.message.startsWith(field), `${name} ${field}`);
 });
@@ -211,6 +215,37 @@ test('the next round of a lane does not inherit the previous round handoff files
   assert.equal(await readFile(join(laneDirectory, 'PUSH_READY.md'), 'utf8'), 'round r2', 'a resumed round keeps its own handoff');
   assert.deepEqual(seen.find(([task]) => task === 'alpha-r2')[1], [true, false, false], 'only r2 own file is visible to its collection');
   assert.equal((await runFile(r, 'alpha')).finishReason, 'hard_stop');
+});
+
+test('the preamble files are appended to the brief once, so a resume sees the same brief', async t => {
+  const r = await rig(t);
+  const common = join(r.root, 'common.md'); await writeFile(common, 'shared rules v1');
+  await r.drop('alpha', 'r1', { preamble: [common] });
+  r.script.push(async () => { r.controller.abort(); return []; });
+  await serve(r.options);
+  const launched = await readFile(join(r.layout.home, 'alpha-r1.brief.md'), 'utf8');
+  assert.equal(launched, 'the brief\n\nshared rules v1\n');
+  // The shared file changes while loopd is down: the running round keeps the brief it was launched with.
+  await writeFile(common, 'shared rules v2');
+  const again = new AbortController(); r.options.signal = again.signal; r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'finished') again.abort(); };
+  r.idle.add('alpha-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]);
+  await serve(r.options);
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
+  assert.equal(await readFile(join(r.layout.home, 'alpha-r1.brief.md'), 'utf8'), launched);
+});
+
+test('a missing preamble file ends the entry as launch_failed with the file named', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1', { preamble: [join(r.root, 'nope.md')] });
+  r.options.retryMs = 1;
+  r.finished(1);
+  const watcher = r.options.log; r.options.log = (kind, detail) => { watcher(kind, detail); if (kind === 'launch_failed') r.controller.abort(); };
+  await serve(r.options);
+  const run = await runFile(r, 'alpha');
+  assert.equal(run.finishReason, 'launch_failed');
+  assert.equal(run.launchError.code, 'preamble_unavailable');
+  assert.match(run.launchError.message, /nope\.md/);
 });
 
 test('an entry that cannot launch is retried, then ends as launch_failed with its reason', async t => {

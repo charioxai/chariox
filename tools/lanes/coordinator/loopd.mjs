@@ -31,6 +31,9 @@ export function parseEntry(fileName, text) {
   if (!Number.isSafeInteger(raw.hardStopMinutes) || raw.hardStopMinutes < 1 || raw.hardStopMinutes > 1440) invalid('hardStopMinutes', 'must be a whole number of minutes, 1..1440');
   if (!absolute(raw.brief)) invalid('brief', 'must be an absolute path');
   if (raw.notes !== undefined && !absolute(raw.notes)) invalid('notes', 'must be an absolute path');
+  const preamble = raw.preamble ?? [];
+  if (!Array.isArray(preamble) || preamble.length > 8) invalid('preamble', 'must list up to 8 absolute file paths');
+  preamble.forEach((path, index) => { if (!absolute(path)) invalid(`preamble[${index}]`, 'needs an absolute path'); });
   if (!Array.isArray(raw.worktrees) || !raw.worktrees.length || raw.worktrees.length > 4) invalid('worktrees', 'must list 1..4 worktrees; the first is the one the worker starts in');
   const worktrees = raw.worktrees.map((item, index) => {
     const worktree = typeof item === 'string' ? { path: item } : item;
@@ -38,7 +41,7 @@ export function parseEntry(fileName, text) {
     if (worktree.base !== undefined && !/^[a-f0-9]{40}$/.test(worktree.base)) invalid(`worktrees[${index}].base`, 'must be a full 40-character commit id');
     return { path: worktree.path, base: worktree.base };
   });
-  return { lane: raw.lane, round: raw.round, key: `${raw.lane}-${raw.round}`, provider: raw.provider, model: raw.model, effort: raw.effort, hardStopMinutes: raw.hardStopMinutes, brief: raw.brief, notes: raw.notes, worktrees };
+  return { lane: raw.lane, round: raw.round, key: `${raw.lane}-${raw.round}`, provider: raw.provider, model: raw.model, effort: raw.effort, hardStopMinutes: raw.hardStopMinutes, brief: raw.brief, preamble, notes: raw.notes, worktrees };
 }
 
 export async function serve(options) {
@@ -68,6 +71,18 @@ export async function serve(options) {
     }
   };
 
+  // Workers get only their brief, so the shared rules named by the entry are appended to it. The result is written once:
+  // a resumed round must see the brief it was launched with, even if a shared file changed meanwhile.
+  const composeBrief = async entry => {
+    if (!entry.preamble.length) return entry.brief;
+    const composed = join(home, 'rounds', `${entry.key}.brief.md`);
+    if (await exists(composed)) return composed;
+    const parts = [entry.brief, ...entry.preamble];
+    const texts = await Promise.all(parts.map(path => readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') throw new LaneError('preamble_unavailable', `${path} does not exist; fix the entry's brief or preamble list.`); throw error; })));
+    await writeFile(composed, `${texts.map(text => text.trimEnd()).join('\n\n')}\n`, { mode: 0o600 });
+    return composed;
+  };
+
   // Bases are fixed at the first sighting of an entry, so a restarted service bundles the same round.
   const prepare = async entry => {
     const specPath = join(home, 'rounds', `${entry.key}.spec.json`);
@@ -94,7 +109,7 @@ export async function serve(options) {
     config.bases[entry.key] = spec.bases[0];
     return {
       lane: entry.key, name: entry.lane, round: entry.round, provider: entry.provider, model: entry.model, effort: entry.effort,
-      worktree: entry.worktrees[0].path, brief: entry.brief, inbox: entry.notes || join(laneDirectory, 'REVIEW_INBOX.md'),
+      worktree: entry.worktrees[0].path, brief: await composeBrief(entry), inbox: entry.notes || join(laneDirectory, 'REVIEW_INBOX.md'),
       runFile: join(laneDirectory, 'LOOP_RUN.json'), lastMessageFile: join(laneDirectory, 'last-message.md'), hardStopMinutes: entry.hardStopMinutes,
       extraBundles: entry.worktrees.slice(1).map((worktree, index) => ({ name: `${basename(worktree.path).replace(/[^A-Za-z0-9_.-]/g, '-')}`, worktree: worktree.path, base: spec.bases[index + 1], repository: config.repository })),
     };

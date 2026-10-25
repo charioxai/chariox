@@ -36,6 +36,21 @@ test('loopbrief writes the brief and a queue entry, then reports the run file on
   assert.match(result.stdout, /queue file: .*integ2-r1\.json\nrun file: +.*integ2\/LOOP_RUN\.json\npicked up by loopd as integ2-r1 \(gpt-6\.1-sol medium, hard stop 90 min\)/);
 });
 
+test('loopbrief names the shared rules as the entry preamble: the PREAMBLE env, else agents/common.md when it exists', async t => {
+  const r = await rig(t);
+  await mkdir(r.agents, { recursive: true });
+  await writeFile(join(r.agents, 'common.md'), 'rules');
+  const first = r.run(['alpha', '/work/alpha', 'claude']);
+  const entry = JSON.parse(await r.waitFor(join(r.agents, '_loop/queue/alpha-r1.json')));
+  assert.deepEqual(entry.preamble, [join(r.agents, 'common.md')]);
+  await writeFile(join(r.agents, 'alpha/LOOP_RUN.json'), JSON.stringify({ round: 'r1', launchedAtMs: 1 }));
+  assert.equal((await first.done).code, 0);
+  const second = r.run(['beta', '/work/beta', 'claude'], { PREAMBLE: '/rules/a.md /rules/b.md' });
+  assert.deepEqual(JSON.parse(await r.waitFor(join(r.agents, '_loop/queue/beta-r1.json'))).preamble, ['/rules/a.md', '/rules/b.md']);
+  await writeFile(join(r.agents, 'beta/LOOP_RUN.json'), JSON.stringify({ round: 'r1', launchedAtMs: 1 }));
+  assert.equal((await second.done).code, 0);
+});
+
 test('loopbrief numbers the next round after the briefs and queue entries it finds', async t => {
   const r = await rig(t);
   await mkdir(join(r.agents, 'amint'), { recursive: true });

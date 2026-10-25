@@ -101,23 +101,30 @@ resumes from receipts). Process: `node run/tools/lanes/coordinator/round.mjs ser
 { "lane": "integ2", "round": "r35", "provider": "claude", "model": "claude-sonnet-5-5", "effort": "high",
   "hardStopMinutes": 240, "brief": "/abs/agents/integ2/BRIEF-r35.md",
   "worktrees": ["/abs/primary", { "path": "/abs/second", "base": "<40-hex commit>" }],
-  "notes": "/abs/REVIEW_INBOX.md" }
+  "preamble": ["/abs/agents/common.md"], "notes": "/abs/REVIEW_INBOX.md" }
 ```
 
 `provider` is `claude` or `codex`; `effort` is `low|medium|high|xhigh|max`; `worktrees` lists 1..4 repositories
 (the first is where the worker starts; every other one is bundled too); `notes` is optional and defaults to
-`agents/<lane>/REVIEW_INBOX.md`. The coordinator side is `tools/lanes/coordinator/mac/loopbrief.sh <lane> <worktree>
-<claude|codex> < brief.md` (env `MODEL`, `EFFORT`, `HARD_STOP_MIN`, `ROUND`, `EXTRA_WORKTREES`): it copies the
+`agents/<lane>/REVIEW_INBOX.md`. `preamble` is an optional list (up to 8) of absolute files that loopd appends to the
+brief, in order, so the worker gets the shared rules without the wrapper pasting them: the composed brief is written
+once, at first admission, and a resumed round keeps it even if a shared file changes. A missing file ends the entry
+as `launch_failed` (`preamble_unavailable`, naming the file). The coordinator side is `tools/lanes/coordinator/mac/loopbrief.sh <lane> <worktree>
+<claude|codex> < brief.md` (env `MODEL`, `EFFORT`, `HARD_STOP_MIN`, `ROUND`, `EXTRA_WORKTREES`, `PREAMBLE`; the preamble defaults to `agents/common.md` when it exists): it copies the
 brief to `agents/<lane>/BRIEF-<round>.md` over the `b3.sh` helper, writes the entry atomically and prints the
 queue file and `LOOP_RUN.json` path once loopd has picked it up. An invalid entry moves to `queue/rejected/`
 with `<name>.reason.txt` naming the exact field. One round per lane runs at a time; a second entry for the
-same lane waits in the queue. A launch that fails 5 times (30 s apart) ends as `finishReason: launch_failed`.
+same lane waits in the queue; after a loopd restart the lane's unfinished round is resumed first, whatever the file
+order, and the waiting entry starts only when it has finished. A launch that fails 5 times (30 s apart) ends as `finishReason: launch_failed`.
 
 **Per lane** loopd writes `agents/<lane>/LOOP_RUN.json` (`launchedAtMs`, `events`, `permissions`, `notes`, `head`,
 `bundle`, `bundleSha256`, `files`, `finishReason`, `finishedAtMs`, `driverError`, `lastMessage`), and
 `last-message.md` (the worker's final message, from the session history). A finished entry moves to
 `queue/done/` and its run file is also kept as `LOOP_RUN.<round>.json`; a file left by another round is set
-aside as `LOOP_RUN.<round>.json` before the new round starts. `finishReason` is `finished`, `hard_stop`
+aside as `LOOP_RUN.<round>.json` before the new round starts. The previous round's handoff files
+(`PUSH_READY.md`, `LANE_STATUS.md`, `ACCEPTANCE_UPDATE.json`) are set aside the same way (`PUSH_READY.<round>.md`, ...)
+when the next round is first admitted, so a round that writes none is not collected with the old ones; the live
+file for the current round stays at `agents/<lane>/PUSH_READY.md`, and a resume does not move it. `finishReason` is `finished`, `hard_stop`
 or one of those with `_collect_failed` (then `collectError` names the code; the stop still happened).
 Handoff files the worker did not write are listed as `missing` and do not stop the collection of its commits.
 
