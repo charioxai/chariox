@@ -24,7 +24,7 @@ async function rig(t, capabilities = ['outside_steer_events_v1']) {
     return { ActivePromptSteered: { prompt: { id: 'provider-steer' } } };
   }, cli: async argv => {
     calls.push({ argv });
-    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [target] } };
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [target, { kernel: 'executor', session_id: 'room' }] } };
     if (argv[1] === 'wait') return { events: [event], next_cursor: event.cursor, timed_out: false };
     assert.equal(argv[1], 'ack');
     assert.ok((await readdir(join(home, 'events'))).length);

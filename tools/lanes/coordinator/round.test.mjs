@@ -35,7 +35,7 @@ async function rig(t, lanes = ['alpha', 'beta']) {
     },
     cli: async argv => {
       calls.push({ argv });
-      if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: lanes.map(l => ({ kernel: 'executor', session_id: `room-${l}` })) } };
+      if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: lanes.flatMap(l => [{ kernel: 'executor', session_id: `room-${l}` }, { kernel: 'executor', session_id: `room-${l}`, agent_id: `agent-${l}` }, { kernel: 'executor', session_id: `ops-${l}` }]) } };
       if (argv[1] === 'wait') {
         const stops = calls.filter(c => c.op === 'stop' && !c.served);
         if (stops.length) stops[0].served = true;

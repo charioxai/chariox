@@ -36,7 +36,7 @@ async function rig(t) {
     },
     cli: async argv => {
       calls.push({ argv });
-      if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [...launches.keys()].map(key => ({ kernel: 'executor', session_id: `room-${key}` })) } };
+      if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [...launches.keys()].flatMap(key => [{ kernel: 'executor', session_id: `room-${key}` }, { kernel: 'executor', session_id: `room-${key}`, agent_id: `agent-${key}` }, { kernel: 'executor', session_id: `ops-${key}` }]) } };
       if (argv[1] === 'wait') {
         clock.ms += 15_000;
         const stops = calls.filter(c => c.op === 'stop' && !c.served);
@@ -383,14 +383,14 @@ test('after a restart gives the service a new grant, the running lanes follow th
   const cli = r.options.cli;
   r.options.cli = async argv => {
     if (argv[1] === 'subscribe') { followed.push(argv.slice(2).join(' ')); r.calls.push({ argv }); return {}; }
-    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'new-grant', targets: followed.map(item => ({ kernel: 'executor', session_id: item.split(' ')[3] })), kernels: [{ kernel: 'executor' }] } };
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'new-grant', targets: followed.map(item => ({ kernel: 'executor', session_id: item.split(' ')[3], ...(item.includes('--agent') && { agent_id: item.split(' ')[5] }) })), kernels: [{ kernel: 'executor' }] } };
     return cli(argv);
   };
   r.options.signal = (r.controller = new AbortController()).signal;
   r.idle.add('alpha-r1');
   r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'finished') r.controller.abort(); };
   await serve(r.options);
-  assert.deepEqual(followed.sort(), ['--kernel executor --session ops-alpha-r1', '--kernel executor --session room-alpha-r1']);
+  assert.deepEqual(followed.sort(), ['--kernel executor --session ops-alpha-r1', '--kernel executor --session room-alpha-r1', '--kernel executor --session room-alpha-r1 --agent agent-alpha-r1']);
   assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
   assert.equal(r.calls.filter(c => c.op === 'launch').length, 2, 'the same receipts are reused; the adapter sees the idempotent launch only');
 });

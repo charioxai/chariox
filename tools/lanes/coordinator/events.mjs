@@ -6,14 +6,31 @@ import { LaneError, save } from '../lanes.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 export async function openInbox(home, cli, settleMs = 1000) {
-  const { subscription } = await cli(['events', 'subscription']);
+  let { subscription } = await cli(['events', 'subscription']);
   if (!subscription || subscription.ended) throw new LaneError('subscription_unavailable');
   const statePath = join(home, 'subscription.json');
   let previous; try { previous = await read(statePath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (previous && previous.subscription_id !== subscription.subscription_id) throw new LaneError('subscription_changed', 'The access grant changed; restore the original grant before resuming its inbox.');
   const records = await Promise.all((await readdir(home)).filter(f => /^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(f) && !f.endsWith('.launch.json')).map(f => read(join(home, f))));
+  let repaired = false;
   for (const r of records.filter(r => r.launch && !r.stopped)) {
-    if (!subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === r.launch.sessionId && (!t.agent_id || t.agent_id === r.launch.agentId))) throw new LaneError('subscription_target_missing', `Launch target ${r.lane} is missing from the inbox; subscribe before waiting.`);
+    const wanted = [
+      { session_id: r.launch.sessionId },
+      { session_id: r.launch.sessionId, agent_id: r.launch.agentId },
+      ...(r.launch.operationsSessionId ? [{ session_id: r.launch.operationsSessionId }] : []),
+    ];
+    if (wanted.some(w => !subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === w.session_id && t.agent_id === w.agent_id))) {
+      await followLaunch(cli, r.launch);
+      repaired = true;
+    }
+  }
+  if (repaired) {
+    subscription = (await cli(['events', 'subscription'])).subscription;
+    for (const r of records.filter(r => r.launch && !r.stopped)) {
+      if (!subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === r.launch.sessionId && t.agent_id === r.launch.agentId)) {
+        throw new LaneError('subscription_target_missing', `Worker ${r.lane} is still missing after subscribing; retry after the kernel is ready.`);
+      }
+    }
   }
   // A destroyed agent that stays a target makes the kernel refuse the whole stream (every lane goes silent).
   // Stopped workers lose their agent target; their sessions go once the removal event has been seen.
@@ -31,7 +48,7 @@ export async function openInbox(home, cli, settleMs = 1000) {
   // The kernel clears its refusal a moment after the dead target goes, so look again before giving up.
   let current = targets.size ? (await cli(['events', 'subscription'])).subscription : subscription;
   const refusal = () => current.kernels?.find(k => k.error?.code === 'events_refused');
-  for (let look = 0; targets.size && refusal() && look < 8; look++) {
+  for (let look = 0; (targets.size || repaired) && refusal() && look < 8; look++) {
     await new Promise(resolve => setTimeout(resolve, settleMs));
     current = (await cli(['events', 'subscription'])).subscription;
   }
@@ -41,9 +58,16 @@ export async function openInbox(home, cli, settleMs = 1000) {
   return current;
 }
 
-// A new access grant starts with an empty inbox: follow the worker's Room sessions again (agent events arrive through them).
+// A new grant needs both Room and agent targets; the routed agent stream is admitted separately.
 export async function followLaunch(cli, launch) {
   for (const session of [launch.sessionId, launch.operationsSessionId].filter(Boolean)) await cli(['events', 'subscribe', '--kernel', launch.kernel, '--session', session]);
+  try { await cli(['events', 'subscribe', '--kernel', launch.kernel, '--session', launch.sessionId, '--agent', launch.agentId]); }
+  catch (error) {
+    if (!['agent_not_found', 'agent_not_in_session', 'session_not_found'].includes(error.code)) throw error;
+    const lost = new LaneError('worker_lost', `Worker ${launch.agentId} no longer exists in ${launch.sessionId}; collect its work without calling it finished.`);
+    lost.launch = launch;
+    throw lost;
+  }
 }
 
 // Called before a worker is destroyed: the agent target would be dead the moment it is gone.

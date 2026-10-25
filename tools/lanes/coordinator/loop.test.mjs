@@ -21,7 +21,7 @@ async function rig(t) {
     return { stopped: true };
   }, cli: async argv => {
     calls.push({ argv });
-    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room' }] } };
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room' }, { kernel: 'executor', session_id: 'room', agent_id: 'agent' }, { kernel: 'executor', session_id: 'ops' }] } };
     if (argv[1] === 'wait') return { events: [calls.some(c => c.op === 'stop') ? { cursor: 1, kernel: launch.kernel, session_id: launch.sessionId, agent_id: launch.agentId, type: 'session', value: { state: 'agent_removed' } } : { cursor: 1, type: 'agent' }], next_cursor: 1 };
     return {};
   } };
@@ -96,7 +96,7 @@ test('watch: archives a real exit-3 ending batch and its reason without ack', as
 import { appendFileSync } from 'node:fs';
 const argv = process.argv.slice(2);
 appendFileSync(${JSON.stringify(calls)}, JSON.stringify(argv) + '\\n');
-if (argv[1] === 'subscription') console.log(JSON.stringify({ subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room' }] } }));
+if (argv[1] === 'subscription') console.log(JSON.stringify({ subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room' }, { kernel: 'executor', session_id: 'room', agent_id: 'agent' }, { kernel: 'executor', session_id: 'ops' }] } }));
 else if (argv[1] === 'wait') { console.log(JSON.stringify(${JSON.stringify(batch)})); process.exitCode = 3; }
 else process.exitCode = 1;
 `, { mode: 0o700 });
