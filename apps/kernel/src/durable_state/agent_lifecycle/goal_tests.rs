@@ -1351,3 +1351,62 @@ fn a12_check_is_not_retried_unless_the_same_worker_came_back_after_the_bound() {
         "a check that never ran on a leased worker keeps the plain bound"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S04: an owner's native approval wait is not service time of
+// the completion check that asked for it.
+#[test]
+fn a12_native_approval_wait_does_not_spend_the_completion_check_bound() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.settle("p", true);
+    let pending = f.task();
+    let check = completion::evaluation(&pending).unwrap().clone();
+    f.begin(&check.prompt_id);
+    let task = f.task();
+    f.apply(Operation::BeginGoalApproval {
+        task: "p".into(),
+        prompt: check.prompt_id.clone(),
+        now: check.started_at_ms + 5_000,
+    });
+    let blocked = f.task();
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    let answered_at = check.deadline_ms + 300_000;
+    f.apply(Operation::AnswerGoalApproval {
+        task: "p".into(),
+        prompt: check.prompt_id.clone(),
+        revision: blocked.blocked_revision,
+        now: answered_at,
+    });
+    let resumed = f.task();
+    assert_eq!(resumed.state, ExecutionState::Working);
+    let after = completion::evaluation(&resumed).unwrap();
+    assert_eq!(after.paused_at_ms, None);
+    assert_eq!(
+        after.deadline_ms,
+        answered_at + goals::CHECK_BOUND_MS - 5_000,
+        "the remaining check budget survives the approval wait"
+    );
+    f.apply(Operation::TimeoutGoal {
+        task: "p".into(),
+        prompt: check.prompt_id.clone(),
+        now: check.deadline_ms + 1,
+    });
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Working,
+        "the original deadline no longer applies"
+    );
+    let Outcome::Settled { task: settled, .. } = f.apply(Operation::EvaluateGoal {
+        task: task.task_id,
+        prompt: check.prompt_id,
+        result: assessment("continue").to_string(),
+        now: answered_at + 1_000,
+    }) else {
+        panic!()
+    };
+    assert!(
+        completion::evaluation(&settled).is_none_or(|e| e.result.is_some()
+            && e.result.as_ref().unwrap()["status"] != "blocked"),
+        "an approval answered after the original deadline still finishes its check"
+    );
+}

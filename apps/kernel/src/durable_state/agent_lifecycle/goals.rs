@@ -535,7 +535,7 @@ pub(super) fn begin_owner_wait(
     {
         return Ok(Outcome::Saved);
     }
-    completion::evaluation_mut(&mut t).unwrap().paused_at_ms = Some(now);
+    pause_check_clock(&mut t, &prompt, now);
     t.reason = VAULT_WAIT_REASON.into();
     save(tx, &t)?;
     Ok(Outcome::Task(t))
@@ -551,12 +551,10 @@ pub(super) fn end_owner_wait(
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
-    let Some(paused_at) = check_is_pending(&t, &prompt)
-        .then(|| completion::evaluation(&t).unwrap().paused_at_ms)
-        .flatten()
-    else {
+    if !check_is_pending(&t, &prompt) || completion::evaluation(&t).unwrap().paused_at_ms.is_none()
+    {
         return Ok(Outcome::Saved);
-    };
+    }
     if let Some(reason) = refusal {
         completion::evaluation_mut(&mut t).unwrap().paused_at_ms = None;
         return block_check(
@@ -568,15 +566,34 @@ pub(super) fn end_owner_wait(
             "owner did not unlock the Vault",
         );
     }
-    let waited = now.saturating_sub(paused_at);
-    let check = completion::evaluation_mut(&mut t).unwrap();
-    // The bound stays exactly `CHECK_BOUND_MS` after the start the ledger validates.
-    check.started_at_ms = check.started_at_ms.saturating_add(waited);
-    check.deadline_ms = check.deadline_ms.saturating_add(waited);
-    check.paused_at_ms = None;
+    resume_check_clock(&mut t, &prompt, now);
     t.reason = EVALUATING_REASON.into();
     save(tx, &t)?;
     Ok(Outcome::Task(t))
+}
+
+/// Stops the service bound of the pending check `prompt` while the owner is asked something.
+/// An earlier pause (the Vault unlock) keeps its start.
+pub(super) fn pause_check_clock(t: &mut AgentTaskExecution, prompt: &str, now: u64) {
+    if let Some(check) = completion::evaluation_mut(t)
+        .filter(|e| e.prompt_id == prompt && e.result.is_none() && e.paused_at_ms.is_none())
+    {
+        check.paused_at_ms = Some(now);
+    }
+}
+
+/// Gives the check back the time it was paused.
+pub(super) fn resume_check_clock(t: &mut AgentTaskExecution, prompt: &str, now: u64) {
+    let Some(check) = completion::evaluation_mut(t).filter(|e| e.prompt_id == prompt) else {
+        return;
+    };
+    let Some(paused_at) = check.paused_at_ms.take() else {
+        return;
+    };
+    let waited = now.saturating_sub(paused_at);
+    // The bound stays exactly `CHECK_BOUND_MS` after the start the ledger validates.
+    check.started_at_ms = check.started_at_ms.saturating_add(waited);
+    check.deadline_ms = check.deadline_ms.saturating_add(waited);
 }
 
 fn check_is_pending(t: &AgentTaskExecution, prompt: &str) -> bool {
