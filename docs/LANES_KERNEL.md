@@ -72,6 +72,7 @@ node tools/lanes/kernel/lanes-kernel.mjs start    # idempotent: kernels, Vault u
 node tools/lanes/kernel/lanes-kernel.mjs stop     # holder and both kernels, by exact verified pid
 node tools/lanes/kernel/lanes-kernel.mjs grant [coordinator]   # only an access grant (headless owner popup), default the loopd seat
 node tools/lanes/kernel/lanes-kernel.mjs loopd install|start|stop   # the round service (see "loopd")
+node tools/lanes/kernel/lanes-kernel.mjs set-claude-credential [--from FILE]   # re-store the lanes-claude credential in place (see "Switching the Claude account")
 node tools/lanes/kernel/lanes-kernel.mjs exec [--seat coordinator] [--detach --log FILE] -- CMD...   # run beneath a holder
 ```
 
@@ -99,6 +100,29 @@ through `SetProviderAccountCredential`, read from its file inside the process an
 profile never logs in or out of the shared account. Claude as root cannot run `yolo`, so workers use
 `permission: required` and the round driver answers each `Approve Claude Code …?` decision
 (`allow_session` when offered, else `allow_once`) through the public CLI, except critical, credential-related and question decisions, which stay pending for the coordinator (see "The coordinator's seat").
+
+## Switching the Claude account
+
+`set-claude-credential [--from FILE]` re-stores the running executor's `lanes-claude` credential in place
+(`SetProviderAccountCredential` with overwrite, read inside the process, never printed; default file is
+`config.claudeToken`). No kernel restart, no worker stopped. It prints the profile, the auth state and the
+organization id suffix of the stored account, nothing else. The kernel verifies a new credential with a real
+single Claude turn before it replaces the stored one, so a revoked token (`expired or revoked`) or an account
+over its limit (`HTTP=429`, `verification was inconclusive`) is refused and the old credential stays.
+
+`tools/lanes/coordinator/mac/switch-claude-account.sh chariox|old` is the whole move: it probes the target
+token on b3 (HTTP 200 and limit status `allowed` or `allowed_warning`; only the org suffix is printed) and
+refuses if it is not usable yet, then runs `set-claude-credential`, then copies the token to
+`/root/.claude-lanes/oauth-token` so classic launches use it. The kernel step comes first: if it refuses,
+nothing has changed. Run it with `B3=local` on b3 itself or through the Mac's `b3.sh` helper.
+
+**When a running worker moves.** A Claude process gets `CLAUDE_CODE_OAUTH_TOKEN` in its environment when its
+provider run is launched, and the kernel keeps that value for the run's life (an in-place restart of the
+process for a config change reuses it too: `claude_runtime.rs` `restart_claude_runtime` passes
+`state.provider_credential_env`). A process cannot change its own environment, so **a worker already
+running keeps the account it started with until its provider run is launched again**: the next loopd round
+(a new Room and agent), or a restore after a kernel restart. Every new launch after the command reads the new
+credential. Nothing is stopped, but no running worker moves by itself.
 
 ## Rounds
 

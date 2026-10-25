@@ -400,3 +400,25 @@ What #1080 af52049173 changes for the loop: a restored turn that nothing identif
 ### Still open
 
 - The answer to a worker's `AskUserQuestion` cannot travel through the permission: allowing the tool gives the worker no answer, so the coordinator allows it and sends the answer as a steer. A kernel interaction that carries the question's text and options would let `laneanswer.sh` answer it.
+
+## dogfood r14: the Claude account move, a one-line steer, and a worker in error
+
+- **Account move (Miguel 10-25: "move the worker lanes to it but don't stop them").** `lanes-kernel.mjs set-claude-credential` and
+  `mac/switch-claude-account.sh chariox|old` (see docs/LANES_KERNEL.md, "Switching the Claude account"). Live on a drill pair with the
+  old account: the command ran while a worker was in the middle of a 40-file turn; its Claude process kept its pid and start time,
+  the turn finished and committed. A round launched afterwards got a new process that holds the stored credential (read from
+  `/proc/<pid>/environ`, compared in-process, only labels and org suffixes printed). The chariox account was refused twice on the
+  drill: by the probe (`HTTP 429`, status `rejected`) and by the kernel's own verification turn (`HTTP=429`, inconclusive).
+- **Gap: running workers do not move.** The credential is fixed in a Claude process's environment at launch and kept for the provider
+  run, so the workers of rounds that are running at 16:00Z stay on the old account until their round ends. The switch costs them
+  nothing but they do not relieve the old account. Moving a running worker needs a kernel change (re-resolve the credential from the
+  Vault when `restart_claude_runtime` relaunches the process, then relaunch with `--resume`), reported to extagent in PUSH_READY.
+- **Found by the drill:** the old account answers `allowed_warning` (near its limit, by design), which a strict `allowed` check refused.
+  The probe treats `allowed_warning` as usable and prints the status.
+- **Direct steer output.** `deliver.sh` printed the kernel's answer, which for a worker between turns is the whole session. `steer`
+  now returns `{lane, mode, promptId, agentStatus}` and the ledger keeps the same four fields.
+- **A worker in `error`.** accam-r14 sat in error from 05:33Z to 07:03Z after "Claude Code stopped emitting runtime events". The
+  failure event (`Provider run failed: ...`) was already a lanewait `error` line when the inbox saw it; the worker's state, however,
+  was never checked, so a failure before lanewait's grant (or in an event gap) stayed silent, and loopd's round only finishes on
+  `idle`. `lanehealth` now flags `ERROR` when the agent state is `error`, and lanewait reports it as an `error` line on its first
+  health read, once per episode (the failure event and the health read do not both report it).
