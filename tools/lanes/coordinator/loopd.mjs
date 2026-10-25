@@ -97,12 +97,25 @@ export async function serve(options) {
     log('launch_failed', { key: entry.key, code: error.code });
   };
 
+  // A round that was launched and has not finished is still running, whichever service started it.
+  const unfinished = async entry => {
+    const run = await read(join(layout.agents, entry.lane, 'LOOP_RUN.json')).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    return Boolean(run && run.round === entry.round && run.launchedAtMs && !run.finishReason);
+  };
+
   const scan = async () => {
+    const entries = [];
     for (const name of (await readdir(queue)).filter(file => file.endsWith('.json')).sort()) {
       const key = name.slice(0, -5);
       if (active.has(key) || (attempts.get(key)?.nextAtMs ?? 0) > now()) continue;
-      let entry;
-      try { entry = parseEntry(name, await readFile(join(queue, name), 'utf8')); } catch (error) { if (error.code !== 'invalid_queue_entry') throw error; await reject(name, error); continue; }
+      try { entries.push(parseEntry(name, await readFile(join(queue, name), 'utf8'))); } catch (error) { if (error.code !== 'invalid_queue_entry') throw error; await reject(name, error); }
+    }
+    // Restored rounds go first, so a waiting entry that sorts earlier cannot take their lane.
+    const resumable = new Set();
+    for (const entry of entries) if (await unfinished(entry)) resumable.add(entry.key);
+    entries.sort((a, b) => Number(resumable.has(b.key)) - Number(resumable.has(a.key)));
+    for (const entry of entries) {
+      const { key } = entry;
       // One round per lane at a time: a second entry for the lane waits in the queue.
       if ([...active.values()].some(item => item.entry.lane === entry.lane)) continue;
       try {

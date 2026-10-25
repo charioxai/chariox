@@ -164,6 +164,27 @@ test('a second entry for a running lane waits, and the second round starts clean
   assert.deepEqual(r.calls.filter(c => c.op === 'launch').map(c => c.taskId), ['alpha-r1', 'alpha-r2']);
 });
 
+test('a restart resumes the running round before it admits a queued one for the same lane, whatever the file order', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r9');
+  r.script.push(async () => { r.controller.abort(); return []; });
+  await serve(r.options);
+  assert.equal((await runFile(r, 'alpha')).round, 'r9');
+  // alpha-r10 sorts before alpha-r9 in the queue; a new service must still resume r9 alone.
+  await r.drop('alpha', 'r10');
+  const again = new AbortController(); r.options.signal = again.signal;
+  const order = [];
+  r.options.log = (kind, detail) => {
+    r.logs.push({ kind, ...detail });
+    if (kind === 'picked_up' || kind === 'finished') order.push(`${kind}:${detail.key}`);
+    if (kind === 'picked_up') { r.idle.add(detail.key); r.script.push(async () => [r.ev(detail.key, { type: 'agent', value: { state: 'idle' } })]); }
+    if (kind === 'finished' && detail.key === 'alpha-r10') again.abort();
+  };
+  await serve(r.options);
+  assert.deepEqual(order, ['picked_up:alpha-r9', 'finished:alpha-r9', 'picked_up:alpha-r10', 'finished:alpha-r10']);
+  assert.equal((await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r9.json'), 'utf8').then(JSON.parse)).finishReason, 'finished', 'the archived r9 file is its finished run');
+});
+
 test('an entry that cannot launch is retried, then ends as launch_failed with its reason', async t => {
   const r = await rig(t);
   await r.drop('alpha', 'r1');
