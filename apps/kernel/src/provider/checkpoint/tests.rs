@@ -316,3 +316,43 @@ fn native_checkpoint_launch_601_round_trip_and_hash_preserve_the_constraint() {
         "e3f3777e36db3f245f27af77f5d076dd51e1c7ac00032a4188e4f4bfb17cdd9a"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn required_native_checkpoint_accepts_provider_appends_but_rejects_changed_history() {
+    let root = Scratch::new();
+    let directory = files::Directory::open(&root.0).unwrap();
+    let original = b"{\"type\":\"session_meta\",\"payload\":{}}\n";
+    let mut binding = checkpoint().binding;
+    binding.artifact_sha256 = digest(original);
+    directory.publish(ARTIFACT, original).unwrap();
+    assert_eq!(
+        codex::verify_required_artifact(&directory, ARTIFACT, &binding),
+        Ok(())
+    );
+    let mut appended = original.to_vec();
+    appended.extend_from_slice(b"{\"type\":\"turn_context\",\"payload\":{}}\n");
+    std::fs::write(root.0.join(ARTIFACT), &appended).unwrap();
+    assert_eq!(
+        codex::verify_required_artifact(&directory, ARTIFACT, &binding),
+        Ok(())
+    );
+    assert_eq!(
+        directory.publish(ARTIFACT, original),
+        Err(NativeCheckpointFailure::TargetConflict)
+    );
+    assert_eq!(std::fs::read(root.0.join(ARTIFACT)).unwrap(), appended);
+    let mut rewritten = appended.clone();
+    rewritten[10] = b'x';
+    for changed in [
+        original[..original.len() - 2].to_vec(),
+        b"different history\n".to_vec(),
+        rewritten,
+    ] {
+        std::fs::write(root.0.join(ARTIFACT), changed).unwrap();
+        assert_eq!(
+            codex::verify_required_artifact(&directory, ARTIFACT, &binding),
+            Err(NativeCheckpointFailure::TargetConflict)
+        );
+    }
+}

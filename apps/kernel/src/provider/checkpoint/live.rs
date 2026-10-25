@@ -141,9 +141,31 @@ fn live_codex_native_checkpoint_driver() {
                 Some(checkpoint.provider_session_id())
             );
             assert!(state.required_native_session().is_some());
+            let after = super::files::Directory::open(&input.codex_home)
+                .unwrap()
+                .read(&checkpoint.relative_path)
+                .unwrap();
+            let unchanged_prefix = after.starts_with(&checkpoint.contents);
+            let appended_record_types: Vec<_> = if unchanged_prefix {
+                after[checkpoint.contents.len()..]
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        serde_json::from_slice::<Value>(line)
+                            .ok()
+                            .and_then(|record| record["type"].as_str().map(str::to_string))
+                            .unwrap_or_else(|| "invalid-json".to_string())
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             save(
                 &input.output,
-                &json!({"imported":true,"same_native_session":true,"required_resume":true,"payload_printed":false}),
+                &json!({"imported":true,"same_native_session":true,"required_resume":true,"payload_printed":false,
+                    "artifact_before_bytes":checkpoint.contents.len(),"artifact_after_bytes":after.len(),
+                    "artifact_before_sha256":checkpoint.sha256(),"artifact_after_sha256":super::digest(&after),
+                    "unchanged_prefix":unchanged_prefix,"appended_record_types":appended_record_types}),
             );
         }
         "delete" => {

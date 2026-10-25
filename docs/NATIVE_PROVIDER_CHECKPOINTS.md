@@ -40,6 +40,13 @@ handles, and publishes without overwriting another file. A matching existing
 artifact is reusable; divergent state is refused. Temporary files are removed
 on either outcome. The target's official resume must return the same native ID,
 model and relocated working directory before the adapter returns readiness.
+Import integrity requires the exact exported bytes. Before the first user turn,
+continuity verification accepts official provider appends only while the entire
+imported checkpoint remains an unchanged prefix at a JSONL record boundary.
+Truncation or rewritten imported history still fails. Codex `thread/resume`
+appends a native event even before a user turn; treating its whole file as an
+immutable artifact would reject a successful native resume. Account, native ID,
+configuration, bounded file reads and no-fresh-session safeguards still apply.
 A published checkpoint remains available for an explicit retry if the provider
 probe fails; import does not admit a user turn or change the committed route.
 

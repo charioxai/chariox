@@ -26,6 +26,16 @@ async function port(){const s=net.createServer();await new Promise((r,j)=>{s.onc
 function start(binary,env,label){const c=spawn(binary,[],{env,cwd:root,stdio:['ignore','pipe','pipe']});children.push(c);c.charioxStart=processes().find(p=>p.pid===c.pid)?.start;summary.processes.push({pid:c.pid,label});const log=createWriteStream(root+'/'+label+'.private.log',{mode:0o600});c.stdout.pipe(log);c.stderr.pipe(log);return c;}
 async function stop(c){if(c.exitCode!==null||c.signalCode!==null)return;const exited=new Promise(r=>c.once('exit',r));if(!Number.isInteger(c.pid)||c.pid<=1||!processes().some(p=>p.pid===c.pid&&p.start===c.charioxStart))throw Error('Invalid owned PID');c.kill('SIGINT');await Promise.race([exited,sleep(15000)]);if(c.exitCode===null&&c.signalCode===null){c.kill('SIGKILL');await exited;}}
 function processes(){const rows=[];for(const name of readdirSync('/proc')){if(!/^\d+$/.test(name))continue;try{const text=readFileSync('/proc/'+name+'/stat','utf8'),rest=text.slice(text.lastIndexOf(')')+2).split(' ');rows.push({pid:Number(name),state:rest[0],ppid:Number(rest[1]),start:rest[19]});}catch{}}return rows;}
+async function artifactObservation(codexHome){
+ const checkpoint=JSON.parse(await readFile(checkpointArtifact,'utf8'));
+ const relative=checkpoint.relative_path;
+ if(!/^sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[a-zA-Z0-9_.-]+\.jsonl$/.test(relative))throw Error('Unexpected native artifact path');
+ const before=Buffer.from(checkpoint.contents),after=await readFile(path.join(codexHome,relative));
+ const unchangedPrefix=after.subarray(0,before.length).equals(before);
+ const known=new Set(['session_meta','turn_context','response_item','event_msg','compacted']);
+ const appendedRecordTypes=unchangedPrefix?after.subarray(before.length).toString('utf8').split('\n').filter(Boolean).map(line=>{try{const type=JSON.parse(line).type;return known.has(type)?type:'other';}catch{return 'invalid-json';}}):[];
+ return {beforeBytes:before.length,afterBytes:after.length,beforeSha256:createHash('sha256').update(before).digest('hex'),afterSha256:createHash('sha256').update(after).digest('hex'),unchangedPrefix,appendedRecordTypes};
+}
 async function binaryHash(binary){const hash=createHash('sha256');for await(const chunk of createReadStream(binary))hash.update(chunk);return hash.digest('hex');}
 
 function rememberOwned(){const rows=processes(),ids=new Set([...children,...tuis.map(t=>t.child)].filter(c=>c.exitCode===null&&c.signalCode===null&&rows.some(p=>p.pid===c.pid&&p.start===c.charioxStart)).map(c=>c.pid));let changed=true;while(changed){changed=false;for(const row of rows)if(ids.has(row.ppid)&&!ids.has(row.pid)){ids.add(row.pid);changed=true;}}for(const row of rows)if(ids.has(row.pid))owned.set(row.pid,row);}
@@ -119,6 +129,7 @@ try{
  first.snapshot=await expandTools(targetTui,first);
  const targetRun=await run(target,targetTui);
  const positive={sameNativeId:targetRun.provider_session_id===sourceRun.provider_session_id,contextRecalled:entries(first.snapshot).some(row=>row.role==='assistant'&&(row.text??'').includes(marker)),relocatedWorkspaceExecuted:completedWorkspaceTool(entries(first.snapshot),first.promptId,target.dir+'/workspace'),model:targetRun.model,variant:targetRun.variant,state:first.snapshot.session.agents.find(a=>a.id===first.snapshot.session.focusedAgentId)?.state,observedRoles:[...new Set(entries(first.snapshot).map(row=>row.role))]};
+ summary.targetArtifact=await artifactObservation(targetHome);
  summary.positive=positive;summary.targetToolEvidence=entries(first.snapshot).filter(r=>r.role==='tool'&&r.promptId===first.promptId).map(({role,promptId,text,blobCollapsed,historyBlobLoaded})=>({role,promptId,text:(text??'').split(marker).join('<native-context-marker>'),blobCollapsed,historyBlobLoaded}));await save();
  if(!positive.sameNativeId||!positive.contextRecalled||!positive.relocatedWorkspaceExecuted||positive.state==='Error')throw Error('Native continuity or relocated workspace failed');
  const endedTarget=await terminate(target,targetRun);

@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+#[cfg(unix)]
+use sha2::{Digest, Sha256};
 
 use super::{
     digest, profile_root, NativeCheckpointBinding, NativeCheckpointFailure as Failure,
@@ -295,12 +297,30 @@ pub(super) fn verify_required_checkpoint(
             .and_then(|path| path.strip_prefix(root).ok())
             .and_then(Path::to_str)
             .ok_or(Failure::TargetConflict)?;
-        if !valid_relative_path(relative, &binding.session_id)
-            || digest(&super::files::Directory::open(root)?.read(relative)?)
-                != binding.artifact_sha256
-        {
-            return Err(Failure::TargetConflict);
-        }
+        verify_required_artifact(&super::files::Directory::open(root)?, relative, binding)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+pub(super) fn verify_required_artifact(
+    directory: &super::files::Directory,
+    relative: &str,
+    binding: &NativeCheckpointBinding,
+) -> Result<(), Failure> {
+    if !valid_relative_path(relative, &binding.session_id) {
+        return Err(Failure::TargetConflict);
+    }
+    let contents = directory.read(relative)?;
+    // Official thread/resume appends native events before the first user turn.
+    // Import still requires exact bytes; continuity requires the full imported
+    // checkpoint to survive as a prefix ending at a JSONL record boundary.
+    let mut hash = Sha256::new();
+    for record in contents.split_inclusive(|byte| *byte == b'\n') {
+        hash.update(record);
+        if format!("{:x}", hash.clone().finalize()) == binding.artifact_sha256 {
+            return Ok(());
+        }
+    }
+    Err(Failure::TargetConflict)
 }
