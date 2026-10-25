@@ -1,6 +1,6 @@
 #!/bin/bash
 # switch-claude-account.sh chariox|old — moves the lanes to the other Claude account without stopping any worker.
-# 1. probes the target token on b3 (HTTP 200 and limit status allowed; only the organization id suffix is printed) and refuses
+# 1. probes the target token on b3 (HTTP 200 and limit status allowed or allowed_warning; only the organization id suffix is printed) and refuses
 #    when it is not usable yet, for example the chariox account before its weekly reset (2026-10-25T16:00Z);
 # 2. re-stores the running lanes kernel's lanes-claude credential in place (lanes-kernel.mjs set-claude-credential: no kernel
 #    restart, no worker stopped). A Claude process takes its credential when it is launched, so the workers already running move

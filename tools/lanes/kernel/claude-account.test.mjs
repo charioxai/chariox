@@ -18,6 +18,11 @@ test('an allowed 200 is usable and reports only the organization suffix and stat
   assert.ok(!JSON.stringify(result).includes('secret'));
 });
 
+test('allowed_warning (near the limit) is still usable and says so; the old account sits there on purpose', async () => {
+  const result = await probeClaudeToken('t', { fetchImpl: reply(200, { 'anthropic-organization-id': org, 'anthropic-ratelimit-unified-status': 'allowed_warning' }) });
+  assert.deepEqual(result, { usable: true, http: 200, org: '0123456789ab', status: 'allowed_warning' });
+});
+
 test('a rejected weekly limit, a non-200 and a network failure are all unusable with a reason', async () => {
   const rejected = await probeClaudeToken('t', { fetchImpl: reply(200, { 'anthropic-organization-id': org, 'anthropic-ratelimit-unified-status': 'rejected' }) });
   assert.equal(rejected.usable, false); assert.match(rejected.reason, /limit status rejected/);

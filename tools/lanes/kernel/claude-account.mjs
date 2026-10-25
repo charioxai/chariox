@@ -21,7 +21,8 @@ export async function probeClaudeToken(token, { fetchImpl = fetch } = {}) {
   await response.body?.cancel().catch(() => {});
   const org = response.headers.get('anthropic-organization-id')?.split('-').pop() ?? null;
   const status = response.headers.get('anthropic-ratelimit-unified-status');
-  const usable = response.status === 200 && status === 'allowed';
+  // allowed_warning means near the limit, not over it: the old account is deliberately paced there.
+  const usable = response.status === 200 && (status === 'allowed' || status === 'allowed_warning');
   const reason = usable ? undefined : response.status !== 200 ? `HTTP ${response.status}` : `limit status ${status ?? 'missing'}`;
   return { usable, http: response.status, org, status, ...(reason && { reason }) };
 }
