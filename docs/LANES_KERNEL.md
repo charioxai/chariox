@@ -226,3 +226,39 @@ and effort come from the entry (`gpt-6.1-sol` by default in `loopbrief.sh`).
 
 **Tests:** `node --test tools/lanes/coordinator/loopd.test.mjs tools/lanes/coordinator/mac/loopbrief.test.mjs` (fake adapters,
 a real `round.mjs serve` process, a stand-in `b3.sh`).
+
+## Planned Claude YOLO restart (dogfood r15)
+
+MP-08 / MP-09 / MP-10 / MP-11. When the **running executor kernel** has exactly
+`IS_SANDBOX=1`, new loopd Claude workers use `permission: yolo`, which the kernel
+launches as `--permission-mode bypassPermissions --allow-dangerously-skip-permissions`.
+Without that environment, Claude keeps `required`; Codex and OpenCode behavior and
+loopd's routine-decision handling are unchanged. The root behavior was audited in
+`agents/rootaudit/AUDIT.md` sections 1 and 4 (outside git). This is the owner's approved
+lanes setting, not a change to the product's default permissions.
+
+After the account switch, the coordinator runs once on b3:
+
+```sh
+B3=local bash tools/lanes/coordinator/mac/lanes-kernel-restart.sh
+```
+
+The Mac wrapper also supports the usual `B3`, `LANES_STATE` and `ADAPTERS` overrides.
+It calls `restart-yolo`, which verifies the af52049173 carry-over runtime, the installed
+binary hash and `claude-acct.sh probe` before stopping anything. It drains loopd's
+current step, saves every running round's session/agent/launch time in
+`restart-rounds.json`, writes the non-secret launcher setting
+`kernel-environment.json` (`{"IS_SANDBOX":"1"}`), and stops/starts the pair once.
+It requires a fresh `picked_up` for every round, unchanged identities, no driver error
+and a readable worker provider/permission, then prints each worker's provider,
+permission and Claude account name/organization suffix. Any failed check exits nonzero;
+do not repeat a failed restart blindly. The operation has a ten-minute outer timeout.
+
+**Existing rounds keep their launch permission**, including after restore. They pick up
+YOLO on their next round, which creates a new agent; no active work is relaunched just
+to change permission. The planned kernel restart still interrupts an in-flight tool
+call and resumes the existing Claude conversation, as with other af52049173 restarts.
+
+`switch-claude-account.sh chariox --probe` is a read-only usability check. A failed
+classic-file copy, rename or switch-marker update after kernel success returns nonzero
+and explicitly reports that the kernel credential has already changed.

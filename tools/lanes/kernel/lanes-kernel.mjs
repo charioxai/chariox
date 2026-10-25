@@ -4,9 +4,10 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer, connect } from 'node:net';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkSync, chmodSync, unlinkSync, copyFileSync, rmSync, renameSync, readdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { restartWithSandbox } from './restart.mjs';
 import { syncWorkerAgents } from './worker-agents.mjs';
 import { probeClaudeToken, readToken, replaceClaudeCredential } from './claude-account.mjs';
 
@@ -35,6 +36,8 @@ const kernelPid = role => ownedPid(role, file(role, 'kernel.pid'), kernelBinary)
 
 function roleEnv(role) {
   const root = dir(role);
+  const launchEnvironment = join(STATE, 'kernel-environment.json');
+  const sandbox = existsSync(launchEnvironment) ? JSON.parse(readFileSync(launchEnvironment, 'utf8')).IS_SANDBOX : process.env.IS_SANDBOX;
   return {
     // The sbin directories are part of the standard root PATH: workers run ufw, ip, iptables and the like.
     PATH: `${config.toolchain}/cargo/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
@@ -44,6 +47,7 @@ function roleEnv(role) {
     CHARIOX_HOME: file(role, 'chariox'), CHARIOX_LOG_DIR: join(root, 'logs'), CHARIOX_SESSION_HISTORY_DIR: join(root, 'history'),
     CHARIOX_DAEMON_SOCKET: join(root, 'daemon.sock'), CHARIOX_DAEMON_ALIAS: `lanes-${role}`, CHARIOX_MACHINE_ALIAS: `lanes-${role}`,
     NODE_OPTIONS: '--max-old-space-size=4096',
+    ...(sandbox === '1' && { IS_SANDBOX: '1' }),
   };
 }
 
@@ -227,8 +231,10 @@ function writeLoopConfig() {
   loop.repository ??= join(STATE, 'loop', 'imported.git');
   loop.providers ??= {};
   const claude = file('executor', 'claude-profile.id'), codex = file('executor', 'codex-profile.id');
-  // Claude as root cannot run yolo, so its permission prompts are answered by the loop; Codex has no such refusal.
-  if (existsSync(claude)) loop.providers.claude = { profile: readText(claude), model: 'claude-sonnet-5-5', effort: 'high', permission: 'required' };
+  // Use the running kernel's environment, never a caller's env added after it started.
+  const pid = kernelPid('executor');
+  const sandbox = pid ? readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').includes('IS_SANDBOX=1') : roleEnv('executor').IS_SANDBOX === '1';
+  if (existsSync(claude)) loop.providers.claude = { profile: readText(claude), model: 'claude-sonnet-5-5', effort: 'high', permission: sandbox ? 'yolo' : 'required' };
   if (existsSync(codex)) loop.providers.codex = { profile: readText(codex), model: 'gpt-6.1-sol', effort: 'medium', permission: 'yolo' };
   mkdirSync(join(STATE, 'loop'), { recursive: true, mode: 0o700 });
   writeFileSync(path, JSON.stringify(loop, null, 2) + '\n', { mode: 0o600 });
@@ -415,32 +421,69 @@ async function status() {
   return result;
 }
 
+async function startLanes() {
+  const started = [];
+  for (const role of ['executor', 'coordinator']) started.push(await startKernel(role));
+  const steps = [];
+  for (const role of ROLES) steps.push(await ensureVault(role));
+  for (const role of ROLES) steps.push(await enroll(role));
+  steps.push(await ensureClaudeProfile());
+  steps.push(await ensureCodexProfile());
+  writeLoopConfig();
+  // One popup at a time: the loopd seat first, then the coordinator's own.
+  steps.push({ grant: await grantAccess() });
+  steps.push({ coordinatorGrant: await grantAccess('coordinator') });
+  steps.push(await startLoopd());
+  return { started, steps };
+}
+async function stopLanes() {
+  const results = [];
+  results.push(await stopLoopd());
+  for (const seat of Object.keys(SEATS)) {
+    const holder = holderPid(seat);
+    if (holder) { process.kill(holder, 'SIGTERM'); results.push({ holder, seat, stopped: true }); }
+  }
+  for (const role of ROLES) results.push(await stopKernel(role));
+  return results;
+}
+
 const [command, ...rest] = process.argv.slice(2);
 try {
   if (command === 'holder') runHolder(rest[0]);
   else if (command === 'start' || command === 'setup') {
-    const started = [];
-    for (const role of ['executor', 'coordinator']) started.push(await startKernel(role));
-    const steps = [];
-    for (const role of ROLES) steps.push(await ensureVault(role));
-    for (const role of ROLES) steps.push(await enroll(role));
-    steps.push(await ensureClaudeProfile());
-    steps.push(await ensureCodexProfile());
-    writeLoopConfig();
-    // One popup at a time: the loopd seat first, then the coordinator's own.
-    steps.push({ grant: await grantAccess() });
-    steps.push({ coordinatorGrant: await grantAccess('coordinator') });
-    steps.push(await startLoopd());
-    out({ started, steps });
+    out(await startLanes());
   } else if (command === 'stop') {
-    const results = [];
-    results.push(await stopLoopd());
-    for (const seat of Object.keys(SEATS)) {
-      const holder = holderPid(seat);
-      if (holder) { process.kill(holder, 'SIGTERM'); results.push({ holder, seat, stopped: true }); }
-    }
-    for (const role of ROLES) results.push(await stopKernel(role));
-    out(results);
+    out(await stopLanes());
+  } else if (command === 'restart-yolo') {
+    const check = await restartWithSandbox({
+      state: STATE, agents: config.agents || '/root/.chariox/dev/browser-resume-20260930/agents',
+      preflight: async () => {
+        const runtime = spawnSync('git', ['-C', config.runtime.worktree, 'merge-base', '--is-ancestor', 'af52049173a502fd30fa21a32e039c874fe0b9eb', config.runtime.head]);
+        if (runtime.status !== 0) throw new Error('restart requires the af52049173 carry-over runtime or a descendant');
+        const provenance = JSON.parse(readFileSync(join(STATE, 'PROVENANCE.json'), 'utf8'));
+        if (provenance.head !== config.runtime.head || provenance.sha256?.['chariox-kernel'] !== createHash('sha256').update(readFileSync(kernelBinary)).digest('hex')) throw new Error('kernel binary does not match the recorded carry-over runtime; no restart performed');
+        for (const role of ROLES) if (!kernelPid(role)) throw new Error(`${role} kernel is not running; refusing a partial restart`);
+        const probe = spawnSync(process.env.CLAUDE_ACCT || '/root/.chariox/dev/coordinator/claude-acct.sh', ['probe'], { encoding: 'utf8', timeout: 100_000, maxBuffer: 64 << 10 });
+        if (probe.status !== 0) throw new Error('claude-acct.sh probe failed; no restart performed');
+        const accounts = probe.stdout.split('\n').filter(line => /^oauth-token(?:\.[a-z-]+)? org=/.test(line));
+        const active = accounts.find(line => line.startsWith('oauth-token '));
+        const org = active?.match(/org=…([a-f0-9]+)/)?.[1];
+        if (!org || !active.includes('http=200') || !/status=allowed(?:_warning)?(?: |$)/.test(active)) throw new Error('active Claude account is not usable; no restart performed');
+        const named = accounts.find(line => !line.startsWith('oauth-token ') && line.includes(`org=…${org} `));
+        if (!named) throw new Error('active Claude account name could not be resolved; no restart performed');
+        return `${named.split(' ')[0].replace('oauth-token.', '')}(org=…${org})`;
+      },
+      stopLoopd, stop: stopLanes, start: startLanes,
+      inspect: async run => {
+        const response = await rpc('executor', { GetSessionState: { session_id: run.launch.sessionId } });
+        const session = response.SessionState.session;
+        const agent = (response.SessionState.agents || session.agents || []).find(agent => agent.id === run.launch.agentId);
+        if (!agent) throw new Error(`worker missing after restart: ${run.key}`);
+        return { provider: agent.provider, permission: agent.permission_level_override || session.permission_level,
+          state: (response.SessionState.agent_activity || session.agent_activity)?.[agent.id]?.status };
+      },
+    });
+    out(check);
   } else if (command === 'status') out(await status());
   else if (command === 'loopd') {
     const action = rest[0];

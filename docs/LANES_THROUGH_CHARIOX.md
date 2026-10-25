@@ -437,3 +437,17 @@ What #1080 af52049173 changes for the loop: a restored turn that nothing identif
 - **Legacy receipt (P2).** `steer` and `answer` resolve a lane name to the running round first; an old classic receipt of the same name is only
   used when no round is running.
 - Live on a drill pair (installed copy of this head): a two-heading note steered mid-turn gave one line, both files were created and loopd recorded two `direct-steered` notes with no second delivery; after the round a note was appended only ("no round under loopd"); no lock directory was left.
+
+## dogfood r15: exclusive admission, retained deliveries and Claude launch mode
+
+MP-08 / MP-09 / MP-10 / MP-11. Lane admission uses an OS-owned `flock` held for the
+whole prompt/collection operation; stale-directory migration is serialized under it,
+and release closes only that holder's descriptor. Live locks are never stolen on a
+timeout or because another collector has the same name. Pending direct commands are
+retained per note identity, including unresolved older notes when another note arrives;
+the inbox fallback understands both the old single receipt and the new ledger.
+
+Account switching reports partial changes honestly, including marker failures.
+The coordinator's planned restart and the sandbox-gated Claude YOLO launch setting are
+documented in [LANES_KERNEL.md](LANES_KERNEL.md#planned-claude-yolo-restart-dogfood-r15).
+Running agents retain their permission mode until their next round.

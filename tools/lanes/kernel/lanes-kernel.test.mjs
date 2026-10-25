@@ -10,9 +10,10 @@ import { once } from 'node:events';
 
 const script = new URL('./lanes-kernel.mjs', import.meta.url).pathname;
 
-async function holder(t, extraConfig = {}, seat) {
+async function holder(t, extraConfig = {}, seat, launchEnvironment) {
   const state = await mkdtemp(join(tmpdir(), 'lanes-kernel-')); t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, 'config.json'), JSON.stringify({ toolchain: state, ...extraConfig }));
+  if (launchEnvironment) await writeFile(join(state, 'kernel-environment.json'), JSON.stringify(launchEnvironment));
   const env = { PATH: process.env.PATH, HOME: state, LANES_KERNEL_STATE: state };
   const child = spawn(process.execPath, [script, 'holder', ...(seat ? [seat] : [])], { env, stdio: 'ignore' });
   const exited = once(child, 'exit');
@@ -82,4 +83,13 @@ test('a command whose client went away is stopped by the holder', async t => {
   let alive = true;
   for (let i = 0; i < 100 && alive; i++) { await new Promise(resolve => setTimeout(resolve, 50)); try { process.kill(pid, 0); } catch { alive = false; } }
   assert.equal(alive, false, 'the orphaned command is gone');
+});
+
+test('only IS_SANDBOX=1 in the launch environment reaches worker processes', async t => {
+  for (const value of ['1', '0', 'true', '']) {
+    const { exec } = await holder(t, {}, undefined, { IS_SANDBOX: value });
+    const result = exec('--', '/bin/sh', '-c', 'printf "%s" "${IS_SANDBOX-unset}"');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, value === '1' ? '1' : 'unset');
+  }
 });

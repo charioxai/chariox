@@ -1,0 +1,49 @@
+// MP-08 / MP-09 / MP-10 / MP-11: preserve every admitted round across the coordinator's planned restart.
+import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+const read = async path => JSON.parse(await readFile(path, 'utf8'));
+
+export async function runningRounds(agents) {
+  const rounds = [];
+  for (const entry of await readdir(agents, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
+    const path = join(agents, entry.name, 'LOOP_RUN.json');
+    let run; try { run = await read(path); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (run.launchedAtMs && !run.finishedAtMs) rounds.push({ path, ...run });
+  }
+  return rounds;
+}
+
+export async function restartWithSandbox({ state, agents, preflight, stopLoopd, stop, start, inspect, report = console.log,
+  now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 120_000 }) {
+  // Resolve prerequisites before interrupting any service. stopLoopd finishes its current step before the snapshot.
+  const account = await preflight();
+  await stopLoopd();
+  const before = await runningRounds(agents);
+  await writeFile(join(state, 'restart-rounds.json'), JSON.stringify(before.map(({ path, key, round, launch, launchedAtMs }) => ({ path, key, round, launch, launchedAtMs }))), { mode: 0o600 });
+  await writeFile(join(state, 'kernel-environment.json'), JSON.stringify({ IS_SANDBOX: '1' }) + '\n', { mode: 0o600 });
+  const logPath = join(state, 'loopd.log');
+  const previousLog = await readFile(logPath, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+  await stop();
+  await start();
+  const deadline = now() + timeoutMs;
+  const pending = new Map(before.map(run => [run.key, run]));
+  while (pending.size && now() < deadline) {
+    const lines = (await readFile(logPath, 'utf8')).slice(previousLog.length).trim().split('\n');
+    const pickedUp = new Set(lines.flatMap(line => { try { const e = JSON.parse(line); return e.kind === 'picked_up' ? [e.key] : []; } catch { return []; } }));
+    for (const [key, old] of pending) {
+      const run = await read(old.path);
+      if (run.key !== key || run.round !== old.round || run.launchedAtMs !== old.launchedAtMs || JSON.stringify(run.launch) !== JSON.stringify(old.launch)) throw new Error(`round identity changed: ${key}; inspect restart-rounds.json`);
+      if (run.driverError) throw new Error(`round ${key} failed to resume: ${run.driverError.code}`);
+      if (!pickedUp.has(key)) continue;
+      const worker = await inspect(run);
+      if (worker.state === 'error' || !worker.provider || !worker.permission) throw new Error(`round ${key} has no healthy worker or permission level`);
+      report(`${key} provider=${worker.provider} permission=${worker.permission} account=${worker.provider === 'claude' ? account : 'n/a'} resumed=true`);
+      pending.delete(key);
+    }
+    if (pending.size) await sleep(500);
+  }
+  if (pending.size) throw new Error(`rounds did not resume: ${[...pending.keys()].join(', ')}; inspect restart-rounds.json and loopd.log`);
+  report(`restart verified: ${before.length} running rounds carried; Claude YOLO applies to next rounds; existing permissions retained`);
+  return { resumed: before.map(run => run.key), account, nextClaudePermission: 'yolo' };
+}

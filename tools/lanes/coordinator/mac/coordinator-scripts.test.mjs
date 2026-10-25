@@ -166,3 +166,19 @@ test('switch probe-only checks usability and never updates the kernel, active fi
   assert.equal(r.run(['chariox', '--probe']).status, 3);
   assert.deepEqual(await r.kernelCalls(), []);
 });
+
+test('restart wrapper runs one planned restart and returns a clear failure through local and remote helpers', async t => {
+  const r = await switchRig(t);
+  const kernel = join(r.root, 'adapters/tools/lanes/kernel/lanes-kernel.mjs');
+  await writeFile(kernel, `import { appendFileSync } from 'node:fs';
+    appendFileSync(${JSON.stringify(join(r.root, 'restart-calls'))}, process.argv.slice(2).join(' ') + '\\n');
+    process.exitCode = Number(process.env.RESTART_EXIT || 0);`);
+  const helper = join(r.root, 'b3.sh'); await writeFile(helper, '#!/bin/bash\nexec bash -c "$1"\n'); await chmod(helper, 0o755);
+  for (const b3 of ['local', helper]) {
+    const invoke = code => spawnSync('bash', [here('lanes-kernel-restart.sh')], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, HOME: r.root, B3: b3, LANES_STATE: join(r.root, 'state'), ADAPTERS: join(r.root, 'adapters'), RESTART_EXIT: String(code) } });
+    assert.equal(invoke(0).status, 0);
+    const fail = invoke(7); assert.equal(fail.status, 1); assert.match(fail.stderr, /FAILED: lanes kernel restart or carry-over check failed/);
+  }
+  assert.deepEqual((await readFile(join(r.root, 'restart-calls'), 'utf8')).trim().split('\n'), Array(4).fill('restart-yolo'));
+});
