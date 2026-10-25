@@ -179,6 +179,8 @@ export function createRound(options) {
       // Stopping waits on the shared inbox; other lanes' events in those batches are handled here.
       await archived(lane.run.stop?.removal?.archives);
     } catch (error) {
+      // Batches consumed while waiting were acknowledged, so their events are handled even when the removal never came.
+      await archived(error.archives);
       if (error.code !== 'stop_confirmation_timeout') throw error;
       lane.run.stopConfirmationError = { code: error.code, message: String(error.message).slice(0, 300) };
     }

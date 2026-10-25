@@ -286,3 +286,27 @@ test('round: a completion wake received while another lane is stopping is not lo
   assert.equal(alpha.finishReason, 'hard_stop');
   assert.equal(beta.finishReason, 'finished', 'beta is read in the same wake, not at its hard stop');
 });
+
+test('round: events consumed while another lane stops are handled even when its removal never arrives', async t => {
+  const r = await rig(t);
+  r.spec.lanes[0].hardStopMinutes = 2;
+  const cli = r.options.cli;
+  let combined = false;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait' && r.calls.some(c => c.op === 'stop')) {
+      if (combined) { r.clock.ms += 60_000; return { events: [], timed_out: true, next_cursor: 0 }; }
+      combined = true;
+      r.idle.add('beta');
+      r.clock.ms += 15_000;
+      return { events: [
+        r.ev('beta', { cursor: 100, type: 'interaction', refs: { interaction_id: 'claude-permission-9' }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } }),
+        r.ev('beta', { cursor: 101, type: 'agent', value: { state: 'idle' } })], next_cursor: 101 };
+    }
+    return cli(argv);
+  };
+  r.waits.push({}, {});
+  const [alpha, beta] = await runRound(r.spec, r.options);
+  assert.equal(alpha.stopConfirmationError.code, 'stop_confirmation_timeout');
+  assert.equal(r.calls.filter(c => c.op === 'respond' && c.input.interactionId === 'claude-permission-9').length, 1, 'the permission consumed during the stop is answered');
+  assert.equal(beta.finishReason, 'finished', 'beta is read at once, not at its hard stop');
+});

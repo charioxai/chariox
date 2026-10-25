@@ -104,7 +104,7 @@ export async function confirmRemoval({ home, cli, now, target, confirmed }) {
   let remaining = 120;
   while (remaining > 0) {
     const { batch, archive } = await waitBatch(home, cli, now, remaining);
-    archives.push(archive);
+    if (batch.events.length) archives.push(archive); // an empty wake is not written
     const event = batch.events.find(isRemoval(target));
     if (event) {
       await confirmed({ event, archives });
@@ -115,5 +115,6 @@ export async function confirmRemoval({ home, cli, now, target, confirmed }) {
     if (batch.timed_out) break;
     remaining = Math.ceil((deadline - Date.now()) / 1000);
   }
-  throw new LaneError('stop_confirmation_timeout', 'The worker stopped, but no matching removal event arrived in 120 seconds; resume stop to confirm its retained receipt.');
+  // Batches consumed while waiting belong to other lanes too: the caller still has to handle them.
+  throw Object.assign(new LaneError('stop_confirmation_timeout', 'The worker stopped, but no matching removal event arrived in 120 seconds; resume stop to confirm its retained receipt.'), { archives });
 }
