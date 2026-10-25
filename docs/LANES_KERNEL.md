@@ -277,7 +277,7 @@ current step, saves every running round's session/agent/launch time in
 `kernel-environment.json` (`{"IS_SANDBOX":"1"}`), and stops/starts the pair once.
 It requires a fresh `picked_up` for every round, unchanged identities, no driver error
 and a readable worker provider/permission, then prints each worker's provider,
-permission and Claude account name/organization suffix. Any failed check exits nonzero;
+permission and the label of the Claude profile the kernel runs it on (`account=lanes-claude-old`; `unreported` for a worker on the kernel default that has no explicit profile). Any failed check exits nonzero;
 do not repeat a failed restart blindly. The operation has a ten-minute outer timeout.
 
 **Existing rounds keep their launch permission**, including after restore. They pick up
