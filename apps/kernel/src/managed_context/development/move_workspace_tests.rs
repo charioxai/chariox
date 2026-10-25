@@ -211,7 +211,11 @@ fn mk02_directory_uses_project_private_file_choices() {
     let _cleanup = PlainWorkspaceCleanup(root.clone());
     let directory = root.join("notes");
     fs::create_dir(&directory).unwrap();
-    fs::write(directory.join(".gitignore"), "private.txt\nselected.txt\nprivate/\nunselected/\n").unwrap();
+    fs::write(
+        directory.join(".gitignore"),
+        "private.txt\nselected.txt\nprivate/\nunselected/\n",
+    )
+    .unwrap();
     fs::write(directory.join("private.txt"), "do not bring\n").unwrap();
     fs::write(directory.join("selected.txt"), "selected content\n").unwrap();
     fs::create_dir(directory.join("private")).unwrap();
@@ -230,13 +234,13 @@ fn mk02_directory_uses_project_private_file_choices() {
     };
     let workspace = directory.to_string_lossy().into_owned();
     for path in ["selected.txt", "private/needed.bin"] {
-    manifest.private_files.push(ProjectPrivateFileDecision {
-        workspace_id: workspace.clone(),
-        path: path.into(),
-        bring: true,
-        secret_looking: false,
-        reason: "explicitly selected".into(),
-    });
+        manifest.private_files.push(ProjectPrivateFileDecision {
+            workspace_id: workspace.clone(),
+            path: path.into(),
+            bring: true,
+            secret_looking: false,
+            reason: "explicitly selected".into(),
+        });
     }
     register_project_file_rules(&manifest, &BTreeMap::from([(workspace, directory.clone())]));
     let result = export_development_context(DevelopmentContextExportRequest {
@@ -254,7 +258,10 @@ fn mk02_directory_uses_project_private_file_choices() {
     assert!(paths.contains(&"selected.txt"));
     assert!(paths.contains(&"private/needed.bin"));
     assert!(!paths.contains(&"private/stays.txt"));
-    assert!(!exported.manifest.repositories[0].directories.iter().any(|p| p.starts_with("unselected")));
+    assert!(!exported.manifest.repositories[0]
+        .directories
+        .iter()
+        .any(|p| p.starts_with("unselected")));
     assert!(
         !paths.contains(&"private.txt"),
         "unselected ignored files must stay home"

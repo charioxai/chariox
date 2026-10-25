@@ -131,13 +131,19 @@ pub(super) fn snapshot(
             {
                 continue;
             }
-            let file_type = entry.file_type()
+            let file_type = entry
+                .file_type()
                 .map_err(|error| context_io_error("inspect directory workspace entry", error))?;
-            let rule_path = if file_type.is_dir() { format!("{path_text}/") } else { path_text.clone() };
-            let excluded = crate::workspace_live_sync_ignore::user_rules_exclude_path(
-                &rule_path, &patterns,
-            );
-            if excluded && (!file_type.is_dir() || !overlay::may_include_descendant(&patterns, &path_text)) {
+            let rule_path = if file_type.is_dir() {
+                format!("{path_text}/")
+            } else {
+                path_text.clone()
+            };
+            let excluded =
+                crate::workspace_live_sync_ignore::user_rules_exclude_path(&rule_path, &patterns);
+            if excluded
+                && (!file_type.is_dir() || !overlay::may_include_descendant(&patterns, &path_text))
+            {
                 continue;
             }
             // Resolve every component under the retained root, without following

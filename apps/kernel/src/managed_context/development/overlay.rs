@@ -150,20 +150,32 @@ fn reject_dirty_head_types(
     }
     // A staged deletion or type change hides the old type from ls-files.
     // Inspect HEAD too, before accepting either index or worktree bytes.
-    stream_git_nul_records(worktree, &["ls-tree", "-r", "-z", "HEAD"], usize::MAX, |record| {
-        let (metadata, path) = record.split_once('\t')
-            .ok_or_else(|| context_error("Git tree returned malformed dirty-path metadata"))?;
-        if paths.contains(path)
-            && !excluded_for_export(path, vault_enabled)
-            && !crate::workspace_live_sync_ignore::user_rules_exclude_path(path, ignore_patterns)
-            && matches!(metadata.split_whitespace().next(), Some("120000" | "160000"))
-        {
-            return Err(context_error(format!(
+    stream_git_nul_records(
+        worktree,
+        &["ls-tree", "-r", "-z", "HEAD"],
+        usize::MAX,
+        |record| {
+            let (metadata, path) = record
+                .split_once('\t')
+                .ok_or_else(|| context_error("Git tree returned malformed dirty-path metadata"))?;
+            if paths.contains(path)
+                && !excluded_for_export(path, vault_enabled)
+                && !crate::workspace_live_sync_ignore::user_rules_exclude_path(
+                    path,
+                    ignore_patterns,
+                )
+                && matches!(
+                    metadata.split_whitespace().next(),
+                    Some("120000" | "160000")
+                )
+            {
+                return Err(context_error(format!(
                 "dirty path `{path}` is a symlink or submodule in HEAD; dirty symlinks and submodules are not supported"
             )));
-        }
-        Ok(())
-    })
+            }
+            Ok(())
+        },
+    )
 }
 
 fn index_file_state(
@@ -552,15 +564,22 @@ fn normalize_ignore_pattern(line: &str) -> Option<String> {
 // An excluded directory is traversed only when an explicit inclusion can
 // select something below it. Excluded files never enter the plain snapshot.
 pub(super) fn may_include_descendant(patterns: &[String], path: &str) -> bool {
-    patterns.iter().filter_map(|rule| rule.strip_prefix('!')).any(|rule| {
-        if !rule.contains('/') {
-            return true;
-        }
-        let prefix = rule.split('*').next().unwrap_or_default().trim_end_matches('/');
-        prefix == path
-            || prefix.starts_with(&format!("{path}/"))
-            || path.starts_with(&format!("{prefix}/"))
-    })
+    patterns
+        .iter()
+        .filter_map(|rule| rule.strip_prefix('!'))
+        .any(|rule| {
+            if !rule.contains('/') {
+                return true;
+            }
+            let prefix = rule
+                .split('*')
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('/');
+            prefix == path
+                || prefix.starts_with(&format!("{path}/"))
+                || path.starts_with(&format!("{prefix}/"))
+        })
 }
 
 #[cfg(all(test, unix))]

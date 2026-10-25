@@ -61,7 +61,11 @@ pub(crate) fn review_items(
                 }
                 let metadata = fs::symlink_metadata(root.join(path))
                     .map_err(|_| context_error("Vault review metadata unavailable"))?;
-                let rule_path = if metadata.is_dir() { format!("{path}/") } else { path.to_string() };
+                let rule_path = if metadata.is_dir() {
+                    format!("{path}/")
+                } else {
+                    path.to_string()
+                };
                 if crate::workspace_live_sync_ignore::user_rules_exclude_path(&rule_path, &patterns)
                     && (!metadata.is_dir() || !overlay::may_include_descendant(&patterns, path))
                 {
