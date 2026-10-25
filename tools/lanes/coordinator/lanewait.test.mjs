@@ -145,3 +145,17 @@ test('a lane launched while the wait is blocked is followed within one slice, no
   assert.ok(r.kernel.targets.some(x => x.session_id === 'room-late-r1'));
   assert.ok(r.clock.ms - 10_000_000 <= 10_000, 'the lane was followed after one 5 s slice');
 });
+
+test('a room refused right after a kernel restart is retried; only a lasting refusal is reported', async t => {
+  const r = await rig(t, ['alpha-r1', 'beta-r1']);
+  const cli = r.options.cli; const refusals = { 'room-alpha-r1': 2, 'room-beta-r1': 99 };
+  const slept = []; r.options.sleep = async ms => { slept.push(ms); };
+  r.options.cli = async argv => {
+    if (argv[1] === 'subscribe' && refusals[argv[5]]-- > 0) throw Object.assign(new Error('refused'), { code: 'events_refused' });
+    return cli(argv);
+  };
+  const lines = await lanewait({ ...r.options, minutes: 10 });
+  assert.deepEqual(lines.map(l => [l.lane, l.kind, l.summary]), [['beta', 'error', "cannot follow the worker's room: events_refused"]]);
+  assert.ok(r.kernel.targets.some(x => x.session_id === 'room-alpha-r1'), 'alpha was followed on the third attempt');
+  assert.ok(slept.length >= 5);
+});

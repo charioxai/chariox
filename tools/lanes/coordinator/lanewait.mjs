@@ -11,7 +11,8 @@ import { classifyDecision } from './decisions.mjs';
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const readOr = async (path, fallback) => read(path).catch(error => { if (error.code === 'ENOENT') return fallback; throw error; });
 const KEEP_REPLAY = 200;
-const SILENT_MS = 15 * 60_000;
+const SUBSCRIBE_ATTEMPTS = 4;
+const SUBSCRIBE_RETRY_MS = 3000;
 
 export const laneAndRound = key => { const match = /^(.+)-(r\d+\w*)$/.exec(key); return match ? { lane: match[1], round: match[2] } : { lane: key, round: '' }; };
 export const formatLine = line => `${new Date(line.at_ms).toISOString().slice(11, 19)}Z ${line.lane} ${line.round || '-'} ${line.kind} ${line.summary}`;
@@ -66,8 +67,15 @@ export async function lanewait(options) {
       state.tracked[record.lane] ??= { startedMs: now() };
       for (const session of [record.launch.sessionId, record.launch.operationsSessionId].filter(Boolean)) {
         if (subscription.targets?.some(t => t.kernel === record.launch.kernel && t.session_id === session && !t.agent_id)) continue;
-        try { await cli(['events', 'subscribe', '--kernel', record.launch.kernel, '--session', session]); }
-        catch (error) { await emit(record.lane, 'error', `cannot follow the worker's room: ${error.code || 'subscribe_failed'}`); }
+        // Right after a kernel restart a restored Room is refused for a few seconds; only a refusal that lasts is reported.
+        for (let attempt = 1; ; attempt++) {
+          try { await cli(['events', 'subscribe', '--kernel', record.launch.kernel, '--session', session]); break; }
+          catch (error) {
+            if (attempt < SUBSCRIBE_ATTEMPTS) { await sleep(SUBSCRIBE_RETRY_MS); continue; }
+            await emit(record.lane, 'error', `cannot follow the worker's room: ${error.code || 'subscribe_failed'}`);
+            break;
+          }
+        }
       }
     }
     await persist();
