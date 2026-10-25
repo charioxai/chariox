@@ -137,18 +137,20 @@ export async function serve(options) {
   const scan = async () => {
     const entries = [];
     for (const name of (await readdir(queue)).filter(file => file.endsWith('.json')).sort()) {
-      const key = name.slice(0, -5);
-      if (active.has(key) || (attempts.get(key)?.nextAtMs ?? 0) > now()) continue;
+      if (active.has(name.slice(0, -5))) continue;
       try { entries.push(parseEntry(name, await readFile(join(queue, name), 'utf8'))); } catch (error) { if (error.code !== 'invalid_queue_entry') throw error; await reject(name, error); }
     }
-    // Restored rounds go first, so a waiting entry that sorts earlier cannot take their lane.
+    // Restored rounds go first, so a waiting entry that sorts earlier cannot take their lane, not even while
+    // the restored round waits out a failed launch.
     const resumable = new Set();
     for (const entry of entries) if (await unfinished(entry)) resumable.add(entry.key);
     entries.sort((a, b) => Number(resumable.has(b.key)) - Number(resumable.has(a.key)));
+    const held = new Set();
     for (const entry of entries) {
       const { key } = entry;
+      if ((attempts.get(key)?.nextAtMs ?? 0) > now()) { if (resumable.has(key)) held.add(entry.lane); continue; }
       // One round per lane at a time: a second entry for the lane waits in the queue.
-      if ([...active.values()].some(item => item.entry.lane === entry.lane)) continue;
+      if (held.has(entry.lane) || [...active.values()].some(item => item.entry.lane === entry.lane)) continue;
       try {
         const lane = await round.add(await prepare(entry));
         active.set(key, { entry, lane });
@@ -157,6 +159,7 @@ export async function serve(options) {
       } catch (error) {
         const count = (attempts.get(key)?.count ?? 0) + 1;
         attempts.set(key, { count, nextAtMs: now() + retryMs });
+        if (resumable.has(key)) held.add(entry.lane);
         log('launch_error', { key, count, code: error.code, message: error.message });
         if (count >= LAUNCH_ATTEMPTS) await give_up(entry, error);
       }

@@ -248,6 +248,27 @@ test('a missing preamble file ends the entry as launch_failed with the file name
   assert.match(run.launchError.message, /nope\.md/);
 });
 
+test('a restored round whose resume fails keeps its lane: the queued round waits through the retry', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r9');
+  r.script.push(async () => { r.controller.abort(); return []; });
+  await serve(r.options);
+  await r.drop('alpha', 'r10');
+  const again = new AbortController(); r.options.signal = again.signal;
+  const adapter = r.options.adapter;
+  let failures = 1;
+  r.options.adapter = async (op, input) => { if (op === 'launch' && input.taskId === 'alpha-r9' && failures-- > 0) throw Object.assign(new Error('kernel down'), { code: 'kernel_unreachable' }); return adapter(op, input); };
+  const order = [];
+  r.options.log = (kind, detail) => {
+    r.logs.push({ kind, ...detail });
+    if (['picked_up', 'finished', 'launch_error'].includes(kind)) order.push(`${kind}:${detail.key}`);
+    if (kind === 'picked_up') { r.idle.add(detail.key); r.script.push(async () => [r.ev(detail.key, { type: 'agent', value: { state: 'idle' } })]); }
+    if (kind === 'finished' && detail.key === 'alpha-r10') again.abort();
+  };
+  await serve(r.options);
+  assert.deepEqual(order, ['launch_error:alpha-r9', 'picked_up:alpha-r9', 'finished:alpha-r9', 'picked_up:alpha-r10', 'finished:alpha-r10']);
+});
+
 test('an entry that cannot launch is retried, then ends as launch_failed with its reason', async t => {
   const r = await rig(t);
   await r.drop('alpha', 'r1');
