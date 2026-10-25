@@ -103,6 +103,20 @@ test('errors, silence and the round limit are reported once each', async t => {
   assert.deepEqual(long.map(l => l.kind), ['long_round']);
 });
 
+test('a worker sitting in error is reported even when its failure event was never seen, once, and again after it recovers and fails again', async t => {
+  const r = await rig(t);
+  r.status['alpha-r1'] = { state: 'error', currentPrompt: null, flags: ['ERROR'] };
+  const first = await lanewait({ ...r.options, minutes: 10 });
+  assert.deepEqual(first.map(l => [l.lane, l.kind]), [['alpha', 'error']]);
+  assert.match(first[0].summary, /in error/);
+  const again = await lanewait({ ...r.options, minutes: 2, healthMs: 1000 });
+  assert.deepEqual(again, [], 'the same error is not reported again while it lasts');
+  r.status['alpha-r1'] = { state: 'working', flags: [] };
+  await lanewait({ ...r.options, minutes: 2, healthMs: 1000 });
+  r.status['alpha-r1'] = { state: 'error', currentPrompt: null, flags: ['ERROR'] };
+  assert.deepEqual((await lanewait({ ...r.options, minutes: 2, healthMs: 1000 })).map(l => l.kind), ['error']);
+});
+
 test('a new access grant has a new inbox: the old state is set aside and every lane is followed again', async t => {
   const r = await rig(t);
   await lanewait({ ...r.options, minutes: 1 });

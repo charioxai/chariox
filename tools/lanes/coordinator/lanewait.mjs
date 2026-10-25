@@ -135,7 +135,10 @@ export async function lanewait(options) {
       }
       const meaning = describe(event);
       if (meaning?.kind === 'finished') { const done = await finishedSummary(key); await finish(key, done.summary, { reason: done.reason, head: done.head }); }
-      else if (meaning) await emit(key, meaning.kind, meaning.summary, event.refs?.run_id ? { runId: event.refs.run_id } : {});
+      else if (meaning) {
+        await emit(key, meaning.kind, meaning.summary, event.refs?.run_id ? { runId: event.refs.run_id } : {});
+        if (meaning.kind === 'error') (state.flags[key] ??= {}).ERROR = now(); // the health read must not report the same failure again
+      }
     }
   };
 
@@ -151,8 +154,14 @@ export async function lanewait(options) {
       let status;
       try { status = await coordinator('lanehealth', [key]); } catch { continue; }
       const flags = (state.flags[key] ??= {});
-      for (const flag of ['LONG-ROUND', 'SILENT']) {
-        if (status.flags?.includes(flag) && !flags[flag]) { flags[flag] = now(); await emit(key, flag === 'SILENT' ? 'silent' : 'long_round', flag === 'SILENT' ? `no activity for ${Math.round((now() - status.lastActivityMs) / 60_000)} min while working` : 'past its round limit'); }
+      const reports = {
+        'LONG-ROUND': ['long_round', () => 'past its round limit'],
+        SILENT: ['silent', () => `no activity for ${Math.round((now() - status.lastActivityMs) / 60_000)} min while working`],
+        // A failure event the inbox never saw (before this grant, or lost in a gap) would otherwise leave the worker in error unreported.
+        ERROR: ['error', () => 'the worker is in error and nothing is running; resume it with a note or stop it'],
+      };
+      for (const [flag, [kind, summary]] of Object.entries(reports)) {
+        if (status.flags?.includes(flag) && !flags[flag]) { flags[flag] = now(); await emit(key, kind, summary()); }
         else if (!status.flags?.includes(flag)) delete flags[flag];
       }
       for (const interaction of status.interactions ?? []) await interactionLine(key, interaction);

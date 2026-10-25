@@ -176,6 +176,7 @@ export async function coordinate(operation, args, options = {}) {
     const flags = [];
     if (now() >= record.input.deadlineMs) flags.push('LONG-ROUND');
     if (status.state === 'working' && Number.isFinite(status.lastActivityMs) && now() - status.lastActivityMs > 15 * 60_000) flags.push('SILENT');
+    if (status.state === 'error') flags.push('ERROR');
     return { lane, ...status, flags, limitation: 'Activity/deadline flags are signals; working state alone does not prove progress.' };
   }
   if (operation === 'lanefin') {

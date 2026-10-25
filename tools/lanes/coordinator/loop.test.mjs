@@ -345,6 +345,13 @@ test('stop retry confirms a removal another consumer archived and acknowledged',
   assert.equal(r.calls.filter(c => c.op === 'stop').length, stops);
 });
 
+test('lanehealth flags a worker in error', async t => {
+  const r = await launched(t);
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'status' ? { state: 'error', currentPrompt: null, lastActivityMs: 1 } : adapter(op, input);
+  assert.deepEqual((await coordinate('lanehealth', ['lane'], r.options)).flags, ['ERROR']);
+});
+
 test('steer: a running turn is steered with the kernel answer as the only confirmation, and the section is recorded once', async t => {
   const r = await launched(t);
   const status = r.options.adapter;
