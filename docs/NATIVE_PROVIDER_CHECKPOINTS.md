@@ -58,9 +58,9 @@ first accepted native turn. Launch rejects missing or mismatched native state,
 and resume failure neither clears that state nor substitutes another provider.
 A successful official resume and accepted turn retire the constraint, preserving
 ordinary recovery behavior for subsequent work. Existing calls without a binding
-retain their previous behavior. No peer message changes in this PR, so reserved
-peer allocation 207 is unused; existing remote-native forwarding refuses the
-unsupported checkpoint/interface combination before sending anything.
+retain their previous behavior. Durable Move carries protected artifacts through
+the authenticated 608/214 peer contract described below; generic client launch
+requests continue to carry metadata only.
 
 The ignored `live_codex_native_checkpoint_driver` test exports/imports private
 artifacts for a real two-kernel/TUI drill. It accepts an explicit private manifest
@@ -74,8 +74,8 @@ provider turn that recalls previous context. A helper or fixture alone is not
 MK01 acceptance.
 
 No managed-only provider branch or shutdown policy is added. Integrated ordinary
-and managed lifecycle parity, peer fencing, Mac directions, full workspace
-transfer, UI and sustained Move drills remain separate acceptance cells.
+and managed lifecycle parity, Mac directions, route UI and sustained Move drills
+remain separate acceptance cells.
 
 ## Durable Move and Return
 

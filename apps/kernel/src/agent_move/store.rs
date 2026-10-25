@@ -19,8 +19,6 @@ pub(super) struct MoveRecords {
 #[derive(Clone)]
 pub(crate) struct AgentMoveStore {
     root: PathBuf,
-    #[cfg(test)]
-    crash_after: Arc<Mutex<Option<&'static str>>>,
     records: Arc<Mutex<MoveRecords>>,
     operations: Arc<Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
 }
@@ -32,8 +30,6 @@ impl AgentMoveStore {
         })?;
         let store = Self {
             root,
-            #[cfg(test)]
-            crash_after: Default::default(),
             records: Default::default(),
             operations: Default::default(),
         };
@@ -445,10 +441,6 @@ impl AgentMoveStore {
 
 #[cfg(test)]
 impl AgentMoveStore {
-    pub(crate) fn crash_after_phase_for_test(&self, phase: &'static str) {
-        *self.crash_after.lock().unwrap() = Some(phase);
-    }
-
     fn crash_at_boundary_for_test(&self, phase: &HomeMovePhase) {
         let name = match phase {
             HomeMovePhase::Fenced => "fenced",
@@ -460,16 +452,10 @@ impl AgentMoveStore {
             HomeMovePhase::Complete { .. } => "complete",
             HomeMovePhase::RolledBack { .. } => "rolled_back",
         };
-        let crash = {
-            let mut requested = self.crash_after.lock().unwrap();
-            if *requested == Some(name) {
-                requested.take();
-                true
-            } else {
-                false
-            }
-        };
+        let marker = self.root.join("crash-after-phase-for-test");
+        let crash = fs::read_to_string(&marker).is_ok_and(|requested| requested.trim() == name);
         if crash {
+            fs::remove_file(marker).expect("consume private test crash marker");
             panic!("simulated kernel crash after durable Move boundary: {name}");
         }
     }

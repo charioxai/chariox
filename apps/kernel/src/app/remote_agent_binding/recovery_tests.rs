@@ -86,10 +86,17 @@ impl Fixture {
         config.relay_request_timeout_ms = 2_000;
         let mut home = DaemonApp::bootstrap(config.clone()).unwrap();
         let (room_a, agent) = crate::app::KernelSessionService::new(&mut home)
-            .create_session(CreateSessionRequest::new(
-                workspace_a.display().to_string(),
-                workspace_a.display().to_string(),
-            ))
+            .create_session(
+                CreateSessionRequest::new(
+                    workspace_a.display().to_string(),
+                    workspace_a.display().to_string(),
+                )
+                .with_project_selection(
+                    crate::session::SessionProjectSelection::New {
+                        name: Some("Move Project".into()),
+                    },
+                ),
+            )
             .unwrap();
         let (room_b, _) = crate::app::KernelSessionService::new(&mut home)
             .create_session(CreateSessionRequest::new(
@@ -125,13 +132,17 @@ impl Fixture {
             } else {
                 format!("slice:room-{index}")
             });
-            worker_config.host_machine_id = config.host_machine_id.clone();
+            worker_config.host_machine_id = if with_slices {
+                config.host_machine_id.clone()
+            } else {
+                format!("ordinary-machine-{fixture_id}-{index}")
+            };
             worker_config.relay_url = Some(relay_url.clone());
             worker_config.relay_token = config.relay_token.clone();
             worker_config.relay_heartbeat_ms = 50;
             let presence = RelayKernelPresence {
                 kernel_id: worker_config.daemon_id.clone(),
-                machine_id: config.host_machine_id.clone(),
+                machine_id: worker_config.host_machine_id.clone(),
                 machine_alias: None,
                 relay_alias: None,
                 kernel_alias: worker_config.daemon_alias.clone(),
@@ -235,7 +246,7 @@ impl Fixture {
             .update(Vec::new(), presences.clone());
         let binding = RemoteAgentBinding {
             worker_kernel_id: presences[0].kernel_id.clone(),
-            worker_machine_id: config.host_machine_id,
+            worker_machine_id: presences[0].machine_id.clone(),
             execution_lease_id: "missing-original-lease".into(),
             leased_agent_id: "missing-original-agent".into(),
             active_worker_provider_run_id: None,

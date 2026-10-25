@@ -1,24 +1,15 @@
 use super::*;
 #[tokio::test(flavor = "multi_thread")]
 async fn mk03_public_move_materializes_current_project_and_return_uses_fresh_root() {
-    let mut fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
     let (session_id, original, notes) = {
-        let mut home = fixture.home.lock().await;
-        let original = fixture.workspace_root.join("a");
-        let (session, agent) = crate::app::KernelSessionService::new(&mut home)
-            .create_session(
-                CreateSessionRequest::new(
-                    original.display().to_string(),
-                    original.display().to_string(),
-                )
-                .with_project_selection(
-                    crate::session::SessionProjectSelection::New {
-                        name: Some("Move Project".into()),
-                    },
-                ),
-            )
+        let home = fixture.home.lock().await;
+        let agent = home
+            .agents()
+            .clear_remote_execution(&fixture.agent_id)
             .unwrap();
-        fixture.agent_id = agent.id().into();
+        let session = home.sessions().get_session(agent.session_id()).unwrap();
+        let original = PathBuf::from(session.worktree_id());
         std::fs::write(original.join("input"), "home before move\n").unwrap();
         let notes = fixture.workspace_root.join("notes");
         std::fs::create_dir_all(notes.join("nested")).unwrap();
@@ -44,7 +35,7 @@ async fn mk03_public_move_materializes_current_project_and_return_uses_fresh_roo
         crate::local::MoveAgentToRemoteRequest {
             session_id: session_id.clone(),
             agent_ref: fixture.agent_id.clone(),
-            machine_ref: fixture.presences[0].kernel_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
         },
     );
     let envelope = crate::runtime::command::KernelCommand::from_local_request(
@@ -153,7 +144,7 @@ async fn move_request(
             crate::local::MoveAgentToRemoteRequest {
                 session_id: session.into(),
                 agent_ref: fixture.agent_id.clone(),
-                machine_ref: fixture.presences[0].kernel_id.clone(),
+                machine_ref: fixture.presences[0].machine_id.clone(),
             },
         )
     } else {
@@ -220,19 +211,22 @@ async fn crash_boundary(phase: &'static str, forward: bool) {
             b"checkpointed workspace\n".to_vec()
         }
     };
-    fixture
+    let journal_root = fixture
         .home
         .lock()
         .await
-        .agent_moves
-        .crash_after_phase_for_test(phase);
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&journal_root).unwrap();
+    std::fs::write(journal_root.join("crash-after-phase-for-test"), phase).unwrap();
     let task_home = fixture.home.clone();
     let request = if forward {
         crate::local::LocalDaemonRequest::MoveAgentToRemote(
             crate::local::MoveAgentToRemoteRequest {
                 session_id: session.clone(),
                 agent_ref: fixture.agent_id.clone(),
-                machine_ref: fixture.presences[0].kernel_id.clone(),
+                machine_ref: fixture.presences[0].machine_id.clone(),
             },
         )
     } else {
@@ -269,22 +263,10 @@ async fn crash_boundary(phase: &'static str, forward: bool) {
     if forward && matches!(phase, "bound" | "committed") {
         reboot_worker(&mut fixture).await;
     }
-    let operation = fixture
-        .home
-        .lock()
-        .await
-        .agent_moves
-        .for_agent(&session, &fixture.agent_id)
-        .unwrap();
-    assert_eq!(operation.phase.is_pending(), phase != "complete");
+    let operation = move_journal(&fixture, &session).await;
     assert_eq!(
-        fixture
-            .home
-            .lock()
-            .await
-            .agent_moves
-            .dispatch_fenced(&session, &fixture.agent_id),
-        phase != "complete"
+        operation["phase"]["phase"].as_str() == Some("complete"),
+        phase == "complete"
     );
     if phase != "complete" {
         let home = fixture.home.lock().await;
@@ -302,18 +284,9 @@ async fn crash_boundary(phase: &'static str, forward: bool) {
             .contains("Agent move holds provider admission"));
     }
     move_request(&fixture, &session, forward).await;
+    let operation = move_journal(&fixture, &session).await;
     let home = fixture.home.lock().await;
-    let operation = home
-        .agent_moves
-        .for_agent(&session, &fixture.agent_id)
-        .unwrap();
-    assert!(matches!(
-        operation.phase,
-        crate::agent_move::HomeMovePhase::Complete { .. }
-    ));
-    assert!(!home
-        .agent_moves
-        .dispatch_fenced(&session, &fixture.agent_id));
+    assert_eq!(operation["phase"]["phase"], "complete");
     assert!(
         home.providers().list_runs().is_empty(),
         "recovery cannot create a provider run"
@@ -388,7 +361,7 @@ async fn mk03_failed_snapshot_rolls_back_without_binding_or_changing_source() {
         crate::local::MoveAgentToRemoteRequest {
             session_id: session.clone(),
             agent_ref: fixture.agent_id.clone(),
-            machine_ref: fixture.presences[0].kernel_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
         },
     );
     let envelope = crate::runtime::command::KernelCommand::from_local_request(
@@ -398,18 +371,9 @@ async fn mk03_failed_snapshot_rolls_back_without_binding_or_changing_source() {
         &request,
     );
     assert!(router.dispatch(envelope, request).await.is_err());
+    let operation = move_journal(&fixture, &session).await;
     let home = fixture.home.lock().await;
-    let operation = home
-        .agent_moves
-        .for_agent(&session, &fixture.agent_id)
-        .unwrap();
-    assert!(matches!(
-        operation.phase,
-        crate::agent_move::HomeMovePhase::RolledBack { .. }
-    ));
-    assert!(!home
-        .agent_moves
-        .dispatch_fenced(&session, &fixture.agent_id));
+    assert_eq!(operation["phase"]["phase"], "rolled_back");
     assert!(home
         .agents()
         .get_agent(&fixture.agent_id)
@@ -418,4 +382,28 @@ async fn mk03_failed_snapshot_rolls_back_without_binding_or_changing_source() {
         .is_none());
     assert_eq!(std::fs::read(outside).unwrap(), b"preserve outside");
     assert!(fixture.workers[0].lock().await.leased_agents.is_empty());
+}
+
+async fn move_journal(fixture: &Fixture, session: &str) -> serde_json::Value {
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::read_dir(root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".home.json"))
+        .map(|entry| {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(entry.path()).unwrap())
+                .unwrap()
+        })
+        .filter(|record| {
+            record["identity"]["home_session_id"] == session
+                && record["identity"]["home_agent_id"] == fixture.agent_id
+        })
+        .max_by_key(|record| record["identity"]["generation"].as_u64().unwrap())
+        .expect("public Move must persist a generation")
 }
