@@ -202,7 +202,7 @@ async fn f4_legacy_decisions_inner() {
         realm_id: "test-realm".into(),
         ..Default::default()
     });
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let app = DaemonApp::bootstrap(config).unwrap();
     let id = app
         .sessions_mut()
         .create_session(root.session_request())
