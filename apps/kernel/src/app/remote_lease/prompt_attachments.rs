@@ -1,7 +1,3 @@
-use std::fs;
-
-use base64::Engine;
-
 use crate::error::DaemonError;
 use crate::execution_lease::LeasedAgent;
 use crate::transport::relay_peer::RelayPromptAttachment;
@@ -37,64 +33,24 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         attachments: Vec<RelayPromptAttachment>,
     ) -> Result<Vec<crate::session::PromptAttachment>, DaemonError> {
-        attachments
+        let attachments = attachments
             .into_iter()
-            .enumerate()
-            .map(|(index, attachment)| {
-                // A note stays inline so the worker's prompt assembly can read it.
-                if attachment.mime == crate::prompt_notes::NOTE_ATTACHMENT_MIME {
-                    let mut note = crate::session::PromptAttachment::new(
-                        attachment.url,
-                        attachment.mime,
-                        attachment.filename,
-                    );
-                    if let Some(contents_base64) = attachment.contents_base64 {
-                        note = note.with_contents_base64(contents_base64);
-                    }
-                    return Ok(note);
-                }
-                if let Some(contents_base64) = attachment.contents_base64 {
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(contents_base64)
-                        .map_err(|error| DaemonError::LocalTransport {
-                            operation: "decode remote prompt attachment",
-                            message: error.to_string(),
-                        })?;
-                    let filename = attachment
-                        .filename
-                        .clone()
-                        .unwrap_or_else(|| format!("attachment-{index}"));
-                    let root = std::env::temp_dir()
-                        .join("chariox-remote-prompt-attachments")
-                        .join(&leased_agent.backing_session_id)
-                        .join(&leased_agent.id);
-                    fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
-                        operation: "create remote prompt attachment directory",
-                        message: error.to_string(),
-                    })?;
-                    let path = root.join(format!(
-                        "{}-{}-{}",
-                        crate::session::unix_epoch_ms(),
-                        index,
-                        filename
-                    ));
-                    fs::write(&path, bytes).map_err(|error| DaemonError::LocalTransport {
-                        operation: "write remote prompt attachment",
-                        message: error.to_string(),
-                    })?;
-                    Ok(crate::session::PromptAttachment::new(
-                        format!("file://{}", path.display()),
-                        attachment.mime,
-                        Some(filename),
-                    ))
-                } else {
-                    Ok(crate::session::PromptAttachment::new(
-                        attachment.url,
-                        attachment.mime,
-                        attachment.filename,
-                    ))
+            .map(|attachment| {
+                let value = crate::session::PromptAttachment::new(
+                    attachment.url,
+                    attachment.mime,
+                    attachment.filename,
+                );
+                match attachment.contents_base64 {
+                    Some(contents) => value.with_contents_base64(contents),
+                    None => value,
                 }
             })
-            .collect()
+            .collect();
+        crate::runtime::agent_actor::prompt_attachment_materialization::materialize_inline_prompt_attachments(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            attachments,
+        )
     }
 }
