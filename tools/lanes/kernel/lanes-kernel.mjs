@@ -7,11 +7,32 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkS
 import { randomBytes, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { serviceUnit, sliceInvocation } from './service.mjs';
 import { restartWithSandbox } from './restart.mjs';
 import { syncWorkerAgents } from './worker-agents.mjs';
 import { probeClaudeToken, readToken, replaceClaudeCredential } from './claude-account.mjs';
 
 const STATE = process.env.LANES_KERNEL_STATE || '/root/.chariox/dev/lanes-kernel';
+// Put the launcher, both kernels, holders and loopd into the shared lane cgroup together.
+if (process.platform === 'linux' && ['setup', 'start', 'restart-yolo'].includes(process.argv[2])) {
+  const slice = spawnSync('systemctl', ['show', 'lanes.slice', '--property=LoadState', '--value'], { encoding: 'utf8' });
+  const invocation = sliceInvocation({ sliceExists: slice.status === 0 && slice.stdout.trim() === 'loaded',
+    cgroup: readFileSync('/proc/self/cgroup', 'utf8'), node: process.execPath, script: process.argv[1], args: process.argv.slice(2) });
+  if (invocation) {
+    const result = spawnSync(invocation[0], invocation.slice(1), { stdio: 'inherit' });
+    process.exit(result.status ?? 1);
+  }
+}
+if (process.argv[2] === 'install-service') {
+  const unit = serviceUnit({ node: process.execPath, script: new URL(import.meta.url).pathname, state: STATE });
+  writeFileSync('/etc/systemd/system/chariox-lanes.service', unit, { mode: 0o644 });
+  for (const args of [['daemon-reload'], ['enable', 'chariox-lanes.service']]) {
+    const result = spawnSync('systemctl', args, { stdio: 'inherit' });
+    if (result.status !== 0) throw new Error(`systemctl ${args[0]} failed; inspect chariox-lanes.service`);
+  }
+  console.log('Installed and enabled chariox-lanes.service for boot; existing workers were not restarted.');
+  process.exit(0);
+}
 const config = JSON.parse(readFileSync(join(STATE, 'config.json'), 'utf8'));
 const ROLES = ['executor', 'coordinator'];
 const dir = role => join(STATE, role);
