@@ -11,6 +11,7 @@ use crate::transport::kernel_protocol::KernelEvent;
 pub(crate) struct HomeAuditFeed {
     appended: tokio::sync::broadcast::Receiver<DurableStateEvent>,
     pending: VecDeque<DurableStateEvent>,
+    lagged: bool,
 }
 
 impl HomeAuditFeed {
@@ -19,12 +20,13 @@ impl HomeAuditFeed {
         Self {
             appended: router.subscribe_durable_state_events(),
             pending: VecDeque::new(),
+            lagged: false,
         }
     }
 
     /// Resolves once an appended row waits to be sent; never resolves when the feed has ended.
     pub(crate) async fn changed(&mut self) {
-        if !self.pending.is_empty() {
+        if self.lagged || !self.pending.is_empty() {
             return;
         }
         loop {
@@ -34,15 +36,21 @@ impl HomeAuditFeed {
                     return;
                 }
                 Err(RecvError::Lagged(missed)) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.runtime_transport",
-                        "a subscription missed home extension audit rows; the client's audit list is stale until it reads it again",
-                        serde_json::json!({ "missed": missed }),
-                    );
+                    self.mark_lagged(missed);
+                    return;
                 }
                 Err(RecvError::Closed) => std::future::pending::<()>().await,
             }
         }
+    }
+
+    fn mark_lagged(&mut self, missed: u64) {
+        self.lagged = true;
+        crate::logging::warn_with_fields(
+            "daemon.runtime_transport",
+            "home extension audit feed lagged; requesting a fresh client list read",
+            serde_json::json!({ "missed": missed }),
+        );
     }
 
     /// The rows of the session's agents that the attachment's owner may read.
@@ -57,11 +65,7 @@ impl HomeAuditFeed {
             match self.appended.try_recv() {
                 Ok(event) => self.pending.push_back(event),
                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(missed)) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.runtime_transport",
-                        "a subscription missed home extension audit rows; the client's audit list is stale until it reads it again",
-                        serde_json::json!({ "missed": missed }),
-                    );
+                    self.mark_lagged(missed);
                 }
                 Err(_) => break,
             }
@@ -69,8 +73,16 @@ impl HomeAuditFeed {
         let Some(session_agents) = session_agents else {
             // Before the first snapshot the session's agents are unknown; the view's reads cover it.
             self.pending.clear();
+            self.lagged = false;
             return Vec::new();
         };
+        if std::mem::take(&mut self.lagged) {
+            // The list read covers this partial batch too. Future appends stay in the receiver.
+            self.pending.clear();
+            return vec![KernelEvent::HomeExtensionAuditLagged {
+                session_id: session_id.to_string(),
+            }];
+        }
         if self.pending.is_empty() {
             return Vec::new();
         }

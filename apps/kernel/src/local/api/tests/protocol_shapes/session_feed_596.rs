@@ -74,9 +74,12 @@ fn fixture_events() -> serde_json::Value {
     serde_json::json!({
         "items": ["MP-08", "MP-10", "MP-11"],
         "local_protocol": 596,
-        "allocation": "596/202, unpublished on main: agent_turn_changed, home_extension_audit_appended, heartbeat_interval_ms",
+        "allocation": "596/202, unpublished on main: agent_turn_changed, home_extension_audit_appended, home_extension_audit_lagged, heartbeat_interval_ms",
         "agent_turn_changed": serde_json::to_value(turn_changed).unwrap(),
         "home_extension_audit_appended": serde_json::to_value(audit_appended).unwrap(),
+        "home_extension_audit_lagged": serde_json::to_value(KernelEvent::HomeExtensionAuditLagged {
+            session_id: "session-1".into(),
+        }).unwrap(),
         "subscribe_with_heartbeat_interval": serde_json::to_value(subscribe).unwrap(),
     })
 }
@@ -86,7 +89,7 @@ fn session_feed_596_shapes_are_pinned() {
     let bytes = include_bytes!("session-feed-596.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "edb311efe3227fbaaba6130f7753967ca474ff5dbf60b1732b4e9dc1ff4e04a5"
+        "0c6e462b83bf394197e9c530b7f9ff5cdb7015a7d8364bdb98f2c32a62fa7834"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture, fixture_events());

@@ -382,6 +382,110 @@ async fn turn_events_are_coalesced_to_one_per_window() {
 }
 
 #[tokio::test]
+async fn audit_overflow_signals_one_reread_for_both_receive_paths() {
+    let watched = Watched::start().await;
+    let mut waiting = crate::transport::home_audit_feed::HomeAuditFeed::new(&watched.router);
+    let mut draining = crate::transport::home_audit_feed::HomeAuditFeed::new(&watched.router);
+    let agents = [watched.agent_id.clone()].into_iter().collect();
+    let store = watched.app.lock().await.durable_state_store();
+    let mut appended = Vec::new();
+    // Neither subscriber reads while the 1,024-row broadcast backlog overflows.
+    for index in 0..1_100 {
+        appended.push(
+            store
+                .append_event(
+                    "home_extension.grant.created",
+                    Some(watched.agent_id.clone()),
+                    serde_json::json!({ "name": format!("overflow-{index}") }),
+                )
+                .unwrap(),
+        );
+    }
+    waiting.changed().await;
+    for feed in [&mut waiting, &mut draining] {
+        let events = feed
+            .next_events(
+                &watched.router,
+                &watched.session_id,
+                &watched.attachment_id,
+                Some(&agents),
+            )
+            .await;
+        let wire: Vec<_> = events
+            .iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect();
+        assert_eq!(
+            wire.len(),
+            1,
+            "a gap replaces the surviving partial batch with one reset"
+        );
+        assert_eq!(wire[0]["event"], "home_extension_audit_lagged");
+        assert_eq!(wire[0]["session_id"], watched.session_id);
+        // The reset's one list read gives the same authoritative rows as any fresh reader.
+        let request = LocalDaemonRequest::ListHomeExtensionAudit(
+            crate::local::ListHomeExtensionAuditRequest {
+                agent_ref: watched.agent_id.clone(),
+                limit: Some(25),
+            },
+        );
+        let command = || {
+            KernelCommand::from_local_request_with_caller(
+                "audit-overflow-oracle",
+                KernelCommandSource::LocalCli,
+                KernelCaller::for_source(&KernelCommandSource::LocalCli)
+                    .with_connection_class(KernelConnectionClass::Terminal),
+                None,
+                None,
+                &request,
+            )
+        };
+        let LocalDaemonResponse::HomeExtensionAuditListed { mut events } = watched
+            .router
+            .dispatch(command(), request.clone())
+            .await
+            .unwrap()
+        else {
+            panic!("expected an audit list after the reset");
+        };
+        events.sort_by_key(|event| event.sequence);
+        assert_eq!(events, appended[appended.len() - 25..]);
+        assert!(feed
+            .next_events(
+                &watched.router,
+                &watched.session_id,
+                &watched.attachment_id,
+                Some(&agents)
+            )
+            .await
+            .is_empty());
+    }
+    let after_reset = store
+        .append_event(
+            "home_extension.grant.created",
+            Some(watched.agent_id.clone()),
+            serde_json::json!({ "name": "after-reset" }),
+        )
+        .unwrap();
+    for feed in [&mut waiting, &mut draining] {
+        let events = feed
+            .next_events(
+                &watched.router,
+                &watched.session_id,
+                &watched.attachment_id,
+                Some(&agents),
+            )
+            .await;
+        assert_eq!(events.len(), 1);
+        let KernelEvent::HomeExtensionAuditAppended { audit_event, .. } = &events[0] else {
+            panic!("a recovered feed must resume ordinary appends");
+        };
+        assert_eq!(audit_event.as_ref(), &after_reset);
+    }
+    watched.stop().await;
+}
+
+#[tokio::test]
 async fn audit_rows_arrive_as_the_list_returns_them() {
     let mut watched = Watched::start().await;
     let store = watched.app.lock().await.durable_state_store();

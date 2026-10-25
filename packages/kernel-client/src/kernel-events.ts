@@ -36,6 +36,10 @@ export type KernelEvent =
     turn: import("./kernel-types.js").SessionHistoryOutlineTurn
   }
   | {
+    event: "home_extension_audit_lagged"
+    session_id: string
+  }
+  | {
     event: "home_extension_audit_appended"
     session_id: string
     agent_id: string
