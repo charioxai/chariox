@@ -382,6 +382,20 @@ Direction (Miguel): talk to the agents and receive their events directly, as a f
 | Workers could not run `ldconfig` and other `/usr/sbin` tools | The kernel's role PATH lacked the sbin directories. | Fixed in `roleEnv`; effective after a kernel restart. Drill: `path.txt` of a worker before the restart had no sbin; after `stop`/`start` it has `/usr/local/sbin`, `/usr/sbin`, `/sbin`. |
 | The `scout` agent was missing for workers | The lanes account HOME was created without the shared agent definitions. | `syncWorkerAgents` at `start`. Drill: a worker's Agent call to `scout` listed the worktree's files. |
 | A bundle that fails its head guard says only `terminal_command_failed` | Acceptance `head` names one commit, the bundle step requires HEAD to equal it; a worker that commits after writing the file fails the guard. Seen in a drill (`finished_collect_failed`). | Open: the error should say `head differs from ACCEPTANCE_UPDATE.json`. Workers must write the file last. |
+| **Found live on the real kernels: `events_refused` for two lanes right after the upgrade** | A restored Room refuses a subscription for a few seconds; the first `lanewait` reported it as an error and moved on. | The subscribe is retried 4 times, 3 s apart; only a refusal that lasts is a line. Fail-first test. |
+| **Found live on the real kernels: three `[unclassified]` decisions for ordinary Bash permissions** | `lanewait` read the lane's state after loopd had already answered the permission and took the missing interaction for an unreadable one. | A permission that was read and is gone is loopd's; only a state that cannot be read becomes `unclassified`. Fail-first test; a one-minute `lanewait` on the six real lanes afterwards printed nothing. |
+
+### The kernel upgrade: b53e3f4704 to af52049173 with six rounds running
+
+What #1080 af52049173 changes for the loop: a restored turn that nothing identifies is ended instead of leaving the agent `working`; leftovers of a dead kernel's provider processes are cleaned (`dead_kernel_leftovers.rs`); restart recovery was reworked (`restart_recovery_runtime.rs`). `chariox-relay` is unchanged between the two heads, so the running binary was reused (sha256 `132eebb7bb0c...`).
+
+| Check | Result |
+| --- | --- |
+| Build | Dev profile through `agents/cargo-slot.sh` in 6 min 53 s (slot 1), copied to `bin.next/`; `strings` shows the lanes-kernel worktree; hashes in `PROVENANCE.json` (`previous` holds b53e3f4704). |
+| Drill pair first | Two workers (claude-haiku-5-5, 40 timed commits each) were running when the drill pair did `stop`, `mv bin`, `start` with the new binaries: 20 s, both `picked_up`, same session and agent ids and `launchedAtMs`, both kept committing, a direct steer after the restart (`deliver.sh`) reached its worker and was done, the coordinator's inbox was reset by the first `lanewait`. |
+| Real kernels | `provusage-r2` finished at 06:34:35Z. At 06:49:20Z `loopd install`, then `stop`, `bin` to `bin.prev`, `bin.next` to `bin`, `start`: 33 s. `accam-r14`, `amint-r22`, `extagent-r31`, `panebuild-r5`, `uxcore-r6` and `uxkernel-r1` each logged `picked_up` at 06:49:55-06:50:00Z with session, agent and `launchedAtMs` unchanged; five of them had new events within 30 s (`accam-r14` has been in `error` since 04:33Z, before the upgrade, and is untouched). Both holders report `{"status":"granted"}`. |
+| Restart budget | All six workers were launched after the r12 restart, so this was each one's single allowed restart. The next kernel restart needs them finished first. |
+| Coordinator seat | `start` granted both seats (loopd's first); `lanewait` on the real state followed all six lanes, and a one-minute wait printed nothing (`no worker events within the wait`). |
 
 ### Still open
 

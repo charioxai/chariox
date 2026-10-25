@@ -13,7 +13,7 @@ rebuilding a rig. Everything lives under `/root/.chariox/dev/lanes-kernel/` (out
 | **holder** | A long-lived process the `until-exit` access grant binds to. Loop commands run beneath it with `exec`. There are two seats, each with its own grant and so its own event inbox: `loopd` (the round service) and `coordinator` (the coordinator's own `lanewait`, `steer` and `answer`, run with `exec --seat coordinator`). |
 | **hosted stack** | `pr1080-dogfoodr6` (own Cloud web + own relay, WSS). Kept running (`KEEP` file is empty). |
 
-Both kernels are the exact OSS #1080 build `b53e3f4704` (upgraded from `e46dcc0ce6` on 2026-10-25 with five coordinator rounds
+Both kernels are the exact OSS #1080 build `af52049173` (upgraded from `b53e3f4704` on 2026-10-25 with six coordinator rounds
 running; the previous binaries stay in `bin.prev/`); hashes and worktree are in `PROVENANCE.json`. The Rust binaries were built through `agents/cargo-slot.sh` and
 copied out of the slot into `bin/`.
 
