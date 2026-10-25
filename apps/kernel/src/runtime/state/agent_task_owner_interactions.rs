@@ -61,7 +61,7 @@ impl KernelRuntimeState {
                 let mut sessions = self.owned.session_store.write();
                 let mut latest = sessions.get_session(&task.room_id)?;
                 if let Some(current) = latest.remove_active_interaction(&id) {
-                    latest.add_active_interaction(current.with_message(message));
+                    latest.add_active_interaction(current.with_message(message.clone()));
                     sessions.restore_session(latest);
                     mutation.record();
                 }
