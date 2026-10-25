@@ -100,3 +100,36 @@ pub(super) fn reconcile_event(tx: &Transaction<'_>, event: &InboxEvent) -> Resul
     }
     Ok(())
 }
+
+// A recipient that never admitted its task has no task outcome to relay. Its removal is
+// nevertheless a terminal source for every sender waiting on that exact inbox receipt.
+pub(super) fn recipient_removed(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    now: u64,
+) -> Result<(), DaemonError> {
+    if !event.reply_requested {
+        return Ok(());
+    }
+    let source = format!("agent-event-{}-{}", event.agent_id, event.sequence);
+    let occurrence = format!("reply-terminal-{}", event.sequence);
+    let settled: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND occurrence_id=?3)",
+        params![event.room_id, source, occurrence],
+        |row| row.get(0),
+    ).map_err(sql)?;
+    if !settled {
+        super::supervision::apply(
+            tx,
+            Operation::SourceOutcome {
+                now,
+                room: event.room_id.clone(),
+                source,
+                occurrence,
+                success: false,
+                public_answer: None,
+            },
+        )?;
+    }
+    Ok(())
+}
