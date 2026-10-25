@@ -8,8 +8,8 @@ For any cargo run that includes those tests, start the command in its own sessio
 
 ```sh
 out=<your lane directory>/tmp/kernel-tests.log
-setsid -f bash -c 'cargo-slot.sh cargo test -p chariox-kernel --lib <filter> >"$0" 2>&1; echo $? >"$0.rc"' "$out"
-until [ -e "$out.rc" ]; do sleep 5; done; tail -n 40 "$out"; cat "$out.rc"
+setsid -f bash -c '/root/.chariox/dev/browser-resume-20260930/agents/cargo-slot.sh cargo test -p chariox-kernel --lib <filter> >"$0" 2>&1; echo $? >"$0.rc"' "$out"
+timeout 590 bash -c 'until [ -e "$0.rc" ]; do sleep 5; done' "$out"; tail -n 40 "$out"; cat "$out.rc"   # repeat the wait if it printed nothing
 ```
 
 Run only the commands that need it this way; everything else keeps its normal foreground form. The detached command
