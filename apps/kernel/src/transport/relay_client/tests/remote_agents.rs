@@ -2467,8 +2467,23 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker_async(
     let worker_path = materialized.url().trim_start_matches("file://");
     let worker_bytes = std::fs::read(worker_path).expect("worker attachment should exist");
     assert_eq!(worker_bytes, b"remote attachment body");
+    let attachment_root = {
+        let mut app = app_worker.lock().await;
+        let leased = RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&remote_leased_agent_id)
+            .expect("the worker should hold the leased agent");
+        crate::runtime::agent_actor::prompt_attachment_materialization::inline_prompt_attachment_root(
+            &leased.backing_session_id,
+            &leased.backing_agent_id,
+        )
+    };
+    assert!(
+        std::path::Path::new(worker_path).starts_with(&attachment_root),
+        "leased files must be inside the provider attachment bind"
+    );
 
     let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_file(worker_path);
     let _ = shutdown_home_tx.send(true);
     let _ = shutdown_worker_tx.send(true);
     connector_home.await.expect("home connector should join");
