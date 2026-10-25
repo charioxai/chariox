@@ -118,7 +118,7 @@ export class DesktopSource {
     const fail=()=>{void this.close().catch(()=>{});};
     for(const process of [oracle,child]){process.on('error',fail);process.on('exit',fail);process.stdin.on('error',fail);safeChildPid(process);}
     this.answers=createInterface({input:oracle.stdout})[Symbol.asyncIterator]();
-    this.worker=new NativeWorkerControl(child);
+    this.worker=new NativeWorkerControl(child,this.timing);
     const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>this.worker.notify({release:slot,serial}));
     const pipe=new NativePipe(header=>{
       if(header.reply!==undefined){this.worker.validate(header);return;}
