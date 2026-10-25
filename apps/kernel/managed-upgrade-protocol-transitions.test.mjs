@@ -27,7 +27,7 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 32, "older managed validators refuse a policy over 32 entries")
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
       && version > 0 && (index === 0 || list[index - 1] < version)))
-    assert.ok(list.includes(343), "tested predecessor fixture must remain reciprocal")
+    assert.ok(!list.includes(343), "retire the obsolete fixture to retain released predecessors within the32-entry cap")
     assert.ok(list.includes(367), "the release before release F must stay reciprocal for in-place updates")
     assert.ok(list.includes(376), "the previous release (release F) must stay reciprocal for in-place updates")
     assert.ok(list.includes(416), "released Apps predecessor remains reciprocal")
@@ -63,7 +63,7 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
       assert.equal(transition(newRoot, localProtocolVersion, oldRoot, version), "")
     }
     // Released G2 and Apps predecessors are reciprocal; other branch numbers stay refused.
-    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 26 }, (_, index) => 436 + index), ...Array.from({ length: 14 }, (_, index) => 473 + index), 488, 489, 492, 495, 496, 499]) {
+    for (const version of [312, 325, 333, 339, 342, 343, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 26 }, (_, index) => 436 + index), ...Array.from({ length: 14 }, (_, index) => 473 + index), 488, 489, 492, 495, 496, 499]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.throws(() => transition(oldRoot, version, newRoot, localProtocolVersion), /not reciprocally authorized/)
       assert.throws(() => transition(newRoot, localProtocolVersion, oldRoot, version), /not reciprocally authorized/)
