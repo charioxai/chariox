@@ -86,14 +86,14 @@ pub(super) fn export_directory(
     ))
 }
 
-type SnapshotOverlay = (
+pub(super) type SnapshotOverlay = (
     Vec<DevelopmentOverlayEntry>,
     Vec<String>,
     u64,
     BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
 );
 
-fn snapshot(
+pub(super) fn snapshot(
     worktree: &Path,
     root: &File,
     repository_id: &str,
