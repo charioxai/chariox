@@ -179,7 +179,7 @@ mod tests {
             assert!(
                 granted
                     .ask
-                    .contains(&"Edit(//root/work/app/**/.env*)".to_string()),
+                    .contains(&"Edit(//root/work/app/**/.env)".to_string()),
                 "{tool}"
             );
         }
@@ -190,7 +190,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains(".env*") && text.contains(".ssh") && text.contains(".config/gh"),
+            text.contains(".env, .env.*") && text.contains(".ssh") && text.contains(".config/gh"),
             "{text}"
         );
         assert!(text.len() < 400, "{text}");
@@ -206,16 +206,23 @@ mod tests {
     }
 
     #[test]
+    fn a_credential_file_gets_only_its_own_rule() {
+        let granted =
+            grant("Write", json!({"file_path": "/root/work/app/.env"})).expect("exact grant");
+        assert_eq!(granted.allow, ["Edit(//root/work/app/.env)"]);
+        assert!(granted.ask.is_empty());
+        assert_eq!(
+            granted.label(),
+            "Allow for this session: Edit(//root/work/app/.env)"
+        );
+    }
+
+    #[test]
     fn no_grant_is_stated_where_no_safe_rule_exists() {
         let home = Some(Path::new("/root"));
         for (tool, input, directory) in [
             ("Write", json!({"file_path": "/root/a.txt"}), home),
             ("Write", json!({"file_path": "/root/.ssh/config"}), home),
-            (
-                "Write",
-                json!({"file_path": "/root/work/app/.env"}),
-                Some(Path::new(WORKTREE)),
-            ),
             ("Write", json!({"file_path": "/root/work/app/a.txt"}), None),
             (
                 "Edit",

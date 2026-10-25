@@ -243,10 +243,14 @@ async fn claude_print_permission_prompt_asks_the_user_and_maps_the_answer() {
     std::fs::create_dir_all(&root).expect("test root should be created");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            root.to_string_lossy(),
-            root.to_string_lossy(),
-        ))
+        .create_session(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    execution_mode: Some(crate::provider::AgentExecutionMode::Build),
+                    permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+                    ..Default::default()
+                }),
+        )
         .expect("session should be created");
     // Launch before inserting the fixture runs so the launch cannot retire them.
     let dev_stub = app
@@ -378,10 +382,14 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
     std::fs::create_dir_all(&root).expect("test root should be created");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            root.to_string_lossy(),
-            root.to_string_lossy(),
-        ))
+        .create_session(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    execution_mode: Some(crate::provider::AgentExecutionMode::Build),
+                    permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+                    ..Default::default()
+                }),
+        )
         .expect("session should be created");
     insert_claude_run(
         &mut app,
@@ -538,10 +546,14 @@ async fn claude_closing_the_connection_during_a_permission_prompt_closes_it() {
     std::fs::create_dir_all(&root).expect("test root should be created");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            root.to_string_lossy(),
-            root.to_string_lossy(),
-        ))
+        .create_session(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    execution_mode: Some(crate::provider::AgentExecutionMode::Build),
+                    permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+                    ..Default::default()
+                }),
+        )
         .expect("session should be created");
     insert_claude_run(
         &mut app,
@@ -640,10 +652,14 @@ async fn claude_waiting_on_a_runtime_popup_is_not_a_turn_stall() {
     std::fs::create_dir_all(&root).expect("test root should be created");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            root.to_string_lossy(),
-            root.to_string_lossy(),
-        ))
+        .create_session(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    execution_mode: Some(crate::provider::AgentExecutionMode::Build),
+                    permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+                    ..Default::default()
+                }),
+        )
         .expect("session should be created");
     const RUN: &str = "provider-run-claude-print-popup-wait";
     insert_claude_run(
@@ -736,6 +752,17 @@ fn claude_print_fixture() -> (
     crate::session::RuntimeSession,
     std::path::PathBuf,
 ) {
+    let (router, session, _agent_id, root, _app) = claude_print_fixture_with_app();
+    (router, session, root)
+}
+
+fn claude_print_fixture_with_app() -> (
+    Arc<CommandRouter>,
+    crate::session::RuntimeSession,
+    String,
+    std::path::PathBuf,
+    Arc<Mutex<DaemonApp>>,
+) {
     let root = std::env::temp_dir().join(format!(
         "chariox-permission-prompt-session-{}-{}",
         std::process::id(),
@@ -744,10 +771,14 @@ fn claude_print_fixture() -> (
     std::fs::create_dir_all(&root).expect("test root should be created");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            root.to_string_lossy(),
-            root.to_string_lossy(),
-        ))
+        .create_session(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_agent_defaults(crate::session::SessionAgentDefaults {
+                    execution_mode: Some(crate::provider::AgentExecutionMode::Build),
+                    permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+                    ..Default::default()
+                }),
+        )
         .expect("session should be created");
     insert_claude_run(
         &mut app,
@@ -764,11 +795,9 @@ fn claude_print_fixture() -> (
             "fixture-print-turn".into(),
             "provider-run-claude-print".into(),
         ));
-    let router = Arc::new(CommandRouter::with_interactive_capacity(
-        Arc::new(Mutex::new(app)),
-        8,
-    ));
-    (router, session, root)
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 8));
+    (router, session, agent.id().to_string(), root, app)
 }
 
 #[tokio::test]
@@ -860,18 +889,38 @@ async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rul
         .iter()
         .all(|addition| addition["destination"] == "session"));
 
-    // No rule is stated for a command outside the prefixes, a credential file or a file outside
-    // the working directory: two buttons, and the third cannot be chosen.
+    // A credential file is granted by itself, so the directory's credential asks stay as they are.
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_env",
+        "Write",
+        serde_json::json!({"file_path": "/work/app/.env"}),
+    )
+    .await;
+    assert_eq!(
+        interaction.choices()[1].label(),
+        "Allow for this session: Edit(//work/app/.env)"
+    );
+    choose(interaction, "allow_session")
+        .await
+        .expect("allow_session should resolve");
+    let granted = answer(call).await;
+    let additions = granted["updatedPermissions"].as_array().expect("additions");
+    assert_eq!(additions.len(), 1);
+    assert_eq!(
+        additions[0]["rules"],
+        serde_json::json!([{"toolName": "Edit", "ruleContent": "//work/app/.env"}])
+    );
+
+    // No rule is stated for a command outside the prefixes or a file outside the working
+    // directory: two buttons, and the third cannot be chosen.
     for (id, tool, input) in [
         (
             "toolu_outside_prefix",
             "Bash",
             serde_json::json!({"command": "cargo test && git push"}),
-        ),
-        (
-            "toolu_env",
-            "Write",
-            serde_json::json!({"file_path": "/work/app/.env"}),
         ),
         (
             "toolu_outside",
@@ -899,9 +948,10 @@ async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rul
 #[tokio::test]
 async fn an_allow_for_session_grant_outlives_the_claude_process() {
     let (router, session, root) = claude_print_fixture();
-    let call_now = |id: &'static str, tool: &'static str, input: Value| {
+    let call_now = |id: &str, tool: &'static str, input: Value| {
         let router = router.clone();
         let session_id = session.id().to_string();
+        let id = id.to_string();
         async move {
             let response = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -995,6 +1045,25 @@ async fn an_allow_for_session_grant_outlives_the_claude_process() {
         .await["behavior"],
         "allow"
     );
+    // Files whose names only look like credentials are ordinary files in the granted directory.
+    for round in 0..2 {
+        for (id, file) in [
+            ("credentials_rs", "/work/app/src/credentials.rs"),
+            ("env_example", "/work/app/.env.example"),
+            ("secrets_rs", "/work/app/src/secrets.rs"),
+        ] {
+            assert_eq!(
+                call_now(
+                    &format!("toolu_{id}_{round}"),
+                    "Edit",
+                    serde_json::json!({"file_path": file, "old_string": "a", "new_string": "b"}),
+                )
+                .await["behavior"],
+                "allow",
+                "{file} round {round}"
+            );
+        }
+    }
     assert!(active_interactions(&router, session.id()).is_empty());
 
     // What the person did not grant still asks: another command, a credential file.
