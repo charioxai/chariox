@@ -115,8 +115,15 @@ async fn signed_installed_ui_actions_reach_the_real_view_context() {
     assert_eq!(catalog.app_catalog().ui_actions()[0].name, "inspect");
     rig.grant().await;
     rig.bind(&rig.session, token.generation);
-    // No hand-filled ViewContext or worker fixture: A2 starts the real Wasm
-    // worker on demand and reads its installation's verified catalog.
+    // A registry commit alone records no intent to run. Use the real lifecycle
+    // start, as installation does, before A2 waits for the native worker.
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
+        .unwrap();
+    // No hand-filled ViewContext or worker fixture: A2 reads the installation's
+    // verified catalog from its actual running Wasm worker.
     let context = rig.runtime.view_context(&rig.agent, TARGET).await.unwrap();
     assert_eq!(context.declared, catalog.app_catalog().ui_actions());
     assert!(rig
