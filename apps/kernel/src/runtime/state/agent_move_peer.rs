@@ -78,7 +78,9 @@ impl KernelRuntimeState {
                         &source.backing_agent_id,
                     )
                     .await?;
-                Ok(Response::SourcePrepared { capture })
+                Ok(Response::SourcePrepared {
+                    capture: Box::new(capture),
+                })
             }
             Request::ReadChunk { kind, offset, .. } => {
                 let source = self
@@ -98,7 +100,7 @@ impl KernelRuntimeState {
                 })
             }
             Request::BeginTarget { capture } => {
-                self.begin_agent_move_target(capture)?;
+                self.begin_agent_move_target(*capture)?;
                 Ok(Response::TargetPrepared)
             }
             Request::WriteChunk { kind, chunk, .. } => {
@@ -123,7 +125,9 @@ impl KernelRuntimeState {
                                 "Move import task stopped; query the durable operation and retry",
                             )
                         })??;
-                Ok(Response::Published { receipt })
+                Ok(Response::Published {
+                    receipt: Box::new(receipt),
+                })
             }
             Request::AttachTarget { context, .. } => {
                 let bound = self
@@ -208,9 +212,13 @@ impl KernelRuntimeState {
         &self,
         capture: AgentMoveCapture,
     ) -> Result<(), DaemonError> {
-        let config = self.owned.config_projection.snapshot();
         #[cfg(test)]
-        let parent = config.private_runtime_state_root().join("move-workspaces");
+        let parent = self
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root()
+            .join("move-workspaces");
         #[cfg(not(test))]
         let parent = std::env::var_os("HOME")
             .map(PathBuf::from)

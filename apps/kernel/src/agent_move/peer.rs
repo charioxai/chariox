@@ -39,7 +39,7 @@ pub enum AgentMovePeerRequest {
         offset: u64,
     },
     BeginTarget {
-        capture: AgentMoveCapture,
+        capture: Box<AgentMoveCapture>,
     },
     WriteChunk {
         identity: AgentMoveIdentity,
@@ -94,11 +94,17 @@ impl AgentMovePeerRequest {
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentMovePeerResponse {
     Compatible,
-    SourcePrepared { capture: AgentMoveCapture },
-    Chunk { chunk: AgentMoveChunk },
+    SourcePrepared {
+        capture: Box<AgentMoveCapture>,
+    },
+    Chunk {
+        chunk: AgentMoveChunk,
+    },
     TargetPrepared,
     ChunkWritten,
-    Published { receipt: AgentMoveMaterialization },
+    Published {
+        receipt: Box<AgentMoveMaterialization>,
+    },
     Attached,
     AttachmentMissing,
     Activated,

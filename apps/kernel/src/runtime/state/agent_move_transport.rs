@@ -18,7 +18,7 @@ impl KernelRuntimeState {
                 .move_peer_target(
                     operation,
                     Request::BeginTarget {
-                        capture: capture.clone(),
+                        capture: Box::new(capture.clone()),
                     },
                 )
                 .await?;
@@ -109,7 +109,7 @@ impl KernelRuntimeState {
                 )
                 .await?;
             match response {
-                Response::Published { receipt } => Ok(receipt),
+                Response::Published { receipt } => Ok(*receipt),
                 _ => Err(move_error(
                     "Target did not publish a verified Project receipt",
                 )),

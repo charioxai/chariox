@@ -242,7 +242,7 @@ impl KernelRuntimeState {
                                 "Source did not return a durable checkpoint and Project capture",
                             ));
                         };
-                        capture
+                        *capture
                     } else {
                         self.prepare_agent_move_source(
                             operation.identity.clone(),

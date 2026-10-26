@@ -811,23 +811,15 @@ async fn slice_selector_ordinary_explicit_alias_remains_supported() {
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_selector_move_to_canonical_worker_does_not_treat_it_as_machine() {
     let fixture = Fixture::new().await;
-    let mut home = fixture.home.lock().await;
+    let home = fixture.home.lock().await;
     let agent = home
         .agents()
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
-    let moved = home
-        .move_agent_to_remote_authorized(
-            agent.session_id(),
-            agent.id(),
-            &fixture.presences[0].kernel_id,
-            &|| Ok(()),
-        )
+    let (moved, _) = home
+        .resolve_agent_move_destination(&agent, &fixture.presences[0].kernel_id)
         .unwrap();
-    assert_eq!(
-        moved.remote_execution().unwrap().worker_kernel_id,
-        fixture.presences[0].kernel_id
-    );
+    assert_eq!(moved.kernel_id, fixture.presences[0].kernel_id);
     drop(home);
     fixture.assert_foreign_worker_untouched().await;
 }
@@ -898,24 +890,18 @@ async fn slice_recovery_off_lock_ordinary_machine_failover_still_uses_lower_load
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_machine_selection_cannot_move_ordinary_agent_into_room_slice() {
     let fixture = Fixture::with_worker_options(true, false, true).await;
-    let mut home = fixture.home.lock().await;
+    let home = fixture.home.lock().await;
     home.slices()
         .restore_records(vec![home.slices().resolve(&fixture.slices[1].id).unwrap()]);
     let agent = home
         .agents()
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
-    let moved = home
-        .move_agent_to_remote_authorized(
-            agent.session_id(),
-            agent.id(),
-            &fixture.binding.worker_machine_id,
-            &|| Ok(()),
-        )
+    let (moved, _) = home
+        .resolve_agent_move_destination(&agent, &fixture.binding.worker_machine_id)
         .unwrap();
     assert_eq!(
-        moved.remote_execution().unwrap().worker_kernel_id,
-        fixture.presences[0].kernel_id,
+        moved.kernel_id, fixture.presences[0].kernel_id,
         "generic Machine placement must exclude the lower-load Room slice"
     );
     drop(home);
@@ -1013,24 +999,16 @@ async fn slice_recovery_recorded_machine_disagreement_is_rejected_before_contact
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_machine_selection_reserved_worker_without_local_record_is_excluded() {
     let fixture = Fixture::with_worker_options(true, false, true).await;
-    let mut home = fixture.home.lock().await;
+    let home = fixture.home.lock().await;
     home.slices().restore_records(Vec::new());
     let agent = home
         .agents()
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
-    let moved = home
-        .move_agent_to_remote_authorized(
-            agent.session_id(),
-            agent.id(),
-            &fixture.binding.worker_machine_id,
-            &|| Ok(()),
-        )
+    let (moved, _) = home
+        .resolve_agent_move_destination(&agent, &fixture.binding.worker_machine_id)
         .unwrap();
-    assert_eq!(
-        moved.remote_execution().unwrap().worker_kernel_id,
-        fixture.presences[0].kernel_id
-    );
+    assert_eq!(moved.kernel_id, fixture.presences[0].kernel_id);
     drop(home);
     fixture.assert_foreign_worker_untouched().await;
 }
