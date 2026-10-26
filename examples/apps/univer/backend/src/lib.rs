@@ -139,24 +139,25 @@ async fn stage_export(name: &str, input: &Value) -> Result<u64, AppError> {
 
 async fn dispatch(name: &str, input: Value) -> Result<Value, AppError> {
     match name {
-        "load_workbook" => {
-            save::sweep_uploads(std::path::Path::new("data"));
-            match state::get("workbook".into()).await? {
-                None => Ok(json!({"text":null,"version":null})),
-                Some(record) => {
-                    let book: Value = serde_json::from_str(&record.value).map_err(|_| {
-                        error(
-                            "INVALID_STATE",
-                            "saved workbook is invalid JSON; open an exported copy",
-                        )
-                    })?;
-                    let book = snapshot::read(book)?;
-                    let mut result = text_chunk(&book.to_string(), &input)?;
-                    result["version"] = json!(record.version.to_string());
-                    Ok(result)
-                }
+        "load_workbook" => match state::get("workbook".into()).await? {
+            None => {
+                save::sweep(std::path::Path::new("data"), None);
+                Ok(json!({"text":null,"version":null}))
             }
-        }
+            Some(record) => {
+                let book: Value = serde_json::from_str(&record.value).map_err(|_| {
+                    error(
+                        "INVALID_STATE",
+                        "saved workbook is invalid JSON; open an exported copy",
+                    )
+                })?;
+                save::sweep(std::path::Path::new("data"), Some(&book));
+                let book = snapshot::read(book)?;
+                let mut result = text_chunk(&book.to_string(), &input)?;
+                result["version"] = json!(record.version.to_string());
+                Ok(result)
+            }
+        },
         "save_workbook" => {
             let name = document::filename(&input["name"]).map_err(invalid)?;
             if !name.ends_with(".univer.json") {

@@ -11,7 +11,6 @@ pub async fn workbook(
     mut write: impl AsyncFnMut(&Value) -> Result<Value, AppError>,
     mut publish: impl AsyncFnMut(Value, Option<u64>) -> Result<u64, AppError>,
 ) -> Result<u64, AppError> {
-    sweep_uploads(data);
     let text = read_document_at(data, name);
     // The editor retains its copy, including on a conflict or invalid upload.
     let _ = std::fs::remove_file(data.join(name));
@@ -30,6 +29,7 @@ pub async fn workbook(
     };
     // Reject stale views before I/O; publication rechecks after writing.
     let previous = get().await?;
+    sweep(data, previous.as_ref().map(|(pointer, _)| pointer));
     if previous.as_ref().map(|(_, version)| *version) != version {
         return Err(error(
             "STATE_CONFLICT",
@@ -50,33 +50,43 @@ pub async fn workbook(
     result
 }
 
-pub fn sweep_uploads(data: &Path) {
+pub fn sweep(data: &Path, current: Option<&Value>) {
     let Ok(entries) = std::fs::read_dir(data) else {
         return;
     };
-    // Bound maintenance per call and leave recently touched uploads alone.
+    // Cancellation can skip save cleanup. Keep the current snapshot and give
+    // other writes a day before reclaiming them, within the same bounded scan.
     for entry in entries.take(256).flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let name = name
+        let saved = name
+            .strip_prefix("saved-")
+            .and_then(|n| n.strip_suffix(".json"))
+            .is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    && current.and_then(|pointer| pointer["sha256"].as_str()) != Some(hash)
+            });
+        let upload = name
             .strip_prefix('.')
             .and_then(|n| n.strip_suffix(".pending"))
             .unwrap_or(name);
-        let Some(id) = name
+        let upload = upload
             .strip_prefix("save-")
             .and_then(|n| n.strip_suffix(".univer.json"))
-        else {
-            continue;
-        };
-        if id.len() != 36
-            || !id.bytes().enumerate().all(|(i, b)| {
-                if [8, 13, 18, 23].contains(&i) {
-                    b == b'-'
-                } else {
-                    b.is_ascii_hexdigit()
-                }
-            })
-        {
+            .is_some_and(|id| {
+                id.len() == 36
+                    && id.bytes().enumerate().all(|(i, b)| {
+                        if [8, 13, 18, 23].contains(&i) {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_hexdigit()
+                        }
+                    })
+            });
+        if !saved && !upload {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {
@@ -241,6 +251,104 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_reclaims_old_snapshot_left_by_a_dropped_save() {
+        let store = Store::new();
+        store.save("current", false, false).unwrap();
+        let orphan = format!("saved-{}.json", "a".repeat(64));
+        let file = fs::File::create(store.data.join(&orphan)).unwrap();
+        file.set_times(
+            fs::FileTimes::new()
+                .set_modified(SystemTime::now() - std::time::Duration::from_secs(24 * 60 * 60)),
+        )
+        .unwrap();
+
+        sweep(
+            &store.data,
+            store.state.borrow().as_ref().map(|(value, _)| value),
+        );
+
+        assert!(
+            !store.data.join(orphan).exists(),
+            "cancelled save was not reclaimed"
+        );
+        store.assert_one_saved();
+    }
+
+    #[test]
+    fn saving_runs_snapshot_maintenance_with_the_current_pointer() {
+        let store = Store::new();
+        store.save("current", false, false).unwrap();
+        let orphan = store.data.join(format!("saved-{}.json", "a".repeat(64)));
+        let file = fs::File::create(&orphan).unwrap();
+        file.set_times(
+            fs::FileTimes::new()
+                .set_modified(SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60)),
+        )
+        .unwrap();
+
+        store.save("next", false, false).unwrap();
+
+        assert!(!orphan.exists());
+        store.assert_one_saved();
+    }
+
+    #[test]
+    fn maintenance_bounds_snapshot_scanning_to_256_entries() {
+        let store = Store::new();
+        let old = SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60);
+        for i in 0..257 {
+            let file = fs::File::create(store.data.join(format!("saved-{i:064x}.json"))).unwrap();
+            file.set_times(fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+
+        sweep(&store.data, None);
+
+        assert_eq!(store.names().len(), 1);
+    }
+
+    #[test]
+    fn maintenance_keeps_current_fresh_future_and_unrecognized_snapshots() {
+        let store = Store::new();
+        store.save("current", false, false).unwrap();
+        let current = store.names().pop().unwrap();
+        let old = SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60);
+        let future = SystemTime::now() + std::time::Duration::from_secs(60 * 60);
+        for (name, time) in [
+            (current, old),
+            (format!("saved-{}.json", "b".repeat(64)), SystemTime::now()),
+            (format!("saved-{}.json", "c".repeat(64)), future),
+            (format!("saved-{}.json", "D".repeat(64)), old),
+            (format!("saved-{}.json", "e".repeat(63)), old),
+            (format!("saved-{}.json", "g".repeat(64)), old),
+            (format!(".saved-{}.json.pending", "f".repeat(64)), old),
+        ] {
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(store.data.join(name))
+                .unwrap();
+            file.set_times(fs::FileTimes::new().set_modified(time))
+                .unwrap();
+        }
+        let directory = store.data.join(format!("saved-{}.json", "0".repeat(64)));
+        fs::create_dir(&directory).unwrap();
+        fs::File::open(directory)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        let before = store.names();
+
+        sweep(
+            &store.data,
+            store.state.borrow().as_ref().map(|(value, _)| value),
+        );
+
+        assert_eq!(store.names(), before);
+    }
+
+    #[test]
     fn maintenance_removes_only_old_view_uploads_and_partial_uploads() {
         let store = Store::new();
         let old = SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60);
@@ -257,7 +365,7 @@ mod tests {
         }
         let recent = "save-87654321-1234-1234-1234-123456789abc.univer.json";
         fs::write(store.data.join(recent), "active").unwrap();
-        sweep_uploads(&store.data);
+        sweep(&store.data, None);
         assert_eq!(
             store.names(),
             vec!["Budget.univer.json", recent, "saved-current.json"]
