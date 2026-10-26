@@ -5,7 +5,6 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
-mod agent_deadline;
 mod agent_lifecycle;
 mod agent_workflow;
 mod aggregate_agent_model;

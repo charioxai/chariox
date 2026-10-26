@@ -47,7 +47,7 @@ export function fakeKernelFiles(): FakeKernelFiles {
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex")
 const failure = (code: string, message: string) => ({ error: { code, message, retryable: false } })
 
-// Serves the four kernel file requests from memory with the kernel's offset and hash rules.
+// Serves the two kernel file requests from memory with the kernel's offset and hash rules.
 export function serveKernelFiles(store: FakeKernelFiles): (socket: WebSocket, frame: FakeKernelFrame) => void {
   return (socket, frame) => {
     store.sockets.add(socket)
@@ -55,16 +55,12 @@ export function serveKernelFiles(store: FakeKernelFiles): (socket: WebSocket, fr
     const file = store.files.get(body?.path)
     if (name === "RelayStatus") {
       replyWith(socket, frame, { response: { RelayStatus: { status: { daemon_id: "d", machine_id: "m", capabilities: ["kernel_gateway_v1"] } } } })
-    } else if (name === "StatKernelFile") {
-      const stat = { path: body.path, exists: !!file, kind: file ? "file" : null, size: file?.length ?? null, modified_ms: file ? 1 : null, sha256: file && body.with_sha256 ? sha256(file) : null, partial_size: store.partials.get(body.path)?.length ?? null }
-      replyWith(socket, frame, { response: { KernelFileStat: { stat } } })
-    } else if (name === "ListKernelDirectory") {
-      const entries = [...store.files].filter(([path]) => path.startsWith(`${body.path}/`)).map(([path, bytes]) => ({ name: path.slice(body.path.length + 1), kind: "file", size: bytes.length, modified_ms: 1 }))
-      replyWith(socket, frame, { response: { KernelDirectoryListed: { path: body.path, entries, truncated: false } } })
     } else if (name === "ReadKernelFile") {
-      if (!file) return replyWith(socket, frame, failure("file_not_found", `${body.path} does not exist.`))
-      const data = file.subarray(body.offset, body.offset + body.length)
-      replyWith(socket, frame, { response: { KernelFileChunk: { path: body.path, offset: body.offset, data_base64: data.toString("base64"), size: file.length, eof: body.offset + data.length >= file.length } } })
+      // An unfinished upload is readable under its staging name, like on the kernel.
+      const read = file ?? (body.path.endsWith(".chariox-partial") ? store.partials.get(body.path.slice(0, -".chariox-partial".length)) : undefined)
+      if (!read) return replyWith(socket, frame, failure("file_not_found", `${body.path} does not exist.`))
+      const data = read.subarray(body.offset, body.offset + body.length)
+      replyWith(socket, frame, { response: { KernelFileChunk: { path: body.path, offset: body.offset, data_base64: data.toString("base64"), size: read.length, eof: body.offset + data.length >= read.length } } })
     } else if (name === "WriteKernelFile") {
       if (file && !body.overwrite) return replyWith(socket, frame, failure("file_exists", `${body.path} already exists; send overwrite to replace it.`))
       const have = body.offset === 0 ? Buffer.alloc(0) : store.partials.get(body.path) ?? Buffer.alloc(0)

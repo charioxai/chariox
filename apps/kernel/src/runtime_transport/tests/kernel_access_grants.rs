@@ -1393,7 +1393,9 @@ async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do
         "{read}"
     );
     assert_eq!(read["response"]["KernelFileChunk"]["eof"], true, "{read}");
-    let missing = holder.request(serde_json::json!({"StatKernelFile":{"path":"relative.txt"}}));
+    let missing = holder.request(
+        serde_json::json!({"ReadKernelFile":{"path":"relative.txt","offset":0,"length":1}}),
+    );
     assert_eq!(missing["error"]["code"], "file_path_invalid", "{missing}");
     assert!(
         missing["error"]["message"]
@@ -1647,7 +1649,6 @@ async fn every_event_request_is_refused_as_ended_after_a_real_grant_expiry() {
         serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}),
         serde_json::json!({"WaitEvents":{"timeout_ms":30000}}),
         serde_json::json!({"AckEvents":{"cursor":0}}),
-        serde_json::json!({"ListEvents":{}}),
         serde_json::json!({"GetEventSubscription":{}}),
         serde_json::json!({"UnsubscribeEvents":{"all":true}}),
     ] {
@@ -1667,7 +1668,6 @@ fn outside_events_use_their_own_ledger_instead_of_transport_cache() {
         serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}),
         serde_json::json!({"UnsubscribeEvents":{"all":true}}),
         serde_json::json!({"GetEventSubscription":{}}),
-        serde_json::json!({"ListEvents":{}}),
         serde_json::json!({"WaitEvents":{"timeout_ms":100}}),
         serde_json::json!({"AckEvents":{"cursor":0}}),
     ] {

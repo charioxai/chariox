@@ -166,12 +166,6 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
-            request.session_id.clone(),
-        )),
-        LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
-            request.session_id.clone(),
-        )),
         LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -636,15 +630,12 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SubscribeEvents(_)
         | LocalDaemonRequest::UnsubscribeEvents(_)
         | LocalDaemonRequest::GetEventSubscription(_)
-        | LocalDaemonRequest::ListEvents(_)
         | LocalDaemonRequest::WaitEvents(_)
         | LocalDaemonRequest::AckEvents(_)
         | LocalDaemonRequest::ListGatewayKernels(_)
         | LocalDaemonRequest::HeartbeatAttachments(_)
         | LocalDaemonRequest::JoinKernelLink(_)
         | LocalDaemonRequest::ForgetGatewayKernel(_)
-        | LocalDaemonRequest::StatKernelFile(_)
-        | LocalDaemonRequest::ListKernelDirectory(_)
         | LocalDaemonRequest::ReadKernelFile(_)
         | LocalDaemonRequest::WriteKernelFile(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)

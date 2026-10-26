@@ -3,7 +3,7 @@ import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 import type { OutsideEvent, EventsBatch } from "@chariox/kernel-client/kernel-types"
 
-export const EVENT_VERBS = ["subscribe", "unsubscribe", "subscription", "list", "wait", "watch", "ack"] as const
+export const EVENT_VERBS = ["subscribe", "unsubscribe", "subscription", "wait", "watch", "ack"] as const
 export type EventVerb = typeof EVENT_VERBS[number]
 export type EventFlags = Map<string, string | true>
 
@@ -50,7 +50,7 @@ export async function runEventsVerb(verb: EventVerb, flags: EventFlags, args: re
   const timeout_ms = eventTimeoutSeconds(verb, flags) * 1000
   let cursor = since(flags)
   do {
-    const response = batch(await send(verb === "list" ? { ListEvents: { ...cursor, limit } } : { WaitEvents: { ...cursor, limit, timeout_ms } }))
+    const response = batch(await send({ WaitEvents: { ...cursor, limit, timeout_ms } }))
     if (verb === "watch") { for (const event of response.events) write(event) } else write(response)
     if (ended(response.events)) return 3
     if (verb !== "watch") return response.timed_out ? 5 : 0

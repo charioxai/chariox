@@ -3,17 +3,6 @@ use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
-        Operation::SetDeadline {
-            room,
-            agent,
-            deadline,
-        } => super::deadlines::set(tx, room, agent, deadline),
-        Operation::ReachDeadline {
-            room,
-            agent,
-            now,
-            stopped,
-        } => super::deadlines::reached(tx, room, agent, now, stopped),
         Operation::LeasedProcess(mutation) => super::leased_processes::apply(tx, mutation),
         Operation::CreateLeasedWake {
             task,

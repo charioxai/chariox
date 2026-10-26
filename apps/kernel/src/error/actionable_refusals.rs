@@ -15,11 +15,6 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "no_active_prompt" => "agent has no matching active prompt; run GetSessionState {session_id} and use its current prompt id. Do not turn a rejected steer into a new prompt",
         "prompt_steer_rejected" => "active prompt changed or did not accept steering; run GetSessionState {session_id} and steer only with the expected current prompt id. Do not submit a replacement prompt automatically",
         "prompt_steer_event_unrecorded" => "the steer was delivered but its event was not recorded; do not send it again",
-        "agent_deadline_reached" => "lane deadline reached; this agent cannot start another turn. Start a new lane agent for new work",
-        "agent_deadline_requires_executor" => "arm a lane deadline on its executing kernel; an agent with a deadline cannot move to a leased worker without worker enforcement",
-        "agent_deadline_extension_refused" => "a lane deadline cannot be extended; start a new lane agent for new work",
-        "agent_deadline_invalid" => "deadline must be a positive bounded epoch millisecond; supply deadline_ms to SetAgentDeadline",
-        "agent_deadline_cleanup_pending" => "deadline reached; physical cleanup is pending and will retry. Read GetAgentDeadline for the stopping receipt",
         _ => return None,
     })
 }

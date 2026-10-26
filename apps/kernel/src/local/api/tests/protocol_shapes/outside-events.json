@@ -1,5 +1,5 @@
 {
-  "local_protocol": 609,
+  "local_protocol": 615,
   "peer_protocol": 215,
   "requests": [
     {
@@ -20,12 +20,6 @@
     },
     {
       "GetEventSubscription": {}
-    },
-    {
-      "ListEvents": {
-        "since": 1,
-        "limit": 100
-      }
     },
     {
       "WaitEvents": {

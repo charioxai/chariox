@@ -136,9 +136,13 @@ test("watch's usage line shows the flags it cannot run without as required", () 
 
 test("the guide teaches moving files and resuming a transfer", () => {
   const guide = guideText()
-  assert.match(guide, /5\. Move files: chariox files put\|get\|stat\|ls --kernel NAME/)
-  assert.match(guide, /put and get resume after an interruption: run the same command again/)
-  for (const verb of ["stat", "ls", "get", "put"]) assert.ok(COMMANDS.some(spec => spec.name === `files ${verb}`))
+  assert.match(guide, /5\. Move files: chariox files put\|get --kernel NAME/)
+  assert.match(guide, /put and get --sha256 HEX resume after an interruption: run the same command again/)
+  assert.match(guide, /Without --sha256, get starts afresh/)
+  assert.match(guide, /Listing, stat, hashing and small reads go through a terminal/)
+  for (const verb of ["get", "put"]) assert.ok(COMMANDS.some(spec => spec.name === `files ${verb}`))
+  for (const verb of ["stat", "ls"]) assert.ok(!COMMANDS.some(spec => spec.name === `files ${verb}`))
+  assert.ok(COMMANDS.find(spec => spec.name === "files get")!.flags.some(flag => flag.name === "--sha256" && flag.value === "HEX"))
 })
 
 test("the guide teaches long-running commands in a terminal that outlives the agent", () => {

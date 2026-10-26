@@ -6,29 +6,14 @@ pub const KERNEL_FILE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// travels base64 inside one relayed request, which the target accepts up to 768 KiB.
 pub const KERNEL_FILE_MAX_CHUNK_BYTES: u64 = 256 * 1024;
 
-/// Protocol 568: what a path is on this machine. `path` is absolute or starts
-/// with `~/`; a directory listing is `ListKernelDirectory`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StatKernelFileRequest {
-    pub path: String,
-    /// Also hash the file (up to the size cap); a hash is how a transfer is verified.
-    #[serde(default)]
-    pub with_sha256: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ListKernelDirectoryRequest {
-    pub path: String,
-}
-
+/// `path` is absolute or starts with `~/`. A read of `<path>.chariox-partial` with length 0
+/// answers with the bytes an unfinished upload holds: where `WriteKernelFile` continues.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadKernelFileRequest {
     pub path: String,
     pub offset: u64,
-    /// At most `KERNEL_FILE_MAX_CHUNK_BYTES`.
+    /// At most `KERNEL_FILE_MAX_CHUNK_BYTES`; 0 only reports `size`.
     pub length: u64,
 }
 
@@ -59,34 +44,4 @@ impl std::fmt::Debug for WriteKernelFileRequest {
             .field("total_size", &self.total_size)
             .finish()
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KernelFileKind {
-    File,
-    Directory,
-    Symlink,
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KernelFileStat {
-    /// The absolute path that was looked at.
-    pub path: String,
-    pub exists: bool,
-    pub kind: Option<KernelFileKind>,
-    pub size: Option<u64>,
-    pub modified_ms: Option<u64>,
-    pub sha256: Option<String>,
-    /// Bytes of an unfinished upload to `path`: where `WriteKernelFile` continues.
-    pub partial_size: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KernelDirectoryEntry {
-    pub name: String,
-    pub kind: KernelFileKind,
-    pub size: u64,
-    pub modified_ms: Option<u64>,
 }

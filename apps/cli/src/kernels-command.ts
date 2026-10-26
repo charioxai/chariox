@@ -139,6 +139,12 @@ export async function watchKernel(
   } finally { await client.close() }
 }
 
+function sha256Flag(value: string | true | undefined): string | null {
+  if (value === undefined) return null
+  if (typeof value !== "string" || !/^[0-9a-fA-F]{64}$/.test(value)) throw new CommandFailure("usage", "--sha256 needs the 64 hex digits of the expected sha256")
+  return value.toLowerCase()
+}
+
 function parseEventId(value: string | true | undefined): number | null {
   if (value === undefined) return null
   const id = Number(value)
@@ -211,7 +217,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       const timeoutSeconds = parseTimeout(flags.get("--timeout"))
       const result = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
-        runFilesVerb(verb, positionals, { sha256: flags.has("--sha256"), overwrite: flags.has("--overwrite") }, send))
+        runFilesVerb(verb, positionals, { sha256: sha256Flag(flags.get("--sha256")), overwrite: flags.has("--overwrite") }, send))
       console.log(JSON.stringify(result))
     } else {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
