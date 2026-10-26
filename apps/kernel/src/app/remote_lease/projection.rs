@@ -1284,17 +1284,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .app
                         .provider_run_projection
                         .get(&projected_provider_run_id);
-                    let provider_diagnostic = projected_termination
+                    let provider_diagnostic = projected_failure
                         .as_ref()
-                        .map(|termination| termination.reason.clone())
+                        .map(|failure| failure.message.clone())
+                        .or_else(|| {
+                            projected_termination
+                                .as_ref()
+                                .map(|termination| termination.reason.clone())
+                        })
                         .or_else(|| {
                             failed_provider
                                 .as_ref()
                                 .and_then(|run| run.terminal_diagnostic().map(str::to_string))
                                 .filter(|message| !message.trim().is_empty())
                         });
-                    let provider_failed =
-                        failed_provider.is_some() && provider_diagnostic.is_some();
+                    let provider_failed = provider_diagnostic.is_some();
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {
@@ -1357,6 +1361,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .app
                         .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
                     outcome.provider_failed = provider_failed;
+                    if provider_failed {
+                        let _ = self
+                            .app
+                            .agents()
+                            .mark_unexpected_provider_exit_error(agent_id, true);
+                    }
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
                         &projected_provider_run_id,
