@@ -5228,7 +5228,7 @@ the external agents v2 line (609/215: gateway kernels, outside events, agent
 deadlines, kernel files, provider account copy). Both lines keep their
 contracts; clients feature-detect each by its own allocated number. 610 stays a
 reciprocal managed-upgrade predecessor; 609 never shipped and is not admitted.
-The 32-entry validator limit retires the unshipped branch protocol 528.
+The 32-entry validator limit retires the unshipped branch protocol 525.
 A subscribe frame that names a `kernel` (gateway route) and also sets
 `heartbeat_interval_ms` is refused with `heartbeat_interval_not_routable`: the
 routed kernel's own interval applies, so the field is not silently dropped.

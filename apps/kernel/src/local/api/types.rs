@@ -368,5 +368,5 @@ pub use workspace::*;
 /// Allocated 591 adds the outside `steer` event.
 /// Allocated 609 adds explicit same-owner Vault-backed provider account copy.
 /// Allocated 614 unions the staging 610 line with the external agents 609 line; 610 and 609 are not admitted as separate kernels
-/// (609 never shipped), and 528 leaves the predecessor list to keep it within the 32-entry policy.
+/// (609 never shipped), and 525 leaves the predecessor list to keep it within the 32-entry policy.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 614;
