@@ -96,6 +96,13 @@ impl CommandRouter {
         // Select the handler before polling. A single async match reserves
         // stack space for unrelated arms throughout every nested handler poll.
         match request {
+            LocalDaemonRequest::Dictation(request) => boxed_handler(|| async move {
+                let result = self
+                    .runtime_state
+                    .dictation_request(&command, &command_caller_user_id(&command), request.command)
+                    .await?;
+                Ok(LocalDaemonResponse::Dictation { result })
+            }),
             LocalDaemonRequest::Notes(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state
@@ -117,6 +124,11 @@ impl CommandRouter {
                     .await?;
                 Ok(LocalDaemonResponse::KernelBrowser { result })
             }),
+            LocalDaemonRequest::PreviewWorkflowSchedule(request) => {
+                boxed_handler(
+                    || async move { self.runtime_state.preview_workflow_schedule(request) },
+                )
+            }
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
                 boxed_handler(|| async move { terminal_command_catalog_response() })
             }
@@ -223,6 +235,11 @@ impl CommandRouter {
             LocalDaemonRequest::ExportDebugBundle(request) => {
                 boxed_handler(|| async move { execute_export_debug_bundle_request(request) })
             }
+            LocalDaemonRequest::GetAgentUsageSnapshot(request) => boxed_handler(|| async move {
+                let (_, kernels) = self.remote_relay_inventory_projection.snapshot();
+                self.runtime_state
+                    .agent_usage_snapshot_response(request, &kernels)
+            }),
             request @ (LocalDaemonRequest::GetProviderRun(_)
             | LocalDaemonRequest::UpdateProviderRunSelection(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
@@ -586,7 +603,8 @@ impl CommandRouter {
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
-            request @ (LocalDaemonRequest::ListProviderAccountProfiles(_)
+            request @ (LocalDaemonRequest::GetProviderUsageSnapshot(_)
+            | LocalDaemonRequest::ListProviderAccountProfiles(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::CreateProviderAccountProfile(_)
             | LocalDaemonRequest::LinkProviderAccountProfile(_)

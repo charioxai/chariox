@@ -200,6 +200,32 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
 }
 
 #[tokio::test]
+async fn agent_alias_change_is_durable_so_a_rename_survives_restart() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+
+    runtime
+        .alias_agent(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("lead".to_string()),
+        )
+        .await
+        .expect("rename should succeed");
+
+    let durable_events = app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_by_kind("agent.updated")
+        .expect("agent update events should load");
+    assert!(durable_events.iter().any(|event| {
+        event.payload["agent"]["id"].as_str() == Some(agent_id.as_str())
+            && event.payload["agent"]["alias"].as_str() == Some("lead")
+    }));
+}
+
+#[tokio::test]
 async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
     let cloud_owner = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();

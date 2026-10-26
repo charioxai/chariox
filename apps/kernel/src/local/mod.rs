@@ -1,4 +1,8 @@
 pub use api::{
+    AgentContextUsage, AgentExecutionRoute, AgentUsageSnapshot, GetAgentUsageSnapshotRequest,
+    GetProviderUsageSnapshotRequest, ProviderUsageAccount,
+};
+pub use api::{
     AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
     ListWorkflowNotificationsRequest, NotificationDeliveryMode,
     RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
@@ -35,7 +39,7 @@ pub use api::{
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AppendNativeProviderOutputBatchItem,
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
-    ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveProjectRequest,
+    ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveAgentRequest, ArchiveProjectRequest,
     ArmDeploymentCredentialEnrollmentRequest, AttachSessionViewRequest, AttachToSessionRequest,
     AttachWorkspaceLinkRequest, BatchOperationFailure, BindWorkflowCodeSourceRequest,
     BindWorkflowEndpointRequest, BindWorkflowPublicationDeploymentRequest,
@@ -194,9 +198,9 @@ pub use api::{
     SessionHistoryBlobContentPage, SessionHistoryOutlineAgent, SessionHistoryOutlineBlob,
     SessionHistoryOutlineCursor, SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle,
     SessionInviteRecord, SetCredentialSecretRequest, SetProjectPinnedRequest,
-    SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest, SetUserConfigValueRequest,
-    SetWorkflowFlushContextRequest, SetWorkflowNodeCanCompleteRunRequest,
-    SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest, SetRoomPinnedRequest,
+    SetUserConfigValueRequest, SetWorkflowFlushContextRequest,
+    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
     SetWorkflowNodeWaitForAllInputsRequest, SetWorkflowRunOutputSchemaRequest,
     SetWorkflowScheduleEnabledRequest, SetWorkflowWatchdogEnabledRequest,
@@ -278,6 +282,11 @@ pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
     ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
+};
+pub use api::{
+    DictationCommand, DictationContext, DictationKeyState, DictationModelState, DictationProvider,
+    DictationRequest, DictationResult, DictationStatus, DICTATION_MAX_AUDIO_BYTES,
+    DICTATION_MAX_CHUNK_BYTES, DICTATION_SAMPLE_RATE_HZ,
 };
 pub use api::{
     ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,

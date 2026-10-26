@@ -22,7 +22,7 @@ use crate::registry::{
 
 mod cleanup;
 
-pub(super) use cleanup::remove_peer;
+pub(super) use cleanup::{announce_released_daemon, release_daemon, remove_peer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConnectionAction {
@@ -225,6 +225,7 @@ pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
             client_public_key,
             subscription_scope,
             resume_from_event_id,
+            heartbeat_interval_ms,
         } => {
             let Some((realm_id, connected_daemon_key)) =
                 connected_client_binding(registry, peer_addr).await
@@ -481,6 +482,7 @@ pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
                     client_public_key,
                     subscription_scope,
                     resume_from_event_id,
+                    heartbeat_interval_ms,
                 },
             )
             .is_err()

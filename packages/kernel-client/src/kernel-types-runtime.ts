@@ -427,6 +427,7 @@ export type AgentInstance = {
   /** Tried in order, each for one turn whose provider failed (protocol 397). */
   substitutes?: AgentSubstituteProfile[]
   substitution_timeout_ms?: number | null
+  archived?: boolean
   visible_in_freeform?: boolean
   external_provider_import?: ExternalProviderImportMetadata | null
   state: "Idle" | "Working" | "Focused" | "Error"

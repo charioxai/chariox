@@ -72,7 +72,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::SetRoomPinned(request) => {
+            LocalRequestMetadata::new("room.pin", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
+        LocalDaemonRequest::Dictation(_) => LocalRequestMetadata::new("dictation", Normal),
         LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
         LocalDaemonRequest::CaptureVisibleRegion(_) => {
             LocalRequestMetadata::new("screenshot.capture", Normal)
@@ -81,6 +85,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
             )
+        }
+        LocalDaemonRequest::GetAgentUsageSnapshot(request) => {
+            LocalRequestMetadata::new("agent.usage_snapshot.get", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
         }
         LocalDaemonRequest::BeginAppInstall(request) => {
             LocalRequestMetadata::new("app.install.begin", Interactive).optional_session(
@@ -471,6 +480,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ForkAgent(request) => {
             LocalRequestMetadata::new("agent.fork", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::ArchiveAgent(request) => {
+            LocalRequestMetadata::new("agent.archive", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::DestroyAgent(request) => {
             LocalRequestMetadata::new("agent.destroy", Interactive)
                 .session(&request.session_id)
@@ -596,6 +610,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
@@ -605,6 +620,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
         LocalDaemonRequest::Notes(_) => "notes",
+        LocalDaemonRequest::Dictation(_) => "dictation",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
         LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
@@ -770,6 +786,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
         LocalDaemonRequest::GetClientCatalogRevisions(_) => "client.catalog_revisions.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
+        LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
+        LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
         LocalDaemonRequest::ListProviderAccountProfiles(_) => "provider_account.list",
         LocalDaemonRequest::GetProviderAccountProfile(_) => "provider_account.get",
         LocalDaemonRequest::CreateProviderAccountProfile(_) => "provider_account.create",
@@ -964,6 +982,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ForkAgent(_) => "agent.fork",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::MoveAgentToLocal(_) => "agent.move_local",
+        LocalDaemonRequest::ArchiveAgent(_) => "agent.archive",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
         LocalDaemonRequest::GrantAgentExtension(_) => "agent.extension.grant",
         LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",

@@ -322,6 +322,14 @@ impl DaemonApp {
         }
         let replay_ms = replay_started.elapsed().as_millis();
         diagnostics.log_summary();
+        let default_named_agents = self.agents.assign_missing_default_aliases();
+        if default_named_agents > 0 {
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "gave restored agents without an alias a default name",
+                serde_json::json!({ "agents": default_named_agents }),
+            );
+        }
         let reconciliation_started = Instant::now();
         self.recover_pending_slice_backup_restores()?;
         self.reconcile_slice_backup_restore_acknowledgements()?;
@@ -333,6 +341,11 @@ impl DaemonApp {
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
         self.sessions.write().restore_room_environments()?;
+        if default_named_agents > 0 {
+            // Later renames are saved per agent, so the names given above must
+            // be saved now or a restart would number the unnamed agents again.
+            self.save_durable_state_snapshot()?;
+        }
         crate::logging::info_with_fields(
             "durable_state.restore",
             "restored durable kernel state",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
+import { archiveAgentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("agent substitute add request carries the chosen account profile", () => {
@@ -45,4 +45,9 @@ test("agent substitute add request omits account profile for default semantics",
   const add = (request.UpdateAgentSubstitutes as { action: { Add: Record<string, unknown> } })
     .action.Add
   assert.equal("account_profile" in add, false)
+})
+
+
+test("archive and restore share one explicit agent-scoped request", () => {
+  for (const archived of [true, false]) assert.deepEqual(archiveAgentRequest("room", "agent", archived), { ArchiveAgent: { session_id: "room", agent_id: "agent", archived } })
 })

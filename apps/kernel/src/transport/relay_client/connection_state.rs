@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use crate::runtime::cloud_api_client::CLOUD_PRESENCE_REQUEST_TIMEOUT;
 use crate::runtime::router::CommandRouter;
 #[cfg(test)]
 use crate::transport::relay_peer::RelayPeerRequest;
@@ -20,7 +20,10 @@ use super::peer_client::RelayPeerResponseEnvelope;
 use super::request_errors::relay_error;
 use super::RelayOutgoingSender;
 
-const CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT: Duration = Duration::from_millis(750);
+/// The request carries its own budget; this bound only catches a publish that
+/// stalls before the request starts, so it must outlast the request.
+const CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT: Duration =
+    CLOUD_PRESENCE_REQUEST_TIMEOUT.saturating_add(Duration::from_secs(1));
 const MANAGED_SLICE_ACTIVATION_EXPECTATION_TTL: Duration = Duration::from_secs(30);
 const MANAGED_SLICE_ACTIVATION_CONFIRMATION_TTL: Duration = Duration::from_secs(30);
 const MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS: u8 = 3;
@@ -704,14 +707,26 @@ pub(super) async fn set_connected(
     Ok(registrations.len())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CloudPresencePublishOutcome {
+    Published,
+    Failed,
+    TimedOut,
+}
+
 pub(super) async fn publish_cloud_presence(
     router: &Arc<CommandRouter>,
     online: bool,
     reason: &str,
-) {
+) -> CloudPresencePublishOutcome {
     let publish_started = Instant::now();
-    match router.publish_cloud_kernel_presence(online).await {
-        Ok(()) => {
+    match timeout(
+        CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT,
+        router.publish_cloud_kernel_presence(online),
+    )
+    .await
+    {
+        Ok(Ok(())) => {
             crate::logging::info_with_fields(
                 "daemon.startup",
                 if online {
@@ -725,8 +740,9 @@ pub(super) async fn publish_cloud_presence(
                     "publish_ms": publish_started.elapsed().as_millis(),
                 }),
             );
+            CloudPresencePublishOutcome::Published
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
                 "failed to publish cloud relay presence",
@@ -737,24 +753,9 @@ pub(super) async fn publish_cloud_presence(
                     "error": error.to_string(),
                 }),
             );
+            CloudPresencePublishOutcome::Failed
         }
-    }
-}
-
-pub(super) fn spawn_cloud_presence_publish(
-    router: Arc<CommandRouter>,
-    online: bool,
-    reason: impl Into<String>,
-) -> JoinHandle<()> {
-    let reason = reason.into();
-    tokio::spawn(async move {
-        if timeout(
-            CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT,
-            publish_cloud_presence(&router, online, &reason),
-        )
-        .await
-        .is_err()
-        {
+        Err(_) => {
             crate::logging::warn_with_fields(
                 "daemon.relay_client",
                 "cloud relay presence publish timed out",
@@ -764,12 +765,13 @@ pub(super) fn spawn_cloud_presence_publish(
                     "timeout_ms": CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT.as_millis(),
                 }),
             );
+            CloudPresencePublishOutcome::TimedOut
         }
-    })
+    }
 }
 
 pub(super) async fn publish_offline_and_set_disconnected(
-    router: &Arc<CommandRouter>,
+    presence: &super::CloudPresencePublisher,
     state: &Arc<RwLock<RelayClientState>>,
     reason: &str,
 ) {
@@ -781,7 +783,7 @@ pub(super) async fn publish_offline_and_set_disconnected(
         }),
     );
     set_disconnected(state).await;
-    spawn_cloud_presence_publish(Arc::clone(router), false, reason.to_string());
+    presence.publish(false, reason);
 }
 
 pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {

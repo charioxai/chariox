@@ -130,6 +130,11 @@ export function createKernelEventDispatchController(
           void deps.refreshAssistantMessageHistory(event.agent_id)
         }
         return
+      // These feed events serve live turn/audit views; this TUI reads those on demand.
+      case "agent_turn_changed":
+      case "home_extension_audit_appended":
+      case "home_extension_audit_lagged":
+        return
       case "session_snapshot":
         await applySessionSnapshot(event)
         return
@@ -169,6 +174,11 @@ export function createKernelEventDispatchController(
       case "runtime_interactions_changed":
         deps.recordDaemonActivity("kernel_runtime_interactions_changed")
         await applyRuntimeInteractionsChanged(event)
+        return
+      case "agent_turn_changed":
+      case "home_extension_audit_appended":
+        // Incremental session feeds are opt-in; this client keeps its snapshot and history subscriptions.
+        deps.recordDaemonActivity(`kernel_${event.event}`)
         return
       case "kernel_browser_frame":
         // MD-DISPLAY-04: raster presentation is consumed by an admitted display viewer.

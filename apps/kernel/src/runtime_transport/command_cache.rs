@@ -133,7 +133,9 @@ impl CommandFingerprint {
             request_hash: stable_hash64(&request_bytes),
             browser_caller: matches!(
                 request,
-                LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+                LocalDaemonRequest::KernelBrowser(_)
+                    | LocalDaemonRequest::Notes(_)
+                    | LocalDaemonRequest::Dictation(_)
             )
             .then(|| command.caller.clone()),
             browser_protection_revision: None,

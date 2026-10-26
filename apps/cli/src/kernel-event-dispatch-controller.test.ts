@@ -739,3 +739,10 @@ test("kernel catalog changes invalidate client inventories", async () => {
   assert.equal(clientInventoryEpoch(), previous + 1)
   assert.deepEqual(harness.calls, ["activity:kernel_client_catalog_changed"])
 })
+
+test("optional incremental session feeds do not replace CLI snapshot state", async () => {
+  const harness = createHarness()
+  await harness.controller.handleKernelEvent({ event: "agent_turn_changed", session_id: "session-1", agent_id: "agent-1", history_revision: 1, turn: {} as never })
+  await harness.controller.handleKernelEvent({ event: "home_extension_audit_appended", session_id: "session-1", agent_id: "agent-1", audit_event: {} })
+  assert.equal(harness.snapshots.length, 0)
+})

@@ -964,12 +964,13 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
         snapshot.pointer("/1/AgentMovedToLocal/agent/id"),
         Some(&serde_json::json!("agent-1"))
     );
+    assert_eq!(snapshot[1]["AgentMovedToLocal"]["agent"]["archived"], false);
     let serialized =
         serde_json::to_string(&snapshot).expect("move agent to local snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "3010e5dff7c4bb9ab88882aaed728cc088c05376bb6c3160eebacee7896ec58a"
+        "f47e346ad1148080babf36dcab538325e16521357594585f36ac7d9128b43acf"
     );
 }
 
@@ -1070,18 +1071,23 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     // advertised peer version is pinned explicitly above.
     snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
         serde_json::json!(57);
+    assert_eq!(snapshot["AgentMovedToRemote"]["agent"]["archived"], false);
     let serialized = serde_json::to_string(&snapshot).expect("remote agent snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d9e988094de326f60e3a75f3c2235d3cbcef32f31893fdf3fe77c67a8590033d"
+        "c6e98271507ef722a9bb56e0e697a4dbb139cb2978762bbcd8d15a1f0abf7120"
     );
-    // MP-11: historical bindings predate creator lineage. Compare their frozen
+    // MP-11: historical bindings predate creator lineage and archive state. Compare their frozen
     // projection; the protocol-450 full-agent hash above guards the added field.
     snapshot["AgentMovedToRemote"]["agent"]
         .as_object_mut()
         .unwrap()
         .remove("spawned_by_agent_id");
+    snapshot["AgentMovedToRemote"]["agent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("archived");
     // Only the advertised peer version differs from these historical bindings.
     snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
         serde_json::json!(46);

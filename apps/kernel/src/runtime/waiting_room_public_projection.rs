@@ -19,6 +19,9 @@ use crate::runtime::waiting_room_activity::{
     waiting_room_agent_activity_summary, waiting_room_session_activity_summary,
     waiting_room_workflow_activity_summary,
 };
+use crate::runtime::waiting_room_launch_directory::{
+    launched_workspace_directory, user_home_directory,
+};
 use crate::runtime::workspace_git_common::{
     detect_git_branch, workspace_display_label, workspace_repository_state, worktree_display_label,
 };
@@ -501,7 +504,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         .into_iter()
         .map(filter_remote_kernel_product_providers)
         .collect::<Vec<_>>();
-    let launch_target = infer_waiting_room_launch_target();
+    let launch_target = infer_waiting_room_launch_target(&sessions);
     let structural_version = waiting_room_structural_version(
         &sessions,
         &projects,
@@ -553,13 +556,49 @@ fn filter_remote_kernel_product_providers(mut kernel: RelayKernelPresence) -> Re
     kernel
 }
 
-pub(crate) fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
-    let cwd = std::env::current_dir().ok()?;
+/// The default workspace for a new session: where the kernel was launched
+/// when that is a user workspace, else the last-used workspace, else the
+/// kernel user's home directory.
+pub(crate) fn infer_waiting_room_launch_target(
+    sessions: &[WaitingRoomPublicSessionSummary],
+) -> Option<WaitingRoomLaunchTarget> {
+    match launched_workspace_directory() {
+        Some(directory) => cached_launch_target(&directory),
+        None => last_used_workspace_target(sessions)
+            .or_else(|| user_home_directory().and_then(|home| cached_launch_target(&home))),
+    }
+}
+
+/// Only a workspace and worktree this kernel's host still has qualify: a session
+/// imported from another machine, or from a managed one, or whose linked worktree
+/// was removed outside Chariox, names paths CreateSession would reject.
+fn last_used_workspace_target(
+    sessions: &[WaitingRoomPublicSessionSummary],
+) -> Option<WaitingRoomLaunchTarget> {
+    let mut by_recency = sessions.iter().collect::<Vec<_>>();
+    by_recency.sort_by_key(|session| {
+        std::cmp::Reverse(session.last_used_at_ms.unwrap_or(session.created_at_ms))
+    });
+    let session = by_recency.into_iter().find(|session| {
+        std::path::Path::new(&session.workspace_id).is_dir()
+            && std::path::Path::new(&session.worktree_id).is_dir()
+    })?;
+    Some(WaitingRoomLaunchTarget {
+        repository_state: session.repository_state.clone(),
+        workspace_id: session.workspace_id.clone(),
+        worktree_id: session.worktree_id.clone(),
+        workspace_label: session.workspace_label.clone(),
+        directory: session.directory.clone(),
+        worktree_label: session.worktree_label.clone(),
+    })
+}
+
+fn cached_launch_target(cwd: &std::path::Path) -> Option<WaitingRoomLaunchTarget> {
     let cwd_string = cwd.display().to_string();
     let now_ms = unix_epoch_ms();
     let cache = LAUNCH_TARGET_CACHE.get_or_init(|| StdMutex::new(None));
     let Ok(mut guard) = cache.lock() else {
-        return compute_waiting_room_launch_target(&cwd, &cwd_string, now_ms);
+        return compute_waiting_room_launch_target(cwd, &cwd_string, now_ms);
     };
     if let Some(target) = guard
         .as_ref()
@@ -568,7 +607,7 @@ pub(crate) fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarg
     {
         return target;
     }
-    let target = compute_waiting_room_launch_target(&cwd, &cwd_string, now_ms);
+    let target = compute_waiting_room_launch_target(cwd, &cwd_string, now_ms);
     *guard = Some(CachedLaunchTarget {
         cwd: cwd_string,
         expires_at_ms: now_ms.saturating_add(WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS),
@@ -863,6 +902,7 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 .or_insert_with(|| cached_worktree_label(&worktree_id, &workspace_id))
                 .clone();
             WaitingRoomPublicSessionSummary {
+                pinned: session.pinned(),
                 repository_state: Some(workspace_repository_state(&workspace_id)),
                 id: session.id().to_string(),
                 project_id: session.project_id().to_string(),
@@ -908,6 +948,7 @@ fn waiting_room_public_agent_summaries(
     let mut agents = session
         .agents()
         .iter()
+        .filter(|agent| !agent.archived())
         .map(|agent| {
             let effective_config =
                 crate::session::effective_agent_execution_config(session, Some(agent));
@@ -1227,18 +1268,146 @@ mod tests {
     use chariox_relay::protocol::RelayKernelPresence;
 
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
+    use crate::local::WaitingRoomPublicSessionSummary;
     use crate::local::{RelayStatus, RemoteMachineRecord, RemoteMachineTrustStatus, TerminalType};
     use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
         build_waiting_room_public_snapshot, build_waiting_room_public_snapshot_from_cached_shared,
-        enrich_waiting_room_agent_slice_placements, waiting_room_activity_revision,
-        waiting_room_session_summaries, waiting_room_structural_version,
-        WaitingRoomSessionSummaryProjectionStore,
+        enrich_waiting_room_agent_slice_placements, infer_waiting_room_launch_target,
+        waiting_room_activity_revision, waiting_room_session_summaries,
+        waiting_room_structural_version, WaitingRoomSessionSummaryProjectionStore,
     };
     use crate::session::{
         RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionStatus, WorkflowDefinition,
         WorkflowRun, WorkflowRunStatus,
     };
+
+    struct LaunchEnvironment {
+        home: Option<std::ffi::OsString>,
+        chariox_home: Option<std::ffi::OsString>,
+        cwd: std::path::PathBuf,
+    }
+
+    impl LaunchEnvironment {
+        fn enter(
+            home: &std::path::Path,
+            chariox_home: &std::path::Path,
+            cwd: &std::path::Path,
+        ) -> Self {
+            let previous = Self {
+                home: std::env::var_os("HOME"),
+                chariox_home: std::env::var_os("CHARIOX_HOME"),
+                cwd: std::env::current_dir().unwrap(),
+            };
+            std::env::set_var("HOME", home);
+            std::env::set_var("CHARIOX_HOME", chariox_home);
+            std::env::set_current_dir(cwd).unwrap();
+            previous
+        }
+    }
+
+    impl Drop for LaunchEnvironment {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.cwd).unwrap();
+            for (name, value) in [("HOME", &self.home), ("CHARIOX_HOME", &self.chariox_home)] {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    fn used_session(workspace: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
+        WaitingRoomPublicSessionSummary {
+            pinned: false,
+            id: format!("session-{last_used_at_ms}"),
+            project_id: "project".to_string(),
+            alias: None,
+            repository_state: None,
+            workspace_id: workspace.to_string(),
+            worktree_id: workspace.to_string(),
+            workspace_label: None,
+            directory: Some(workspace.to_string()),
+            worktree_label: None,
+            workspace_live_sync_mode: None,
+            created_at_ms: 1,
+            last_used_at_ms: Some(last_used_at_ms),
+            last_prompt_sent_at_ms: None,
+            status: SessionStatus::Active,
+            connected_cli_count: 0,
+            joined_collaborator_count: 0,
+            pending_collaboration_invite_count: 0,
+            activity: Default::default(),
+            agents: Vec::new(),
+            workflows: Vec::new(),
+        }
+    }
+
+    // A systemd user unit runs the kernel inside its release bundle; that
+    // directory, or a managed machine's state path, is never a workspace.
+    #[test]
+    fn default_workspace_is_the_last_used_one_else_home_never_the_release_directory() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("launch-target");
+        let user_home = root.path().join("user");
+        let chariox_home = user_home.join(".chariox/dev/md-staging");
+        let bundle = chariox_home.join("releases/186c31ef/bundle");
+        let project = user_home.join("src/project");
+        for directory in [&bundle, &project] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let older = user_home.join("src/older");
+        let latest = user_home.join("src/latest");
+        for directory in [&older, &latest] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let managed =
+            "/var/lib/chariox/home/state/managed-context-empty-workspaces/context/workspace";
+        let sessions = [
+            used_session(older.to_str().unwrap(), 10),
+            used_session(latest.to_str().unwrap(), 20),
+            used_session(managed, 30),
+        ];
+        let target = |sessions: &[WaitingRoomPublicSessionSummary]| {
+            infer_waiting_room_launch_target(sessions)
+                .unwrap()
+                .workspace_id
+        };
+
+        let _restore = LaunchEnvironment::enter(&user_home, &chariox_home, &bundle);
+        assert_eq!(target(&sessions), latest.display().to_string());
+        assert_eq!(target(&[]), user_home.display().to_string());
+        std::env::set_current_dir(&project).unwrap();
+        assert_eq!(target(&sessions), project.display().to_string());
+    }
+
+    // CreateSession rejects a workspace/worktree pair whose worktree is gone,
+    // so a linked worktree removed outside Chariox must not become the default.
+    #[test]
+    fn default_workspace_skips_a_session_whose_linked_worktree_was_removed() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("launch-target-removed-worktree");
+        let user_home = root.path().join("user");
+        let chariox_home = user_home.join(".chariox/dev/md-staging");
+        let bundle = chariox_home.join("releases/186c31ef/bundle");
+        let repository = user_home.join("src/repository");
+        let older = user_home.join("src/older");
+        for directory in [&bundle, &repository, &older] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let mut removed_worktree = used_session(repository.to_str().unwrap(), 20);
+        removed_worktree.worktree_id = user_home
+            .join("src/repository-linked")
+            .display()
+            .to_string();
+        let sessions = [used_session(older.to_str().unwrap(), 10), removed_worktree];
+
+        let _restore = LaunchEnvironment::enter(&user_home, &chariox_home, &bundle);
+        let target = infer_waiting_room_launch_target(&sessions).unwrap();
+        assert_eq!(target.workspace_id, older.display().to_string());
+        assert_eq!(target.worktree_id, older.display().to_string());
+    }
 
     fn slice_with_agent(
         id: &str,
@@ -1569,6 +1738,44 @@ mod tests {
                 .session_count,
             1
         );
+    }
+
+    #[test]
+    fn archive_agent_disappears_from_waiting_room_rows_and_activity() {
+        let mut session =
+            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let make = |id| {
+            crate::agent::AgentInstance::new(
+                id,
+                id,
+                "room",
+                None,
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            )
+        };
+        let mut archived = make("archived");
+        archived.set_archived(true);
+        archived.set_state(crate::agent::AgentState::Error);
+        session.set_agents(vec![make("active"), archived]);
+        let rows = waiting_room_session_summaries(
+            vec![session],
+            &MetaagentEventStore::default(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert_eq!(
+            rows[0]
+                .agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["active"]
+        );
+        assert_eq!(rows[0].activity.agent_count, 1);
+        assert_eq!(rows[0].activity.error_agent_count, 0);
     }
 
     #[test]

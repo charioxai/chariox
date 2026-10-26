@@ -1,6 +1,7 @@
 //! MD-2/MD-3: routing and focused-agent MCP adapter for the host service.
 use super::*;
 use crate::local::KernelBrowserCommand;
+use crate::runtime::kernel_browser_features as features;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 
 /// MD-3: no serde impl. Display owns the serialized protocol adapter/version.
@@ -391,19 +392,15 @@ impl KernelRuntimeState {
             } => self.is_room_display(subscription_id),
             _ => false,
         };
-        if !room_control
-            && std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1")
-            && !(std::env::var("CHARIOX_KERNEL_BROWSER_MIRROR").as_deref() == Ok("1")
-                && matches!(
-                    &request,
-                    KernelBrowserDisplayRequest::Takeover { .. }
-                        | KernelBrowserDisplayRequest::Release { .. }
-                        | KernelBrowserDisplayRequest::Actors
-                ))
-        {
-            return Err(host_error(
-                "MD-DISPLAY: experimental display disabled".into(),
-            ));
+        let mirror_control = features::mirror_enabled()
+            && matches!(
+                &request,
+                KernelBrowserDisplayRequest::Takeover { .. }
+                    | KernelBrowserDisplayRequest::Release { .. }
+                    | KernelBrowserDisplayRequest::Actors
+            );
+        if !(room_control || features::display_enabled() || mirror_control) {
+            return Err(host_error("MD-DISPLAY: display disabled".into()));
         }
         Box::pin(self.kernel_browser_display_request(caller, request)).await
     }
@@ -1094,6 +1091,72 @@ mod document_tests {
                 "MD-3: caller-bound retry receipts must distinguish connections"
             );
             assert_eq!(a.caller, retry.caller);
+        });
+    }
+
+    #[test]
+    fn mirror_and_display_requests_are_admitted_without_environment() {
+        // MP-08/MP-11: a plain kernel serves the mirror and display; "0" is the kill switch.
+        crate::test_support::isolated_env_test!();
+        use crate::runtime::command::{KernelCommand, KernelCommandSource};
+        use crate::runtime::router::CommandRouter;
+        std::env::remove_var("CHARIOX_KERNEL_BROWSER_MIRROR");
+        std::env::remove_var("CHARIOX_KERNEL_BROWSER_DISPLAY");
+        std::env::set_var(
+            "CHARIOX_KERNEL_BROWSER_SCRIPT",
+            "/nonexistent/kernel-browser-host.mjs",
+        );
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let state = router.runtime_state();
+            let request = crate::local::LocalDaemonRequest::KernelBrowser(
+                crate::local::KernelBrowserRequest {
+                    command: KernelBrowserCommand::State,
+                },
+            );
+            let caller = KernelCommand::from_local_request_with_caller(
+                "gate-check",
+                KernelCommandSource::LocalCli,
+                router
+                    .local_terminal_caller(KernelCommandSource::LocalCli, "gate-connection")
+                    .await,
+                None,
+                None,
+                &request,
+            );
+            let refusal = |command| {
+                let (state, caller) = (&state, &caller);
+                async move {
+                    state
+                        .kernel_browser_terminal_request(caller, command)
+                        .await
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_default()
+                }
+            };
+            let mirror = || KernelBrowserCommand::MirrorClose {
+                subscription_id: "gate".into(),
+                generation: 1,
+            };
+            let display = || KernelBrowserCommand::DisplayCapture {
+                tab_id: "gate".into(),
+                generation: 1,
+            };
+            for command in [mirror(), display()] {
+                let error = refusal(command).await;
+                assert!(!error.contains("disabled"), "default must admit: {error}");
+            }
+            std::env::set_var("CHARIOX_KERNEL_BROWSER_MIRROR", "0");
+            std::env::set_var("CHARIOX_KERNEL_BROWSER_DISPLAY", "0");
+            assert!(refusal(mirror()).await.contains("mirroring disabled"));
+            assert!(refusal(display()).await.contains("display disabled"));
         });
     }
 

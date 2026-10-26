@@ -116,29 +116,6 @@ async fn token_rollover_during_registration_authenticates_snapshot_without_disco
 }
 
 #[tokio::test]
-async fn cloud_presence_publish_gate_skips_running_task() {
-    let (_tx, rx) = oneshot::channel::<()>();
-    let task = tokio::spawn(async move {
-        let _ = rx.await;
-    });
-
-    assert!(!should_start_cloud_presence_publish(Some(&task)));
-
-    task.abort();
-}
-
-#[tokio::test]
-async fn cloud_presence_publish_gate_allows_finished_or_missing_task() {
-    let task = tokio::spawn(async {});
-    while !task.is_finished() {
-        tokio::task::yield_now().await;
-    }
-
-    assert!(should_start_cloud_presence_publish(None));
-    assert!(should_start_cloud_presence_publish(Some(&task)));
-}
-
-#[tokio::test]
 async fn cloud_token_refresh_gate_skips_running_task() {
     let (_tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
@@ -220,27 +197,39 @@ fn cloud_presence_schedule_claims_due_idle_publish_once_per_interval() {
     let mut schedule =
         CloudPresencePublishSchedule::new_with_interval(start, Duration::from_millis(100));
 
-    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(99), None));
-    assert!(schedule.claim_publish_if_due(start + Duration::from_millis(100), None));
-    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(101), None));
-    assert!(schedule.claim_publish_if_due(start + Duration::from_millis(200), None));
+    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(99)));
+    assert!(schedule.claim_publish_if_due(start + Duration::from_millis(100)));
+    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(101)));
+    assert!(schedule.claim_publish_if_due(start + Duration::from_millis(200)));
 }
 
 #[tokio::test]
-async fn cloud_presence_schedule_does_not_retry_every_heartbeat_while_task_runs() {
-    let start = Instant::now();
-    let mut schedule =
-        CloudPresencePublishSchedule::new_with_interval(start, Duration::from_millis(100));
+async fn failed_inventory_refresh_retries_on_the_next_heartbeat() {
+    let mut task = Some(tokio::spawn(async { false }));
+    while !task.as_ref().unwrap().is_finished() {
+        tokio::task::yield_now().await;
+    }
+    assert!(remote_inventory_refresh_due(1, &mut task));
+    assert!(task.is_none());
+
+    let mut task = Some(tokio::spawn(async { true }));
+    while !task.as_ref().unwrap().is_finished() {
+        tokio::task::yield_now().await;
+    }
+    assert!(!remote_inventory_refresh_due(1, &mut task));
+    assert!(!remote_inventory_refresh_due(2, &mut task));
+    assert!(remote_inventory_refresh_due(
+        RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
+        &mut task
+    ));
+
     let (_tx, rx) = oneshot::channel::<()>();
-    let running_task = tokio::spawn(async move {
-        let _ = rx.await;
-    });
-
-    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(100), Some(&running_task)));
-    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(101), Some(&running_task)));
-    assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(199), Some(&running_task)));
-
-    running_task.abort();
+    let mut running = Some(tokio::spawn(async move { rx.await.is_ok() }));
+    assert!(!remote_inventory_refresh_due(
+        RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
+        &mut running
+    ));
+    running.unwrap().abort();
 }
 
 #[test]

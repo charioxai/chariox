@@ -13,6 +13,8 @@ import { candidates as macCandidates, launchEnvironment as macEnvironment } from
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
 import { PointerOutsideViewport } from "./kernel-browser-refusal.mjs";
+// These fixtures exercise the host with the mirror and display kill-switched; tests that need them on set "1" themselves.
+process.env.CHARIOX_KERNEL_BROWSER_MIRROR ??= '0'; process.env.CHARIOX_KERNEL_BROWSER_DISPLAY ??= '0';
 
 test('MP-08 / MP-11: Chromium temporary sockets use the held private directory through a bounded path', () => {
   const environment = { TMPDIR: '/private/' + 'long/'.repeat(60), XAUTHORITY: '/private/authority' };

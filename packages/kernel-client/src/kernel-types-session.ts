@@ -42,6 +42,7 @@ export type SessionViewAttachedResponse = {
 }
 
 export type RuntimeSession = {
+  pinned?: boolean
   id: string
   project_id: string
   alias?: string | null
@@ -188,6 +189,7 @@ export type SessionAgentDefaults = {
 }
 
 export type WaitingRoomPublicSessionSummary = {
+  pinned?: boolean
   id: string
   project_id: string
   kernel_id?: string | null

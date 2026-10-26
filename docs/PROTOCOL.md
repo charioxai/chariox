@@ -1382,6 +1382,8 @@ Current slice-management surface:
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
+- Local daemon protocol v589 / relay peer v195 adds `GetProviderUsageSnapshot {}` and `GetAgentUsageSnapshot {session_id, agent_id}`. The read-only account response contains only provider/profile id/label and the existing provider-observed usage meters (rolling windows, credits, reset and observation times). It uses the ordinary provider-account authority owner scope, never refreshes credentials, and never estimates missing balances or windows. The agent response requires Room membership and an agent belonging to that Room. It returns observed context used/limit when available and the actual execution target (slice name, remote kernel alias/id, or local kernel alias/id), with the home kernel as `via` for remote execution. Context has no observation timestamp because provider-run activity time is not a usage observation. Remote admission credentials and profile locations are never included. Clients below 589 omit the usage menu, context ring and routed execution label without issuing the new requests.
+
 - Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Waiting-room projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
 - Provider account selection is immutable within one provider run. Updating an existing agent's provider/account/model uses the normal bounded context-handoff and run replacement lifecycle; it does not mutate provider auth in place.
@@ -4797,6 +4799,73 @@ clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust has
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
 
+Allocated 603/209 extends the original594/200 `Dictation` request with service and setup state.
+The original594 fixture remains immutable. The expanded contract uses the `Dictation` request (terminal callers only, like `Notes`): kernel
+dictation, speech-to-text on the kernel the person is connected to. `status` reports the model as
+`not_downloaded`, `downloading` (`received_bytes` of `total_bytes`), `ready` or `failed` (`reason`)
+and the saved `language`, explicit `configured` flag, selected `service`, owner-scoped `vault_key`
+handle and `key_state` (`not_required`, `locked`, `missing` or `saved`; never a key value).
+`set_service` selects local/OpenAI/ElevenLabs and marks the kernel configured; `clear_service` resets
+configuration to Not set up without deleting the model. `download_model` starts or resumes the pinned download (it never starts
+without this explicit request); `set_language` saves an ISO 639-1 code or `null` (detect);
+`append_audio` adds 16 kHz mono 16-bit little-endian PCM at the `offset` the kernel already holds
+(chunks of at most 256 KiB, a recording of at most 120 s, four recordings at a time, discarded after
+120 s idle); `transcribe` returns `{ text, language }` and discards the recording. Refusals use the
+relay error codes `dictation_model_missing`, `dictation_audio_invalid`,
+`dictation_audio_out_of_order`, `dictation_audio_too_long`, `dictation_audio_unknown`,
+`dictation_language_invalid`, `dictation_settings_failed`, `dictation_busy` and
+`dictation_transcription_failed`. `dictation-603.json` pins the shape (Rust hash test
+`dictation_603_snapshot`). Older kernels refuse the request; clients require603 for the expanded contract. See
+`docs/DICTATION.md`.
+
+MP-08 / MP-10 / MP-11: allocated 596/202 makes two changes for clients that draw a Room from its first reply.
+`GetSessionState` (and the `state` of `AttachSessionView`) reads `agent_activity_revision` before it reads
+the session, so a state is never older than its revision; `session_snapshot` already labelled its
+revision before its state, so a client can order the two by revision and apply a snapshot's `session`,
+`room_workflows` and `agent_activity` instead of asking `GetSessionState` again. `AttachSessionView`
+takes the optional `latest_prompt_count` (default 1, capped at 20 like the history outline): how many of the latest prompts per
+agent the initial `history` holds, so a pane that needs more than one turn draws filled in one reply and
+older turns only ever load above it. Older kernels ignore the field and return one turn; clients
+feature-detect 596 for both and keep the read-after-event path below it.
+
+MP-08 / MP-10 / MP-11: the same 596/202 allocation (still unpublished on main, so it stays inside 596; if it
+had been published it would take 598/204) adds two events to a session subscription and one field to every
+subscription, so a client draws from events instead of reading again. Fixture: `session-feed-596.json`
+(`session_feed_596_shapes_are_pinned`), which pins all three shapes.
+- `agent_turn_changed { session_id, agent_id, history_revision, turn }`: the agent's latest turn changed.
+  `turn` is exactly the `SessionHistoryOutlineTurn` that `GetSessionHistoryOutline` (one prompt) and
+  `AttachSessionView.history` return, read the same way, so a client applies it with the code it has. It is
+  sent when terminal output, an assistant message or an activity change touches the agent, at most once per
+  50 ms per agent, and once more at the turn's end with its final status (`completed`, `cancelled` or
+  `failed`; the kernel looks again for up to 2 s until history shows the end). Nothing is sent when the
+  turn is identical to the one last sent, nor before the subscription's first snapshot: the view's own
+  read covers everything before it. `history_revision` is the newest history sequence stored for the agent
+  when the turn was read, before it was read, so the turn is never older than its revision. It orders
+  events of one agent, never decreases and, like `agent_activity_revision`, is a label the client compares,
+  not a cursor. Only agents of the session the caller may see get the event; external-agent streams never do.
+- `home_extension_audit_appended { session_id, agent_id, audit_event }`: a row appended to the agent's home
+  extension audit. `audit_event` is the row `ListHomeExtensionAudit` returns (`sequence`, `event_id`, `kind`,
+  `subject_id`, `timestamp_ms`, `payload`). It is named `audit_event` because `event` is the tag of every
+  kernel event. Only the caller's own audit rows arrive (same authority as the list) and only those of the
+  session's agents.
+- `home_extension_audit_lagged { session_id }`: the subscription's audit broadcast backlog overflowed.
+  The surviving partial batch is discarded and one signal replaces it. A client re-reads
+  `ListHomeExtensionAudit` once for each watched agent, replacing its cached list, then resumes applying
+  appended rows (deduplicated by audit `event_id` or `sequence`). Unrelated durable-state events share
+  the backlog, so their sequences cannot detect gaps in this audit feed.
+- `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
+  subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
+  is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
+  Over the relay the field travels in `client_subscribe` and `daemon_subscribe`, next to
+  `resume_from_event_id`; a relay or kernel that does not know it ignores it and the default stays, so a
+  client keeps its liveness check while heartbeats arrive slower than it asked. `AttachSessionView` does not
+  take the field: the subscription that follows it does.
+  Repeating a client subscription applies the new interval; omitting it restores the default. A relay
+  client retires the old binding before replacing it when the interval changes, keeping the event cursor.
+  Direct and relay subscriptions continue emitting heartbeats while turn revisions, history outlines,
+  and audit feed rows are read; a slow history writer or database query does not suspend the schedule.
+Older kernels send neither event; clients feature-detect 596 and keep the read-after-event path below it.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
@@ -4932,3 +5001,49 @@ absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
 added; the bump records the changed relay terminal-event semantics under the
 Protocol Change Rule. Web/native minimums are unchanged unless a client requires
 prompt-scoped live rows.
+
+
+### Room stars (588/194)
+
+MP-11: `SetRoomPinned { session_id, pinned }` returns `RoomPinned { session }`.
+It persists the Room's `pinned` flag on its session and publishes the normal
+session and waiting-room projections so all of the person's clients see it.
+Like Project stars, the Room owner controls the pin. Room stars do not change
+last-used ordering. Legacy session records default to unpinned.
+
+Clients use these requests only with protocol 588 or newer. Protocol 567 clients
+continue to work; web clients attached to a 567 kernel keep Room stars in their
+own browser storage. This feature does not raise the general client minimum.
+
+### MP-08 / MP-10 — durable agent archive (592 / peer 198)
+
+`ArchiveAgent { session_id, agent_id, archived }` changes the owner's agent's
+archive state; `archived: false` restores it. `AgentArchived { session, agent }`
+returns the authoritative result and repaired focus. An agent with an active
+turn or queued prompts refuses archive: stop it and clear the queue first.
+Archived agents stay in the session snapshot with `archived: true`, retaining
+identity, history and provider-run records across restart. Clients hide their
+active panes; prompting, workflow admission and focus cannot select them.
+Scheduled work and task continuations remain paused until unarchive. Older
+agent records default to active; clients gate this request on protocol 592.
+
+### Staging new UI union (599/205)
+
+MP-08 / MP-09 / MP-10 / MP-11: this union combines Room stars (588/194),
+usage (589/195), agent archive (592/198), dictation (594/200), and session
+snapshot state (596/202). It keeps protocol 567 and each feature predecessor
+reciprocal for managed upgrade and rollback. The 32-entry validator limit
+requires retiring unshipped branch protocols 371–375; released 376/377/411,
+Apps 416, main 472/520, display 552, and staging 567 remain admitted.
+The general web minimum remains 567; clients gate additive requests separately.
+
+
+### Staging new UI + dictation union (610/216)
+
+MP-08 / MP-09 / MP-10 / MP-11: this union adds Vault speech services
+(603/209: speech-service selection, owner Vault metadata, setup state and
+recording context) to the 599/205 staging union. It keeps 599 and 567 as
+reciprocal managed-upgrade predecessors. The 32-entry validator limit retires
+the unshipped branch protocol 378; the other admitted releases stay. Clients
+require 603 for the Dictation settings contract and gate it separately from
+the general web minimum.

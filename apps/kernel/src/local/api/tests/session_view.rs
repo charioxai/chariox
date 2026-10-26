@@ -7,6 +7,7 @@ fn view_request(session_id: &str, preferred: Option<&str>) -> LocalDaemonRequest
         client_id: "initial-view-client".into(),
         capability_level: ClientCapabilityLevel::FullTerminal,
         preferred_agent_id: preferred.map(str::to_string),
+        latest_prompt_count: None,
     })
 }
 

@@ -91,3 +91,7 @@ mod waiting_room_projection;
 mod workflow_definition_control;
 mod workflow_run_control;
 mod workspace_capabilities;
+
+mod usage_snapshot;
+
+mod agent_archive;

@@ -6,7 +6,7 @@ import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostViewport,featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -351,7 +351,7 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-10/MP-11: native page density applies to the private display
   // only; the owned Computer desktop stays at its 1x X11 density.
-  viewport() { return hostViewport(!this.chromium.desktop && (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' || process.env.CHARIOX_KERNEL_BROWSER_MIRROR === '1')); }
+  viewport() { return hostViewport(!this.chromium.desktop && (featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY') || featureOn('CHARIOX_KERNEL_BROWSER_MIRROR'))); }
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: 1280, height: 800 }; }
@@ -494,7 +494,7 @@ export class KernelBrowserHost {
   chromeWindow() {
     const tabbed = this.chromeWindows?.bound?.tabbed;
     // MP-11: only the managed lockdown refuses fullscreen; without it no band is offered.
-    if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !(tabbed?.isBandCurrent ?? tabbed?.isCurrent)?.()) return null;
+    if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY") || this.chromium?.policy !== "managed" || !(tabbed?.isBandCurrent ?? tabbed?.isCurrent)?.()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
     // MP-08/MP-10: restoring Apps temporarily focus their own windows. The
@@ -769,8 +769,8 @@ export class KernelBrowserHost {
   async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
-    if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
-    if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+    if (command.op.startsWith("mirror_") && !featureOn("CHARIOX_KERNEL_BROWSER_MIRROR")) throw new Error("MP-08: DOM mirror disabled");
+    if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
     await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
@@ -865,7 +865,7 @@ export class KernelBrowserHost {
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
-      if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+      if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
@@ -1072,7 +1072,7 @@ export class KernelBrowserHost {
         await admitComputerMutation(this, request.params);
         const nativeParams={...request.params,observed_by:observer};
         if (request.params.op === 'display_subscribe') {
-          if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');
+          if(!featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY'))throw new Error('MP-08: display disabled');
           return {id:request.id,ok:true,result:await this.desktopDisplay.subscribe(nativeParams,request.params.observed_by??'terminal')};
         }
         if (['installed_applications','launch_application'].includes(request.params.op)) {

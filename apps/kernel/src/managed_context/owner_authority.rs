@@ -63,7 +63,7 @@ async fn kernel_cloud_request<T: serde::de::DeserializeOwned + Send + 'static>(
             .as_deref()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| admission_error("Kernel enrollment credential is required"))?;
-        let agent = ureq::AgentBuilder::new()
+        let agent = crate::outbound_dial::agent_builder()
             .timeout(std::time::Duration::from_secs(15))
             .redirects(0)
             .build();

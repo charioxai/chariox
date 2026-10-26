@@ -257,6 +257,9 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::SendTerminalInput(request) => {
                 Box::pin(async move { self.store.send_terminal_input(request).await })
             }
+            LocalDaemonRequest::SetRoomPinned(request) => {
+                Box::pin(async move { self.store.set_room_pinned(request, caller_user_id).await })
+            }
             LocalDaemonRequest::PollRuntimeNotices(request) => {
                 Box::pin(async move { self.store.poll_runtime_notices(request).await })
             }
@@ -389,6 +392,9 @@ impl SessionRuntimeCommandExecutor {
             }
             LocalDaemonRequest::ForkAgent(request) => {
                 Box::pin(async move { self.store.fork_agent(request, caller_user_id).await })
+            }
+            LocalDaemonRequest::ArchiveAgent(request) => {
+                Box::pin(async move { self.store.archive_agent(request, caller_user_id).await })
             }
             LocalDaemonRequest::DestroyAgent(request) => Box::pin(async move {
                 self.store

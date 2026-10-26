@@ -23,6 +23,9 @@ pub(crate) fn redact_response_for_user(
                 agent,
             }
         }
+        LocalDaemonResponse::RoomPinned { session } => LocalDaemonResponse::RoomPinned {
+            session: redact_session(session)?,
+        },
         LocalDaemonResponse::SessionResolved { session } => LocalDaemonResponse::SessionResolved {
             session: redact_session(session)?,
         },

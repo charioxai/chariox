@@ -77,7 +77,7 @@ export async function handleCycleAgentFocus(
     await applyFocusedAgentSession(deps, previousSession, payload.session, payload.agent)
     if (payload.agent) {
       deps.flashFooter(
-        `cycled to agent ${payload.agent.agent_ref}${payload.agent.alias ? ` (${payload.agent.alias})` : ""}`,
+        `cycled to ${deps.formatAgentLabel(payload.agent)}`,
         "info",
       )
     } else {
@@ -104,7 +104,7 @@ export async function handleAgentDeleteCommand(
     await deps.refreshAgentPanes(nextSession)
     deps.rebuildTranscript()
     deps.refreshSplitPaneFocusRepaint()
-    deps.flashFooter(`deleted agent ${deps.formatAgentLabel(resolved.agent)}`, "info")
+    deps.flashFooter(`deleted ${deps.formatAgentLabel(resolved.agent)}`, "info")
   } catch (error) {
     deps.flashFooter(deps.formatError(error), "error")
   }
@@ -130,7 +130,7 @@ export async function handleAgentFocusCommand(
     const payload = await deps.focusAgent(resolved.agent.id)
     await applyFocusedAgentSession(deps, previousSession, payload.session, payload.agent)
     deps.flashFooter(
-      `focused on agent ${payload.agent.agent_ref}${payload.agent.alias ? ` (${payload.agent.alias})` : ""}`,
+      `focused on ${deps.formatAgentLabel(payload.agent)}`,
       "info",
     )
   } catch (error) {

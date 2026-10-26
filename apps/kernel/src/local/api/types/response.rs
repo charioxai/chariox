@@ -3,6 +3,8 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
+    AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     SshMachine { machine: SshMachineResult },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -29,6 +31,7 @@ pub enum LocalDaemonResponse {
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
     Notes { result: NoteResult, },
+    Dictation { result: DictationResult, },
     VisibleRegionCaptured { capture: VisibleRegionCapture },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },
@@ -370,6 +373,7 @@ pub enum LocalDaemonResponse {
         answer: Option<String>,
     },
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
+    RoomPinned { session: RuntimeSession, },
     KernelAccessDecisionResponded { interaction_id: String, },
     InteractionResponded { interaction_id: String, session: RuntimeSession, },
     DeploymentCredentialEnrollmentArmed {
@@ -456,6 +460,7 @@ pub enum LocalDaemonResponse {
     RemoteExtensionManifestSynced { agent: AgentInstance, },
     HomeExtensionAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },
     SliceAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },
+    AgentArchived { session: RuntimeSession, agent: AgentInstance, },
     AgentDestroyed { agent: AgentInstance, },
     AgentFocused { agent: AgentInstance, },
     AgentOutputSeenAcknowledged { session_id: String, agent_id: String, },

@@ -8,6 +8,8 @@ mod daemon_lifecycle;
 mod durable_runtime_state;
 mod external_provider_session_discovery;
 #[cfg(test)]
+mod restored_agent_names_tests;
+#[cfg(test)]
 mod room_environment_durability_tests;
 pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;
 mod external_provider_sessions;
@@ -165,6 +167,7 @@ pub struct DaemonApp {
     pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
     // MP-08 / MP-10 / MP-11: one authority across independently built runtime actors.
     pub(crate) kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    pub(crate) dictation: Arc<crate::dictation::DictationService>,
     pub(crate) private_assessment_dispatch:
         Option<crate::runtime::state::PrivateAssessmentDispatch>,
     pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
@@ -382,6 +385,9 @@ impl DaemonApp {
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
             kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
                 config.private_runtime_state_root(),
+            ),
+            dictation: crate::dictation::DictationService::new(
+                config.private_runtime_state_root().join("dictation"),
             ),
             room_computer_revoked: Default::default(),
             private_assessment_dispatch: None,

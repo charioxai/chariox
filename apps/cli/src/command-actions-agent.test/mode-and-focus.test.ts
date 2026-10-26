@@ -191,6 +191,6 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
   await handlers.handleCycleAgentFocus()
 
   assert.equal(refreshCount, 0)
-  assert.equal(flashedMessage, "cycled to agent agent-b")
+  assert.equal(flashedMessage, "cycled to agent-b")
   assert.equal(currentSession.focused_agent_id, "agent-b")
 })

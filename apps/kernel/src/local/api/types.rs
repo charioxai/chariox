@@ -19,6 +19,7 @@ mod capability;
 mod cloud_relay;
 mod config_capabilities;
 mod daemon;
+mod dictation;
 mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
@@ -47,6 +48,7 @@ mod slice;
 mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod usage_snapshot;
 mod user_domain_access;
 mod waiting_room;
 mod workflow;
@@ -62,6 +64,7 @@ pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
 pub use daemon::*;
+pub use dictation::*;
 pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
@@ -90,6 +93,7 @@ pub use slice::*;
 pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
@@ -338,4 +342,9 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;
+/// MP-08/MP-10/MP-11: allocated 596 reads a session state's revision before the state, so a state is never
+/// older than its `agent_activity_revision`, and lets `AttachSessionView` ask for `latest_prompt_count` turns.
+/// Allocated 594 adds `Dictation`: kernel speech-to-text with an on-demand model download.
+/// Allocated 603 adds speech-service selection, owner Vault metadata, setup state and recording context.
+/// Allocated 610 unions the staging features 588-603 with the new-UI contracts; 599 and 567 stay reciprocal predecessors.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 610;

@@ -19,6 +19,7 @@ mod cloud_relay;
 mod computer_hold;
 mod core;
 mod credential_enrollment;
+mod dictation;
 mod display_resumption;
 mod disposable_worker;
 mod event_publication;
@@ -49,6 +50,7 @@ mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
+mod session_feed_596;
 mod session_view;
 mod slice_disk_quota;
 mod slice_display;
@@ -108,3 +110,6 @@ mod relay_transport;
 mod ssh_machine;
 
 mod waiting_room_workspace;
+
+mod room_pin;
+mod usage_snapshot;

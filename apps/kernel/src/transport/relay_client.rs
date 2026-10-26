@@ -35,6 +35,7 @@ use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
 mod browser_input_order;
+mod cloud_presence;
 mod connection_config;
 mod connection_state;
 mod connector;
@@ -56,10 +57,9 @@ mod request_errors;
 mod request_timing;
 mod sender_identity;
 mod subscriptions;
+use cloud_presence::CloudPresencePublisher;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
-use connection_state::{
-    publish_offline_and_set_disconnected, set_connected, spawn_cloud_presence_publish,
-};
+use connection_state::{publish_offline_and_set_disconnected, set_connected};
 use daemon_requests::{
     handle_daemon_request, handle_prepared_daemon_request, prepare_daemon_request,
 };
@@ -96,7 +96,7 @@ use peer_requests::handle_daemon_peer_request;
 pub(crate) use peer_requests::send_authenticated_peer_request_for_test;
 pub(crate) use remote_inventory::refresh_remote_inventory_projection;
 use remote_inventory::{
-    abort_inventory_refresh_task, clear_remote_inventory_projection,
+    abort_inventory_refresh_task, clear_remote_inventory_projection, remote_inventory_refresh_due,
     spawn_remote_inventory_projection_refresh,
 };
 use subscriptions::{

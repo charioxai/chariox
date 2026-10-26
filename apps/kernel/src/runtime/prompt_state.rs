@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
+mod archive;
 mod profile_transition;
 mod queue_promotion;
 pub(crate) use profile_transition::AgentProfileTransitionClaim;
@@ -146,6 +147,7 @@ struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
     profile_transitions: BTreeMap<PromptStateKey, Arc<()>>,
     queue_promotions: BTreeSet<PromptStateKey>,
+    archived_agents: BTreeSet<PromptStateKey>,
 }
 
 impl PromptStateOwner {
@@ -468,6 +470,15 @@ impl PromptStateOwner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner
+            .archived_agents
+            .contains(&PromptStateKey::new(session.id(), &agent_id))
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "submit prompt",
+                message: "Unarchive this agent before sending it work.".into(),
+            });
+        }
         if let (Some(operation_id), Some(fingerprint)) = (
             prompt.durable_operation_id(),
             prompt.durable_operation_fingerprint(),
@@ -1541,6 +1552,16 @@ impl PromptStateOwner {
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
+        owner
+            .archived_agents
+            .retain(|key| key.session_id != session.id());
+        owner.archived_agents.extend(
+            session
+                .agents()
+                .iter()
+                .filter(|agent| agent.archived())
+                .map(|agent| PromptStateKey::new(session.id(), agent.id())),
+        );
         let restored_agent_ids = session
             .prompt_states()
             .keys()
@@ -1588,19 +1609,24 @@ impl PromptStateOwner {
     }
 
     pub(crate) fn remove_session(&self, session_id: &str) {
-        self.state
+        let mut owner = self
+            .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned")
-            .states
-            .retain(|key, _| key.session_id.as_str() != session_id);
+            .expect("prompt state owner lock should not be poisoned");
+        owner.states.retain(|key, _| key.session_id != session_id);
+        owner
+            .archived_agents
+            .retain(|key| key.session_id != session_id);
     }
 
     pub(crate) fn remove_agent(&self, session_id: &str, agent_id: &str) {
-        self.state
+        let mut owner = self
+            .state
             .lock()
-            .expect("prompt state owner lock should not be poisoned")
-            .states
-            .remove(&PromptStateKey::new(session_id, agent_id));
+            .expect("prompt state owner lock should not be poisoned");
+        let key = PromptStateKey::new(session_id, agent_id);
+        owner.states.remove(&key);
+        owner.archived_agents.remove(&key);
     }
 
     fn remove_queued_prompts_matching(

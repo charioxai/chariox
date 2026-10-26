@@ -68,6 +68,10 @@ impl AgentServiceStore {
         self.write().restore_agent(agent)
     }
 
+    pub(crate) fn assign_missing_default_aliases(&self) -> usize {
+        self.write().assign_missing_default_aliases()
+    }
+
     pub(crate) fn materialize_publication_agent(
         &self,
         agent: AgentInstance,
@@ -126,6 +130,15 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .create_default_agent(session_id, worktree_id, provider, sessions)
+    }
+
+    pub(crate) fn archive_agent(
+        &self,
+        agent_id: &str,
+        archived: bool,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().archive_agent(agent_id, archived, sessions)
     }
 
     pub fn destroy_agent(

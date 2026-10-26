@@ -883,14 +883,27 @@ impl KernelRuntimeState {
             .load_subject_events(agent.id(), limit)?;
         Ok(events
             .into_iter()
-            .filter(|event| {
-                event.kind.starts_with("home_extension.")
-                    || event.kind.starts_with("agent.extension")
-                    || event.kind.starts_with("agent.mcp_")
-                    || event.kind.starts_with("agent.skill_")
-                    || event.kind.starts_with("extension.registration.")
-            })
+            .filter(is_home_extension_audit_event)
             .collect())
+    }
+
+    /// Whether a freshly appended event is a row `list_home_extension_audit_events` would return
+    /// to this caller.
+    pub(crate) fn is_readable_home_extension_audit_event(
+        &self,
+        event: &crate::durable_state::DurableStateEvent,
+        caller_user_id: &str,
+    ) -> bool {
+        is_home_extension_audit_event(event)
+            && event.subject_id.as_deref().is_some_and(|agent_id| {
+                self.owned
+                    .ensure_agent_extension_authority(
+                        agent_id,
+                        caller_user_id,
+                        "home extension audit",
+                    )
+                    .is_ok()
+            })
     }
 
     pub(crate) async fn update_session_config(
@@ -1136,6 +1149,8 @@ impl KernelRuntimeState {
         let agent = self
             .owned
             .alias_agent(session_id, agent_id, caller_user_id, alias)?;
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
     }
@@ -1215,3 +1230,11 @@ fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {
 
 #[cfg(test)]
 mod tests;
+
+fn is_home_extension_audit_event(event: &crate::durable_state::DurableStateEvent) -> bool {
+    event.kind.starts_with("home_extension.")
+        || event.kind.starts_with("agent.extension")
+        || event.kind.starts_with("agent.mcp_")
+        || event.kind.starts_with("agent.skill_")
+        || event.kind.starts_with("extension.registration.")
+}

@@ -184,6 +184,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetAgentUsageSnapshot(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -292,6 +295,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RecordPromptInputHistory(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::SetRoomPinned(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::PollRuntimeNotices(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -347,6 +353,9 @@ pub(crate) fn request_session_scope(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::MoveAgentToLocal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ArchiveAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::DestroyAgent(request) => Some(SessionMembershipScope::SessionId(
@@ -583,6 +592,7 @@ pub(crate) fn request_session_scope(
         ),
         // MD-stack: user-domain admission lives in each authenticated service.
         LocalDaemonRequest::Notes(_)
+        | LocalDaemonRequest::Dictation(_)
         | LocalDaemonRequest::KernelBrowser(_)
         | LocalDaemonRequest::OpenUserAppView(_)
         | LocalDaemonRequest::ListUserAppViews(_)
@@ -680,6 +690,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetClientCatalogSnapshot(_)
         | LocalDaemonRequest::GetClientCatalogRevisions(_)
         | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+        | LocalDaemonRequest::GetProviderUsageSnapshot(_)
         | LocalDaemonRequest::ListProviderAccountProfiles(_)
         | LocalDaemonRequest::GetProviderAccountProfile(_)
         | LocalDaemonRequest::CreateProviderAccountProfile(_)

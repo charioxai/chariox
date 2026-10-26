@@ -801,6 +801,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
 
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
+        pinned: false,
         repository_state: None,
         id: id.to_string(),
         project_id: "project-a".to_string(),
@@ -1134,4 +1135,26 @@ fn env_ux01_unrelated_transport_failures_remain_retryable() {
         message: "connection interrupted".into(),
     };
     assert!(super::map_kernel_error(&error).retryable);
+}
+
+#[test]
+fn dictation_command_errors_keep_the_speech_service_code() {
+    for code in [
+        "dictation_bad_key",
+        "dictation_vault_locked",
+        "dictation_no_key",
+        "dictation_quota",
+        "dictation_network",
+        "dictation_service_changed",
+    ] {
+        let error = DaemonError::RelayTransport {
+            operation: "dictation",
+            code: code.into(),
+            message: "Safe speech-service recovery advice".into(),
+            retryable: false,
+        };
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+    }
 }

@@ -435,6 +435,7 @@ pub(super) async fn handle_incoming_envelope(
             client_public_key,
             subscription_scope,
             resume_from_event_id,
+            heartbeat_interval_ms,
         } => {
             if chariox_relay::frame_transport::is_display_scope(subscription_scope.as_deref()) {
                 return super::browser_display::enqueue_subscribe(
@@ -469,6 +470,7 @@ pub(super) async fn handle_incoming_envelope(
                 client_public_key,
                 subscription_scope,
                 resume_from_event_id,
+                heartbeat_interval_ms,
             )
             .await?;
         }

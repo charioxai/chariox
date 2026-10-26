@@ -160,6 +160,7 @@ mod room_screenshot;
 mod room_secret_observation;
 mod room_shared_display;
 mod runtime_tool_call_activity;
+mod usage_snapshot;
 mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
@@ -222,6 +223,7 @@ struct KernelRuntimeOwnedState {
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
     kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    dictation: Arc<crate::dictation::DictationService>,
     leased_computer_changes: Arc<std::sync::Mutex<()>>,
     leased_computer_grants: Arc<
         std::sync::Mutex<BTreeMap<String, crate::transport::relay_peer::LeasedComputerGrant>>,
@@ -405,6 +407,7 @@ struct SlicePrivateRelayConnector {
     task: std::thread::JoinHandle<()>,
 }
 
+mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
@@ -447,6 +450,7 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod room_pin;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
@@ -532,6 +536,7 @@ mod kernel_browser_secret_runtime;
 mod kernel_browser_state_wait;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
+mod dictation_runtime;
 mod kernel_computer_runtime;
 mod leased_computer_runtime;
 #[cfg(test)]
@@ -725,6 +730,7 @@ impl KernelRuntimeState {
             managed_kernel_registration,
             runtime_tool_call_activity,
             kernel_browser_host,
+            dictation,
             room_computer_revoked,
             sudo_windows,
             pending_agent_context_handoffs,
@@ -744,6 +750,7 @@ impl KernelRuntimeState {
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
                         app.kernel_browser_host.clone(),
+                        app.dictation.clone(),
                         app.room_computer_revoked.clone(),
                         app.sudo_window_projection(),
                         app.pending_agent_context_handoff_store(),
@@ -948,6 +955,7 @@ impl KernelRuntimeState {
                 attached_provider_transcript_cursors,
                 slice_store,
                 kernel_browser_host,
+                dictation,
                 leased_computer_changes: Default::default(),
                 leased_computer_grants: Default::default(),
                 app_grant_epochs: Arc::default(),

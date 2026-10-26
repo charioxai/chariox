@@ -53,6 +53,10 @@ pub(crate) enum KernelIncomingFrame {
         subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
+        /// Protocol 596: how often the subscription's `heartbeat` arrives; at least
+        /// `MIN_SUBSCRIPTION_HEARTBEAT_MS`. Left out, the default interval applies.
+        #[serde(default)]
+        heartbeat_interval_ms: Option<u64>,
     },
     Unsubscribe {
         request_id: String,
@@ -100,6 +104,26 @@ pub(crate) enum KernelEvent {
         recipient_attachment_ids: Vec<String>,
         message_id: String,
         completed_at_ms: u64,
+    },
+    /// Protocol 596: the agent's latest turn changed. `turn` is what
+    /// `GetSessionHistoryOutline` answers for that turn at `history_revision`.
+    AgentTurnChanged {
+        session_id: String,
+        agent_id: String,
+        history_revision: u64,
+        turn: Box<crate::local::SessionHistoryOutlineTurn>,
+    },
+    /// Protocol 596: a row `ListHomeExtensionAudit` returns for the agent was appended. The row is
+    /// `audit_event`: `event` is the tag of every kernel event.
+    HomeExtensionAuditAppended {
+        session_id: String,
+        agent_id: String,
+        audit_event: Box<crate::durable_state::DurableStateEvent>,
+    },
+    /// Protocol 596: audit rows were lost. Re-read `ListHomeExtensionAudit` for the watched agents
+    /// once, replacing their lists; appends after this signal continue normally.
+    HomeExtensionAuditLagged {
+        session_id: String,
     },
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
@@ -240,6 +264,28 @@ pub(crate) enum KernelSubscriptionScope {
     WaitingRoomInventory,
 }
 
+pub(crate) const MIN_SUBSCRIPTION_HEARTBEAT_MS: u64 = 500;
+pub(crate) const INVALID_HEARTBEAT_INTERVAL_CODE: &str = "invalid_heartbeat_interval";
+
+/// The interval a subscription asked for, or `default` when it did not ask.
+pub(crate) fn requested_heartbeat_interval(
+    requested_ms: Option<u64>,
+    default: std::time::Duration,
+) -> Result<std::time::Duration, KernelTransportError> {
+    match requested_ms {
+        None => Ok(default),
+        Some(ms) if ms >= MIN_SUBSCRIPTION_HEARTBEAT_MS => Ok(std::time::Duration::from_millis(ms)),
+        Some(ms) => Err(KernelTransportError {
+            code: INVALID_HEARTBEAT_INTERVAL_CODE.to_string(),
+            message: format!(
+                "heartbeat_interval_ms {ms} is below the minimum of {MIN_SUBSCRIPTION_HEARTBEAT_MS}; leave it out for the default of {} ms",
+                default.as_millis()
+            ),
+            retryable: false,
+        }),
+    }
+}
+
 pub(crate) fn kernel_subscription_scope(scope: Option<&str>) -> KernelSubscriptionScope {
     if scope == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) {
         KernelSubscriptionScope::WaitingRoomInventory
@@ -288,6 +334,37 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "provider_run_id": provider_run.as_ref().as_ref().map(|run| run.id()),
             "agent_activity": agent_activity,
             "agent_activity_revision": agent_activity_revision,
+        }),
+        KernelEvent::AgentTurnChanged {
+            session_id,
+            agent_id,
+            history_revision,
+            turn,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "agent_turn_changed",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "history_revision": history_revision,
+            "turn_id": turn.turn_id,
+            "lifecycle": turn.lifecycle,
+        }),
+        KernelEvent::HomeExtensionAuditAppended {
+            session_id,
+            agent_id,
+            audit_event: audit,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "home_extension_audit_appended",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "kind": audit.kind,
+            "sequence": audit.sequence,
+        }),
+        KernelEvent::HomeExtensionAuditLagged { session_id } => serde_json::json!({
+            "event_id": event_id,
+            "event": "home_extension_audit_lagged",
+            "session_id": session_id,
         }),
         KernelEvent::AgentTaskUpdated { session_id, task } => serde_json::json!({
             "event_id": event_id, "event": "agent_task_updated", "session_id": session_id,
@@ -751,6 +828,9 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::TerminalOutput { .. } => "terminal_output",
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
+        KernelEvent::AgentTurnChanged { .. } => "agent_turn_changed",
+        KernelEvent::HomeExtensionAuditAppended { .. } => "home_extension_audit_appended",
+        KernelEvent::HomeExtensionAuditLagged { .. } => "home_extension_audit_lagged",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
@@ -785,6 +865,9 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
             notices.first().map(|notice| notice.session_id.as_str())
         }
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::AgentTurnChanged { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::HomeExtensionAuditAppended { session_id, .. }
+        | KernelEvent::HomeExtensionAuditLagged { session_id } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
@@ -849,7 +932,10 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         } => recipient_attachment_ids
             .iter()
             .any(|id| id == attachment_id),
-        KernelEvent::RoomWorkflowsChanged { .. }
+        KernelEvent::AgentTurnChanged { .. }
+        | KernelEvent::HomeExtensionAuditAppended { .. }
+        | KernelEvent::HomeExtensionAuditLagged { .. }
+        | KernelEvent::RoomWorkflowsChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }
@@ -970,6 +1056,12 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        DaemonError::RelayTransport {
+            operation: "dictation",
+            code,
+            retryable,
+            ..
+        } => kernel_error(code, error, *retryable),
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {

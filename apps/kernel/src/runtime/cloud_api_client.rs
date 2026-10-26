@@ -18,7 +18,8 @@ pub(crate) use http::{
     delete_cloud_json_authenticated, get_cloud_json, get_cloud_json_authenticated,
     get_cloud_kernel_directory, is_stale_cloud_link_error, normalize_cloud_api_url,
     post_cloud_acknowledged, post_cloud_json, post_cloud_json_authenticated,
-    post_cloud_json_dynamic, post_cloud_to_file,
+    post_cloud_json_dynamic, post_cloud_json_with_timeout, post_cloud_to_file,
+    CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;
@@ -264,10 +265,11 @@ pub(crate) async fn issue_cloud_runtime_token(
             serde_json::Value::String(public_key_thumbprint),
         );
     }
-    post_cloud_json(
+    post_cloud_json_with_timeout(
         profile.api_url.clone(),
         "/relay/token",
         serde_json::Value::Object(body),
+        CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
     )
     .await
 }

@@ -29,9 +29,10 @@ use crate::runtime::event_log::EventLog;
 use crate::runtime::projection::TransportHealthStore;
 use crate::runtime::router::CommandRouter;
 use crate::transport::kernel_protocol::{
-    kernel_subscription_scope, map_kernel_error, serialize_frame, KernelEvent, KernelIncomingFrame,
-    KernelOutgoingFrame, KernelSubscriptionScope, KernelTransportError,
-    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    kernel_subscription_scope, map_kernel_error, requested_heartbeat_interval, serialize_frame,
+    KernelEvent, KernelIncomingFrame, KernelOutgoingFrame, KernelSubscriptionScope,
+    KernelTransportError, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
 mod local_auth;
@@ -44,6 +45,7 @@ mod outgoing;
 mod socket_options;
 mod subscription_projection;
 mod subscriptions;
+pub(crate) use subscriptions::await_subscription_work_with_heartbeats;
 
 pub(crate) use subscription_projection::session_projection_events;
 
@@ -357,6 +359,8 @@ struct KernelSubscription {
     subscription_scope: KernelSubscriptionScope,
     /// Protocol 403: whether the subscription carries passkey prompts.
     connection_class: KernelConnectionClass,
+    /// Protocol 596: the interval of this subscription's `heartbeat` events.
+    heartbeat_interval: Duration,
 }
 
 #[derive(Debug)]
@@ -1638,7 +1642,30 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             attachment_id,
             subscription_scope,
             resume_from_event_id,
+            heartbeat_interval_ms,
         } => {
+            let heartbeat_interval = match requested_heartbeat_interval(
+                heartbeat_interval_ms,
+                subscriptions::subscription_heartbeat_interval(),
+            ) {
+                Ok(interval) => interval,
+                Err(error) => {
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        &runtime.transport_health,
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: Box::new(None),
+                            error: Some(error),
+                        },
+                        None,
+                        None,
+                    );
+                    return;
+                }
+            };
             let scope = kernel_subscription_scope(subscription_scope.as_deref());
             crate::logging::info_with_fields(
                 "daemon.runtime_transport",
@@ -1743,6 +1770,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                     attachment_id: attachment_id.clone(),
                     subscription_scope: scope.clone(),
                     connection_class,
+                    heartbeat_interval,
                 });
                 state.watch_task = Some(tokio::spawn(run_subscription_loop(
                     Arc::clone(router),
@@ -1755,6 +1783,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         attachment_id: attachment_id.clone(),
                         subscription_scope: scope,
                         connection_class,
+                        heartbeat_interval,
                     },
                 )));
             }
