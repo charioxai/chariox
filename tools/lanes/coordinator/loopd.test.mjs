@@ -563,3 +563,27 @@ test('an unconfirmed requested stop retains its lane until physical cleanup succ
   assert.equal(archived.finishReason, 'stopped');
   assert.equal(r.calls.some(c => c.op === 'stop' && c.taskId === 'beta-r1'), false);
 });
+
+for (const eventSeen of [true, false]) test(`a lane popup stays pending until answered and is cleared by ${eventSeen ? 'its resolution event' : 'a later status read'}`, async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  const adapter = r.options.adapter;
+  const popup = {id:'ask-r22',kind:'choice',title:'MP-11 question',message:'Which drill?',choices:['run'],choiceLabels:[{id:'run',label:'Run it'}]};
+  let pending = true, automaticAnswers = 0;
+  r.options.respond = async () => { automaticAnswers++; };
+  r.options.adapter = async (op, input) => op === 'status' ? {...await adapter(op,input), interactions:pending ? [popup] : []} : adapter(op,input);
+  r.script.push(async () => [r.ev('alpha-r1',{type:'interaction',refs:{interaction_id:popup.id},value:{state:'pending'}})]);
+  r.script.push(async () => {
+    const [ask] = (await runFile(r,'alpha')).unanswered;
+    assert.equal(ask.message,popup.message);
+    assert.deepEqual(ask.choiceLabels,popup.choiceLabels);
+    assert.equal(automaticAnswers,0);
+    pending = false;
+    r.idle.add('alpha-r1');
+    return [r.ev('alpha-r1',eventSeen ? {type:'interaction',refs:{interaction_id:popup.id},value:{state:'resolved'}} : {type:'agent',summary:'idle'})];
+  });
+  r.finished(1);
+  await serve(r.options);
+  assert.deepEqual((await runFile(r,'alpha')).unanswered,[]);
+  assert.equal(automaticAnswers,0);
+});

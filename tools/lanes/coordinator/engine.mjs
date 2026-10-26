@@ -122,7 +122,10 @@ export function createRound(options) {
       // The agent's own last_activity_at_ms only moves at turn boundaries; event times show a worker is alive.
       lane.run.lastEventAtMs = Math.max(lane.run.lastEventAtMs ?? 0, event.at_ms ?? 0);
       if (event.type === 'interaction' && event.value?.state === 'pending') await answer(lane, event.refs?.interaction_id, event.summary);
-      else if (event.type !== 'interaction') { touched.add(lane); lane.needsRead = true; }
+      else if (event.type === 'interaction' && event.value?.state === 'resolved') {
+        lane.run.unanswered = lane.run.unanswered.filter(item => item.interactionId !== event.refs?.interaction_id);
+        touched.add(lane); lane.needsRead = true;
+      } else if (event.type !== 'interaction') { touched.add(lane); lane.needsRead = true; }
     }
     for (const lane of lanes) lane.run.events = lane.run.events.slice(-KEEP_EVENTS);
     return touched;
@@ -371,6 +374,10 @@ export function createRound(options) {
       }
       // Kept for the coordinator: a restored worker that never resumed still reads as working, and only SILENT shows it.
       lane.run.health = { atMs: now(), state: status.state, flags: status.flags, lastActivityMs: status.lastActivityMs };
+      if (Array.isArray(status.interactions)) {
+        const pending = new Set(status.interactions.map(interaction => interaction.id));
+        lane.run.unanswered = lane.run.unanswered.filter(item => pending.has(item.interactionId));
+      }
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
       for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
       lane.run.currentPromptId = status.currentPrompt || status.admittedPromptId || lane.run.currentPromptId || lane.receipt.promptId;

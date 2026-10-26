@@ -6,6 +6,11 @@ to stderr and exits 1. `CHARIOX_BIN` selects the actual `chariox` executable.
 The normal product access grant must already cover the coordinator process.
 Provider login, credentials, transport and authority remain Chariox's job.
 
+Use the updated CLI from the minimal-primitives change (protocol 615 source),
+even with an older kernel. Older CLIs reject `files get --sha256` and still use
+removed file metadata requests internally. Install the CLI and these adapters
+together; upgrading the kernel itself can follow later.
+
 Every operation requires `kernel` and a stable `taskId` (letters, numbers, `.`,
 `_`, `-`). A mutation's command id derives from this task id and its step.
 Connection loss or request timeout gets one retry with identical bytes and id.
