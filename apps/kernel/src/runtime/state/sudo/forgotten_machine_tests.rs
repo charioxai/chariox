@@ -79,8 +79,8 @@ async fn forgetting_the_worker_machine_ends_the_leased_sudo_window_and_refuses_l
     let worker = crate::config::DaemonConfig::for_tests();
     crate::config::DaemonConfig::approve_remote_machine(MACHINE, Some("amrig worker".into()))
         .unwrap();
-    let window = open(&f, None).await;
     lease_agent_to_machine(&f, &worker.daemon_id);
+    let window = open(&f, None).await;
     let state = f.state.with_relay_peer_authority(
         crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id),
     );
