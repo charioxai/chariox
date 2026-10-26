@@ -11,12 +11,17 @@ if (!chariox?.action || !chariox?.view || !chariox?.call) throw new Error('Open 
 let api, storage, actions, timer, previousScene;
 let actionQueue = Promise.resolve();
 const loaded = await chariox.call('load_scene', {});
-const reported = new Set();
+let automaticSaveError;
 const report = error => {
   const message = error.message ?? String(error);
-  if (!api || reported.has(message)) return;
-  reported.add(message);
+  if (!api) return;
   api.setToast({ message, closable: true, duration: Infinity });
+};
+const reportAutomaticSave = error => {
+  const message = error.message ?? String(error);
+  if (automaticSaveError === message && api.getAppState().toast?.message === message) return;
+  automaticSaveError = message;
+  report(error);
 };
 const invoke = name => () => actions[name](name === 'export_file' ? { format: 'png' } : {}).catch(report);
 const ready = next => {
@@ -77,7 +82,7 @@ createRoot(document.getElementById('root')).render(
       if (text === previousScene) return;
       previousScene = text;
       clearTimeout(timer);
-      timer = setTimeout(() => storage.save().catch(report), 300);
+      timer = setTimeout(() => storage.save().then(() => { automaticSaveError = undefined; }).catch(reportAutomaticSave), 300);
     }}>
     <MainMenu>
       <MainMenu.Item onSelect={invoke('open_file')}>Open</MainMenu.Item>

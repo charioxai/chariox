@@ -25,6 +25,7 @@ async function fixture(run) {
   const browser = await chromium.launch({ executablePath: process.env.CHARIOX_TEST_CHROME ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    page.setDefaultTimeout(5000);
     const broker = { scene: null, version: null, saveAttempts: 0, fail: false, files: new Map(), writes: [], picked: null };
     await page.exposeFunction('broker', async (name, input) => {
       if (name === 'load_scene') return { scene: broker.scene, version: broker.version };
@@ -81,7 +82,9 @@ test('a failed action then a human edit reports once without trapping the canvas
   const idle = await page.evaluate(() => window.__charioxViewAgent.changes(0));
   assert.equal(idle.value.latest, changes.value.latest, 'reporting and closing must not re-arm saves');
   await draw(700);
-  assert.equal(await notice.count(), 0, 'the same failure must be reported once even after another human edit');
+  await notice.waitFor();
+  assert.match(await notice.innerText(), /Concurrent view/, 'a new edit after dismissal must report the active failure again');
+  await notice.locator('button').click();
   const summary = await invoke('scene_summary');
   assert.equal(summary.value.total, 3, 'a person can keep editing after the failure');
   broker.fail = false;
@@ -110,7 +113,39 @@ test('an oversized human paste has one dismissible notice and can be removed', {
   await page.keyboard.press('Control+a'); await page.keyboard.press('Delete');
   await page.waitForTimeout(500);
   assert(broker.saveAttempts > attempts, 'shrinking the scene must recover saving without reloading');
+  await page.evaluate(() => navigator.clipboard.writeText(('x'.repeat(1000) + '\n').repeat(200)));
+  await page.keyboard.press('Control+Shift+v');
+  await notice.waitFor();
+  assert.match(await notice.innerText(), /192 KiB/, 'a later oversized scene must report again after recovery');
   await page.screenshot({ path: join(evidence, 'oversized-recovery.png') });
+}));
+
+test('Open reports a sticky conflict on every explicit attempt', { timeout: 30_000 }, () => fixture(async ({ page, broker, draw }) => {
+  await draw(); broker.fail = true; await draw(500);
+  const notice = page.locator('.Toast');
+  await notice.waitFor();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await notice.locator('button').click();
+    await page.getByTestId('main-menu-trigger').click();
+    await page.getByText('Open', { exact: true }).click();
+    await notice.waitFor();
+    assert.match(await notice.innerText(), /Concurrent view/);
+  }
+  await page.screenshot({ path: join(evidence, 'repeated-open-conflict.png') });
+}));
+
+test('a second oversized PNG export reports again', { timeout: 30_000 }, () => fixture(async ({ page, invoke }) => {
+  await invoke('add_elements', { elements: [{ id: 'noise', type: 'text', x: 50, y: 50,
+    text: Array.from({ length: 55 }, (_, i) => Array.from({ length: 85 }, (_, j) => String.fromCharCode(33 + (i * 37 + j * 19) % 90)).join('')).join('\n') }] });
+  const notice = page.locator('.Toast');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.getByTestId('main-menu-trigger').click();
+    await page.getByText('Export image', { exact: true }).click();
+    await notice.waitFor();
+    assert.match(await notice.innerText(), /144 KiB/);
+    await notice.locator('button').click();
+  }
+  await page.screenshot({ path: join(evidence, 'repeated-oversized-export.png') });
 }));
 
 test('opening a picked diagram keeps the previous canvas recoverable with Undo', { timeout: 30_000 }, () => fixture(async ({ page, broker, invoke, draw }) => {

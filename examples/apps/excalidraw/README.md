@@ -70,8 +70,10 @@ to keep the offered file, then choose that file with Open to restore it. The
 current Web interaction only offers Decline; use the text terminal to save it.
 An agent can still save/open an explicitly
 named private file; a repeated explicit name replaces that file.
-A concurrent-view conflict is shown once in a dismissible toast. Use Save a
-copy and keep the offered file before reloading, then Open it to recover edits.
+A concurrent-view conflict appears in a dismissible toast. Automatic saving
+does not repeat an active notice; another edit after dismissal or an explicit
+action can report it again. Use Save a copy and keep the offered file before
+reloading, then Open it to recover edits.
 Reloading clears the automatic-save error and loads the latest durable scene.
 
 `scene_summary` reads actual canvas elements, with IDs, geometry, labels,
