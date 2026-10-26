@@ -8,17 +8,21 @@ export function persistence(chariox, api, loaded) {
   let sequence = 0;
   const notify = () => chariox.view.changed({ sequence: ++sequence, persisted: !failure });
   function save(candidate) {
-    const text = candidate ?? sceneJSON(api);
+    // Validation failures can recover after a person makes the diagram smaller.
+    try { checkedScene(candidate ?? sceneJSON(api)); } catch (error) { return Promise.reject(error); }
     const pending = queue.then(async () => {
       if (failure) throw failure;
+      const text = candidate ?? sceneJSON(api);
       if (text === lastSaved) return;
       const scene = checkedScene(text);
-      const result = await chariox.call('save_scene', { scene, version });
+      let result;
+      try { result = await chariox.call('save_scene', { scene, version }); }
+      catch (error) { failure = error; throw error; }
       version = result.version;
       lastSaved = text;
       notify();
     });
-    queue = pending.catch(error => { failure = error; });
+    queue = pending.catch(() => {});
     return pending;
   }
   const filename = (name = 'diagram', extension = '.excalidraw') => name.endsWith(extension) ? name : name + extension;

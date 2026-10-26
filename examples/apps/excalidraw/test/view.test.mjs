@@ -37,12 +37,13 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
         network.push(route.request().url());
         return route.abort();
       });
-      let scene = null, version = null, failSave = false;
+      let scene = null, version = null, failSave = false, holdSave = null, saveStarted;
       const files = new Map();
       await page.exposeFunction('broker', async (name, input) => {
         calls.push(name);
         if (name === 'load_scene') return { scene, version };
         if (name === 'save_scene') {
+          if (holdSave && input.scene.elements.some(element => element.id === 'stale-action')) { saveStarted(); await holdSave; }
           if (failSave) { failSave = false; throw Error('Concurrent view changed the scene; reload.'); }
           assert.equal(input.version, version);
           scene = input.scene; version = String(Number(version) + 1);
@@ -66,10 +67,14 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
       };
       const registrations = await page.evaluate(() => window.__charioxViewAgent.registrations());
       assert.deepEqual(registrations, manifest.uiActions);
+      const parallel = await page.evaluate(() => Promise.all(['parallel-a', 'parallel-b'].map(id => window.__charioxViewAgent.invoke('add_elements', { elements: [{ id, type: 'rectangle', x: 20, y: 20 }] }))));
+      assert(parallel.every(result => result.ok));
+      assert.equal((await invoke('scene_summary')).total, 2, 'overlapping actions must retain both additions');
+      await invoke('delete_elements', { ids: ['parallel-a', 'parallel-b'] });
       await page.waitForSelector('.excalidraw__canvas.interactive');
       // A person draws using Excalidraw's real toolbar/keys and pointer path.
       await page.keyboard.press('r');
-      await page.mouse.move(80, 160); await page.mouse.down(); await page.mouse.move(240, 250, { steps: 5 }); await page.mouse.up();
+      await page.mouse.move(80, 160); await page.mouse.down(); await page.mouse.move(240, 250, { steps: 5 }); await page.waitForTimeout(100); await page.mouse.up();
       await page.waitForFunction(() => window.__charioxViewAgent.state().then(r => r.value?.total > 0));
       await invoke('add_elements', { elements: [
         { id: 'client', type: 'rectangle', x: 300, y: 200, label: 'Client' },
@@ -116,6 +121,26 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
       await page.screenshot({ path: join(evidence, `canvas-dpr${dpr}.png`) });
       for (const name of ['proof.excalidraw', 'proof.svg', 'proof.png']) await writeFile(join(evidence, `dpr${dpr}-${name}`), files.get(name));
       await writeFile(join(evidence, `browser-dpr${dpr}.json`), JSON.stringify({ errors, network, calls, drawn, moved, png: { width: png.readUInt32BE(16), height: png.readUInt32BE(20) } }, null, 2));
+      let release;
+      await page.locator('.excalidraw__canvas.interactive').click({ position: { x: 50, y: 450 } });
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('v');
+      await invoke('select_elements', { ids: ['client'] });
+      await page.waitForTimeout(500);
+      holdSave = new Promise(resolve => { release = resolve; });
+      const saving = new Promise(resolve => { saveStarted = resolve; });
+      await page.evaluate(() => { window.pendingAction = window.__charioxViewAgent.invoke('add_elements', { elements: [{ id: 'stale-action', type: 'rectangle', x: 30, y: 30 }] }); });
+      await saving;
+      await page.keyboard.press('Delete');
+      await page.waitForFunction(total => window.__charioxViewAgent.state().then(result => result.value.total === total - 2), moved.total);
+      await page.waitForTimeout(200);
+      holdSave = null; release();
+      const raced = await page.evaluate(() => window.pendingAction);
+      assert.equal(raced.ok, false, 'a pending action must preserve a concurrent human edit');
+      const afterHuman = await invoke('scene_summary');
+      assert.equal(afterHuman.total, moved.total - 2);
+      assert(!afterHuman.elements.some(element => element.id === 'client'));
+      assert(!afterHuman.elements.some(element => element.id === 'stale-action'));
       // A failed receipt must leave the visible scene unchanged. Private copies
       // remain available so a person can recover edits after a CAS conflict.
       await page.waitForTimeout(500);

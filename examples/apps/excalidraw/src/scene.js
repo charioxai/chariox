@@ -57,7 +57,12 @@ export function diagramActions(api, persist) {
     // The canvas and agent paths share Excalidraw's scene store and undo history.
     const candidate = serializeAsJSON(elements.filter(e => !e.isDeleted), api.getAppState(), api.getFiles(), 'local');
     checkedScene(candidate);
+    const previous = sceneJSON(api);
     await persist(candidate);
+    if (sceneJSON(api) !== previous) {
+      await persist(sceneJSON(api));
+      fail('The canvas changed while this action was saving. Read the scene and retry.');
+    }
     api.updateScene({ elements, ...(selectedElementIds ? { appState: { selectedElementIds } } : {}), captureUpdate: 'IMMEDIATELY' });
     return summary(api);
   }

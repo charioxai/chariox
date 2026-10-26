@@ -9,6 +9,7 @@ import { persistence } from './persistence.js';
 const chariox = window.chariox;
 if (!chariox?.action || !chariox?.view || !chariox?.call) throw new Error('Open this App in a Chariox kernel with WASM and UI action support.');
 let api, storage, actions, timer;
+let actionQueue = Promise.resolve();
 const loaded = await chariox.call('load_scene', {});
 const report = error => api?.updateScene({ appState: { errorMessage: error.message ?? String(error) } });
 const invoke = name => () => actions[name](name === 'export_file' ? { format: 'png' } : {}).catch(report);
@@ -16,7 +17,12 @@ const ready = next => {
   if (api) return;
   api = next;
   storage = persistence(chariox, api, loaded);
-  actions = { ...diagramActions(api, storage.save), ...storage };
+  const handlers = { ...diagramActions(api, storage.save), ...storage };
+  actions = Object.fromEntries(declarations.uiActions.map(({ name }) => [name, input => {
+    const result = actionQueue.then(() => handlers[name](input));
+    actionQueue = result.catch(() => {});
+    return result;
+  }]));
   // Excalidraw installs its default actions after calling excalidrawAPI.
   queueMicrotask(() => { for (const [name, handler, key, shift] of [
     ['loadScene', 'open_file', 'o', false],
