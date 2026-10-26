@@ -280,6 +280,19 @@ mod failure_cause_tests {
                 "Model not found: opencode/glm-5.3-flash. Did you mean: glm-5.3-flash-free?"
             )
         );
+        for (status, message, cause) in [
+            (403, "permission_error: model access denied", Other),
+            (403, "Invalid API key", SignInRequired),
+            (401, "Request rejected", SignInRequired),
+        ] {
+            assert_eq!(
+                session_error(serde_json::json!({
+                    "name": "APIError",
+                    "data": {"message": message, "statusCode": status, "isRetryable": false}
+                })),
+                expected(cause, false, message)
+            );
+        }
         // The provider's explicit retryability wins over an HTTP-status default.
         assert_eq!(
             session_error(serde_json::json!({
