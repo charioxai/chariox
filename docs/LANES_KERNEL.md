@@ -29,8 +29,15 @@ due to finish before the next one. The binaries can be built at any time, becaus
 
 1. In `/root/work/agent-dogfood/lanes-kernel` (detached checkout of the new head): `touch` the sources, then
    `agents/cargo-slot.sh cargo build -p chariox-kernel --bin chariox-kernel --bin chariox-cli -p chariox-relay` (dev profile, `CARGO_BUILD_JOBS=4`,
-   `TMPDIR` under the state dir). Copy `chariox-kernel`, `chariox-cli` (installed as `chariox`) and `chariox-relay` out of the slot's `target/debug`
-   into `bin.next/`, check with `strings` that they embed that worktree, and write their sha256 to `PROVENANCE.json`.
+   `TMPDIR` under the state dir). Copy `chariox-kernel` and `chariox-cli` (installed as `chariox`) out of the slot's `target/debug`
+   into `bin.next/`, check with `strings` that they embed that worktree, and write their sha256 to `PROVENANCE.json`. Three things that
+   went wrong in r20/r21: (a) `--bin` flags leave the relay out even with `-p chariox-relay`, so build it on its own
+   (`cargo build -p chariox-relay --bin chariox-relay`) and copy it from the slot that built it (the build can land in another slot than the
+   kernel; a `chariox-relay` found in the first slot may belong to another lane's tree, so run `strings` on it too); (b) the `chariox` binary
+   starts the TypeScript CLI from the worktree it was built in, so in that worktree run `pnpm install --frozen-lockfile`, `pnpm build:kernel-client`
+   and `node scripts/build.mjs` in `apps/cli`, and keep the worktree for as long as that build runs (without it `chariox access request` fails
+   with `failed to build the TypeScript CLI before launch`); (c) `config.json` `runtime.worktree` and `runtime.head` name the tree whose
+   `packages/kernel-client` the launcher loads, so set them to the new worktree and head at the swap.
 2. Prove it on a **drill pair** first: `LANES_KERNEL_STATE=/root/.chariox/dev/lanes-kernel-drill<N>` with its own `config.json` (copy the
    real one, change `ports` and set `agents` to a directory of its own: the holder passes it to loopd as `LOOPD_AGENTS`, so the drill loopd
    reads its own queue and never the coordinator's), a copy of the current `bin/`, `loopd install`, `start`. Run a long drill round, swap the
