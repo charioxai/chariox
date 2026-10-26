@@ -10,10 +10,12 @@ import net from 'node:net'
 import path from 'node:path'
 import {fileURLToPath, pathToFileURL} from 'node:url'
 import {LocalIpcClient} from '../../../packages/kernel-client/dist/ipc.js'
+import {createOwnedRuntime, sweepOwnedRuntime} from '../../../scripts/e2e-stack/context-switch/runtime-owned.mjs'
 import {openTui, publicSnapshot} from '../../../scripts/e2e-stack/context-switch/tui.mjs'
 import {spawnOwned, signalOwnedProcess, ownedProcessHandles} from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 
 const tree = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
+let interrupted=false
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const variant = (r, name) => { assert(r[name], `Expected ${name}, got ${Object.keys(r)}`); return r[name] }
 const assistantText = snapshot => (snapshot.transcript?.entries??[])
@@ -21,23 +23,26 @@ const assistantText = snapshot => (snapshot.transcript?.entries??[])
 const required = key => { assert(process.env[key], `Set ${key}`); return process.env[key] }
 async function until(label, read, predicate = Boolean, timeout = 90_000) {
   const deadline = Date.now() + timeout
-  while (Date.now() < deadline) { const value = await read(); if (predicate(value)) return value; await sleep(250) }
+  while (Date.now() < deadline) { if(interrupted)throw Error('Drill interrupted; stopping owned resources'); const value = await read(); if (predicate(value)) return value; await sleep(250) }
   throw Error(`Timed out: ${label}`)
 }
 
 // This runs from an official provider tool on the outside kernel. It knows no
 // owner's token or profile: only the private socket and public Room id.
 if (process.argv[2] === '--follower') {
-  const [socket, room, output] = process.argv.slice(3)
-  const client = new LocalIpcClient(`ws+unix://${socket}`)
+  const [socket, room, interactionId, output] = process.argv.slice(3)
+  let client = new LocalIpcClient(`ws+unix://${socket}`)
   try {
     let refused = false
-    try { await client.send({GetSessionState:{session_id:room}}) } catch { refused = true }
-    assert(refused, 'An ungranted outside process must be refused')
+    try { await client.send({RespondToInteraction:{session_id:room,interaction_id:interactionId,choice_id:'continue'}}) } catch { refused = true }
+    assert(refused, 'An ungranted outside answer must be refused')
+    await client.close()
+    client=new LocalIpcClient(`ws+unix://${socket}`)
     const granted = variant(await client.send({RequestKernelAccess:{holder_pid:process.pid,lifetime_minutes:5}}), 'KernelAccessGranted').grant
     const session = variant(await client.send({GetSessionState:{session_id:room}}), 'SessionState').session
     const question = session.active_interactions.find(q => q.title === 'AMASK primary')
     assert(question?.asking_task_id)
+    assert.equal(question.id,interactionId)
     const request = {RespondToInteraction:{session_id:room,interaction_id:question.id,choice_id:'continue'}}
     await client.send(request)
     let secondRefused = false
@@ -51,16 +56,25 @@ if (process.argv[2] === '--follower') {
 
 const evidence = required('AMASK_EVIDENCE'), state = required('AMASK_STATE_ROOT')
 for (const dir of [evidence,state]) { assert(path.isAbsolute(dir) && !dir.startsWith(tree+'/')); await mkdir(dir,{recursive:true,mode:0o700}) }
-const root = await mkdtemp(path.join(state,'run-')), bin = required('AMASK_BIN')
+const runtimeName='amask-'+randomBytes(4).toString('hex'), root=path.join(state,'run-'+runtimeName), bin=required('AMASK_BIN')
+await createOwnedRuntime(root,{name:runtimeName,head:execFileSync('git',['rev-parse','HEAD'],{cwd:tree,encoding:'utf8'}).trim()})
+process.once('SIGINT',()=>{interrupted=true});process.once('SIGTERM',()=>{interrupted=true})
 const profilePath = required('AMASK_CODEX_PROFILE')
 const workspace = await mkdtemp('/root/work/agent-amask-drill-')
 execFileSync('git',['init','-q',workspace])
 await writeFile(path.join(workspace,'README.md'),'Disposable MP-08 / MP-09 / MP-10 / MP-11 async-question drill.\n')
 const children = [], kernels = [], clients = [], tuis = [], secrets = []
-const report = {MP:['MP-08','MP-09','MP-10','MP-11'],head:execFileSync('git',['rev-parse','HEAD'],{cwd:tree,encoding:'utf8'}).trim(),started:new Date().toISOString(),model:'gpt-6-luna',effort:'low',cells:[],processes:[]}
+const toolingHead=execFileSync('git',['rev-parse','HEAD'],{cwd:tree,encoding:'utf8'}).trim()
+const report = {MP:['MP-08','MP-09','MP-10','MP-11'],head:process.env.AMASK_RUNTIME_HEAD??toolingHead,tooling_head:toolingHead,tooling_script_sha256:createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex'),started:new Date().toISOString(),model:'gpt-6-luna',effort:'low',cells:[],processes:[]}
 let browser
 function safe(text) { for(const secret of secrets) assert(!text.includes(secret),'Private value in evidence'); return text }
 async function record(name, data) { await writeFile(path.join(evidence,name+'.json'),safe(JSON.stringify(data,null,2))+'\n',{mode:0o600}) }
+function questionAnswers(kernel, sourceId) {
+  // Read only this disposable question's public ledger payload, never config or
+  // provider state. Keep the attribution and exact outcome in the evidence.
+  const script = 'import sqlite3,json,sys\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True)\nprint(json.dumps([json.loads(r[0])["public_answer"] for r in c.execute("SELECT payload FROM agent_inbox WHERE source_id=? ORDER BY sequence",(sys.argv[2],))]))'
+  return JSON.parse(execFileSync('python3',['-c',script,path.join(kernel.env.CHARIOX_HOME,'state/kernel.db'),sourceId],{encoding:'utf8'}))
+}
 async function port() { return new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>resolve(p))})}) }
 function start(binary, env, name) {
   const child=spawnOwned(binary,[],{cwd:tree,env,stdio:['ignore','pipe','pipe'],detached:true})
@@ -70,15 +84,17 @@ function start(binary, env, name) {
   return child
 }
 async function stop(child) {
-  if(!child || child.exitCode!==null || child.signalCode!==null)return
-  signalOwnedProcess(child,'SIGINT')
-  try { await until('owned process exit',async()=>child.exitCode!==null||child.signalCode!==null,Boolean,20_000) }
-  catch {
-    signalOwnedProcess(child,'SIGTERM')
-    try { await until('owned process termination',async()=>child.exitCode!==null||child.signalCode!==null,Boolean,5000) }
-    catch { signalOwnedProcess(child,'SIGKILL'); await until('owned process killed',async()=>child.exitCode!==null||child.signalCode!==null,Boolean,5000) }
+  if(!child)return
+  const exited=()=>child.exitCode!==null||child.signalCode!==null
+  for(const [signal,ms] of [['SIGINT',20_000],['SIGTERM',5000],['SIGKILL',5000]]){
+    if(exited())return
+    signalOwnedProcess(child,signal)
+    const deadline=Date.now()+ms
+    while(!exited()&&Date.now()<deadline)await sleep(100)
   }
+  assert(exited(),'Owned child did not exit after bounded cleanup')
 }
+
 async function capture(tui,name) {
   await record(name,publicSnapshot(await tui.send('snapshot')))
   await writeFile(path.join(evidence,name+'.ansi'),safe(tui.output()),{mode:0o600})
@@ -111,6 +127,7 @@ async function setup(name,relayUrl,relaySecret) {
   await k.client.subscribeToWaitingRoomInventory()
   const linked=variant(await k.client.send({LinkProviderAccountProfile:{provider:'codex',label:'amask-'+name,path:profilePath}}),'ProviderAccountProfile').profile
   k.profile=linked.profile_id
+  await k.client.send({RefreshProviderAccountProfile:{provider:"codex",account_profile:k.profile}})
   await until(name+' relay registered',()=>k.client.send({RelayStatus:null}),r=>r.RelayStatus?.status?.connected)
   const pairing=variant(await k.client.send({CreateTerminalPairingLink:{terminal_type:'cli',alias:'amask-'+name,expires_in_ms:60_000}}),'TerminalPairingLinkCreated').pairing
   secrets.push(pairing.pairing_link)
@@ -125,6 +142,9 @@ async function setup(name,relayUrl,relaySecret) {
   let s=await tui.send('snapshot');k.room=s.session.id;k.agent=s.session.focusedAgentId
   await tui.type('\x15/agent variant '+k.agent+' low\r')
   await ensureVault(k)
+  const resolved=(await tui.send('snapshot')).session.agents.find(a=>a.id===k.agent)
+  assert.equal(resolved.model,'gpt-6-luna');assert.equal(resolved.effort,'low')
+  report.resolved_agents??=[];report.resolved_agents.push({kernel:name,agent_id:k.agent,provider:resolved.provider,model:resolved.model,effort:resolved.effort})
   k.session=async()=>variant(await k.client.send({GetSessionState:{session_id:k.room}}),'SessionState').session
   kernels.push(k)
   return k
@@ -137,6 +157,10 @@ try {
   const owner=await setup('owner',relayUrl,relaySecret)
   const follower=await setup('follower',relayUrl,relaySecret)
   for(const name of ['chariox-kernel','chariox-cli','chariox-relay'])report[name+'_sha256']=createHash('sha256').update(await readFile(bin+'/'+name)).digest('hex')
+  if(process.env.AMASK_SETUP_ONLY==='1'){
+    await capture(owner.tui,'preflight-owner');await capture(follower.tui,'preflight-follower')
+    report.preflight='PASS (no provider turns; not acceptance)'
+  }else{
   await owner.tui.send('submit_prompt',{prompt:'Use chariox.request_popup with wait:false, title "AMASK primary", message "Choose the next step", one choice {id:"continue",label:"Continue",reply:"AMASK exact outside answer"}, timeout_sec:600. Then call chariox.events.inbox with this turn task_id and origin_prompt_id as a second tool while the question is pending. Finish this turn with AMASK_KEPT_WORKING. Do not block or yield. In a subsequent inbox turn, handle the answer, print AMASK_ANSWER_RECEIVED with the exact reply and attributed answerer, then acknowledge it as handled.'})
   const pending=await until('primary async question',owner.session,s=>(s.active_interactions??[]).some(q=>q.title==='AMASK primary'))
   const question=pending.active_interactions.find(q=>q.title==='AMASK primary')
@@ -147,7 +171,7 @@ try {
   report.cells.push({id:'AM-ASK-01',result:'CORE PASS',interaction_id:question.id,asking_task_id:question.asking_task_id})
   if(process.env.AMASK_WEB_CAPTURE_HELPER){
     // The helper drives the production hosted entry and captures both DPRs.
-    execFileSync(process.env.AMASK_WEB_CAPTURE_HELPER,[owner.room,question.id,evidence],{env:{...process.env,AMASK_OWNER_ENDPOINT:owner.url,AMASK_OWNER_CHARIOX_HOME:owner.env.CHARIOX_HOME},stdio:'inherit',timeout:180_000})
+    try{execFileSync(process.env.AMASK_WEB_CAPTURE_HELPER,[owner.room,question.id,evidence],{env:{...process.env,AMASK_OWNER_ENDPOINT:owner.url,AMASK_OWNER_CHARIOX_HOME:owner.env.CHARIOX_HOME},stdio:'inherit',timeout:180_000})}catch(error){report.web_failure=error.message;process.exitCode=1}
   }
   if(process.env.AMASK_WEB_ORIGIN){delete owner.env.CHARIOX_RELAY_URL;delete owner.env.CHARIOX_RELAY_TOKEN}
   await stop(owner.child)
@@ -159,7 +183,7 @@ try {
   await ensureVault(owner)
   await capture(owner.tui,'02-restarted-question')
   const followerResult=path.join(root,'follower-result.json')
-  const followerCommand=['node',path.join(tree,'apps/cli/scripts/live-async-question-drill.mjs'),'--follower',owner.env.CHARIOX_DAEMON_SOCKET,owner.room,followerResult].map(s=>"'"+s.replaceAll("'","'\\''")+"'").join(' ')
+  const followerCommand=['node',path.join(tree,'apps/cli/scripts/live-async-question-drill.mjs'),'--follower',owner.env.CHARIOX_DAEMON_SOCKET,owner.room,question.id,followerResult].map(s=>"'"+s.replaceAll("'","'\\''")+"'").join(' ')
   await follower.tui.send('submit_prompt',{prompt:`Run this exact command using your shell tool and wait for it: ${followerCommand}. It requests access through the normal owner approval; do not read the owner token or state. When it succeeds finish with AMASK_FOLLOWER_DONE.`})
   const access=await until('outside grant decision',async()=>owner.passkeys.find(p=>p.kind==='access_grant'))
   assert(access.approve_choice_id)
@@ -171,24 +195,56 @@ try {
   const wake=answered.agent_wakes.find(w=>w.id===question.id)
   assert.equal(wake.fire_count,1)
   assert(!answered.active_interactions.some(q=>q.id===question.id))
+  await until('primary answer handled',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===question.asking_task_id&&t.state==='done'))
+  const answers=questionAnswers(owner,question.id)
+  assert.equal(answers.length,1)
+  assert.equal(answers[0].status,'answered')
+  assert.equal(answers[0].choice_id,'continue')
+  assert.equal(answers[0].reply,'AMASK exact outside answer')
+  assert(answers[0].answered_by&&answers[0].client_id)
+  await record('04-attributed-answer',answers)
   await capture(owner.tui,'04-answer-wake')
   report.cells.push({id:'AM-ASK-02',result:'CORE PASS',grant_id:result.grant_id,duplicate_refused:true,ungranted_refused:true})
   report.cells.push({id:'AM-ASK-03',result:'CORE PASS',fire_count:wake.fire_count,restarted:true})
-  await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup twice, both wait:false and timeout_sec:3. First title "AMASK deadline default", message "Default deadline", choices [{id:"continue",label:"Continue",reply:"AMASK timeout default"}], default_on_timeout:"continue". Second title "AMASK deadline empty", message "No default deadline", same choices but omit default_on_timeout. Call events.inbox as another tool, then finish with AMASK_DEADLINES_ARMED. When woken, read events.inbox and handle both timed_out answers, report AMASK_DEADLINES_RECEIVED with their status/choice/reply, and acknowledge the handled events.'})
+  await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup twice, both wait:false and timeout_sec:10. First title "AMASK deadline default", message "Default deadline", choices [{id:"continue",label:"Continue",reply:"AMASK timeout default"}], default_on_timeout:"continue". Second title "AMASK deadline empty", message "No default deadline", same choices but omit default_on_timeout. Call events.inbox as another tool, then finish with AMASK_DEADLINES_ARMED. When woken, read events.inbox and handle both timed_out answers, report AMASK_DEADLINES_RECEIVED with their status/choice/reply, and acknowledge the handled events.'})
   await until('deadline receipts',owner.session,s=>s.agent_wakes?.filter(w=>w.kind==='interaction'&&w.id!==question.id&&w.fire_count===1).length>=2,120_000)
   await until('deadline answer turn',async()=>owner.tui.send('snapshot'),s=>assistantText(s).includes('AMASK_DEADLINES_RECEIVED'),120_000)
+  await until('both deadline outcomes handled',owner.session,s=>{
+    const tasks=new Set(s.agent_wakes.filter(w=>w.kind==='interaction'&&w.id!==question.id).map(w=>w.task_id))
+    return tasks.size>0&&s.agent_tasks.filter(t=>tasks.has(t.task_id)).every(t=>t.state==='done')
+  },120_000)
   await capture(owner.tui,'05-deadline-wake')
+  const deadlines=(await owner.session()).agent_wakes.filter(w=>w.kind==='interaction'&&w.id!==question.id)
+  assert.equal(deadlines.length,2)
+  const outcomes=deadlines.map(w=>({title:w.detail.title,fire_count:w.fire_count,answers:questionAnswers(owner,w.id)}))
+  for(const outcome of outcomes){
+    assert.equal(outcome.fire_count,1);assert.equal(outcome.answers.length,1)
+    assert.equal(outcome.answers[0].status,'timed_out')
+    const hasDefault=outcome.title==='AMASK deadline default'
+    assert.equal(outcome.answers[0].choice_id,hasDefault?'continue':null)
+    assert.equal(outcome.answers[0].reply,hasDefault?'AMASK timeout default':null)
+  }
+  await record('05-deadline-outcomes',outcomes)
   report.cells.push({id:'AM-ASK-04',result:'CORE PASS'})
   await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup with wait:false, title "AMASK stop", message "Stop withdraws this question", choices [{id:"continue",label:"Continue",reply:"AMASK must not default"}], timeout_sec:300, default_on_timeout:"continue". Then run sleep 60 with your shell tool and wait for it. This is a stop drill; do not answer the question yourself.'})
-  await until('stop question pending',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK stop'))
+  const beforeStop=await until('stop question pending',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK stop'))
+  const stopQuestion=beforeStop.active_interactions.find(q=>q.title==='AMASK stop')
   await capture(owner.tui,'06-before-stop')
   await owner.tui.type('\x03')
   await until('stop withdraws card',owner.session,s=>!s.active_interactions?.some(q=>q.title==='AMASK stop'))
   await capture(owner.tui,'07-after-stop')
+  const withdrawn=questionAnswers(owner,stopQuestion.id)
+  assert.equal(withdrawn.length,1);assert.equal(withdrawn[0].status,'withdrawn')
+  assert.equal(withdrawn[0].reply,null)
+  await record('07-stop-outcome',withdrawn)
   report.cells.push({id:'AM-ASK-05',result:'CORE PASS',stopped_via:'real TUI Ctrl+C'})
-  report.web=process.env.AMASK_WEB_CAPTURE_HELPER?'captured by hosted helper':'NOT RUN (run the hosted web helper at DPR1 and DPR2)'
+  report.web=report.web_failure?'FAIL (see web-report.json)':process.env.AMASK_WEB_CAPTURE_HELPER?'captured by hosted helper':'NOT RUN (run the hosted web helper at DPR1 and DPR2)'
+  }
 } catch(error) {
   report.failure=String(error.message)
+  report.runtime_root=root
+  for(let i=0;i<tuis.length;i++)await capture(tuis[i],'failure-tui-'+i).catch(()=>{})
+  report.child_exits=children.map(child=>({pid:child.pid,exit_code:child.exitCode,signal:child.signalCode}))
   process.exitCode=1
 } finally {
   for(const tui of tuis.reverse())await tui.close().catch(()=>{})
@@ -197,8 +253,11 @@ try {
   const remaining=children.flatMap(child=>ownedProcessHandles(child)).filter(h=>h.pid>1)
   for(const handle of remaining){try{signalOwnedProcess(handle,'SIGTERM')}catch{}}
   await browser?.close().catch(()=>{})
+  try{report.cleanup=await sweepOwnedRuntime(root)}catch(error){report.cleanup_failure=error.message;process.exitCode=1}
+  if(!report.cleanup_failure&&!(report.failure&&process.env.AMASK_KEEP_FAILED_STATE==='1')){
+    await rm(root,{recursive:true,force:true})
+    await rm(workspace,{recursive:true,force:true})
+  }else report.preserved_failure_state={root,workspace}
   await record('report',report)
-  await rm(root,{recursive:true,force:true})
-  await rm(workspace,{recursive:true,force:true})
-  console.log(JSON.stringify({MP:report.MP,cells:report.cells,failure:report.failure??null,web:report.web,cleanup:'owned runtime removed'}))
+  console.log(JSON.stringify({MP:report.MP,cells:report.cells,failure:report.failure??null,web:report.web,cleanup:report.preserved_failure_state?'owned processes stopped; failure state retained for diagnosis':'owned runtime removed'}))
 }

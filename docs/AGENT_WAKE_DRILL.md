@@ -160,6 +160,7 @@ systemd-run --scope --quiet -p MemoryMax=4G -p MemorySwapMax=0 -- timeout 900 \
       AMASK_STATE_ROOT=/absolute/path/to/disposable/state \
       AMASK_EVIDENCE=/absolute/path/to/evidence \
       AMASK_CODEX_PROFILE=/absolute/path/to/product/codex/profile \
+      AMASK_RUNTIME_HEAD=<exact-runtime-commit> \
   node apps/cli/scripts/live-async-question-drill.mjs
 ```
 
@@ -186,3 +187,8 @@ Run against the base first: it must fail because a non-blocking question is
 not available, then run the matching candidate. Source regressions are selected
 with `cargo test -p chariox-kernel --lib async_popup` (through the build-slot
 wrapper). The existing `popup_notice` tests guard the default blocking mode.
+
+`AMASK_SETUP_ONLY=1` checks disposable kernel/TUI/Vault setup without a provider
+turn; it is not acceptance. The harness refreshes linked profile status through
+the normal product request before the TUI starts. Reports distinguish runtime
+head, tooling head, binary hashes and resolved provider model/effort.
