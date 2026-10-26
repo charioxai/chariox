@@ -48,3 +48,37 @@ invokes the tool. Agent calls and the TUI use the same kernel operation.
 These implementation checks do not establish Stage 1 acceptance. S1-02/S1-07
 still require real client/provider, DEV Tab reload, timing and platform evidence
 on the selected integrated runtime head. MP-09 shutdown policy is unchanged.
+
+## Focused development drill
+
+Run the kernel and built TUI from the same head, with the pinned SDK tooling
+and a runtime that supports the template's engine. For the browser leg, use a
+normal-user host with the product-pinned Chromium and installed namespace
+helper. Keep state and recordings outside the checkout.
+
+1. Copy an SDK template to a kernel workspace. Attach the TUI to a new Room,
+   unlock that kernel's Vault, and run `/app dev /absolute/path/to/template`.
+   Accept its shared install approval. Record the installation and generation.
+2. Run `/app open INSTALLATION`. Save a visible change to `bundle/ui/index.html`.
+   Confirm the same Tab shows it on the next generation. Record the file-save
+   timestamp and the first visible updated frame; report their difference.
+3. Break `app.ts` syntax and save. Confirm the TUI reports the compiler error,
+   the generation stays unchanged, and the Tab still serves the previous UI.
+   Fix the syntax and save once; confirm activation and reload recover.
+4. Add a network capability to `app.json` and save. Decline the shared approval.
+   Confirm the active generation and UI stay unchanged. Remove the capability
+   and save; confirm the next generation activates without another expansion.
+5. Save several UI revisions in a burst, then save while a build is running.
+   Confirm the final UI contains the newest revision and no concurrent push is
+   started by the watcher. Stop it with `/app dev stop`.
+6. In that developer Room, run a real agent turn asking it to call
+   `app_dev_push` on the same source. Follow a returned request id to its final
+   result. Compare its installation and generation with the TUI's result. In
+   another Room, verify the tool is absent; an attempted invocation must fail.
+7. Stop the TUI and kernel, and verify their provider and browser children exit.
+
+A controller fixture can additionally assert that committed assets are sent
+through `browser.app.reload` to the original target and that broken or declined
+pushes send no reload. Report this as controller-dispatch evidence. It does not
+establish page rendering, web-storage preservation, browser isolation or visible
+save-to-reload latency.

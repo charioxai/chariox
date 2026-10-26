@@ -205,8 +205,15 @@ class DevRun {
     // A response can be lost after admission. Finish that exact request before
     // submitting the newest save, so a reconnect cannot duplicate installation.
     if (this.pushRequest) {
-      const prior = await this.followPush(this.pushRequest, true)
-      if (!prior || this.stopped) return
+      try {
+        const prior = await this.followPush(this.pushRequest, true)
+        if (!prior || this.stopped) return
+      } catch (error) {
+        // A terminal build failure settles the earlier revision. The save
+        // that brought us back still needs its own push.
+        if (this.pushRequest) throw error
+        this.deps.notice(`Previous build: ${message(error)}`)
+      }
       this.pushRequest = undefined
     }
     const request = `dev-${randomUUID()}`

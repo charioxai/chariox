@@ -115,3 +115,29 @@ test("busy status admission keeps the accepted push identity for the next save",
   await loop.start(root);await loop.settled();change("app.ts");await loop.settled()
   assert.equal(ids.length,3);assert.equal(ids[0],ids[1]);assert.notEqual(ids[1],ids[2])
 })
+
+test("a failed build found after a lost response still pushes the newest save", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "app-push-failed-replay-")))
+  await mkdir(join(root, "bundle")); await writeFile(join(root, "app.json"), "{}")
+  t.after(() => rm(root, { recursive: true, force: true }))
+  let change!: (file: string | null) => void
+  const ids: string[] = [], notices: string[] = []
+  const loop = new AppDevLoop({
+    currentSession: () => "room", notice: text => notices.push(text), debounceMs: 1, pollMs: 1,
+    installer: {} as AppDevDeps["installer"],
+    watch: (_root, callback) => { change = callback; return { close() {} } },
+    send: async request => {
+      const id = (request.BeginAppDevPush as any)?.request_id
+      assert.ok(id); ids.push(id)
+      if (ids.length === 1) throw new Error("connection lost after admission")
+      if (ids.length === 2) return { AppDevPushFailed: { request_id: id, code: "build_failed", message: "Earlier source had a syntax error" } }
+      return { AppInstallOperationStatus: { operation: { request_id: id, phase: "committed", installation_id: "dev", generation: "2", package_digest: "sha256:" + "a".repeat(64), interaction_id: null, failure: null } } }
+    },
+  })
+  t.after(() => loop.dispose())
+  await loop.start(root); await loop.settled(); change("app.ts"); await loop.settled()
+  assert.equal(ids.length, 3)
+  assert.equal(ids[0], ids[1]); assert.notEqual(ids[1], ids[2])
+  assert.ok(notices.some(text => text.startsWith("Previous build:") && text.includes("syntax error")))
+  assert.ok(notices.some(text => text.includes("generation 2")))
+})
