@@ -72,3 +72,10 @@ import Testing
     #expect(!supportsSkillsV2Runtime(protocolVersion: 532, capabilities: ["skills_v2_runtime"]))
     #expect(supportsSkillsV2Runtime(protocolVersion: 533, capabilities: ["skills_v2_runtime"]))
 }
+
+// MP-08 / MP-10 / MP-11: a kernel without the 581 capability must not be offered repository updates.
+@Test func skillsRepositoryUpdateRequiresTheRepositoryUpdateCapability() {
+    #expect(!supportsSkillsRepositoryUpdate(capabilities: ["skills_v2_runtime"]))
+    #expect(!supportsSkillsRepositoryUpdate(capabilities: ["skills_repository_update_v581"]))
+    #expect(supportsSkillsRepositoryUpdate(capabilities: ["skills_v2_runtime", "skills_repository_update_v581"]))
+}

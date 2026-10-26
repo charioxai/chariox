@@ -24,7 +24,7 @@ fn skills_v2_protocol_allocation_and_contract_hash() {
             "{:x}",
             Sha256::digest(include_str!("../../../../skill/v2.rs"))
         ),
-        "27b86896ba225deedf3d43c5f9fba46d68c5a2b5233ac178fba09e675fa41bde"
+        "6137dd64e765459d9fcebbccea0f9f556ddb121d1129bae597c1bb4d86457b88"
     );
 }
 
@@ -234,6 +234,12 @@ fn skills_v2_runtime_capability_is_projected_by_kernel_readiness_not_listed_stat
     );
     assert!(!crate::local::RUNTIME_CONTROL_CAPABILITIES
         .contains(&crate::local::SKILLS_V2_RUNTIME_CAPABILITY));
+    assert_eq!(
+        crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY,
+        "skills_repository_update_v581"
+    );
+    assert!(!crate::local::RUNTIME_CONTROL_CAPABILITIES
+        .contains(&crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY));
 }
 
 // MP-08 / MP-10 / MP-11: there is no old Skill grant/RPC compatibility decoder.
@@ -301,6 +307,34 @@ fn skills_v2_leased_native_inventory_peer_162_shape_and_hash() {
     assert!(serde_json::from_value::<RelayPeerResponse>(not_started).is_ok());
 }
 
+// MP-08 / MP-10 / MP-11: peer 192 adds the worker's compaction report to the inventory.
+#[test]
+fn skills_v2_leased_native_inventory_compaction_ids_peer_192_shape_and_hash() {
+    let response = serde_json::json!({"kind":"leased_skill_native_inventory","inventory":{
+        "entries":[],"revision":"native-1","provider_run_id":"run-1",
+        "compaction_ids":["compact-1","compact-2"]}});
+    let parsed: RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), response);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&response).unwrap())
+        ),
+        "931aa8bed7dbd8147fb0a74020b25a71071bca5ccc8d2d65c512d39441978d96"
+    );
+    // The field is omitted when empty, which is what a 189 worker sends.
+    let RelayPeerResponse::LeasedSkillNativeInventory {
+        inventory: Some(old),
+        ..
+    } = serde_json::from_value(serde_json::json!({"kind":"leased_skill_native_inventory",
+            "inventory":{"entries":[],"revision":"native-1"}}))
+    .unwrap()
+    else {
+        panic!("inventory response");
+    };
+    assert!(old.compaction_ids.is_empty());
+}
+
 #[test]
 fn skills_v2_ensure_remote_skill_packages_name_view_is_an_additive_peer_179_field() {
     assert_eq!(
@@ -327,4 +361,21 @@ fn skills_v2_ensure_remote_skill_packages_name_view_is_an_additive_peer_179_fiel
     );
     wire["skill_names"]["skills"][0]["path"] = serde_json::json!("/worker/skill");
     assert!(serde_json::from_value::<RelayPeerRequest>(wire).is_err());
+}
+
+// MP-08 / MP-10 / MP-11: the repository update shape is carried by the 581/189 pair.
+#[test]
+fn skills_v2_repository_update_wire_roundtrips() {
+    let wire =
+        serde_json::json!({"SkillsV2":{"action":"resolve_repository_update","package_id":"repo"}});
+    let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let wire = serde_json::json!({"SkillsV2":{"result":{
+        "kind":"repository_update", "package_id":"repo", "locator":"https://github.com/owner/skills", "from_revision":"old", "revision":"new",
+        "changed":[{"member":{"path":"skills/review","skill_id":"s1","name":"review","digest":"old-digest"},"digest":"new-digest"}],
+        "added":[],"removed":[],"unchanged":[],"skipped":[],
+        "mutation":{"scope":{"kind":"chariox"},"expected_revision":3,"actions":[]}
+    }}});
+    let response: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), wire);
 }

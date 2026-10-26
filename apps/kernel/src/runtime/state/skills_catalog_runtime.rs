@@ -24,7 +24,15 @@ fn capabilities_for_readiness(ready: bool) -> Vec<String> {
     crate::local::RUNTIME_CONTROL_CAPABILITIES
         .iter()
         .copied()
-        .chain(ready.then_some(crate::local::SKILLS_V2_RUNTIME_CAPABILITY))
+        .chain(
+            ready
+                .then_some([
+                    crate::local::SKILLS_V2_RUNTIME_CAPABILITY,
+                    crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY,
+                ])
+                .into_iter()
+                .flatten(),
+        )
         .map(str::to_owned)
         .collect()
 }
@@ -44,6 +52,15 @@ fn skill_error(message: &str) -> DaemonError {
 }
 
 impl KernelRuntimeState {
+    pub(crate) fn with_skills_catalog_caller(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+    ) -> Self {
+        let mut state = self.clone();
+        state.skills_catalog_caller = Some((command.source.clone(), command.caller.clone()));
+        state
+    }
+
     pub(crate) fn skills_v2_runtime_available(&self) -> bool {
         catalog_available(&self.owned.durable_state_store)
     }
@@ -110,6 +127,18 @@ impl KernelRuntimeState {
 
     pub(super) fn skills_host_owner(&self, user: &str) -> bool {
         let config = self.owned.config_projection.snapshot();
+        if let Some((source, caller)) = &self.skills_catalog_caller {
+            return caller
+                .user_id
+                .as_deref()
+                .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID)
+                == user
+                && crate::runtime::cloud_relay_authorization::kernel_cloud_caller_owner(
+                    &config, source, caller,
+                );
+        }
+        // Internal skill tools and feeds supply an owner from kernel-owned agent
+        // or attachment state. Client requests must retain their transport identity.
         user == crate::session::DEFAULT_LOCAL_USER_ID
             || config
                 .cloud_relay
@@ -357,6 +386,14 @@ impl KernelRuntimeState {
                     ));
                 }
                 service.resolve_repository(&url)
+            }
+            SkillsV2Request::ResolveRepositoryUpdate { package_id } => {
+                if origin.is_some() || !self.skills_host_owner(user) {
+                    return Err(skill_error(
+                        "only the home kernel owner can update a repository package, from Skills",
+                    ));
+                }
+                service.resolve_repository_update(&package_id)
             }
             SkillsV2Request::Mutate {
                 mutation,
@@ -638,7 +675,222 @@ mod capability_tests {
                 .count(),
             1
         );
+        assert_eq!(
+            ready
+                .iter()
+                .filter(|value| value.as_str() == crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY)
+                .count(),
+            1
+        );
         assert!(closed.iter().all(|value| ready.contains(value)));
-        assert_eq!(ready.len(), closed.len() + 1);
+        assert_eq!(ready.len(), closed.len() + 2);
+    }
+}
+
+#[cfg(test)]
+mod owner_gate_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn catalog_owner_requires_the_authenticated_relay_principal() {
+        use crate::runtime::command::{
+            KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource,
+        };
+        let mut config = crate::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "owner".into(),
+            realm_id: "owner-realm".into(),
+            ..Default::default()
+        });
+        let app = crate::DaemonApp::bootstrap(config).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        crate::test_support::install_skill_through_requests(&router, "owner-skill", 0).await;
+        for (kind, user, realm, allowed) in [
+            (
+                KernelCallerKind::RemoteClient,
+                "owner",
+                Some("wrong-realm"),
+                false,
+            ),
+            (KernelCallerKind::RemoteClient, "owner", None, false),
+            (
+                KernelCallerKind::RemoteKernel,
+                "owner",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::HostedService,
+                "owner",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::LocalClient,
+                "local",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::RemoteClient,
+                "local",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::RemoteClient,
+                "member",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::RemoteClient,
+                "owner",
+                Some("owner-realm"),
+                true,
+            ),
+        ] {
+            let hosted_service = kind == KernelCallerKind::HostedService;
+            let caller = KernelCaller {
+                caller_kind: kind,
+                user_id: Some(user.into()),
+                realm_id: realm.map(str::to_owned),
+                ..KernelCaller::for_source(&KernelCommandSource::RelayClient)
+            };
+            for request in [
+                SkillsV2Request::Preview {
+                    mutation: install_probe("probe"),
+                },
+                SkillsV2Request::Mutate {
+                    mutation: install_probe("probe"),
+                    review_receipt_id: "not-issued".into(),
+                },
+            ] {
+                let preview = matches!(request, SkillsV2Request::Preview { .. });
+                let request = LocalDaemonRequest::SkillsV2(request);
+                let command = KernelCommand::from_local_request_with_caller(
+                    "owner-probe",
+                    KernelCommandSource::RelayClient,
+                    caller.clone(),
+                    None,
+                    None,
+                    &request,
+                );
+                let result = router.dispatch(command, request).await;
+                if allowed {
+                    if preview {
+                        assert!(matches!(
+                            result.unwrap(),
+                            crate::local::LocalDaemonResponse::SkillsV2 {
+                                result: SkillsV2Response::Preview { .. }
+                            }
+                        ));
+                    } else if let Err(error) = result {
+                        assert!(!error.to_string().contains("home kernel owner"), "{error}");
+                    }
+                } else {
+                    let error =
+                        result.expect_err("a user ID alone must not grant catalog ownership");
+                    assert!(
+                        error.to_string().contains("home kernel owner")
+                            || (hosted_service
+                                && error
+                                    .to_string()
+                                    .contains("authorize hosted service request")),
+                        "{error}"
+                    );
+                }
+            }
+        }
+        let snapshot = router
+            .runtime_state()
+            .skills_catalog_service()
+            .unwrap()
+            .storage
+            .snapshot()
+            .unwrap();
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(
+            snapshot
+                .catalogs
+                .iter()
+                .map(|catalog| catalog.skills.len())
+                .sum::<usize>(),
+            1
+        );
+    }
+
+    fn install_probe(name: &str) -> SkillCatalogMutation {
+        SkillCatalogMutation {
+            scope: SkillScope::Chariox,
+            expected_revision: 1,
+            actions: vec![SkillCatalogAction::Install {
+                source: SkillInstallSource::Content {
+                    skill_md: format!("---\nname: {name}\ndescription: Probe {name}\n---\nBody.\n"),
+                },
+                collision: SkillCollisionAction::Reject,
+                package_id: None,
+            }],
+        }
+    }
+
+    // A shared-session member is not the home kernel owner: Preview and Mutate are
+    // refused before any review or publish, and the catalog keeps the owner's revision.
+    #[tokio::test]
+    async fn session_member_cannot_preview_or_mutate_the_home_catalog() {
+        let app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let revision =
+            crate::test_support::install_skill_through_requests(&router, "owner-skill", 0).await;
+        assert_eq!(revision, 1);
+        let member = "shared-session-member".to_owned();
+        let denial = "the home kernel owner must authorize skill catalog mutations";
+        let preview = state
+            .execute_skills_catalog_request(
+                SkillsV2Request::Preview {
+                    mutation: install_probe("member-skill"),
+                },
+                member.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(preview.to_string().contains(denial), "{preview}");
+        let mutate = state
+            .execute_skills_catalog_request(
+                SkillsV2Request::Mutate {
+                    mutation: install_probe("member-skill"),
+                    review_receipt_id: "not-issued".into(),
+                },
+                member,
+            )
+            .await
+            .unwrap_err();
+        assert!(mutate.to_string().contains(denial), "{mutate}");
+        let crate::local::LocalDaemonResponse::SkillsV2 {
+            result: SkillsV2Response::Catalog {
+                revision, skills, ..
+            },
+        } = state
+            .execute_skills_catalog_request(
+                SkillsV2Request::Catalog {
+                    project_id: None,
+                    agent_id: None,
+                },
+                crate::session::DEFAULT_LOCAL_USER_ID.to_owned(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("Catalog must answer with the catalog");
+        };
+        assert_eq!(revision, 1);
+        assert_eq!(skills.len(), 1);
     }
 }

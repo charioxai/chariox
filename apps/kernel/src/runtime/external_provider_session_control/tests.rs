@@ -16,6 +16,7 @@ mod alias;
 mod history_authority;
 mod import;
 mod poller;
+mod profile_roots;
 
 pub(super) fn observer_target(agent_id: &str) -> AttachedExternalObserverTarget {
     attached_external_observer_target_from_import(

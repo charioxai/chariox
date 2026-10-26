@@ -188,6 +188,7 @@ impl SkillCatalogSet {
             return Err(failure("a batch must contain 1 to 512 reviewed actions"));
         }
         let mut next = self.clone();
+        let mut repository_packages = BTreeMap::new();
         for (index, action) in mutation.actions.iter().enumerate() {
             match action {
                 SkillCatalogAction::Install {
@@ -218,6 +219,20 @@ impl SkillCatalogSet {
                             record.package_id = existing.package_id;
                             record.state_override = existing.state_override;
                             record.provenance.installed_at_ms = existing.provenance.installed_at_ms;
+                            if let (SkillInstallSource::Repository { path, .. }, Some(package_id)) =
+                                (source, &record.package_id)
+                            {
+                                if !next.package_mut(&record.scope, package_id)?.custom {
+                                    next.attach_repository_member(
+                                        &record.scope,
+                                        package_id,
+                                        path,
+                                        &record,
+                                    )?;
+                                    repository_packages
+                                        .insert(package_id.clone(), record.scope.clone());
+                                }
+                            }
                             *next.record_mut(skill_id)? = record;
                             continue;
                         }
@@ -226,13 +241,14 @@ impl SkillCatalogSet {
                         (source, &record.package_id)
                     {
                         next.attach_repository_member(&mutation.scope, package_id, path, &record)?;
+                        repository_packages.insert(package_id.clone(), record.scope.clone());
                     }
                     next.catalog_mut(&mutation.scope).skills.push(record);
                 }
                 SkillCatalogAction::Update {
                     skill_id,
                     expected_digest,
-                    ..
+                    source,
                 } => {
                     let existing = next
                         .record(skill_id)
@@ -253,6 +269,19 @@ impl SkillCatalogSet {
                     record.name = existing.name;
                     record.state_override = existing.state_override;
                     record.provenance.installed_at_ms = existing.provenance.installed_at_ms;
+                    if let (SkillInstallSource::Repository { path, .. }, Some(package_id)) =
+                        (source, &record.package_id)
+                    {
+                        if !next.package_mut(&mutation.scope, package_id)?.custom {
+                            next.attach_repository_member(
+                                &mutation.scope,
+                                package_id,
+                                path,
+                                &record,
+                            )?;
+                            repository_packages.insert(package_id.clone(), record.scope.clone());
+                        }
+                    }
                     *next.record_mut(skill_id)? = record;
                 }
                 SkillCatalogAction::Remove { skill_id } => {
@@ -354,6 +383,14 @@ impl SkillCatalogSet {
                 }
             }
         }
+        for (package_id, scope) in repository_packages {
+            if next
+                .catalog(&scope)
+                .is_some_and(|c| c.packages.iter().any(|p| p.id == package_id))
+            {
+                next.advance_repository_revision(&scope, &package_id)?;
+            }
+        }
         next.revision = self
             .revision
             .checked_add(1)
@@ -361,27 +398,7 @@ impl SkillCatalogSet {
         for catalog in &mut next.catalogs {
             catalog.revision = next.revision;
         }
-        let repository_batch = mutation.actions.iter().any(|action| {
-            matches!(
-                action,
-                SkillCatalogAction::Install {
-                    source: SkillInstallSource::Repository { .. },
-                    ..
-                }
-            )
-        });
-        next.validate().map_err(|error| match error {
-            // A repository batch has no rename or replace choice to offer.
-            DaemonError::LocalTransport { message, .. }
-                if repository_batch && message.contains("is occupied") =>
-            {
-                failure(format!(
-                    "{}: a skill of this repository is already installed, or another skill uses that name; remove the installed one first, or leave that directory out of the import",
-                    message.split(';').next().unwrap_or(&message)
-                ))
-            }
-            other => other,
-        })?;
+        next.validate()?;
         Ok(next)
     }
     fn package_mut(
@@ -442,21 +459,55 @@ impl SkillCatalogSet {
             package.custom = false;
             package.source_locator = locator;
             package.source_revision = revision;
-        } else if package.custom
-            || package.source_locator != locator
-            || package.source_revision != revision
-        {
+        } else if package.custom || package.source_locator != locator {
             return Err(failure(
                 "a repository installs into its own new package or one from the same repository commit; create a new package for it",
             ));
         }
         if package
             .upstream_members
+            .iter()
+            .any(|(current_path, id)| id == &record.id && current_path != path)
+        {
+            return Err(failure("a source-backed member keeps its upstream directory; review its removal and new directory as a package update"));
+        }
+        if package
+            .upstream_members
             .insert(path.into(), record.id.clone())
-            .is_some()
+            .is_some_and(|previous| previous != record.id)
         {
             return Err(failure("a repository directory can be installed only once"));
         }
+        Ok(())
+    }
+    /// Source revisions are attested by prepared members. Check the final batch,
+    /// so no ordering of its updates can publish a partly advanced package.
+    fn advance_repository_revision(
+        &mut self,
+        scope: &SkillScope,
+        package_id: &str,
+    ) -> Result<(), DaemonError> {
+        let locator = self.package_mut(scope, package_id)?.source_locator.clone();
+        let members: Vec<_> = self
+            .catalog(scope)
+            .into_iter()
+            .flat_map(|c| &c.skills)
+            .filter(|s| s.package_id.as_deref() == Some(package_id))
+            .collect();
+        let Some(first) = members.first() else {
+            return Ok(());
+        };
+        let revision = first.provenance.source_revision.clone();
+        if revision.is_none()
+            || members.iter().any(|skill| {
+                skill.provenance.kind != "repository"
+                    || skill.provenance.locator != locator
+                    || skill.provenance.source_revision != revision
+            })
+        {
+            return Err(failure("repository package members must share the same repository commit; update or remove every remaining member in one reviewed batch"));
+        }
+        self.package_mut(scope, package_id)?.source_revision = revision;
         Ok(())
     }
     fn remove_skill(&mut self, scope: &SkillScope, id: &str) -> Result<(), DaemonError> {

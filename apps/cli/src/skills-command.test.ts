@@ -20,7 +20,8 @@ const native: NativeSkillEntry = {
   description: "Lint with house rules", digest: null, exposure: "confirmed", default_state: "auto", complete_manifest: true, supports_load_ack: true, discovery_error: null,
 }
 
-function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packages"] = [], failure?: Error, agentProvider = "claude") {
+function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packages"] = [], failure?: Error,
+  repositoryUpdate?: Extract<SkillsV2Response, { kind: "repository_update" }>, agentProvider = "claude") {
   const requests: SkillsV2Request[] = []
   const notices: string[] = []
   const footers: string[] = []
@@ -43,10 +44,14 @@ function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packa
       switch (request.action) {
         case "catalog": return catalog
         case "loads": return { kind: "loads", records: [] }
-        case "preview": return { kind: "preview", expected_revision: 7, affected: [], collisions: [], review_receipt: { id: "receipt-1", expires_at_ms: 0, mutation_sha256: "x", sources: [] } }
+        case "preview": return { kind: "preview", expected_revision: request.mutation.expected_revision, affected: [], collisions: [], review_receipt: { id: "receipt-1", expires_at_ms: 0, mutation_sha256: "x", sources: [] } }
         case "resolve_repository": return { kind: "repository", locator: request.url, revision: "c".repeat(40),
           skills: [{ path: "skills/alpha", name: "alpha", description: "A" }, { path: "skills/beta", name: "beta", description: "B" }],
           skipped: [{ path: "skills/bad", reason: "SKILL.md must start with YAML frontmatter" }] }
+        case "resolve_repository_update": {
+          if (!repositoryUpdate) throw new Error("unexpected repository update")
+          return repositoryUpdate
+        }
         case "mutate": return { kind: "published", revision: 8, changed_skill_ids: ["skill-review"], removed_skill_ids: [] }
         default: throw new Error(`unexpected ${request.action}`)
       }
@@ -79,6 +84,14 @@ test("a refused /skills command keeps the reason in the transcript without the t
   assert.deepEqual(footers, ["Skills: skill name `review` is occupied; choose Rename or Replace"])
 })
 
+test("/skills tells what to do next when the kernel does not answer in time", async () => {
+  const { notices, footers, run } = harness([], new Error("kernel transport `handle kernel response` failed: timed out"))
+  await run("/skills repo-update Acme")
+  const expected = "Skills: the kernel did not answer in time and may still be working. Run /skills list to see whether the change landed, then repeat the command if it did not."
+  assert.deepEqual(notices, [expected])
+  assert.deepEqual(footers, [expected])
+})
+
 test("/skills from lists the focused provider's skills read-only", async () => {
   const { notices, run } = harness()
   await run("/skills from")
@@ -87,7 +100,7 @@ test("/skills from lists the focused provider's skills read-only", async () => {
 
 for (const launchMode of ["claude-headless", "claude-p"]) {
   test(`/skills from, show-from and import find the canonical Claude skills of a ${launchMode} agent`, async () => {
-    const { notices, footers, requests, run } = harness([], undefined, launchMode)
+    const { notices, footers, requests, run } = harness([], undefined, undefined, launchMode)
     await run("/skills from")
     assert.match(notices.join("\n"), /\$lint {2}From Claude · confirmed · Auto/)
     await run("/skills show-from lint")
@@ -157,4 +170,40 @@ test("/skills repo --only installs just the named directories and refuses an unk
   await run("/skills repo https://github.com/acme/skills.git --only skills/nope")
   assert.match(footers.at(-1)!, /no skill at skills\/nope/)
   assert.match(notices.at(-2)!, /\$alpha {2}skills\/alpha/, "the listing is shown before the refusal")
+})
+
+
+test("/skills repo-update reviews the resolved commit before publishing the kernel batch", async () => {
+  const update: Extract<SkillsV2Response, { kind: "repository_update" }> = {
+    kind: "repository_update", package_id: "package-repo", locator: "https://github.com/acme/skills.git",
+    from_revision: "a".repeat(40), revision: "b".repeat(40), added: [], removed: [], unchanged: [],
+    changed: [{ member: { path: "skills/review", skill_id: "skill-review", name: "review", digest: "d".repeat(64) }, digest: "e".repeat(64) }],
+    skipped: [{ path: "skills/moved", reason: "moved out of this package; retained" }],
+    mutation: { scope: { kind: "chariox" }, expected_revision: 9, actions: [{ action: "update", skill_id: "skill-review", expected_digest: "d".repeat(64), source: { kind: "repository", url: "https://github.com/acme/skills.git", revision: "b".repeat(40), path: "skills/review" } }] },
+  }
+  const { requests, notices, run } = harness([{ id: "package-repo", name: "Acme", scope: { kind: "chariox" }, custom: false,
+    source_locator: update.locator, source_revision: update.from_revision, upstream_members: { "skills/review": "skill-review" } }], undefined, update)
+  await run("/skills repo-update Acme")
+  assert.deepEqual(requests.find(request => request.action === "resolve_repository_update"), { action: "resolve_repository_update", package_id: "package-repo" })
+  const preview = requests.find(request => request.action === "preview")
+  assert.deepEqual(preview?.action === "preview" && preview.mutation, update.mutation)
+  assert.equal(requests.some(request => request.action === "mutate"), false)
+  assert.match(notices.join("\n"), /changed \$review/)
+  assert.match(notices.join("\n"), /skipped skills\/moved: moved out/)
+  await run("/skills confirm")
+  const mutation = requests.find(request => request.action === "mutate")
+  assert.deepEqual(mutation?.action === "mutate" && mutation.mutation, update.mutation)
+})
+
+test("/skills update-package does not stage an up-to-date repository", async () => {
+  const revision = "a".repeat(40)
+  const { requests, footers, run } = harness([{ id: "package-repo", name: "Acme", scope: { kind: "chariox" }, custom: false,
+    source_locator: "https://github.com/acme/skills.git", source_revision: revision, upstream_members: {} }], undefined,
+    { kind: "repository_update", package_id: "package-repo", locator: "https://github.com/acme/skills.git", from_revision: revision, revision,
+      changed: [], added: [], removed: [], unchanged: [], skipped: [], mutation: { scope: { kind: "chariox" }, expected_revision: 7, actions: [] } })
+  await run("/skills update-package Acme")
+  assert.match(footers.at(-1)!, /up to date/)
+  assert.equal(requests.some(request => request.action === "preview"), false)
+  await run("/skills confirm")
+  assert.equal(requests.some(request => request.action === "mutate"), false)
 })

@@ -2247,6 +2247,12 @@ mod tests {
             ..legacy.clone()
         };
         assert!(!previous.relay_peer_protocol_compatible());
+        // MP-08/MP-10/MP-11: a 189 worker cannot report compactions.
+        let before_compaction_report = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(189),
+            ..previous.clone()
+        };
+        assert!(!before_compaction_report.relay_peer_protocol_compatible());
         let current = RemoteAgentBinding {
             relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
             ..legacy

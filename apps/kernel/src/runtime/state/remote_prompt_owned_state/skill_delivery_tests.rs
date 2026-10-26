@@ -92,6 +92,7 @@ async fn fixture_with_dispatch(
         prompt_delivery_skill_ids: ["explicit".into()].into(),
         remote_roots: Default::default(),
         native_tool_loads: Default::default(),
+        compaction_revision: None,
     };
     runtime
         .owned
@@ -1165,7 +1166,15 @@ async fn leased_turn_re_attaches_a_load_when_the_worker_reports_a_new_run_at_tur
     leased_load_is_delivered_once_per_worker_run(Relaunch::ReportedAtTurnStart).await;
 }
 
+// The worker's harness compacted its conversation inside the run the home still sees:
+// the load rides the next turn once, and a replayed report does not repeat it.
+#[tokio::test]
+async fn leased_turn_re_attaches_a_load_after_a_worker_compaction_exactly_once() {
+    leased_load_is_delivered_once_per_worker_run(Relaunch::Compacted).await;
+}
+
 enum Relaunch {
+    Compacted,
     Settled,
     Projected,
     ReportedAtTurnStart,
@@ -1316,6 +1325,50 @@ async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
         .is_none_or(|turn| !roots(&turn).contains("Review source.")),
         "the worker run already holds the load"
     );
+    if matches!(relaunch, Relaunch::Compacted) {
+        settle(&second, "worker-run-1");
+        let compacted = |ids: &[&str]| {
+            super::super::skills_dispatch::record_worker_compactions(
+                &runtime,
+                &session_id,
+                &agent_id,
+                &binding.leased_agent_id,
+                &ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        let live = || ReportedWorkerRun::Live("worker-run-1".into());
+        compacted(&["compact-1"]);
+        let third = submit("after-compaction", "continue reviewing", vec![]);
+        assert!(
+            roots(&remote_reported(&third.prompt_id, live()).unwrap()).contains("Review source."),
+            "a compacted worker conversation lost the load"
+        );
+        runtime
+            .owned
+            .settle_remote_dispatch_if_current(&third, Some("worker-run-1"))
+            .unwrap();
+        let third_context = RemoteWorkspaceLiveSyncContext {
+            home_prompt_id: Some(third.prompt_id.clone()),
+            ..context.clone()
+        };
+        acknowledge(
+            &runtime,
+            &third_context,
+            serde_json::json!({"delivery":"prompt"}),
+        )
+        .await
+        .unwrap();
+        complete("worker-run-1");
+        compacted(&["compact-1"]);
+        let fourth = submit("after-recovery", "continue reviewing", vec![]);
+        assert!(
+            remote_reported(&fourth.prompt_id, live())
+                .is_none_or(|turn| !roots(&turn).contains("Review source.")),
+            "one compaction reloads once"
+        );
+        return;
+    }
     // The worker relaunched: the home sees it as the next settlement or projection, or
     // only from the worker's own report when the next turn starts.
     let reported = match relaunch {
@@ -1324,6 +1377,7 @@ async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
             project_run("worker-run-2");
             ReportedWorkerRun::Unknown
         }
+        Relaunch::Compacted => unreachable!("returned above"),
         Relaunch::Settled => {
             settle(&second, "worker-run-2");
             ReportedWorkerRun::Unknown
@@ -1348,6 +1402,235 @@ async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
     assert!(
         roots(&remote_reported(&third.prompt_id, reported).unwrap()).contains("Review source."),
         "a new worker run lost the load"
+    );
+}
+
+// A compaction loses every earlier load, so one receipt for one reloaded skill must not
+// make the other look held on the next turn.
+#[tokio::test]
+async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowledged() {
+    partial_compaction_recovery(false).await;
+    partial_compaction_recovery(true).await;
+}
+
+async fn partial_compaction_recovery(other_session_is_newer: bool) {
+    use super::super::skills_dispatch::ReportedWorkerRun;
+    use crate::skill::service::SkillCatalogService;
+    let (runtime, session_id, agent_id, attachment, binding) =
+        super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
+    let config = runtime.owned.config_projection.snapshot();
+    let service = SkillCatalogService::new(
+        SkillCatalogStorage::new(
+            config.user_config_path.parent().unwrap(),
+            runtime.owned.durable_state_store.clone(),
+        )
+        .unwrap(),
+    );
+    let install = |name: &str, body: &str| {
+        SkillCatalogAction::Install {
+        source: SkillInstallSource::Content { skill_md: format!("---\nname: {name}\ndescription: {name} safely\ndisable-model-invocation: true\n---\n{body}\n") },
+        collision: SkillCollisionAction::Reject, package_id: None,
+    }
+    };
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![
+            install("review", "Review source."),
+            install("audit", "Audit source."),
+        ],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
+    let skills = &catalog.catalogs[0].skills;
+    let find = |name: &str| {
+        skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .unwrap()
+            .clone()
+    };
+    let (review, audit) = (find("review"), find("audit"));
+    let select = |skill: &SkillRecord| SkillSelection::Chariox {
+        skill_id: skill.id.clone(),
+        name: skill.name.clone(),
+        catalog_revision: catalog.revision,
+    };
+    let session = || {
+        runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+    };
+    let submit = |id: &str, text: &str, selections: Vec<SkillSelection>| {
+        runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: crate::session::PromptQueueItem::new(
+                    id,
+                    &attachment,
+                    &agent_id,
+                    text,
+                    crate::session::PromptStatus::Queued,
+                )
+                .with_skill_selections(selections)
+                .with_user_skill_syntax(true),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .unwrap()
+            .unwrap()
+            .remote_dispatch
+            .unwrap()
+    };
+    let remote = |prompt_id: &str| {
+        super::super::skills_dispatch::prepare_remote_turn(
+            &runtime,
+            &session_id,
+            &agent_id,
+            prompt_id,
+            &binding.leased_agent_id,
+            &[],
+            &ReportedWorkerRun::Live("worker-run-1".into()),
+        )
+        .unwrap()
+    };
+    let bodies = |turn: Option<super::super::skills_dispatch::RemoteSkillTurn>| {
+        turn.map(|turn| {
+            turn.hidden_context(
+                &turn
+                    .set
+                    .manifest
+                    .skills
+                    .iter()
+                    .map(|entry| {
+                        let name = skills
+                            .iter()
+                            .find(|skill| skill.id == entry.skill_id)
+                            .unwrap()
+                            .name
+                            .clone();
+                        crate::transport::relay_peer::RemoteSkillMaterialization {
+                            skill_id: entry.skill_id.clone(),
+                            materialized_root: format!("/worker/{name}"),
+                            name,
+                            version_hash: entry.digest.clone(),
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        })
+        .unwrap_or_default()
+    };
+    let context_for = |prompt_id: &str| RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: config.daemon_id.clone(),
+        home_session_id: session_id.clone(),
+        home_agent_id: agent_id.clone(),
+        home_prompt_id: Some(prompt_id.into()),
+        leased_agent_id: binding.leased_agent_id.clone(),
+        worker_kernel_id: binding.worker_kernel_id.clone(),
+        worker_machine_id: binding.worker_machine_id.clone(),
+        worker_provider_run_id: "worker-run-1".into(),
+        worker_worktree_path: session().worktree_id().into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
+    };
+    let settle = |dispatch: &crate::app::KernelRemotePromptDispatch| {
+        runtime
+            .owned
+            .settle_remote_dispatch_if_current(dispatch, Some("worker-run-1"))
+            .unwrap();
+    };
+    let complete = || {
+        runtime
+            .owned
+            .complete_remote_prompt_owner(&session_id, &agent_id, "worker-run-1", None)
+            .unwrap();
+    };
+    let first = submit(
+        "load-both",
+        "$review $audit inspect",
+        vec![select(&review), select(&audit)],
+    );
+    let loaded = bodies(remote(&first.prompt_id));
+    assert!(loaded.contains("Review source.") && loaded.contains("Audit source."));
+    settle(&first);
+    acknowledge(
+        &runtime,
+        &context_for(&first.prompt_id),
+        serde_json::json!({"delivery":"prompt"}),
+    )
+    .await
+    .unwrap();
+    complete();
+    let other_boundary = || {
+        runtime
+            .owned
+            .operational_history_store
+            .record_agent_compaction_boundary(
+                &session_id,
+                &agent_id,
+                "claude",
+                "haiku",
+                "other-account",
+                Some("other-native"),
+            )
+            .unwrap()
+    };
+    let older = (!other_session_is_newer).then(other_boundary);
+    super::super::skills_dispatch::record_worker_compactions(
+        &runtime,
+        &session_id,
+        &agent_id,
+        &binding.leased_agent_id,
+        &["compact-1".to_string()],
+    )
+    .unwrap();
+    let second = submit("after-compaction", "continue", vec![]);
+    let reloaded = bodies(remote(&second.prompt_id));
+    assert!(
+        reloaded.contains("Review source.") && reloaded.contains("Audit source."),
+        "a compaction lost both loads"
+    );
+    settle(&second);
+    // The worker's harness took only one of the two reloads.
+    acknowledge(
+        &runtime,
+        &context_for(&second.prompt_id),
+        serde_json::json!({"delivery":"tool","skill_id":review.id,"digest":review.digest}),
+    )
+    .await
+    .unwrap();
+    complete();
+    let other = older.unwrap_or_else(other_boundary);
+    runtime
+        .owned
+        .operational_history_store
+        .deliver_agent_compaction_boundary(&session_id, &agent_id, other)
+        .unwrap();
+    let third = submit("next-turn", "continue", vec![]);
+    assert!(
+        bodies(remote(&third.prompt_id)).contains("Audit source."),
+        "one receipt cleared the compaction for a skill that was never reloaded"
+    );
+    settle(&third);
+    // Only the skill still missing is acknowledged; the first one's receipt from the
+    // previous turn must still count in this compaction epoch.
+    acknowledge(
+        &runtime,
+        &context_for(&third.prompt_id),
+        serde_json::json!({"delivery":"tool","skill_id":audit.id,"digest":audit.digest}),
+    )
+    .await
+    .unwrap();
+    complete();
+    let fourth = submit("settled", "continue", vec![]);
+    let held = bodies(remote(&fourth.prompt_id));
+    assert!(
+        !held.contains("Audit source.") && !held.contains("Review source."),
+        "every skill was reloaded; nothing is pending"
     );
 }
 
@@ -1706,6 +1989,7 @@ async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
         prompt_delivery_skill_ids: [skill.id.clone()].into(),
         remote_roots: Default::default(),
         native_tool_loads: Default::default(),
+        compaction_revision: None,
     };
     runtime
         .owned

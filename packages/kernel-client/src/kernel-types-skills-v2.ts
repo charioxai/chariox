@@ -133,6 +133,8 @@ export type SkillLoadRecord = {
 
 export type RepositorySkill = { path: string; name: string; description: string }
 export type RepositorySkillSkip = { path: string; reason: string }
+export type RepositorySkillMember = { path: string; skill_id: string; name: string; digest: string }
+export type RepositorySkillUpdate = { member: RepositorySkillMember; digest: string }
 export type SkillInstallSource =
   | { kind: "folder"; path: string }
   | { kind: "content"; skill_md: string }
@@ -186,6 +188,7 @@ export type SkillsV2Request =
   | { action: "mutate"; mutation: SkillCatalogMutation; review_receipt_id: string }
   | { action: "preview"; mutation: SkillCatalogMutation }
   | { action: "resolve_repository"; url: string }
+  | { action: "resolve_repository_update"; package_id: string }
   | { action: "list"; session_id: string; agent_id: string; cursor: string | null; limit: number }
   | { action: "load"; session_id: string; agent_id: string; skill_id: string }
   | { action: "submit"; session_id: string; attachment_id: string; target_agent_id: string; prompt: string; attachments: (PromptAttachmentPart)[]; selections: (SkillSelection)[] }
@@ -198,6 +201,7 @@ export type SkillsV2Response =
   | { kind: "loads"; records: (SkillLoadRecord)[] }
   | { kind: "preview"; expected_revision: number; affected: (SkillRecord)[]; collisions: (string)[]; review_receipt: SkillReviewReceipt }
   | { kind: "repository"; locator: string; revision: string; skills: (RepositorySkill)[]; skipped: (RepositorySkillSkip)[] }
+  | { kind: "repository_update"; package_id: string; locator: string; from_revision: string; revision: string; changed: RepositorySkillUpdate[]; added: RepositorySkill[]; removed: RepositorySkillMember[]; unchanged: RepositorySkillMember[]; skipped: RepositorySkillSkip[]; mutation: SkillCatalogMutation }
   | { kind: "published"; revision: number; changed_skill_ids: (string)[]; removed_skill_ids: (string)[] }
   | { kind: "page"; revision: number; skills: (SkillProjection)[]; next_cursor: string | null }
   | { kind: "loaded"; skill_id: string; digest: string; body: string; root: string; files: (SkillFileManifest)[] }

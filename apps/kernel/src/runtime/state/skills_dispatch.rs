@@ -102,6 +102,15 @@ pub(super) enum ReportedWorkerRun {
     /// The worker-local id of the run that takes the turn.
     Live(String),
 }
+pub(super) fn record_worker_compactions(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    leased_agent_id: &str,
+    ids: &[String],
+) -> Result<(), DaemonError> {
+    service(state).record_worker_compactions(session_id, agent_id, leased_agent_id, ids)
+}
 pub(super) fn prepare_remote_turn(
     state: &KernelRuntimeState,
     session_id: &str,
@@ -330,14 +339,7 @@ impl SkillDispatchService {
         leased_agent_id: &str,
         worker_run: &ReportedWorkerRun,
     ) -> Result<Option<String>, DaemonError> {
-        let agent = self.agents.get_agent(agent_id)?;
-        let projected = self.runs.get_for_agent(session_id, agent_id).filter(|run| {
-            crate::provider::worker_provider_run_id_from_projected_leased_id(
-                leased_agent_id,
-                run.id(),
-            )
-            .is_some()
-        });
+        let projected = self.projected_leased_run(session_id, agent_id, leased_agent_id);
         let settled = self.settled_worker_runs.last(agent_id, leased_agent_id);
         let live = match (&projected, settled) {
             (Some(run), Some(settled)) if run.id() != settled => return Ok(None),
@@ -354,25 +356,103 @@ impl SkillDispatchService {
                 }
             }
         }
-        let intact = match &projected {
-            Some(run) => self.context_survives_compaction(
-                session_id,
-                agent_id,
-                run.provider(),
-                run.account_profile(),
-                super::context_handoff::native_session_id(run),
-            )?,
-            None => self.context_survives_compaction(
-                session_id,
-                agent_id,
-                agent.provider(),
-                agent.provider_account_profile(),
-                agent
-                    .provider_resume_state()
-                    .provider_session_id(agent.provider()),
-            )?,
-        };
+        let intact = self
+            .pending_leased_compaction(session_id, agent_id, leased_agent_id)?
+            .is_none();
         Ok(intact.then_some(live))
+    }
+    fn projected_leased_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        leased_agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.runs.get_for_agent(session_id, agent_id).filter(|run| {
+            crate::provider::worker_provider_run_id_from_projected_leased_id(
+                leased_agent_id,
+                run.id(),
+            )
+            .is_some()
+        })
+    }
+    /// A leased agent's recovery epochs live under the home's view of its native
+    /// session: the projected worker run, else what the agent last resumed.
+    fn leased_context_identity(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        leased_agent_id: &str,
+    ) -> Result<(String, String, String, Option<String>), DaemonError> {
+        Ok(
+            match self.projected_leased_run(session_id, agent_id, leased_agent_id) {
+                Some(run) => (
+                    run.provider().to_string(),
+                    run.model().to_string(),
+                    run.account_profile().to_string(),
+                    super::context_handoff::native_session_id(&run).map(str::to_string),
+                ),
+                None => {
+                    let agent = self.agents.get_agent(agent_id)?;
+                    (
+                        agent.provider().to_string(),
+                        agent.model().unwrap_or_default().to_string(),
+                        agent.provider_account_profile().to_string(),
+                        agent
+                            .provider_resume_state()
+                            .provider_session_id(agent.provider())
+                            .map(str::to_string),
+                    )
+                }
+            },
+        )
+    }
+    fn pending_leased_compaction(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        leased_agent_id: &str,
+    ) -> Result<Option<u64>, DaemonError> {
+        let (provider, _, account, native) =
+            self.leased_context_identity(session_id, agent_id, leased_agent_id)?;
+        Ok(self
+            .history
+            .load_agent_compaction_boundary(
+                session_id,
+                agent_id,
+                &provider,
+                &account,
+                native.as_deref(),
+            )?
+            .map(|boundary| boundary.revision))
+    }
+    /// The worker owns its harness, so it reports compactions; each new ID starts a
+    /// recovery epoch on the home, where `live_leased_run_id` reads it.
+    fn record_worker_compactions(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        leased_agent_id: &str,
+        ids: &[String],
+    ) -> Result<(), DaemonError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let (provider, model, account, native) =
+            self.leased_context_identity(session_id, agent_id, leased_agent_id)?;
+        for id in ids {
+            self.history.record_observed_agent_compaction_boundary(
+                session_id,
+                agent_id,
+                crate::history::AgentCompactionOrigin {
+                    provider: &provider,
+                    model: &model,
+                    account: &account,
+                    native_session: native.as_deref(),
+                },
+                id,
+            )?;
+        }
+        Ok(())
     }
     fn prepare_remote(
         &self,
@@ -446,6 +526,8 @@ impl SkillDispatchService {
             .collect();
         let set = remote_skill_set(&service, &catalog, project_id, &rows, &chariox_delivered)?;
         let run_id = leased_run_id(leased_agent_id);
+        let compaction_revision =
+            self.pending_leased_compaction(session_id, agent_id, leased_agent_id)?;
         let mut authority = SkillTurnAuthority {
             catalog_revision: catalog.revision,
             project_id: project_id.into(),
@@ -463,6 +545,7 @@ impl SkillDispatchService {
             prompt_delivery_skill_ids: Default::default(),
             remote_roots: Default::default(),
             native_tool_loads: Default::default(),
+            compaction_revision,
         };
         // The worker reports a completed OpenCode `skill` tool by name; the home maps it.
         // Other harnesses never report one, so the map is inert for them.
@@ -897,6 +980,7 @@ impl SkillPromptBridge for SkillDispatchService {
             prompt_delivery_skill_ids: Default::default(),
             remote_roots: Default::default(),
             native_tool_loads: Default::default(),
+            compaction_revision: None,
         };
         if let Some(previous) = prompt
             .skill_turn_authority()

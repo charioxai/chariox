@@ -3,6 +3,8 @@ import type { ManagedEnvironmentAutoStopPolicy, ManagedEnvironmentContextPlanInp
 export const disposableWorkerControlMinimumProtocolVersion = 367
 export const managedEnvironmentKeepRunningMinimumProtocolVersion = 367
 
+export const skillsRepositoryUpdateCapability = "skills_repository_update_v581"
+
 const disposableControlRequests = new Set([
   "CreateDisposableWorker", "GetDisposableWorker", "ReleaseDisposableWorker",
   "KeepDisposableWorkerRunning", "PrepareDisposableWorkerContextTransfer",
@@ -57,6 +59,9 @@ export async function requireKernelControlCapability(
     || !status.capabilities.every(value => typeof value === "string")
     || !status.capabilities.includes(capability)) {
     throw new Error(`Connected kernel does not support ${capability}; update the kernel before retrying`)
+  }
+  if (name === "SkillsV2" && payload?.action === "resolve_repository_update" && !status.capabilities.includes(skillsRepositoryUpdateCapability)) {
+    throw new Error("Repository updates need a newer kernel: update the kernel, then run /skills update-package again")
   }
 }
 

@@ -502,6 +502,10 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
     public struct ResolveRepositoryPayload: Codable, Equatable, Sendable {
         public var url: String
     }
+    case resolveRepositoryUpdate(ResolveRepositoryUpdatePayload)
+    public struct ResolveRepositoryUpdatePayload: Codable, Equatable, Sendable {
+        public var package_id: String
+    }
     case list(ListPayload)
     public struct ListPayload: Codable, Equatable, Sendable {
         public var session_id: String
@@ -536,6 +540,7 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
         case "mutate": self = .mutate(try MutatePayload(from: decoder))
         case "preview": self = .preview(try PreviewPayload(from: decoder))
         case "resolve_repository": self = .resolveRepository(try ResolveRepositoryPayload(from: decoder))
+        case "resolve_repository_update": self = .resolveRepositoryUpdate(try ResolveRepositoryUpdatePayload(from: decoder))
         case "list": self = .list(try ListPayload(from: decoder))
         case "load": self = .load(try LoadPayload(from: decoder))
         case "submit": self = .submit(try SubmitPayload(from: decoder))
@@ -568,6 +573,9 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .resolveRepository(payload):
             try container.encode("resolve_repository", forKey: .action)
+            try payload.encode(to: encoder)
+        case let .resolveRepositoryUpdate(payload):
+            try container.encode("resolve_repository_update", forKey: .action)
             try payload.encode(to: encoder)
         case let .list(payload):
             try container.encode("list", forKey: .action)
@@ -623,6 +631,19 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
         public var skills: [RepositorySkill]
         public var skipped: [RepositorySkillSkip]
     }
+    case repositoryUpdate(RepositoryUpdatePayload)
+    public struct RepositoryUpdatePayload: Codable, Equatable, Sendable {
+        public var package_id: String
+        public var locator: String
+        public var from_revision: String
+        public var revision: String
+        public var changed: [RepositorySkillUpdate]
+        public var added: [RepositorySkill]
+        public var removed: [RepositorySkillMember]
+        public var unchanged: [RepositorySkillMember]
+        public var skipped: [RepositorySkillSkip]
+        public var mutation: SkillCatalogMutation
+    }
     case published(PublishedPayload)
     public struct PublishedPayload: Codable, Equatable, Sendable {
         public var revision: UInt64
@@ -658,6 +679,7 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
         case "loads": self = .loads(try LoadsPayload(from: decoder))
         case "preview": self = .preview(try PreviewPayload(from: decoder))
         case "repository": self = .repository(try RepositoryPayload(from: decoder))
+        case "repository_update": self = .repositoryUpdate(try RepositoryUpdatePayload(from: decoder))
         case "published": self = .published(try PublishedPayload(from: decoder))
         case "page": self = .page(try PagePayload(from: decoder))
         case "loaded": self = .loaded(try LoadedPayload(from: decoder))
@@ -688,6 +710,9 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .repository(payload):
             try container.encode("repository", forKey: .kind)
+            try payload.encode(to: encoder)
+        case let .repositoryUpdate(payload):
+            try container.encode("repository_update", forKey: .kind)
             try payload.encode(to: encoder)
         case let .published(payload):
             try container.encode("published", forKey: .kind)
@@ -823,4 +848,16 @@ public indirect enum SkillsV2JSON: Codable, Equatable, Sendable {
         case .null: try c.encodeNil()
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: a repository diff is reviewed before the normal atomic batch.
+public struct RepositorySkillMember: Codable, Equatable, Sendable {
+    public var path: String
+    public var skill_id: String
+    public var name: String
+    public var digest: String
+}
+public struct RepositorySkillUpdate: Codable, Equatable, Sendable {
+    public var member: RepositorySkillMember
+    public var digest: String
 }

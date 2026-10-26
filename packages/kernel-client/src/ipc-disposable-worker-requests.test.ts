@@ -44,3 +44,16 @@ test("Skills V2 controls require the connected runtime capability", async () => 
   }
   assert.equal(queries, 3)
 })
+
+// MP-08 / MP-10 / MP-11: a 571 kernel advertises skills_v2_runtime but cannot decode the 581 repository update.
+test("Skills repository update needs the 581 capability and tells the person to update the kernel", async () => {
+  const update = { SkillsV2: { action: "resolve_repository_update", package_id: "package-1" } }
+  const status = (capabilities: string[]) => async () => ({ RelayStatus: { status: { daemon_id: "home", machine_id: "machine", capabilities } } })
+  await assert.rejects(
+    requests.requireKernelControlCapability(status(["skills_v2_runtime"]), update),
+    /Repository updates need a newer kernel: update the kernel, then run \/skills update-package again/,
+  )
+  await requests.requireKernelControlCapability(status(["skills_v2_runtime", "skills_repository_update_v581"]), update)
+  // The other Skills requests keep working against a kernel without the update capability.
+  await requests.requireKernelControlCapability(status(["skills_v2_runtime"]), { SkillsV2: { action: "catalog", project_id: null, agent_id: null } })
+})

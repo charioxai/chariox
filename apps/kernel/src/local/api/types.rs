@@ -340,4 +340,8 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
 /// MP-08/MP-10/MP-11: allocated 571 carries Skills v2 leased-worker native inventory and selections
 /// (no client-visible shape changed; Skills clients still gate at 533).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 571;
+/// MP-08/MP-10/MP-11: allocated 581 adds the Skills v2 `resolve_repository_update` request and
+/// `repository_update` result (clients gate the update command on it).
+/// MP-08/MP-10/MP-11: allocated 586 adds `compaction_ids` to the leased-worker native
+/// inventory response (no client-visible shape changed).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 586;

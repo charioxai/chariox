@@ -16,6 +16,7 @@ use crate::error::DaemonError;
 
 pub(crate) use handoff_brief::AgentHandoffBrief;
 mod compaction_boundary;
+pub(crate) use compaction_boundary::AgentCompactionOrigin;
 mod handoff_brief;
 pub(crate) mod leased_projection;
 mod operational_archive;
@@ -629,6 +630,7 @@ impl OperationalHistoryStore {
         ensure_operational_history_merge_key_index(&mut connection)?;
         public_history::initialize_public_history(&connection)?;
         ensure_operational_history_answered_sessions(&connection)?;
+        compaction_boundary::migrate(&connection)?;
         remote_lease_context::migrate(&connection)?;
         let max_sequence: u64 = connection
             .query_row(
@@ -1327,17 +1329,23 @@ CREATE TABLE IF NOT EXISTS history_agent_handoff_briefs (
     PRIMARY KEY (session_id, agent_id)
 ) WITHOUT ROWID;
 
-CREATE TABLE IF NOT EXISTS history_agent_compaction_boundaries (
+CREATE TABLE IF NOT EXISTS history_agent_compaction_observations (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    provider_family TEXT NOT NULL,
+    account_profile TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    provider_turn_id TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id, provider_family, account_profile, provider_session_id, provider_turn_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS history_agent_compaction_reloads (
     session_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
     revision INTEGER NOT NULL,
-    delivered_revision INTEGER NOT NULL,
-    provider_family TEXT NOT NULL,
-    source_provider TEXT NOT NULL,
-    source_model TEXT NOT NULL,
-    account_profile TEXT NOT NULL,
-    provider_session_id TEXT,
-    PRIMARY KEY (session_id, agent_id)
+    skill_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id, revision, skill_id, digest)
 ) WITHOUT ROWID;
 "#;
 

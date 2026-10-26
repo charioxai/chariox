@@ -1,6 +1,6 @@
 {
-  "local_protocol": 571,
-  "peer_protocol": 179,
+  "local_protocol": 586,
+  "peer_protocol": 192,
   "reset_header": {
     "snapshot_complete": false
   },

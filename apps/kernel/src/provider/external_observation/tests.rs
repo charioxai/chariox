@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn claude_compaction_does_not_reopen_a_completed_turn() {
+    let turns = [
+        ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Status,
+            text: "claude message completed\n{}".into(),
+            provider_turn_id: Some("completed".into()),
+            observed_at_ms: Some(1),
+        },
+        ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Compaction,
+            text: String::new(),
+            provider_turn_id: Some("compact-1".into()),
+            observed_at_ms: Some(2),
+        },
+    ];
+    let policy = ExternalProviderObservationPolicy::for_provider("claude");
+    assert!(policy.latest_effective_turn_settles(&turns));
+    assert!(policy.turn_is_passive_telemetry(&turns[1]));
+}
+
+#[test]
 fn codex_and_opencode_require_explicit_completion() {
     assert!(ExternalProviderObservationPolicy::for_provider("codex").uses_explicit_completion());
     assert!(ExternalProviderObservationPolicy::for_provider("opencode").uses_explicit_completion());
