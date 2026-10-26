@@ -185,6 +185,15 @@ fn rate_limit_clears(normalized: &str) -> bool {
 /// OpenCode error names, by the code each adapter frames.
 fn failure_for_code(code: &str, message: &str) -> Option<(ProviderFailureCause, bool)> {
     use ProviderFailureCause::*;
+    if let Some(status) = code
+        .strip_prefix("http_status_")
+        .and_then(|s| s.parse::<u16>().ok())
+    {
+        return Some(match status {
+            408 | 500..=599 => (Network, true),
+            _ => (Other, false),
+        });
+    }
     Some(match code {
         "server_overloaded" => (Overloaded, true),
         "usage_limit_exceeded" | "billing_error" | "session_budget_exceeded" => (UsageLimit, false),
