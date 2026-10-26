@@ -211,10 +211,10 @@ async fn a12_legacy_workflow_turn_settled_without_a_task_keeps_its_node() {
     );
 }
 
-// A plain turn only gets a task row: ending after a tool call with no answer is
-// settled Done, never corrected, held to a wait or blocked for the owner.
+// A plain turn only gets a task row, never a wait or an owner block: ending after a tool
+// call with no answer is corrected once, as a plain turn without any obligation.
 #[tokio::test]
-async fn plain_turn_ending_without_an_answer_settles_done_without_a_correction() {
+async fn plain_turn_ending_without_an_answer_is_corrected_once() {
     use crate::durable_state::agent_lifecycle::ExecutionState;
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -249,9 +249,14 @@ async fn plain_turn_ending_without_an_answer_settles_done_without_a_correction()
         )
         .unwrap()
         .expect("plain turn settlement");
-    assert!(!correction, "{task:?}");
-    assert_eq!(task.state, ExecutionState::Done, "{task:?}");
-    assert!(task.pending_prompt_id.is_none() && !task.correction_used);
+    assert!(correction, "{task:?}");
+    assert_eq!(task.state, ExecutionState::Working, "{task:?}");
+    assert!(task.correction_used && task.wait.is_none() && task.obligations.is_empty());
+    assert_eq!(
+        task.pending_prompt_id.as_deref(),
+        Some("task-correction-plain-turn")
+    );
+    assert!(task.reason.contains("final answer"), "{}", task.reason);
 }
 
 async fn workflow_wait_cancellation(cancel_creator: bool) {
