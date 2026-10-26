@@ -11,6 +11,7 @@ impl KernelRuntimeOwnedState {
         terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
         let _admission = self.begin_managed_activity_admission()?;
+        self.sweep_stale_task_owner_interactions()?;
         let _mutation = self
             .pending_interactions
             .mutation
@@ -181,8 +182,8 @@ impl KernelRuntimeOwnedState {
                 })
                 .map(|existing| existing.id().to_owned())
                 .collect::<Vec<_>>();
-            for id in superseded {
-                if let Some(previous) = session.remove_active_interaction(&id) {
+            for id in &superseded {
+                if let Some(previous) = session.remove_active_interaction(id) {
                     self.publish_outside_interaction(
                         session_id,
                         &previous,
@@ -190,10 +191,21 @@ impl KernelRuntimeOwnedState {
                         None,
                     )?;
                 }
-                pending.remove(&id);
+                pending.remove(id);
+            }
+            if !superseded.is_empty() {
+                // This cleanup is definitive even when the new admission is refused.
+                sessions.restore_session(session.clone());
             }
             drop(pending);
-            self.ensure_kernel_decision_capacity(owner)?;
+            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction) {
+                activity_mutation.record();
+                drop(sessions);
+                self.session_snapshot(session_id)?;
+                self.terminal_stream
+                    .notify_terminal_projection_change(session_id);
+                return Err(error);
+            }
         }
         if session
             .active_interactions()

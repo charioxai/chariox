@@ -24,6 +24,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid unattached kernel decision"));
         }
+        self.ensure_kernel_decision_capacity(owner, &interaction)?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {
@@ -34,22 +35,6 @@ impl KernelRuntimeOwnedState {
             })
         {
             return Err(interaction_error(INTERACTION_ALREADY_PENDING));
-        }
-        if pending
-            .values()
-            .filter(|p| p.belongs_to(&self.session_store) && p.kernel_operation_owner.is_some())
-            .count()
-            >= 32
-            || pending
-                .values()
-                .filter(|p| {
-                    p.belongs_to(&self.session_store)
-                        && p.kernel_operation_owner.as_deref() == Some(owner)
-                })
-                .count()
-                >= 8
-        {
-            return Err(interaction_error(KERNEL_DECISION_LIMIT));
         }
         let popup = super::super::passkey_prompts::passkey_prompt_for_scope(
             "",

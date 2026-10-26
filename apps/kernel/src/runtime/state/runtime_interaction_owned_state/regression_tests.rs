@@ -8,6 +8,8 @@ use crate::{
 };
 use tokio::sync::oneshot;
 
+mod task_capacity;
+
 struct Fixture {
     state: KernelRuntimeState,
     session: String,
