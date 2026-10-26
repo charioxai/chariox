@@ -133,6 +133,11 @@ try {
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...saveButton, button: 'left', clickCount: 1 });
     for (let attempt=0; attempt<100 && calls.filter(call=>call.method==='save_workbook').length===saves; attempt++) await delay(50);
     assert.equal(calls.filter(call=>call.method==='save_workbook').length, saves+1, 'human Files > Save reaches the backend');
+    // Leave the pointer over the old top-centre toast position: it must not
+    // pause a status message over the tabs and toolbar.
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 720, y: 40 });
+    await delay(3000);
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-sonner-toast]')].some(e=>e.innerText.includes('Done'))"), false, 'status toast expires without covering the toolbar');
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...bounds, button: 'left', clickCount: 1 });
     const exportButton = await evaluate(`(() => { const el=[...document.querySelectorAll('[role="menuitem"]')].find(e=>e.textContent.trim()==='Export CSV…'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...exportButton, button: 'left', clickCount: 1 });

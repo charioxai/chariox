@@ -8,6 +8,7 @@ import '@univerjs/preset-sheets-core/lib/index.css';
 import '@univerjs/preset-sheets-sort/lib/index.css';
 import { attachWorkbook } from './actions.mjs';
 import { fileDialogs } from './dialogs.mjs';
+import { INotificationService } from '@univerjs/ui';
 
 async function start() {
   if (!globalThis.chariox?.action || !globalThis.chariox?.call) throw new Error('Open Univer through its installed Chariox App view');
@@ -18,9 +19,10 @@ async function start() {
   });
   const { actions, summary } = await attachWorkbook(univerAPI, chariox);
   const dialogs = fileDialogs(options => univer.__getInjector().get(IConfirmService).confirm(options));
+  const notifications = univer.__getInjector().get(INotificationService);
   const run = task => async () => {
-    try { if (await task() === false) return; univerAPI.showMessage({ type: 'success', content: 'Done', duration: 2000 }); }
-    catch (error) { univerAPI.showMessage({ type: 'error', content: error.message ?? String(error), duration: 10000 }); }
+    try { if (await task() === false) return; notifications.show({ type: 'success', title: 'Done', duration: 2000, position: 'bottom-right' }); }
+    catch (error) { notifications.show({ type: 'error', title: error.message ?? String(error), duration: 10000, position: 'bottom-right' }); }
   };
   const open = async format => {
     if (summary().dirty && !await dialogs.replace()) return false;
