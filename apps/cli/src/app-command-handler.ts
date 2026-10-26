@@ -67,6 +67,14 @@ function splitShellWords(line: string, count: number): [string, string] {
   return [line, ""]
 }
 
+export function reportAppViewInspectionFailure(
+  deps: Pick<AppCommandHandlerDeps, "appendNotice" | "flashFooter">,
+  error: unknown,
+): void {
+  deps.appendNotice(error instanceof Error ? error.message : "App view inspection failed; retry /app actions")
+  deps.flashFooter("App view inspection failed; see transcript", "error")
+}
+
 export async function handleAppSlashCommand(
   deps: AppCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "app" }>,
@@ -75,8 +83,7 @@ export async function handleAppSlashCommand(
     await executeAppSlashCommand(deps, command)
   } catch (error) {
     if (command.args[0] !== "actions") throw error
-    deps.appendNotice(error instanceof Error ? error.message : "App view inspection failed; retry /app actions")
-    deps.flashFooter("App view inspection failed; see transcript", "error")
+    reportAppViewInspectionFailure(deps, error)
   }
 }
 

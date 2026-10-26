@@ -810,7 +810,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     renderer, dimensions, themeRevision, currentFocus: currentFocusedRenderable,
     promptFocus: promptInputRefController.currentOrNull,
     closeOtherDialog: () => { userAppViews?.hide(); kernelApprovals.close(); closeActiveDialogOverlay() },
-    notify: message => flashFooter(message, "error"),
+    appendNotice, flashFooter,
   })
 
   const runUiBatch = uiBatchController.run
