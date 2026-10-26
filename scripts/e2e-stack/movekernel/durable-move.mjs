@@ -68,6 +68,13 @@ async function turnProgress(r, label, snapshot) {
     const run = response?.ProviderRun?.provider_run;
     await record(label + '-progress', {
         agentState: agent?.state, isProcessing: agent?.isProcessing,
+        tuiFocusedAgentId: snapshot.session.focusedAgentId,
+        homeFocusedAgentId: core.session.focused_agent_id,
+        tuiRemoteKernelId: agent?.remote_execution?.worker_kernel_id,
+        tuiAccountProfile: agent?.account_profile,
+        homeAccountProfile: actual?.account_profile,
+        statusLine: snapshot.statusLine,
+        fatalError: snapshot.fatalError,
         activeProviderRunId: actual?.active_provider_run_id,
         remoteKernelId: actual?.remote_execution?.worker_kernel_id,
         leasedAgentId: actual?.remote_execution?.leased_agent_id,

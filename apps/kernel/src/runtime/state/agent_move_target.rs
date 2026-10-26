@@ -188,10 +188,49 @@ impl KernelRuntimeState {
         let request = self
             .prepare_provider_launch_request_with_vault(request, "prepare moved native session")
             .await?;
-        tokio::task::spawn_blocking(move || checkpoint.import_for_move(&request))
+        let account_owner = request
+            .provider_account_owner_user_id
+            .clone()
+            .ok_or_else(|| {
+                move_error("Native target account authority is missing; retry target preparation")
+            })?;
+        let account_profile = request.account_profile.clone();
+        let imported = tokio::task::spawn_blocking(move || checkpoint.import_for_move(&request))
             .await
-            .map_err(|_| move_error("Native target probe stopped; retry the durable move"))?
-            .map(|_| ())
-            .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)
+            .map_err(|_| move_error("Native target probe stopped; retry the durable move"))?;
+        self.finish_agent_move_native_probe(&account_owner, &account_profile, imported)?;
+        self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        self.record_waiting_room_change();
+        Ok(())
+    }
+
+    pub(super) fn finish_agent_move_native_probe(
+        &self,
+        account_owner: &str,
+        account_profile: &str,
+        imported: Result<
+            crate::provider::ProviderResumeState,
+            crate::provider::NativeCheckpointFailure,
+        >,
+    ) -> Result<(), DaemonError> {
+        imported.map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
+        // Import verified this profile through the official account and native
+        // session APIs. Publish that observation before ordinary prompt admission.
+        let profile =
+            self.owned
+                .provider_account_profiles
+                .get(account_owner, "codex", account_profile)?;
+        self.owned.provider_account_profiles.update_observation(
+            account_owner,
+            "codex",
+            account_profile,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            profile.identity_summary,
+            profile.plan,
+            profile.detected_provider_version,
+            None,
+        )?;
+        Ok(())
     }
 }

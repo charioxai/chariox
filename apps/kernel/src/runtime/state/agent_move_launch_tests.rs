@@ -3,6 +3,105 @@ use super::provider_launch_owned_state::owned_runtime_state;
 use super::*;
 
 #[tokio::test]
+async fn mk03_native_probe_authenticates_return_replica_before_prompt_admission() {
+    use crate::account_profile::ProviderAccountAuthState;
+    use crate::provider::{NativeCheckpointFailure, ProviderResumeState};
+
+    let worktree = crate::test_support::TestWorktree::new("move-return-account-admission");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, mut agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let owner = crate::account_profile::provider_account_authority_owner_user_id(
+        app.config(),
+        agent.owner_user_id(),
+    );
+    let registry = app.provider_account_profile_registry();
+    let source = registry.create_managed(&owner, "codex", "source").unwrap();
+    let environment = registry
+        .resolve_environment(&owner, "codex", &source.profile_id)
+        .unwrap();
+    let source_root = std::path::PathBuf::from(&environment["CODEX_HOME"]);
+    std::fs::create_dir_all(&source_root).unwrap();
+    std::fs::write(
+        source_root.join("auth.json"),
+        br#"{"auth_mode":"apikey","OPENAI_API_KEY":"fixture-only"}"#,
+    )
+    .unwrap();
+    registry
+        .update_observation(
+            &owner,
+            "codex",
+            &source.profile_id,
+            ProviderAccountAuthState::Authenticated,
+            Some("source@example.invalid".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let mut materialization = registry
+        .export_materialization(&owner, "codex", &source.profile_id)
+        .unwrap();
+    materialization.profile.profile_id = "return-native-profile".into();
+    materialization.profile.is_default = false;
+    let replica = registry
+        .materialize_replica(&owner, &materialization)
+        .unwrap();
+    assert_eq!(replica.auth_state, ProviderAccountAuthState::Unknown);
+    agent.set_provider("codex");
+    agent.set_account_profile(Some(replica.profile_id.clone()));
+    app.agents().restore_agent(agent.clone());
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    assert!(
+        !runtime.owned.provider_account_allows_queued_prompt_advance(
+            session.id(),
+            &agent,
+            "unverified Return account",
+        )
+    );
+    assert!(runtime
+        .finish_agent_move_native_probe(
+            &owner,
+            &replica.profile_id,
+            Err(NativeCheckpointFailure::AccountMismatch),
+        )
+        .is_err());
+    assert_eq!(
+        registry
+            .get(&owner, "codex", &replica.profile_id)
+            .unwrap()
+            .auth_state,
+        ProviderAccountAuthState::Unknown
+    );
+    runtime
+        .finish_agent_move_native_probe(
+            &owner,
+            &replica.profile_id,
+            Ok(ProviderResumeState::from_codex_thread_id(
+                "00000000-0000-0000-0000-000000000008",
+            )),
+        )
+        .unwrap();
+    assert!(
+        runtime.owned.provider_account_allows_queued_prompt_advance(
+            session.id(),
+            &agent,
+            "verified Return account",
+        ),
+        "a successful native account/session probe must admit the returned agent's next prompt"
+    );
+    let original = registry.get(&owner, "codex", &source.profile_id).unwrap();
+    assert_eq!(original.auth_state, ProviderAccountAuthState::Authenticated);
+    assert_eq!(
+        original.identity_summary.as_deref(),
+        Some("source@example.invalid")
+    );
+    assert!(runtime.owned.provider_store.list_runs().is_empty());
+}
+
+#[tokio::test]
 async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() {
     use crate::agent_move::*;
     use crate::managed_context::development::*;
