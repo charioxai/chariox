@@ -25,6 +25,9 @@ executables = [entry["executable"] for entry in artifacts
 if len(executables) != 1:
     raise SystemExit("expected exactly one kernel library test executable")
 shutil.copy2(executables[0], root / "bin/kernel-tests")
-shutil.copy2(target / "debug/chariox-app-wasm-worker", root / "bin/chariox-app-wasm-worker")
+worker = root / "bin/chariox-app-wasm-worker"
+worker.unlink(missing_ok=True)
+shutil.copy2(target / "debug/chariox-app-wasm-worker", worker)
+worker.chmod(0o500)
 PY
 "$CHARIOX_WORKER_DRILL_DIR/bin/kernel-tests" signed_installed_ui_actions_reach_the_real_view_context --ignored --nocapture --test-threads=1
