@@ -733,8 +733,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         // The hidden backing session stays out of lists but is a real session: health checks
         // the backing agent against the session projection.
-        let backing_session = self.app.sessions.get_session(session.id())?;
-        self.app.update_session_projection(backing_session);
+        crate::app::KernelSessionReadService::new(&*self.app).session_snapshot(session.id())?;
         Ok(agent)
     }
 
