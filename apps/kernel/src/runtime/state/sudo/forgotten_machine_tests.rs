@@ -8,7 +8,7 @@ use crate::runtime::command::{KernelCommand, KernelCommandSource};
 
 const MACHINE: &str = "worker-machine";
 
-fn lease_agent_to_machine(f: &Fixture, worker_kernel_id: &str) {
+pub(super) fn lease_agent_to_machine(f: &Fixture, worker_kernel_id: &str) {
     f.state
         .owned
         .agent_store
@@ -104,4 +104,91 @@ async fn forgetting_the_worker_machine_ends_the_leased_sudo_window_and_refuses_l
         refusal.to_string().contains("was forgotten by the owner"),
         "{refusal}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forgetting_a_private_slice_worker_delivers_both_cleanup_requests() {
+    crate::test_support::isolated_env_test!();
+    use crate::transport::relay_client::{
+        ConnectedWorkerRig, RelayClientState, SlicePrivateRelayConnector,
+    };
+    use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+
+    let f = fixture_with_options(None, true);
+    let config = f.state.owned.config_projection.snapshot();
+    let relay_url = "ws://127.0.0.1:9";
+    let private_state = Arc::new(tokio::sync::RwLock::new(RelayClientState::default()));
+    let mut worker = ConnectedWorkerRig::connect(&private_state, &config, relay_url).await;
+    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+    f.state
+        .owned
+        .slice_private_relay_connectors
+        .lock()
+        .await
+        .insert(
+            "private-slice".into(),
+            SlicePrivateRelayConnector {
+                relay_url: relay_url.into(),
+                state: private_state,
+                shutdown_tx,
+                task: std::thread::spawn(|| {}),
+            },
+        );
+    crate::config::DaemonConfig::approve_remote_machine(MACHINE, None).unwrap();
+    lease_agent_to_machine(&f, worker.worker_kernel_id());
+    let agent_id = f.request.target_agent_id.as_deref().unwrap();
+    let mut binding = f
+        .state
+        .owned
+        .agent_store
+        .get_agent(agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
+    binding.relay_url = Some(relay_url.into());
+    binding.relay_token = Some("private-relay-fixture".into());
+    f.state
+        .owned
+        .agent_store
+        .bind_remote_execution(agent_id, binding)
+        .unwrap();
+
+    forget(&f).await;
+
+    let agent_request = worker
+        .answer(|request| match request {
+            RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => {
+                RelayPeerResponse::LeasedAgentDestroyed {
+                    leased_agent_id: leased_agent_id.clone(),
+                }
+            }
+            other => panic!("expected agent cleanup, got {other:?}"),
+        })
+        .await;
+    assert!(
+        matches!(agent_request, RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } if leased_agent_id == "leased-agent")
+    );
+    let lease_request = worker
+        .answer(|request| match request {
+            RelayPeerRequest::DestroyExecutionLease { lease_id } => {
+                RelayPeerResponse::ExecutionLeaseDestroyed {
+                    lease_id: lease_id.clone(),
+                }
+            }
+            other => panic!("expected lease cleanup, got {other:?}"),
+        })
+        .await;
+    assert!(
+        matches!(lease_request, RelayPeerRequest::DestroyExecutionLease { lease_id } if lease_id == "lease")
+    );
+    let connector = f
+        .state
+        .owned
+        .slice_private_relay_connectors
+        .lock()
+        .await
+        .remove("private-slice")
+        .unwrap();
+    connector.task.join().unwrap();
 }

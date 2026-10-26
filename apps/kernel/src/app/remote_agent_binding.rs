@@ -1423,15 +1423,12 @@ impl DaemonApp {
             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
             daemon_alias: None,
         };
-        let use_connected_relay =
-            self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
-        let agent_cleanup = self.send_remote_binding_request_authorized(
+        let agent_cleanup = self.send_remote_cleanup_request_authorized(
             &relay_config,
             target.clone(),
             RelayPeerRequest::DestroyLeasedAgent {
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
             },
-            use_connected_relay,
             authorize,
         );
         self.reconcile_remote_cleanup_response(
@@ -1440,13 +1437,12 @@ impl DaemonApp {
             "leased_agent_not_found",
             agent_cleanup,
         )?;
-        let lease_cleanup = self.send_remote_binding_request_authorized(
+        let lease_cleanup = self.send_remote_cleanup_request_authorized(
             &relay_config,
             target,
             RelayPeerRequest::DestroyExecutionLease {
                 lease_id: remote_execution.execution_lease_id.clone(),
             },
-            use_connected_relay,
             &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
         );
         self.reconcile_remote_cleanup_response(
@@ -1455,6 +1451,29 @@ impl DaemonApp {
             "execution_lease_not_found",
             lease_cleanup,
         )
+    }
+
+    fn send_remote_cleanup_request_authorized(
+        &self,
+        relay_config: &DaemonConfig,
+        target: ClientTarget,
+        request: RelayPeerRequest,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        let relays = self.connected_relays();
+        self.block_on_relay_future(async {
+            relays
+                .enqueue_leased_worker_request_authorized(
+                    relay_config,
+                    target,
+                    request,
+                    Duration::from_millis(relay_config.relay_request_timeout_ms),
+                    authorize,
+                )
+                .await?
+                .wait()
+                .await
+        })
     }
 
     fn reconcile_remote_cleanup_response(
