@@ -354,14 +354,8 @@ impl KernelRuntimeState {
         // Installation IDs are stable handles in the agent's own Room. After
         // idle retirement they open a fresh Tab from the current verified release.
         // Physical targets from the earlier catalog remain accepted while live.
-        if agent.has_extension_grant(ExtensionKind::App, target)
-            && !self
-                .app_control()
-                .views()
-                .bound_views(agent.session_id())
-                .iter()
-                .any(|(_, binding)| binding.installation == target)
-        {
+        let opened_target;
+        let target = if agent.has_extension_grant(ExtensionKind::App, target) {
             let authority = AppViewAuthority::new(
                 self.owned.agent_store.clone(),
                 Some(agent),
@@ -372,18 +366,23 @@ impl KernelRuntimeState {
             authority.check()?;
             // Opening changes controller state. Finish registration even if the
             // grant is revoked meanwhile, so the pump can retire the idle Tab.
-            self.ensure_room_app_view(
-                agent.owner_user_id(),
-                agent.session_id(),
-                target,
-                crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
-                    agent: agent.id().into(),
-                },
-            )
-            .await
-            .map_err(|error| failure("view_unavailable", error.to_string()))?;
+            let opened = self
+                .ensure_room_app_view(
+                    agent.owner_user_id(),
+                    agent.session_id(),
+                    target,
+                    crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
+                        agent: agent.id().into(),
+                    },
+                )
+                .await
+                .map_err(|error| failure("view_unavailable", error.to_string()))?;
             authority.check()?;
-        }
+            opened_target = opened.target_id;
+            opened_target.as_str()
+        } else {
+            target
+        };
         let mut context = self.bound_view(agent, target)?;
         let lease = tokio::select! {
             result = self.app_lease_on_demand(&context.binding.owner, &context.binding.installation) => {
@@ -417,7 +416,9 @@ impl KernelRuntimeState {
                 views
                     .bound_views(session)
                     .into_iter()
-                    .find(|(_, binding)| binding.installation == target)
+                    .find(|(_, binding)| {
+                        binding.installation == target && binding.owner == agent.owner_user_id()
+                    })
                     .map(|(target, _)| target)
             })
             .ok_or_else(|| {
@@ -429,6 +430,12 @@ impl KernelRuntimeState {
         let (binding, reloading) = views
             .binding_state(session, &target)
             .ok_or_else(|| failure("unknown_view", "the view was closed"))?;
+        if binding.owner != agent.owner_user_id() {
+            return Err(failure(
+                "unknown_view",
+                "no such view is open for your App authority in this Room",
+            ));
+        }
         if reloading {
             return Err(failure(
                 "APP_VIEW_STALE",

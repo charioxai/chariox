@@ -207,6 +207,33 @@ async fn an_agent_reaches_only_its_own_rooms_views_and_only_for_an_app_it_holds(
 }
 
 #[tokio::test]
+async fn a_room_view_of_another_owners_installation_is_not_agent_authority() {
+    let mut rig = rig();
+    rig.grant().await;
+    rig.runtime.app_control().views().register(
+        &rig.session,
+        TARGET,
+        AppViewBinding {
+            owner: "bob".into(),
+            installation: APP.into(),
+            generation: GENERATION,
+            panel: Default::default(),
+            logical_tab: None,
+        },
+    );
+    for handle in [TARGET, APP] {
+        assert_eq!(
+            rig.runtime
+                .bound_view(&rig.agent, handle)
+                .err()
+                .unwrap()
+                .code,
+            "unknown_view"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_view_that_reloaded_onto_a_newer_generation_stops_the_call_before_the_page() {
     let mut rig = rig();
     rig.grant().await;
@@ -236,8 +263,8 @@ async fn the_catalog_lists_each_open_view_and_says_why_one_cannot_be_read() {
         (Some(APP), Some(APP), Some(GENERATION))
     );
     assert_eq!(
-        view["unavailable"]["code"], "APP_UNAVAILABLE",
-        "no worker runs in this rig, so the signed actions cannot be read"
+        view["unavailable"]["code"], "view_unavailable",
+        "a cached binding does not prove this rig has a running Room controller"
     );
 }
 
@@ -639,7 +666,22 @@ async fn mp08_a3_catalog_opens_granted_app_without_a_human_view() {
             .app_control()
             .views()
             .unbind(&rig.session, "actor-target");
+        // The controller retired a Tab; its drain has not pruned Rust's old
+        // binding yet. A stable handle must still resolve the actual target.
+        rig.runtime.app_control().views().register_projection(
+            &rig.session,
+            "retired-target",
+            AppViewBinding {
+                owner: "alice".into(),
+                installation: APP.into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            true,
+        );
         let reopened = rig.runtime.view_context(&rig.agent, APP).await.unwrap();
+        assert_eq!(reopened.target, "actor-target");
         assert_eq!(reopened.binding.installation, APP);
         assert_eq!(reopened.binding.generation, 1);
     });
