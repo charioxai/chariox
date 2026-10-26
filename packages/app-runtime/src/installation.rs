@@ -10,6 +10,8 @@
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
+pub mod activation;
+pub mod channel;
 mod verified;
 pub use verified::{StageTrustBinding, VerifiedInstallCandidate, VerifiedStageError};
 
