@@ -24,3 +24,8 @@ wit-component = { version = "=0.262.0", features = ["dummy-module"] }
 wasm-encoder = { version = "=0.262.0", features = ["wasmparser"] }
 wasmparser = "=0.262.0"
 wat = "=1.262.0"
+
+[[test]]
+name = "containment"
+path = "tests/containment.rs"
+harness = false

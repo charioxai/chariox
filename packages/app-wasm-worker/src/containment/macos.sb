@@ -1,0 +1,19 @@
+(version 1)
+(deny default)
+(deny file-map-executable)
+; Files and network are kernel brokers. No App/package/data/tmp path is granted
+; to the native worker. Already-open IPC/log descriptors remain usable.
+(allow signal (target self))
+(allow process-info-pidinfo (target self))
+(allow process-info-rusage (target self))
+; Hardened runtime, with only allow-jit, owns executable-memory enforcement.
+; This grant cannot override the code-signing policy for ordinary heap pages.
+(allow dynamic-code-generation)
+(allow sysctl-read
+    (sysctl-name "hw.activecpu") (sysctl-name "hw.ncpu")
+    (sysctl-name "hw.logicalcpu_max") (sysctl-name "hw.physicalcpu_max")
+    (sysctl-name "hw.memsize") (sysctl-name-prefix "hw.pagesize")
+    (sysctl-name "hw.cputype") (sysctl-name "hw.cpusubtype")
+    (sysctl-name-prefix "hw.optional.") (sysctl-name "hw.machine")
+    (sysctl-name "kern.osrelease") (sysctl-name "kern.ostype")
+    (sysctl-name "kern.osversion") (sysctl-name "kern.version"))

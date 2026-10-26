@@ -3,6 +3,34 @@ use chariox_app_wit::APP_WORLD;
 mod support;
 
 #[test]
+fn native_escape_imports_and_malformed_components_are_rejected() {
+    use chariox_app_wasm_worker::worker::WorkerEngine;
+    let engine = WorkerEngine::new().unwrap();
+    for import in ["read-host-file", "open-host-socket", "spawn-host-process"] {
+        let source = include_str!("../../app-wit/tests/fixtures/v1.wit").replace(
+            "world probe {",
+            &format!("world probe {{ import {import}: func();"),
+        );
+        let bytes = support::vector(&source, true);
+        let error = engine.compile(&bytes, APP_WORLD).unwrap_err();
+        assert!(format!("{error:#}").contains(import));
+        assert_eq!(
+            chariox_app_wit::check_component(&bytes, APP_WORLD),
+            Err(chariox_app_wit::ComponentError::ImportNotAllowed {
+                import: import.into()
+            })
+        );
+    }
+    assert!(engine.compile(b"malformed component", APP_WORLD).is_err());
+    engine
+        .compile(
+            &support::vector(include_str!("../../app-wit/tests/fixtures/v1.wit"), true),
+            APP_WORLD,
+        )
+        .unwrap();
+}
+
+#[test]
 fn r1_forward_vector_reports_engine_incompatibility() {
     let bytes = support::vector(include_str!("../../app-wit/tests/fixtures/v1.wit"), false);
     chariox_app_wit::check_component(&bytes, APP_WORLD).unwrap();

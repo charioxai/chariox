@@ -1,5 +1,6 @@
 //! One async component instance per installation, on the kernel App wire.
 
+pub mod containment;
 pub mod engine;
 
 mod attribution;

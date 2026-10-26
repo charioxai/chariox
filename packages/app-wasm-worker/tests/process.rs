@@ -19,6 +19,18 @@ fn code(outcome: Outcome) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "source App build required; use scripts/drill.sh"]
+async fn huge_output_is_rejected_and_both_apps_remain_healthy() {
+    let mut worker = Worker::start(vec![]).await;
+    let mut unrelated = Worker::start(vec![]).await;
+    worker.call("huge", "huge", 5000).await;
+    assert_eq!(code(worker.response("huge").await), "INVALID_OUTPUT");
+    worker.echo("after-huge").await;
+    unrelated.echo("unrelated-after-huge").await;
+    println!("DRILL huge output: INVALID_OUTPUT; same and unrelated App valid calls recover: PASS");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "source App build required; use scripts/drill.sh"]
 async fn real_worker_process_concurrency_cancel_deadline_trap_oom_restart() {
     let mut worker = Worker::start(vec![]).await;
     let mut gates = Vec::new();
