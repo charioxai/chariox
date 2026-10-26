@@ -155,8 +155,11 @@ repository with a test watcher, ask the agent to start one `chariox.events.proce
 watcher and yield on that source with a finite deadline. Retain the Waiting task,
 its open process obligation and the watcher's exact PID before the fault.
 
-Kill only that run's owned provider descendants, reconnect the TUI to the same
-agent, and enter `@ stop`. This exercises the shared shell Stop handler. Capture
+Kill only that run's owned provider descendants and reconnect the TUI to the same
+agent. Build `@chariox/shell`, then run the real `apps/shell/dist/shell.js` client
+with the same kernel URL and credential scope. Its script selects `session use
+<session-id>`, selects `agent focus <agent-id>`, and runs `stop`. This exercises
+the shared shell Stop handler. Capture
 its `cancelled task <task_id>` result: a successful ledger transition accompanied
 by `unexpected response variant: expected PromptCancelled` is a failure. Verify
 the same task becomes Cancelled, its process source physically exits and no
