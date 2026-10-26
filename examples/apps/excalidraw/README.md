@@ -65,6 +65,8 @@ are filenames, never host paths. Only WASI's installation-private `data` preopen
 is read directly. Named private saves survive worker/view restarts independently
 of the current scene. Save a copy (also Ctrl+S and Ctrl+Shift+S) offers a new,
 uniquely named `.excalidraw` copy through the kernel's file-save interaction.
+Once the broker owns the offered bytes, the App removes its private staging
+file; only explicitly named private saves remain in `data/`.
 In a text terminal, use its displayed `/app file save OPERATION "PATH"` command
 to keep the offered file, then choose that file with Open to restore it. The
 current Web interaction only offers Decline; use the text terminal to save it.
@@ -75,6 +77,17 @@ does not repeat an active notice; another edit after dismissal or an explicit
 action can report it again. Use Save a copy and keep the offered file before
 reloading, then Open it to recover edits.
 Reloading clears the automatic-save error and loads the latest durable scene.
+
+The component file-cleanup regression uses the built backend and a real WASI
+`data` directory, with a fixture file broker. After building `app.wasm`, run:
+
+```sh
+CHARIOX_EXCALIDRAW_COMPONENT="$app_out/runtime/app.wasm" \
+  cargo test --locked -p chariox-app-sdk-tools --features component-drills \
+  --test excalidraw-files-drill
+```
+
+Keep `TMPDIR` outside the checkout and use the shared builder's Cargo slot.
 
 `scene_summary` reads actual canvas elements, with IDs, geometry, labels,
 selection, groups and arrow bindings. Follow `nextOffset` until null. The state

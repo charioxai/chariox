@@ -102,7 +102,15 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
             }
             let length = replace(name.clone(), bytes).await?;
             let grant = if input["offer"].as_bool().unwrap_or(false) {
-                Some(files::export(name.clone()).await?)
+                let grant = files::export(name.clone()).await?;
+                // The broker owns the offered bytes after export succeeds.
+                std::fs::remove_file(format!("data/{name}")).map_err(|_| {
+                    error(
+                        "FILE_CLEANUP_FAILED",
+                        "copy was offered but its private staging file could not be removed",
+                    )
+                })?;
+                Some(grant)
             } else {
                 None
             };

@@ -183,12 +183,15 @@ test('UI saves offer distinct copies that a person can reopen through Open', { t
   await draw();
   await page.keyboard.press('Control+s'); await page.waitForTimeout(200);
   await page.keyboard.press('Control+s'); await page.waitForTimeout(200);
-  assert.equal(broker.writes.length, 2);
+  await page.keyboard.press('Control+s'); await page.waitForTimeout(200);
+  assert.equal(broker.writes.length, 3);
   const [first, second] = broker.writes;
   assert.equal(first.offer, true, 'Ctrl+S must offer the copy through files.export');
   assert.equal(second.offer, true);
   assert.notEqual(first.name, second.name, 'each unnamed save needs a distinct filename');
-  assert.equal(broker.files.size, 2, 'saving another copy must retain the previous one');
+  assert.equal(new Set(broker.writes.map(write => write.name)).size, 3);
+  assert(broker.writes.every(write => write.offer));
+  assert.equal(broker.files.size, 3, 'offered copies remain available to their recipient');
   const saved = (await invoke('scene_summary')).value.elements;
   await draw(600);
   broker.picked = first.name;
