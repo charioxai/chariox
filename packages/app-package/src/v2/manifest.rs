@@ -56,6 +56,10 @@ pub struct ManifestV2 {
     pub world: String,
     /// Exactly the features the content below needs (see `derive_features`).
     pub required_features: Vec<RequiredFeature>,
+    /// Only these signed tool names may be replayed once after instance loss.
+    /// Omission means no automatic replay, including for read effects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub idempotent_tools: Vec<String>,
     pub runtime: RuntimeV2,
     pub build: Build,
     pub ui: Ui,
@@ -111,6 +115,20 @@ impl ManifestV2 {
             return Err(invalid("contract and resource policy are required"));
         }
         self.publisher.validate()?;
+        if self.idempotent_tools.len() > limits.max_declarations
+            || self
+                .idempotent_tools
+                .windows(2)
+                .any(|names| names[0] >= names[1])
+            || self
+                .idempotent_tools
+                .iter()
+                .any(|name| !crate::manifest::valid_function_name(name))
+        {
+            return Err(invalid(
+                "idempotentTools must contain sorted, unique tool names",
+            ));
+        }
         WorldId::parse(&self.world)?;
         if self.required_features != self.derive_features() {
             return Err(invalid(
