@@ -14,7 +14,8 @@ use crate::runtime::relay_config_control::projected_relay_status_view;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::terminal_pairings::paired_terminal_records;
 use crate::runtime::waiting_room_public_projection::{
-    build_waiting_room_public_snapshot_from_cached_shared, WaitingRoomSessionSummaryProjectionStore,
+    build_waiting_room_public_snapshot_from_cached_shared, WaitingRoomCaller,
+    WaitingRoomSessionSummaryProjectionStore,
 };
 use crate::session::unix_epoch_ms;
 use crate::transport::relay_client::RelayClientState;
@@ -124,7 +125,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(caller_user_id);
     let config = config_projection.snapshot();
-    let relay_status = projected_relay_status_view(relay_state, config_projection).await;
+    let relay_status = projected_relay_status_view(relay_state, config_projection.clone()).await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
     let terminals = if super::self_host_terminal_grants::required(&config) {
         super::self_host_terminal_grants::entries(&config)?
@@ -148,6 +149,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let (runtime_sessions, external_working_agents, session_revision, external_working_generation) =
         session_projection.waiting_room_snapshot();
     let runtime_sessions = runtime_sessions.unwrap_or_else(|| Arc::from([]));
+    let caller = WaitingRoomCaller::new(caller_user_id, &config_projection);
     let mut snapshot = build_waiting_room_public_snapshot_from_cached_shared(
         runtime_sessions.as_ref(),
         session_revision,
@@ -165,7 +167,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
         remote_kernels,
         terminals,
         unix_epoch_ms(),
-        caller_user_id,
+        &caller,
     )?;
     let accounts = runtime_state
         .provider_account_profile_registry()

@@ -211,10 +211,10 @@ async fn a12_legacy_workflow_turn_settled_without_a_task_keeps_its_node() {
     );
 }
 
-// A plain turn only gets a task row: ending after a tool call with no answer is
-// settled Done, never corrected, held to a wait or blocked for the owner.
+// A plain turn only gets a task row, never a wait or an owner block: ending after a tool
+// call with no answer is corrected once, as a plain turn without any obligation.
 #[tokio::test]
-async fn plain_turn_ending_without_an_answer_settles_done_without_a_correction() {
+async fn plain_turn_ending_without_an_answer_is_corrected_once() {
     use crate::durable_state::agent_lifecycle::ExecutionState;
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -249,9 +249,14 @@ async fn plain_turn_ending_without_an_answer_settles_done_without_a_correction()
         )
         .unwrap()
         .expect("plain turn settlement");
-    assert!(!correction, "{task:?}");
-    assert_eq!(task.state, ExecutionState::Done, "{task:?}");
-    assert!(task.pending_prompt_id.is_none() && !task.correction_used);
+    assert!(correction, "{task:?}");
+    assert_eq!(task.state, ExecutionState::Working, "{task:?}");
+    assert!(task.correction_used && task.wait.is_none() && task.obligations.is_empty());
+    assert_eq!(
+        task.pending_prompt_id.as_deref(),
+        Some("task-correction-plain-turn")
+    );
+    assert!(task.reason.contains("final answer"), "{}", task.reason);
 }
 
 async fn workflow_wait_cancellation(cancel_creator: bool) {
@@ -644,6 +649,77 @@ fn paused_interrupt_prompt_removal_survives_restart() {
 #[test]
 fn cancelled_interrupt_prompt_removal_survives_restart() {
     assert_interrupt_prompt_removal_survives_restart(false);
+}
+
+// HW-04: a run whose prompt was active when the kernel stopped has no provider run after the
+// restart. Stopping it ends the run, so the answer is the Stopped run, not a missing provider.
+#[test]
+fn stop_after_restart_answers_the_stopped_run() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("restart test executor should start");
+    let fixture = interrupt_fixture();
+    let (config, session_id, run_id, agent_id, target_unrelated_prompt_id) = (
+        fixture.config.clone(),
+        fixture.session_id.clone(),
+        fixture.workflow_run_id.clone(),
+        fixture.target_agent_id.clone(),
+        fixture.target_unrelated_prompt_id.clone(),
+    );
+    drop(fixture.runtime);
+    let restored = runtime_state_from_app(
+        DaemonApp::bootstrap(config).expect("restarted kernel should restore the running run"),
+    );
+    let (result, _) = executor.block_on(restored.execute_workflow_cancel_run_request(
+        crate::local::CancelWorkflowRunRequest {
+            session_id: session_id.clone(),
+            workflow_run_ref: run_id.clone(),
+        },
+    ));
+    let Ok(LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. }) = result else {
+        panic!("a stop that ended the run must answer success: {result:?}");
+    };
+    assert_eq!(
+        workflow_run.status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+    let session = restored
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let active = restored
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id);
+    assert!(
+        active.is_none_or(|prompt| prompt.workflow_run_id() != Some(run_id.as_str())),
+        "the stopped run must not keep an active prompt"
+    );
+    // The prompt queued behind the stopped run is next on this agent. With no provider left
+    // after the restart, Stop must have launched one to take it, or it would wait forever.
+    let successor_prompts = restored
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(
+        successor_prompts
+            .0
+            .iter()
+            .chain(successor_prompts.1.front())
+            .any(|prompt| prompt.id() == target_unrelated_prompt_id),
+        "the unrelated prompt must still be the agent's next prompt"
+    );
+    let run = restored
+        .owned
+        .provider_store
+        .get_run_for_agent(&session_id, &agent_id)
+        .expect("the queued successor needs a provider run after the stop");
+    assert!(matches!(
+        run.state(),
+        crate::provider::ProviderRunState::Starting | crate::provider::ProviderRunState::Running
+    ));
 }
 
 async fn run_interrupt_append_failure_regression(pause: bool) {

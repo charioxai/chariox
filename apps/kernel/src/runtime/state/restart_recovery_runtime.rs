@@ -813,6 +813,15 @@ impl KernelRuntimeState {
         // Recover the next provider prompt directly instead of asking the workflow
         // queue to create another run.  The latter leaves a Ready node stranded
         // because the invocation was already claimed before the restart.
+        self.recover_queue_head_after_restart(session_id, agent_id)
+    }
+
+    /// Starts the prompt now at the head of an agent's queue once nothing is active for it.
+    pub(super) fn recover_queue_head_after_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
         let queued_prompt_id = self
             .owned
             .session_store
@@ -1029,7 +1038,7 @@ impl KernelRuntimeState {
 
     /// Removes the cancelling prompt from its agent and starts what was queued behind it. The
     /// workflow node, if any, is the caller's to settle.
-    async fn release_cancelled_local_prompt_after_restart(
+    pub(super) async fn release_cancelled_local_prompt_after_restart(
         &self,
         session_id: &str,
         agent_id: &str,
