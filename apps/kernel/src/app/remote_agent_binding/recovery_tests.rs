@@ -1,5 +1,6 @@
 use super::*;
 use crate::session::CreateSessionRequest;
+use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 use chariox_relay::{RelayConfig, RelayServer};
 use sha2::{Digest, Sha256};
 use tokio::sync::{watch, Mutex};

@@ -17,6 +17,7 @@ import {
   updateCollapsedTranscriptTurnState,
   type TranscriptDisplayEntry,
 } from "./transcript-display-state.js"
+import { reindexTranscriptEntries } from "./transcript-entry-state.js"
 
 function baseTurnEntries(): TranscriptDisplayEntry[] {
   return [
@@ -70,7 +71,7 @@ test("projectTranscriptDisplayState returns display entries with derived transcr
   )
   assert.equal(projection.currentTurnId, 4)
   assert.equal(projection.nextTurnId, 5)
-  assert.equal(projection.entryCounter, 6)
+  assert.equal(projection.entryCounter, 5)
 })
 
 test("projectCompactTranscriptDisplayState compacts inputs before deriving display state", () => {
@@ -92,7 +93,7 @@ test("projectCompactTranscriptDisplayState compacts inputs before deriving displ
     ],
   )
   assert.equal(projection.currentTurnId, 1)
-  assert.equal(projection.entryCounter, 5)
+  assert.equal(projection.entryCounter, 4)
 })
 
 test("compactTranscriptDisplayEntries removes nullish placeholder entries", () => {
@@ -133,6 +134,20 @@ test("projectSettledTranscriptTurnDisplayState collapses a settled collapsible t
       ["assistant", "I changed the transcript layout."],
     ],
   )
+})
+
+// MP-08 / MP-10 (panes, Miguel 2026-10-12 correction): the TUI never folds
+// a finished turn by itself; the turn keeps its toggle.
+test("projectSettledTranscriptTurnDisplayState leaves a finished turn expanded", () => {
+  const projection = projectSettledTranscriptTurnDisplayState(baseTurnEntries(), [])
+
+  assert.equal(projection.settledTurnId, 1)
+  assert.deepEqual(projection.collapsedTurnIds, [])
+  assert.deepEqual(
+    projection.entries.filter((entry) => !entry.hidden).map((entry) => entry.role),
+    ["user", "turn_toggle", "reasoning", "tool", "assistant"],
+  )
+  assert.equal(projection.entries.find((entry) => entry.role === "turn_toggle")?.text, "click to collapse")
 })
 
 test("projectSettledTranscriptTurnDisplayState keeps open history turns expanded", () => {
@@ -208,7 +223,7 @@ test("projectTranscriptBlobToggleDisplayState projects blob expansion through sh
   assert.equal(projection?.entryId, 3)
   assert.equal(projection?.collapsed, false)
   assert.equal(projection?.entries.find((entry) => entry.id === 3)?.blobCollapsed, false)
-  assert.equal(projection?.entryCounter, 5)
+  assert.equal(projection?.entryCounter, 4)
   assert.deepEqual(
     projection?.entries.filter((entry) => !entry.hidden).map((entry) => [entry.role, entry.text]),
     [
@@ -248,13 +263,13 @@ test("applyTranscriptDisplayState uses shared collapsed blob descriptions by def
   const reasoning = entries.find((entry) => entry.id === 2)
   assert.equal(reasoning?.blobCollapsible, true)
   assert.equal(reasoning?.blobCollapsed, true)
-  assert.equal(reasoning?.blobTitle, "reasoning")
+  assert.equal(reasoning?.blobTitle, "Thought")
   assert.equal(reasoning?.blobSummary, "Thinking through the render model")
 
   const toolEntry = entries.find((entry) => entry.id === 3)
   assert.equal(toolEntry?.blobCollapsible, true)
   assert.equal(toolEntry?.blobCollapsed, true)
-  assert.equal(toolEntry?.blobTitle, "bash · COMPLETED")
+  assert.equal(toolEntry?.blobTitle, "Ran git status · COMPLETED")
   assert.equal(toolEntry?.blobSummary, "$ git status")
 })
 
@@ -291,7 +306,7 @@ test("applyTranscriptDisplayState applies shared blob defaults by role", () => {
       .map((entry) => [entry.role, entry.blobCollapsible ?? false, entry.blobCollapsed ?? null, entry.blobTitle ?? null]),
     [
       ["user", false, null, null],
-      ["reasoning", true, true, "reasoning"],
+      ["reasoning", true, true, "Thought"],
       ["status", true, true, "status"],
       ["tool", true, true, "tool"],
       ["error", false, null, null],
@@ -495,4 +510,38 @@ test("applyTranscriptDisplayState keeps steered prompts out of turn tracking", (
       [4, 1],
     ],
   )
+})
+
+test("history refresh never reassigns a turn toggle id to a later transcript entry", () => {
+  // MP-08/MP-10/MP-11: the history refresh reindexes from zero, then the
+  // display projection re-adds turn toggles. An automation client that used
+  // the largest id as its baseline must still see the next turn's receipt.
+  const refresh = (entries: TranscriptDisplayEntry[]) => projectCompactTranscriptDisplayState(
+    reindexTranscriptEntries(applyTranscriptDisplayState(reindexTranscriptEntries(entries, 0)), 0),
+  ).entries
+  const completedTurns: TranscriptDisplayEntry[] = [7, 16, 55, 70].flatMap((turnId) => [
+    { id: 0, role: "user", text: `prompt ${turnId}`, turnId },
+    { id: 0, role: "assistant", text: `working ${turnId}`, turnId },
+    { id: 0, role: "tool", text: `tool output ${turnId}`, turnId },
+    { id: 0, role: "assistant", text: `answer ${turnId}`, turnId },
+  ])
+  const before = refresh(completedTurns)
+  const baseline = Math.max(...before.map((entry) => entry.id))
+
+  const after = refresh([
+    ...completedTurns,
+    { id: 0, role: "user", text: "Press End", turnId: 85 },
+    { id: 0, role: "assistant", text: "Attempting End.", turnId: 85 },
+    { id: 0, role: "tool", text: "", turnId: 85, historyBlobId: "history:87:88" },
+    { id: 0, role: "assistant", text: "Refused operation.", turnId: 85 },
+  ])
+  const receipt = after.find((entry) => entry.historyBlobId === "history:87:88")
+
+  assert.ok(receipt && receipt.id > baseline, `receipt id ${receipt?.id} must exceed baseline ${baseline}`)
+  const beforeById = new Map(before.map((entry) => [entry.id, entry]))
+  for (const entry of after) {
+    const previous = beforeById.get(entry.id)
+    assert.ok(!previous || (previous.role === entry.role && previous.turnId === entry.turnId), `id ${entry.id} was reassigned`)
+  }
+  assert.equal(new Set(after.map((entry) => entry.id)).size, after.length)
 })

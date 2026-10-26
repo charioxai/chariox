@@ -16,6 +16,25 @@ export async function applyBrowserBar(connection, pages, appTargetIds, visible, 
       return null;
     }
   };
+  // MP-08/MP-10/MP-11: an empty Room's startup tab is a real surface, not a white fullscreen frame.
+  // Ordinary user tabs and content already placed in about:blank keep their contents.
+  if (!visible && appTargetIds.size === 0 && pages.length === 1 && pages[0].url === "about:blank") {
+    await quietly(async () => {
+      const { sessionId } = await connection.send("Target.attachToTarget", { targetId: pages[0].targetId, flatten: true });
+      try {
+        await connection.send("Runtime.evaluate", { expression: `(() => {
+          if (document.URL !== 'about:blank' || !document.body || !document.head || document.body.childNodes.length || document.head.childNodes.length || document.body.style.length || document.documentElement.style.length) return false;
+          document.title = 'Room';
+          const style = document.createElement('style');
+          style.textContent = 'html,body{margin:0;min-height:100%;background:#111;color:#ededed;font:16px system-ui,sans-serif}body{min-height:100vh;display:grid;place-items:center}main{text-align:center;padding:32px}h1{font-size:24px;font-weight:500;margin:0 0 12px}p{color:#aaa;margin:0}';
+          document.head.append(style);
+          const main = document.createElement('main'), title = document.createElement('h1'), hint = document.createElement('p');
+          title.textContent = 'Room ready'; hint.textContent = 'Open an app to begin.';
+          main.append(title, hint); document.body.append(main); return true;
+        })()`, returnByValue: true }, sessionId);
+      } finally { await quietly(() => connection.send("Target.detachFromTarget", { sessionId })); }
+    });
+  }
   const windowOf = async (targetId) =>
     (await quietly(() => connection.send("Browser.getWindowForTarget", { targetId })))?.windowId ?? null;
   const appWindows = new Set();

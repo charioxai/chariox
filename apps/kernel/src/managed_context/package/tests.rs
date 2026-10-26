@@ -39,6 +39,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
     .expect("export development context");
     let binding = ManagedContextPackageBinding {
         plan: ManagedContextPlanBinding {
+            destination: None,
             context_id: "context-empty-apply".to_string(),
             plan_digest: format!("sha256:{}", "1".repeat(64)),
             kernel_context: ManagedContextKernelSelection::Empty,
@@ -101,6 +102,36 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         "explicit Empty\n"
     );
     fs::remove_dir_all(root).expect("remove Empty apply fixture");
+}
+
+#[test]
+fn package_extraction_reclaims_interrupted_staging_before_measuring_room() {
+    use crate::managed_context::limits::{tree_size, with_volume, DISK_RESERVE_BYTES};
+    let fixture = PackageFixture::new("interrupted-staging");
+    let exported =
+        export_managed_context_package(fixture.export_request(ManagedContextPackageKernel::Empty))
+            .expect("export package");
+    let package_directory = exported
+        .package_path
+        .parent()
+        .expect("package parent")
+        .to_path_buf();
+    let package_size = fs::metadata(&exported.package_path)
+        .expect("package size")
+        .len();
+    // A crash left a fully extracted staging directory behind.
+    let stale = component_root_for_package(&exported.package_path).expect("component root");
+    fs::create_dir(&stale).expect("create stale staging");
+    fs::write(stale.join("development.tar.gz"), vec![0_u8; 64 * 1024]).expect("stale component");
+    // Room for the package's extraction once the stale staging is gone, not while it still counts.
+    let capacity =
+        DISK_RESERVE_BYTES + tree_size(&package_directory) - 64 * 1024 + package_size + 4096;
+    let extracted = with_volume(&package_directory, capacity, || {
+        extract_managed_context_package(fixture.import_request(&exported))
+    })
+    .expect("the retry fits once the interrupted staging is reclaimed");
+    drop(extracted);
+    fixture.cleanup();
 }
 
 #[test]
@@ -501,6 +532,12 @@ esac
         r#"#!/bin/sh
 set -eu
 case "$1 $2 $3" in
+  "config --global --null")
+    test -f "$HOME/git-helper" || exit 1
+    printf '!gh auth git-credential\0'
+    ;;
+  "config --global --unset-all") /bin/rm -f "$HOME/git-helper" ;;
+  "config --global --add") /usr/bin/touch "$HOME/git-helper" ;;
   "config --global --get-regexp") test -f "$HOME/git-helper" ;;
   "config --global --remove-section") /bin/rm -f "$HOME/git-helper" ;;
   *) exit 2 ;;
@@ -853,6 +890,7 @@ impl PackageFixture {
             development_bytes,
             binding: ManagedContextPackageBinding {
                 plan: ManagedContextPlanBinding {
+                    destination: None,
                     context_id: "context-1".to_string(),
                     plan_digest: format!("sha256:{}", "1".repeat(64)),
                     kernel_context: ManagedContextKernelSelection::Empty,
@@ -936,7 +974,7 @@ impl PackageFixture {
                 },
                 extensions: Vec::new(),
                 dependencies: Vec::new(),
-                vault: crate::secret::TransferredVaultSnapshot {
+                vault: Some(crate::secret::TransferredVaultSnapshot {
                     schema_version: 1,
                     context_id: self.binding.plan.context_id.clone(),
                     source_kernel_id: self.binding.source_kernel_id.clone(),
@@ -951,7 +989,7 @@ impl PackageFixture {
                         nonce: "nonce".to_string(),
                         ciphertext: "ciphertext".to_string(),
                     },
-                },
+                }),
             },
             snapshot_sha256: "d".repeat(64),
         }

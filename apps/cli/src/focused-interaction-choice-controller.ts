@@ -34,6 +34,8 @@ export type FocusedInteractionChoicePasteEvent = {
 export type FocusedInteractionChoiceControllerDeps = {
   getFocusedInteraction: () => RuntimeInteraction | null
   isAttached: () => boolean
+  /** Text already typed in the composer; Enter and digits then belong to it. */
+  getComposerText?: () => string
   getSessionId: () => string
   getSelectedIndex: (interactionId: string) => number | undefined
   setSelectedIndex: (interactionId: string, index: number) => void
@@ -53,6 +55,13 @@ export type FocusedInteractionChoiceControllerDeps = {
   applySessionState: (session: RuntimeSession) => void
   flashFooter: (message: string, tone: FooterFlash["tone"]) => void
   formatError?: (error: unknown) => string
+  /** Provider login interactions: link actions and the kernel's result. */
+  providerLogin?: {
+    stripState: (interaction: RuntimeInteraction) => { view: { url: string | null } } | null
+    codeSent: (interaction: RuntimeInteraction) => boolean
+    openLink: (interaction: RuntimeInteraction) => Promise<void>
+    copyLink: (interaction: RuntimeInteraction) => Promise<void>
+  }
 }
 
 export type FocusedInteractionChoiceController = {
@@ -66,6 +75,10 @@ export function createFocusedInteractionChoiceController(
   deps: FocusedInteractionChoiceControllerDeps,
 ): FocusedInteractionChoiceController {
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
+  const pending = new Set<string>()
+  const answered = new Set<string>()
+  const identity = (interaction: RuntimeInteraction) => JSON.stringify([deps.getSessionId(), interaction.id, interaction.requested_at_ms])
+  const busy = (interaction: RuntimeInteraction) => pending.has(identity(interaction)) || answered.has(identity(interaction))
 
   const repaintInteractions = () => {
     deps.renderAgentInteractions()
@@ -77,6 +90,7 @@ export function createFocusedInteractionChoiceController(
     if (!interaction || !deps.isAttached()) {
       return false
     }
+    if (busy(interaction)) return true
     const submitDecision = resolveInteractionChoiceSubmission({
       interaction,
       requestedIndex: choiceIndex,
@@ -86,9 +100,11 @@ export function createFocusedInteractionChoiceController(
     if (submitDecision.action === "unavailable") {
       return false
     }
+    const providerLogin = Boolean(interaction.provider_login)
     if (submitDecision.action === "edit_custom") {
       deps.setCustomEditing(interaction.id, true)
       repaintInteractions()
+      if (deps.providerLogin?.stripState(interaction)) deps.flashFooter("Paste the code from the provider's page first", "info")
       return true
     }
     deps.setSelectedIndex(interaction.id, submitDecision.selectedIndex)
@@ -102,6 +118,9 @@ export function createFocusedInteractionChoiceController(
       deps.setCustomEditing(interaction.id, false)
       repaintInteractions()
     }
+    const key = identity(interaction)
+    pending.add(key)
+    deps.flashFooter("Sending response…", "info")
     try {
       const session = await deps.respondToInteraction(
         deps.getSessionId(),
@@ -109,16 +128,27 @@ export function createFocusedInteractionChoiceController(
         submitDecision.choiceId,
         submitDecision.customReply,
       )
-      deps.applySessionState(session)
+      // Provider sign-in keeps one interaction alive across code/retry phases.
+      if (!providerLogin) answered.add(key)
+      if (answered.size > 256) answered.delete(answered.values().next().value!)
+      deps.applySessionState(providerLogin ? session : { ...session, active_interactions: session.active_interactions?.filter(item =>
+        item.id !== interaction.id || item.requested_at_ms !== interaction.requested_at_ms) ?? [] })
       if (!submittedSecret) {
         deps.clearCustomReply(interaction.id)
         deps.setCustomEditing(interaction.id, false)
       }
-      deps.flashFooter("interaction answered", "info")
+      // A sent code is answered by the kernel's login status, not here.
+      if (!(providerLogin && submitDecision.choiceId === interaction.custom_choice?.id && deps.providerLogin?.codeSent(interaction))) {
+        deps.flashFooter(providerLogin
+          ? submitDecision.choiceId === "cancel" ? "Cancelling the sign-in…" : "Sign-in continues; waiting for the kernel…"
+          : "interaction answered", "info")
+      }
       return true
     } catch (error) {
       deps.flashFooter(formatError(error), "error")
       return true
+    } finally {
+      pending.delete(key)
     }
   }
 
@@ -127,6 +157,7 @@ export function createFocusedInteractionChoiceController(
     if (!interaction) {
       return false
     }
+    if (busy(interaction)) return true
     const currentIndex = deps.getSelectedIndex(interaction.id) ?? 0
     const nextIndex = nextInteractionChoiceIndex({ interaction, currentIndex, delta })
     if (nextIndex === null) {
@@ -143,6 +174,29 @@ export function createFocusedInteractionChoiceController(
   const handleKey = (event: FocusedInteractionChoiceKeyEvent) => {
     const interaction = deps.getFocusedInteraction()
     if (!interaction || event.eventType === "release") {
+      return false
+    }
+    if (busy(interaction)) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      return true
+    }
+    // O and C act on a login link while its code field is focused and empty.
+    if (
+      (event.name === "o" || event.name === "c") && !event.ctrl && !event.meta && !event.alt
+      && deps.isCustomEditing(interaction.id) && !deps.getCustomReply(interaction.id)
+      && deps.providerLogin?.stripState(interaction)?.view.url
+    ) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      void (event.name === "o" ? deps.providerLogin.openLink(interaction) : deps.providerLogin.copyLink(interaction))
+        .catch((error) => deps.flashFooter(formatError(error), "error"))
+      return true
+    }
+    // A steer typed beside the card is sent with Enter; a digit inside it is text.
+    if (!deps.isCustomEditing(interaction.id) && deps.getComposerText?.().trim()
+      && !event.ctrl && !event.meta && !event.alt
+      && (event.name === "return" || event.name === "enter" || /^[0-9]$/.test(event.name))) {
       return false
     }
     const keyAction = resolveInteractionChoiceKeyAction({
@@ -205,6 +259,11 @@ export function createFocusedInteractionChoiceController(
     const customChoice = interaction?.custom_choice
     if (!interaction || !customChoice || event.defaultPrevented) {
       return false
+    }
+    if (busy(interaction)) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      return true
     }
     const customIndex = interactionCustomChoiceIndex(interaction)
     const secretSelected = customChoice.input_kind === "secret"

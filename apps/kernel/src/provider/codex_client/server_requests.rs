@@ -305,6 +305,29 @@ impl CodexClient {
         })
     }
 
+    /// Codex waits for an answer to every approval request, so a failed
+    /// interaction declines instead of leaving the turn without one.
+    fn native_interaction_resolution(
+        &self,
+        result: Result<crate::provider::ProviderNativeInteractionResolution, DaemonError>,
+    ) -> crate::provider::ProviderNativeInteractionResolution {
+        result.unwrap_or_else(|error| {
+            crate::logging::warn_with_fields(
+                "daemon.provider.codex",
+                "codex native interaction failed; declining",
+                json!({
+                    "provider_run_id": self.provider_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+            crate::provider::ProviderNativeInteractionResolution {
+                status: "timed_out".into(),
+                choice_id: None,
+                reply: None,
+            }
+        })
+    }
+
     fn request_native_permission_interaction(
         &self,
         params: &Value,
@@ -331,7 +354,8 @@ impl CodexClient {
         let origin = self.native_approval_origin_for_request(params);
         let interaction = codex_permission_interaction(prefix, title, message, level, agent_id)
             .with_native_origin(origin);
-        let resolution = bridge.request_blocking(session_id, interaction)?;
+        let resolution =
+            self.native_interaction_resolution(bridge.request_blocking(session_id, interaction));
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex native permission interaction resolved",
@@ -372,7 +396,8 @@ impl CodexClient {
         let origin = self.native_approval_origin_for_request(params);
         let interaction = codex_permission_interaction(prefix, title, message, level, agent_id)
             .with_native_origin(origin);
-        let resolution = bridge.request_blocking(session_id, interaction)?;
+        let resolution =
+            self.native_interaction_resolution(bridge.request_blocking(session_id, interaction));
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex native review interaction resolved",

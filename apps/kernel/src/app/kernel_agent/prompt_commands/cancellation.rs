@@ -96,12 +96,20 @@ impl<'a> KernelAgentService<'a> {
                 crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
                     .remove_run(&provider_run_id)?;
             } else {
+                let input = if active_prompt.delivery_pending() {
+                    crate::app::provider_output_claude_native::claude_native_pending_prompt_cancel_input(
+                        &provider_run,
+                        active_prompt.id(),
+                    )
+                } else {
+                    b"\x03".as_slice()
+                };
                 crate::app::terminal_input::ProviderTerminalInput::new(self.app)
                     .send_provider_input(
                         session_id,
                         &provider_run_id,
                         attachment_id.unwrap_or(active_prompt.source_attachment_id()),
-                        b"\x03",
+                        input,
                     )?;
             }
         }
@@ -111,9 +119,11 @@ impl<'a> KernelAgentService<'a> {
             .prompt_owner_begin_cancelling_active_prompt(session_id, agent_id)?;
         flow_control::note_prompt_settlement_requested(self.app, &provider_run_id);
         if uses_structured_prompt_io {
-            self.app
-                .providers
-                .enqueue_structured_prompt_abort(session_id.to_string(), provider_run_id.clone())?;
+            self.app.providers.enqueue_structured_prompt_abort(
+                session_id.to_string(),
+                provider_run_id.clone(),
+                prompt.id().to_string(),
+            )?;
         }
         let recipients = match attachment_id {
             Some(attachment_id) => self.app.other_attachment_ids(session_id, attachment_id),
@@ -160,6 +170,16 @@ impl<'a> KernelAgentService<'a> {
                 .map(|run| run.id().to_string())
         });
         if let Some(provider_run_id) = cancellation_provider_run_id.as_deref() {
+            // An acknowledged abort can produce no assistant item/output. Still
+            // release this prompt through the ordinary remote completion path.
+            let recipients = self.app.attachments.list_session_attachment_ids(session_id);
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipients,
+                &format!("prompt-complete:{}", prompt.id()),
+                crate::session::unix_epoch_ms(),
+            );
             flow_control::clear_prompt_activity(self.app, provider_run_id);
         }
         // The prompt owner is already finalized. A failed workflow callback must

@@ -23,6 +23,7 @@ export const PROVIDER_TERMINAL_OUTPUT_KIND = "provider_terminal"
 export const PROVIDER_CONNECTION_RETRY_MERGE_KEY = "__provider_connection_retry__"
 
 export type TerminalRecordTranscriptFields = {
+  readonly sequence?: number | null
   readonly prompt_id?: string | null
   readonly prompt_origin?: string | null
   readonly source_attachment_id?: string | null
@@ -45,6 +46,7 @@ export type TerminalRecordTranscriptRole =
   | "user"
 
 export type TerminalRecordTranscriptMetadata = ExternalProviderObservedTranscriptFields & {
+  readonly historySequence?: number
   readonly promptId?: string | null
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
@@ -77,6 +79,9 @@ export function terminalRecordTranscriptMetadata(
 ): TerminalRecordTranscriptMetadata {
   const externalObservedMetadata = historyEntryExternalProviderObservedMetadata(record)
   return {
+    ...(!sessionHistoryEntryIsExternalProviderObserved(record)
+      && Number.isSafeInteger(record.sequence) && (record.sequence ?? -1) >= 0
+      ? { historySequence: record.sequence as number } : {}),
     ...presentTranscriptPromptMetadataFields(kernelRecordTranscriptMetadata(record)),
     ...(externalObservedMetadata ?? {}),
   }

@@ -10,7 +10,17 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
     libdbus-1-dev \
+    libavcodec-dev \
+    libavutil-dev \
     libssl-dev \
+    libwebp-dev \
+    libx11-dev \
+    libxcomposite-dev \
+    libxdamage-dev \
+    libxext-dev \
+    libxtst-dev \
+    libx264-dev \
+    libyuv-dev \
     pkg-config \
     protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
@@ -18,7 +28,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
 COPY apps/kernel apps/kernel
+# MP-08/MP-11: managed update helpers are embedded by the kernel compiler.
+COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/release-update-storage.py deploy/managed-kernel/
 COPY apps/relay apps/relay
+COPY deploy/managed-kernel deploy/managed-kernel
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
@@ -41,14 +54,14 @@ RUN mkdir -p /opt/chariox-runtime-bin \
     else \
       case "$CHARIOX_RUNTIME_BUILD_PROFILE" in \
         release) \
-          CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --features native-display --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-package --bin chariox-app-package \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-runtime --bin chariox-app-storage \
           && profile_dir="release" \
           ;; \
         dev) \
-          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
+          CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --features native-display --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
           && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked --package chariox-relay --bin chariox-relay \
           && profile_dir="debug" \
           ;; \
@@ -104,6 +117,8 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     git \
     jq \
     libdbus-1-dev \
+    libavcodec59 \
+    libavutil57 \
     libdrm2 \
     libegl1 \
     libgbm1 \
@@ -117,7 +132,11 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     libva-x11-2 \
     libwayland-server0 \
     libxkbcommon0 \
+    libxdamage1 \
+    libxcomposite1 \
+    libxtst6 \
     lsof \
+    mousepad \
     novnc \
     openbox \
     pkg-config \
@@ -125,11 +144,17 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     protobuf-compiler \
     pulseaudio \
     python3 \
+    python3-cairo \
+    python3-gi \
     python3-venv \
+    python3-pil \
+    python3-pyatspi \
+    python3-xlib \
     screen \
     scrot \
     socat \
     tesseract-ocr \
+    tesseract-ocr-deu \
     tesseract-ocr-eng \
     tint2 \
     unzip \
@@ -139,12 +164,14 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     x11-xserver-utils \
     xclip \
     xdotool \
+    xfce4-terminal \
     xterm \
     xvfb \
     xserver-xorg-core \
     xserver-xorg-video-dummy \
     xcvt \
     zstd \
+  && update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper \
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
@@ -163,7 +190,7 @@ COPY --chmod=0555 apps/kernel/slice-linux-docker/docker/managed-provider-bwrap.s
 
 RUN --mount=type=bind,from=selkies-build,source=/out,target=/tmp/selkies-package \
     --mount=type=bind,source=apps/kernel/slice-linux-docker/selkies-runtime.requirements.txt,target=/tmp/selkies-requirements.txt \
-    python3 -m venv /opt/chariox-selkies \
+    python3 -m venv --system-site-packages /opt/chariox-selkies \
   && /opt/chariox-selkies/bin/pip install --no-cache-dir --only-binary=:all: \
     --require-hashes --requirement /tmp/selkies-requirements.txt \
   && /opt/chariox-selkies/bin/pip install --no-cache-dir --no-index --no-deps \
@@ -173,9 +200,12 @@ RUN --mount=type=bind,from=selkies-build,source=/out,target=/tmp/selkies-package
   && cp -a /tmp/selkies-package/licenses/. /usr/share/doc/chariox-selkies/ \
   && cp /tmp/selkies-requirements.txt /usr/share/doc/chariox-selkies/python-requirements.txt
 ENV CHARIOX_SLICE_SELKIES_BIN=/opt/chariox-selkies/bin/selkies
+RUN /opt/chariox-selkies/bin/python -c 'import pyatspi; from gi.repository import Atspi'
 RUN --mount=type=bind,source=apps/kernel/slice-linux-docker/docker,target=/tmp/chariox-slice-runtime-tests \
     PYTHONDONTWRITEBYTECODE=1 /opt/chariox-selkies/bin/python -m unittest discover \
       -s /tmp/chariox-slice-runtime-tests -p 'test_*.py'
+COPY apps/kernel/slice-linux-docker/owned_process_signals.py /opt/chariox-slice/owned_process_signals.py
+COPY apps/kernel/slice-linux-docker/docker/runtime-process-owner.py /opt/chariox-slice/runtime-process-owner.py
 COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
      apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py \
      apps/kernel/slice-linux-docker/docker/selkies_viewers.py /opt/chariox-slice/
@@ -200,19 +230,37 @@ RUN groupadd --gid 1001 slice \
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/install-display-codec.py apps/kernel/slice-linux-docker/docker/display-codec-pin.json /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs /opt/chariox-slice/browser-controller-notes.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs /opt/chariox-slice/browser-focus-world.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs /opt/chariox-slice/browser-controller-response-bodies.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/linux-owned-desktop.mjs /opt/chariox-slice/linux-owned-desktop.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs \
+     apps/kernel/slice-linux-docker/docker/desktop-applications.mjs \
+     apps/kernel/slice-linux-docker/docker/desktop-applications.py \
+     apps/kernel/slice-linux-docker/docker/room-desktop-environment.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-closed.mjs \
+     /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cookie-fence.mjs /opt/chariox-slice/browser-controller-cookie-fence.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-dialogs.mjs /opt/chariox-slice/browser-controller-dialogs.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-compatibility.mjs /opt/chariox-slice/browser-controller-compatibility.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-apps.mjs /opt/chariox-slice/browser-controller-apps.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-bar.mjs /opt/chariox-slice/browser-controller-bar.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-restore.mjs /opt/chariox-slice/browser-app-restore.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs /opt/chariox-slice/browser-app-drafts.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs /opt/chariox-slice/browser-controller-image.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-protection-regions.mjs /opt/chariox-slice/browser-protection-regions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs /opt/chariox-slice/kernel-browser-pixels.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs /opt/chariox-slice/kernel-browser-geometry.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs /opt/chariox-slice/kernel-browser-timing.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs /opt/chariox-slice/browser-controller-upload-staging.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-upload-store.py /opt/chariox-slice/browser-upload-store.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-lifecycle.py /opt/chariox-slice/browser-lifecycle.py
@@ -228,6 +276,7 @@ COPY --chown=slice:slice apps/browser-session-import/cookie-import-journal.mjs /
 COPY --chown=slice:slice apps/browser-session-import/cookie-import-transaction.mjs /opt/chariox-slice/browser-session-import/cookie-import-transaction.mjs
 COPY --chown=slice:slice apps/browser-session-import/production-destination.mjs /opt/chariox-slice/browser-session-import/production-destination.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs /opt/chariox-slice/public-runtime-diagnostics.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh
@@ -236,9 +285,15 @@ COPY apps/kernel/slice-linux-docker/docker/canonical-display.py /opt/chariox-sli
 COPY apps/kernel/slice-linux-docker/docker/canonical_vnc.py /opt/chariox-slice/canonical_vnc.py
 COPY apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs /opt/chariox-slice/browser-controller-display.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/tint2rc /opt/chariox-slice/tint2rc
+# MP-08 / MP-11: shared native Computer adapter and typed-refusal assets.
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-keyboard-channel.mjs apps/kernel/slice-linux-docker/docker/native-computer.mjs apps/kernel/slice-linux-docker/docker/native-computer.py apps/kernel/slice-linux-docker/docker/native-accessibility.mjs apps/kernel/slice-linux-docker/docker/room-native-accessibility.mjs apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs apps/kernel/slice-linux-docker/docker/native-accessibility.py apps/kernel/slice-linux-docker/docker/browser-desktop-protection.py apps/kernel/slice-linux-docker/docker/browser-protection-regions.mjs apps/kernel/slice-linux-docker/docker/linux-owned-process.mjs apps/kernel/slice-linux-docker/docker/linux-desktop-session.py apps/kernel/slice-linux-docker/docker/x11-text-keyboard.py apps/kernel/slice-linux-docker/docker/x11-keymap-fence.py /opt/chariox-slice/
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-clipboard.py apps/kernel/slice-linux-docker/docker/native-x11.py apps/kernel/slice-linux-docker/docker/native-input-destination.py /opt/chariox-slice/
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/native-fill-targets.py /opt/chariox-slice/native-fill-targets.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-keyboard.py /opt/chariox-slice/slice-keyboard.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-text-finder.py /opt/chariox-slice/slice-text-finder.py
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py /opt/chariox-slice/slice-observation-mask.py
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-observation-mask.py apps/kernel/slice-linux-docker/docker/room-native-protection.py /opt/chariox-slice/
+# MP-11: import the installed native helpers (not the bind-mounted source) so a missing sibling fails the build.
+RUN cd / && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c 'import importlib.util as u,sys; [(s:=u.spec_from_file_location(n.replace("-","_"),"/opt/chariox-slice/"+n+".py")).loader.exec_module(u.module_from_spec(s)) for n in sys.argv[1:]]' native-x11 native-clipboard native-accessibility slice-keyboard room-native-protection native-computer
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs /opt/chariox-slice/browser-observation-regions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
@@ -247,6 +302,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
     /opt/chariox-slice/browser-controller-input.mjs \
+    /opt/chariox-slice/browser-focus-world.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
@@ -288,3 +344,93 @@ USER slice
 EXPOSE 43119 43130 43140 43252 6080
 WORKDIR /workspace
 CMD ["sleep", "infinity"]
+
+# MP-08/MP-10/MP-11: Room uses the kernel shared producer on its existing display.
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-chrome-window.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-page-geometry.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-compositor.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-contention.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-capture.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-credit.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-document.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-admission.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display-regions.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-region-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-error-label.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-foreground.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-recovery.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-input-queue.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-macos.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-observer.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-resources.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-sanitize.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror-styles.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-css.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-preview.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-motion.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-credit.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-readback.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-tab-state.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-state-signal.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-viewport.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-windows.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-worker.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-visible-page.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-page-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-layout-observer.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-pixels.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-policy.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-popup-evidence.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-process.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-refiner.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-region-protection.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-sample-lane.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-shared-raster.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-tab-groups.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-tiles.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-webcodecs.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-window-region.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-window-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-navigation-hold.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-media-layers.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-region-attestation.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-source.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-display-resumption.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-codec-protection.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-codec-protection.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-encoder.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-encoder.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-openh264.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-raster-damage.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-raster-damage.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-stripes.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-stripes.test.py \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-xshm.py \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-protection.py \
+     apps/kernel/slice-linux-docker/docker/kernel-desktop-protection.test.py \
+     apps/kernel/slice-linux-docker/docker/room-shared-display.mjs \
+     /opt/chariox-slice/
+
+# MP-08/MP-10/MP-11: resolve the installed dependency graph, not the source tree.
+# Missing transitive modules otherwise surface only when a user starts a Room.
+RUN node --input-type=module -e 'await import("/opt/chariox-slice/browser-controller.mjs"); await import("/opt/chariox-slice/kernel-browser-host.mjs")'

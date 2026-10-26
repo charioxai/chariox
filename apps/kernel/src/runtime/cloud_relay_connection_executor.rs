@@ -21,7 +21,8 @@ use crate::runtime::cloud_relay_control::{
     CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
-    clear_cloud_profile_if_stale, persist_cloud_profile, required_cloud_relay_profile,
+    clear_cloud_profile_if_stale, migrate_legacy_kernel_profile, persist_cloud_profile,
+    required_cloud_relay_profile,
 };
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
@@ -48,6 +49,7 @@ pub(crate) async fn ensure_cloud_relay_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<(), DaemonError> {
+    migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     let config = config_projection.snapshot();
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(());
@@ -101,6 +103,7 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     relay_state: Arc<RwLock<RelayClientState>>,
     _request: ConnectCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     let mut profile = required_cloud_relay_profile(config_projection)?;
     let config = config_projection.snapshot();
     let token_subject = cloud_runtime_token_subject(&config, &profile);
@@ -128,15 +131,9 @@ pub(crate) async fn execute_connect_cloud_relay_request(
         )
         .await?;
     provider_catalog_projection.invalidate();
-    let token = CloudRelayRuntimeToken {
-        relay_url: profile.relay_url,
-        relay_token: issued.token,
-        token_expires_at: issued.expires_at,
-    };
     Ok(LocalDaemonResponse::CloudRelayConnected {
         status: projected_relay_status(relay_state, config_projection.clone()).await,
         profile: cloud_profile_from_persisted(&saved),
-        token,
     })
 }
 
@@ -193,7 +190,7 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
                 session_id: request.session_id.clone(),
-                public_key_thumbprint: None,
+                public_key_thumbprint: request.public_key_thumbprint.clone(),
             },
         )
         .await?;
@@ -234,8 +231,9 @@ async fn issue_cloud_relay_client_token(
     request: IssueCloudRelayClientTokenRequest,
 ) -> Result<(CloudRelayProfile, CloudRelayRuntimeToken), DaemonError> {
     let required_public_key_thumbprint = request.public_key_thumbprint.clone();
+    migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let requested_client_id = profile.client_id.as_deref().unwrap_or(&request.client_id);
+    let (requested_client_id, options) = terminal_client_issuance(&profile, &request);
     let config = config_projection.snapshot();
     let machine_only = profile
         .cloud_session_token
@@ -248,30 +246,28 @@ async fn issue_cloud_relay_client_token(
     } else {
         request.target_daemon_alias.as_str()
     };
-    let (client_id, issued) = match issue_cloud_terminal_client_token(
-        &profile,
-        requested_client_id,
-        target,
-        CloudTerminalClientOptions {
-            pair_account_client: profile.client_id.is_none(),
-            ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
-            session_id: request.session_id,
-            public_key_thumbprint: request.public_key_thumbprint,
-            ..CloudTerminalClientOptions::default()
-        },
-    )
-    .await
-    {
-        Ok(issued) => issued,
-        Err(error) => {
-            clear_cloud_profile_if_stale(runtime_state, &error).await?;
-            return Err(error);
-        }
-    };
+    let (client_id, issued) =
+        match issue_cloud_terminal_client_token(&profile, requested_client_id, target, options)
+            .await
+        {
+            Ok(issued) => issued,
+            Err(error) => {
+                // A refused receiving terminal grant does not revoke the issuer.
+                return Err(DaemonError::RelayTransport {
+                    operation: "issue Cloud terminal client token",
+                    code: "cloud_request_failed".into(),
+                    retryable: crate::runtime::cloud_api_client::cloud_error_is_retryable(&error),
+                    message: error.to_string(),
+                });
+            }
+        };
     if let Some(public_key_thumbprint) = required_public_key_thumbprint.as_deref() {
         require_cloud_relay_token_key_binding(&issued.token, public_key_thumbprint)?;
     }
-    if profile.client_id.as_deref() != Some(client_id.as_str()) {
+    if profile.kernel_credential.is_none()
+        && required_public_key_thumbprint.is_none()
+        && profile.client_id.as_deref() != Some(client_id.as_str())
+    {
         profile.client_id = Some(client_id);
         profile = persist_cloud_profile(runtime_state, profile).await?;
     }
@@ -280,7 +276,35 @@ async fn issue_cloud_relay_client_token(
         relay_token: issued.token,
         token_expires_at: issued.expires_at,
     };
+    // The public DTO excludes issuer credentials by construction.
     Ok((cloud_profile_from_persisted(&profile), token))
+}
+
+fn terminal_client_issuance<'a>(
+    profile: &'a crate::config::PersistedCloudRelayProfile,
+    request: &'a IssueCloudRelayClientTokenRequest,
+) -> (&'a str, CloudTerminalClientOptions) {
+    // A keyed terminal is already paired. Renew its exact subject and keep
+    // revocation authoritative; never re-pair it or replace the kernel login ID.
+    let keyed = request.public_key_thumbprint.is_some();
+    (
+        if keyed {
+            request.client_id.as_str()
+        } else {
+            profile.client_id.as_deref().unwrap_or(&request.client_id)
+        },
+        CloudTerminalClientOptions {
+            pair_account_client: !keyed && profile.client_id.is_none(),
+            ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
+            session_id: if profile.kernel_credential.is_some() {
+                None
+            } else {
+                request.session_id.clone()
+            },
+            public_key_thumbprint: request.public_key_thumbprint.clone(),
+            ..CloudTerminalClientOptions::default()
+        },
+    )
 }
 
 pub(crate) fn require_cloud_relay_token_key_binding(
@@ -406,6 +430,32 @@ fn relay_kernel_target_alias(kernel: &chariox_relay::protocol::RelayKernelPresen
 mod tests {
     use super::*;
 
+    #[test]
+    fn keyed_terminal_renewal_keeps_the_requested_subject_without_repairing_it() {
+        let mut profile = crate::config::PersistedCloudRelayProfile {
+            client_id: Some("kernel-login-client".into()),
+            ..Default::default()
+        };
+        let request = IssueCloudRelayClientTokenRequest {
+            target_daemon_alias: "kernel-target".into(),
+            client_id: "paired-terminal".into(),
+            session_id: Some("session-target".into()),
+            public_key_thumbprint: Some("a".repeat(64)),
+        };
+        let (subject, options) = terminal_client_issuance(&profile, &request);
+        assert_eq!(subject, "paired-terminal");
+        assert_eq!(options.ttl_ms, Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS));
+        assert_eq!(options.session_id.as_deref(), Some("session-target"));
+        assert!(!options.pair_account_client);
+        // Revocation must be enforced by issuance, never undone by re-pairing.
+        profile.client_id = None;
+        assert!(
+            !terminal_client_issuance(&profile, &request)
+                .1
+                .pair_account_client
+        );
+    }
+
     fn relay_token_with_thumbprint(thumbprint: Option<&str>) -> String {
         use base64::Engine;
 
@@ -439,6 +489,7 @@ mod tests {
             machine_ref: Some("machine-new".to_string()),
             client_id: Some("client-1".to_string()),
             session_id: None,
+            public_key_thumbprint: None,
         }
     }
 

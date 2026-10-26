@@ -23,7 +23,7 @@ export async function runRoomOfficeWork(input) {
   const actorId = `agent:${agentId}`
   const fixture = await startBrowserComputerFixture({ host: "0.0.0.0", account, password })
   const origin = `http://host.docker.internal:${new URL(fixture.origin).port}`
-  const report = { document, subject, agentId, provider: options.provider, model: options.model }
+  const report = { document, subject, agentId, provider: options.provider, model: options.model, prompts: [] }
   const command = async (args) => (await docker(["exec", "-u", "slice", containerName, ...args])).stdout
   const actions = async () => unwrap(await client.send(requests.listRoomEnvironmentActionHistoryRequest(
     sessionId, null, 100)), "RoomEnvironmentActionHistoryListed").page.actions
@@ -47,18 +47,39 @@ export async function runRoomOfficeWork(input) {
     }
     const promptId = (submitted.outcome?.Started ?? submitted.outcome?.Queued)?.prompt?.id
     assert.ok(promptId, "office prompt lacks an identity")
+    const receipt = { promptId, admission: submitted.outcome.Started ? "Started" : "Queued" }
+    report.prompts.push(receipt)
     const completed = await input.waitFor(async () => {
       if (await finished(fresh(await actions()))) return true
       const outline = unwrap(await input.withTimeout(client.send(requests.getSessionHistoryOutlineRequest(
         sessionId, [agentId], 2)), 5_000, "office provider progress"), "SessionHistoryOutline")
       const turn = outline.agents?.find((a) => a.agent_id === agentId)?.turns?.find((t) => t.prompt_id === promptId)
       if (turn?.lifecycle === "completed") {
-        return await finished(fresh(await actions())) ? true : { missingResult: true }
+        if (await finished(fresh(await actions()))) return true
+        const failed = turn.summary?.entry?.kind === "provider_error"
+          || (turn.entries ?? []).some((item) => item.entry?.kind === "provider_error")
+          || (turn.blobs ?? []).some((item) => item.kind === "provider_error")
+        return failed ? { providerFailed: true } : { missingResult: true }
+      }
+      // A provider may settle into Error before its history turn is closed.
+      // Bind the state probe to this prompt and ignore still-running warnings.
+      if (turn) {
+        const state = unwrap(await input.withTimeout(client.send(requests.getSessionStateRequest(
+          sessionId)), 5_000, "office provider state"), "SessionState")
+        const agent = state.session?.agents?.find((item) => item.id === agentId)
+        if (agent?.is_processing === false
+          && (agent.state === "Error" || state.agent_activity?.[agentId]?.status === "error")) {
+          // An action may have committed between the first read and Error.
+          return await finished(fresh(await actions())) ? true : { providerFailed: true }
+        }
       }
       return false
     }, 300_000, "office provider did not complete its task")
+    if (completed.providerFailed) throw new Error("office provider failed before the required physical result")
     assert.equal(completed, true, "office provider completed without the required physical result")
-    return waitForRoomProviderSettlement(input, agentId, promptId)
+    const settlement = await waitForRoomProviderSettlement(input, agentId, promptId)
+    Object.assign(receipt, settlement)
+    return settlement
   }
 
   try {
@@ -127,7 +148,7 @@ export async function runRoomOfficeWork(input) {
       "Use slice_browser_status to find that mail tab's opaque tab_id. Call slice_browser_tab with action=activate and that tab_id so the shared desktop visibly shows Chromium. Navigation alone does not request desktop focus.",
       `Discover the To, Subject and Body fields, and fill To with ${recipient}, Subject with ${JSON.stringify(subject)}, Body with 'Attached is the graphical editor document.'.`,
       `Find the Attachment file field and use slice_browser_upload with its returned field_id and files=[${JSON.stringify(document)}].`,
-      "Then find Send and submit its form exactly once. Inspect the confirmation with slice_browser_text and stop.",
+      "Then find Send with slice_browser_find and call slice_browser_submit with its returned field_id exactly once. Inspect the confirmation with slice_browser_text and stop.",
       "Do not create or edit any file, use shell commands, scripts, direct HTTP, another browser, or another service.",
     ].join(" "), async (list) => list.some((a) => a.mode === "browser" && a.kind === "upload" && a.state === "completed")
       && fixture.messages.some((m) => m.subject === subject))

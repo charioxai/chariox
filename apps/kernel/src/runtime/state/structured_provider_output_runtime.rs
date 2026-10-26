@@ -21,14 +21,11 @@ impl KernelRuntimeState {
             owned.provider_run_projection.update(provider_run.clone());
         }
         if provider_run.endpoint_mode() != crate::provider::AgentEndpointMode::External {
-            if let Err(error) = self
-                .with_app_side_effect(|app| {
-                    app.drain_provider_pty_output_for_runtime(provider_run_id)
-                })
-                .await
-            {
+            if let Some(Err(error)) = self.try_with_app_side_effect(|app| {
+                app.drain_provider_pty_output_for_runtime(provider_run_id)
+            }) {
                 if self
-                    .reconcile_provider_run_exit(session_id, provider_run_id)
+                    .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                     .await?
                 {
                     return Ok(owned
@@ -44,7 +41,7 @@ impl KernelRuntimeState {
         let now_ms = crate::session::unix_epoch_ms();
         for finished in owned
             .provider_store
-            .drain_finished_structured_output_poll_jobs()
+            .drain_finished_structured_output_poll_jobs_for_run(provider_run_id)
         {
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let finished_run_id = finished.provider_run_id.clone();
@@ -79,13 +76,16 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     let reconcile_result = if is_requested_run {
-                        self.reconcile_provider_run_exit(session_id, provider_run_id)
+                        self.reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                             .await
                     } else {
                         match owned.provider_store.get_run(&finished_run_id) {
                             Ok(run) => {
-                                self.reconcile_provider_run_exit(run.session_id(), &finished_run_id)
-                                    .await
+                                self.reconcile_provider_run_exit_for_output(
+                                    run.session_id(),
+                                    &finished_run_id,
+                                )
+                                .await
                             }
                             Err(run_error) => Err(run_error),
                         }
@@ -408,16 +408,17 @@ impl KernelRuntimeState {
                 );
                 return Ok(records);
             }
-            match owned
-                .provider_store
-                .enqueue_structured_output_poll(provider_run_id)?
-            {
-                true => {
-                    let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+            let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+            match owned.structured_output_records.enqueue_poll(
+                provider_run_id,
+                prompt_id,
+                || {
                     owned
-                        .structured_output_records
-                        .mark_poll_enqueued(provider_run_id, prompt_id);
-                }
+                        .provider_store
+                        .enqueue_structured_output_poll(provider_run_id)
+                },
+            )? {
+                true => {}
                 false => owned.structured_output_records.schedule_after_empty_poll(
                     provider_run_id.to_string(),
                     crate::session::unix_epoch_ms(),
@@ -537,18 +538,25 @@ impl KernelRuntimeState {
                 }),
             );
         }
-        if let Some(usage) = poll_result.account_usage.clone() {
+        // Leased credentials and their account registry belong to the home
+        // kernel. Native quota metadata must not require that home profile to
+        // be registered on the worker, or block its output and completion.
+        if let Some(usage) = poll_result.account_usage.clone().filter(|_| {
+            !owned
+                .provider_run_projection
+                .is_leased_provider_run(provider_run_id)
+        }) {
             let account_owner_user_id =
                 crate::account_profile::provider_account_authority_owner_user_id(
                     &owned.config_projection.snapshot(),
                     provider_run.owner_user_id(),
                 );
-            owned.provider_account_profiles.update_usage(
+            owned.provider_account_profiles.record_observed_usage(
                 &account_owner_user_id,
                 provider_run.provider(),
                 provider_run.account_profile(),
                 usage,
-            )?;
+            );
         }
         let projected_provider_run = owned
             .provider_store
@@ -611,7 +619,7 @@ impl KernelRuntimeState {
         // provider termination evidence.
         let provider_termination = poll_result
             .explicit_provider_error
-            .then(|| terminal_failure.as_deref())
+            .then_some(terminal_failure.as_deref())
             .flatten()
             .map(|message| {
                 crate::provider::ProviderRunTermination::explicit_provider_error(
@@ -682,43 +690,69 @@ impl KernelRuntimeState {
                 .record_terminal_diagnostic(provider_run_id, message.to_string())?;
             owned.provider_run_projection.update(run);
         }
-        let mut history_entries = Vec::with_capacity(poll_result.chunks.len());
         let prompt_metadata =
             owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
         let terminal_outputs = poll_result
             .chunks
             .into_iter()
             .map(|chunk| {
-                let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
-                if chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho {
-                    history_entries.push(
+                let history_entry = (chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho)
+                    .then(|| {
                         crate::history::SessionHistoryEntry::provider_output(
                             session_id,
                             provider_run_id,
                             agent_id.as_deref(),
                             chunk.kind.clone(),
                             chunk.merge_key.clone(),
-                            history_text.clone(),
+                            String::from_utf8_lossy(&chunk.bytes).into_owned(),
                         )
                         .with_prompt_origin(prompt_metadata.prompt_origin)
-                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-                    );
-                }
-                super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-                    provider_run_id: provider_run_id.to_string(),
-                    agent_id: agent_id.clone(),
-                    kind: chunk.kind,
-                    merge_key: chunk.merge_key,
-                    bytes: chunk.bytes,
-                }
+                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone())
+                    });
+                (
+                    super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.to_string(),
+                        agent_id: agent_id.clone(),
+                        kind: chunk.kind,
+                        merge_key: chunk.merge_key,
+                        sequence: None,
+                        bytes: chunk.bytes,
+                    },
+                    history_entry,
+                )
             })
             .collect::<Vec<_>>();
+        let (mut terminal_outputs, history_entries): (Vec<_>, Vec<_>) =
+            terminal_outputs.into_iter().unzip();
+        let positions = history_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| entry.as_ref().map(|_| position))
+            .collect::<Vec<_>>();
+        // Capacity is reserved before publication; no await can cancel the handoff.
+        let history_lease = self
+            .reserve_provider_history(provider_run_id, !positions.is_empty())
+            .await?;
+        let prepared = owned
+            .prepare_history_entries(session_id, history_entries.into_iter().flatten().collect());
+        for item in &prepared {
+            terminal_outputs[positions[item.position]].sequence = Some(item.sequence);
+        }
+        // A view attached from here on reads these rows from history; one that
+        // attached earlier is a recipient now, whatever the pump saw before it
+        // waited for the run lane.
+        self.enqueue_provider_history(prepared, history_lease);
+        let recipient_attachment_ids = owned
+            .attachment_store
+            .list_session_attachment_ids(session_id);
         let records = owned.fan_out_terminal_outputs_to_recipients(
             session_id,
             recipient_attachment_ids.clone(),
             terminal_outputs,
         );
-        owned.append_history_entries(session_id, history_entries);
+        if !completions.is_empty() || prompt_completed || terminal_failure.is_some() {
+            self.flush_provider_history(provider_run_id).await?;
+        }
         for completion in &completions {
             owned.record_assistant_message_completion(
                 session_id,
@@ -743,7 +777,7 @@ impl KernelRuntimeState {
             return Ok(records);
         }
         if !self
-            .reconcile_provider_run_exit(session_id, provider_run_id)
+            .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
             .await?
         {
             let _ = self

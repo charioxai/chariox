@@ -16,6 +16,7 @@ impl KernelRuntimeOwnedState {
                 let mut sessions = self.session_store.write();
                 let session_before_resume = sessions.get_session(session_id)?;
                 let original = sessions.resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+                self.ensure_workflow_run_has_control_provenance(&session_before_resume, &original)?;
                 // Classify an unsubmitted original entry before publishing the run
                 // as runnable to the owned pump. A concurrent pump admission
                 // afterward must suppress this retry, not turn it into an
@@ -333,15 +334,27 @@ mod tests {
                 Some("entry".to_string()),
             )
             .expect("workflow endpoint should be created");
-        let workflow_run = app
+        let queued = app
             .sessions_mut()
-            .invoke_workflow_endpoint(
+            .enqueue_workflow_prompt_by_agent(
                 session.id(),
                 workflow.id(),
                 endpoint.id(),
-                Some("resume exactly once".to_string()),
+                Some("resume exactly once".into()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+                None,
+                Some(agent.id()),
             )
-            .expect("workflow run should be created");
+            .unwrap();
+        app.sessions_mut()
+            .remove_queued_workflow_prompt(session.id(), queued.id())
+            .unwrap();
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_queued_workflow_endpoint(session.id(), &queued)
+            .expect("proven workflow run should be created");
         let node_run_id = workflow_run.node_runs()[0].id().to_string();
         app.sessions_mut()
             .prepare_workflow_turn(

@@ -284,6 +284,8 @@ apt-get install -y --no-install-recommends \
   pkg-config \
   protobuf-compiler \
   python3 \
+  python3-pil \
+  python3-xlib \
   ripgrep \
   rsync \
   rootlesskit \
@@ -294,6 +296,10 @@ apt-get install -y --no-install-recommends \
   util-linux \
   xfsprogs \
   zstd
+
+# MP-08/MP-10/MP-11: match ordinary Setup's system-interpreter verification.
+/usr/bin/python3 -I -B -c 'from Xlib import X, display; from Xlib.ext import xtest; from PIL import Image' \
+  || fail "system Python browser dependencies are unavailable"
 
 systemctl disable --now docker.service docker.socket >/dev/null 2>&1 || true
 systemctl mask docker.service docker.socket >/dev/null

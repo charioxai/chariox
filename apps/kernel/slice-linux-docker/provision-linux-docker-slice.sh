@@ -392,6 +392,7 @@ prepare_home_volume() {
     --label "io.chariox.slice.id=$SLICE_ID"
     --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
     --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+    --label "io.chariox.slice.runtime-name=$SLICE_NAME"
   )
   if disk_quota_enabled; then
     quota_labels+=(--label "io.chariox.slice.disk-quota=xfs-project-v1")
@@ -498,17 +499,36 @@ refresh_slice_support_files() {
   run_with_timeout 180 docker exec -u root "$SLICE_NAME" bash -lc '
     set -euo pipefail
     if ! command -v tint2 >/dev/null 2>&1 || ! command -v dbus-run-session >/dev/null 2>&1 \
-      || [[ ! -r /usr/share/dbus-1/services/org.a11y.Bus.service ]]; then
+      || ! command -v xfce4-terminal >/dev/null 2>&1 || ! command -v mousepad >/dev/null 2>&1 \
+      || [[ ! -r /usr/share/dbus-1/services/org.a11y.Bus.service ]] \
+      || ! /usr/bin/python3 -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"' >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
       apt-get -qq update
-      apt-get -y -qq --no-install-recommends install dbus tint2 at-spi2-core
+      apt-get -y -qq --no-install-recommends install dbus tint2 at-spi2-core python3-xlib python3-gi python3-pyatspi python3-pil xfce4-terminal mousepad
       apt-get clean
       find /var/lib/apt/lists -mindepth 1 -delete
     fi
+    # MP-08/MP-10/MP-11: refresh the alternative even if packages were present.
+    update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper
+    /usr/bin/python3 -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"'
+    # The existing helper interpreter must see the same distro AT-SPI bindings.
+    if [[ -x /opt/chariox-selkies/bin/python ]]; then
+      sed -i "s/^include-system-site-packages = .*/include-system-site-packages = true/" /opt/chariox-selkies/pyvenv.cfg
+      /opt/chariox-selkies/bin/python -c '"'"'import Xlib, gi, pyatspi; from PIL import Image'"'"'
+    fi
   ' || fail "could not prepare desktop services in the existing slice image"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/owned_process_signals.py" "$SLICE_NAME:/opt/chariox-slice/owned_process_signals.py" "shared process ownership guard"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/runtime-process-owner.py" "$SLICE_NAME:/opt/chariox-slice/runtime-process-owner.py" "runtime process ownership guard"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" "runtime launcher"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/install-display-codec.py" "$SLICE_NAME:/opt/chariox-slice/install-display-codec.py" "pinned display codec installer"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/display-codec-pin.json" "$SLICE_NAME:/opt/chariox-slice/display-codec-pin.json" "public display codec hashes"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" "provider launcher"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" "screen launcher"
+  # MP-08 / MP-10 / MP-11: preserved images need the Python closure too.
+  local native_python
+  for native_python in native-x11.py native-computer.py native-accessibility.py native-fill-targets.py native-clipboard.py room-native-protection.py browser-desktop-protection.py x11-text-keyboard.py x11-keymap-fence.py slice-observation-mask.py linux-desktop-session.py; do
+    copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/$native_python" "$SLICE_NAME:/opt/chariox-slice/$native_python" "native Python dependency $native_python"
+  done
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-keyboard.py" "$SLICE_NAME:/opt/chariox-slice/slice-keyboard.py" "physical keyboard and secret target guard"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/tint2rc" "$SLICE_NAME:/opt/chariox-slice/tint2rc" \
     || log "applications taskbar configuration refresh unavailable; continuing"
@@ -529,6 +549,10 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" "Browser Controller actions module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-input.mjs" "Browser Controller actions module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" "Browser Controller CDP module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-response-bodies.mjs" "Browser Controller runtime dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-observation-regions.mjs" "Browser Controller runtime dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-capture-presentation.mjs" "Browser Controller runtime dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-focus-world.mjs" "Browser Controller focus world dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-display.mjs" "Canonical display support"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical-display.py" "$SLICE_NAME:/opt/chariox-slice/canonical-display.py" "Canonical display support"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical_vnc.py" "$SLICE_NAME:/opt/chariox-slice/canonical_vnc.py" "Canonical display support"
@@ -550,10 +574,28 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: safe App session restore"
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod 0644 /opt/chariox-slice/browser-app-restore.mjs \
     || fail "failed to set permissions on safe App session restore overlay"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-drafts.mjs" "Browser Controller App drafts"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller files"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-artifacts.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-image.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-observation-regions.mjs" "Browser Controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-response-bodies.mjs" "Browser Controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs" "$SLICE_NAME:/opt/chariox-slice/kernel-browser-refusal.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  for shared_display_asset in "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.mjs "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.py "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/room-shared-display.mjs; do
+    case "$shared_display_asset" in *.test.mjs) continue ;; esac
+    copy_required_slice_overlay "$shared_display_asset" "$SLICE_NAME:/opt/chariox-slice/$(basename "$shared_display_asset")" "MP-08/MP-10/MP-11 shared display dependency"
+  done
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/room-native-accessibility.mjs" "$SLICE_NAME:/opt/chariox-slice/room-native-accessibility.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-accessibility.mjs" "$SLICE_NAME:/opt/chariox-slice/native-accessibility.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-computer.mjs" "$SLICE_NAME:/opt/chariox-slice/native-computer.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-protection-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-protection-regions.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/linux-owned-process.mjs" "$SLICE_NAME:/opt/chariox-slice/linux-owned-process.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/native-keyboard-channel.mjs" "$SLICE_NAME:/opt/chariox-slice/native-keyboard-channel.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-notes.mjs" "MP-08/MP-10/MP-11 controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/kernel-browser-timing.mjs" "$SLICE_NAME:/opt/chariox-slice/kernel-browser-timing.mjs" "MP-08/MP-10/MP-11 native timing dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-upload-staging.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-upload-staging.mjs" "Browser Controller upload staging module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-upload-store.py" "$SLICE_NAME:/opt/chariox-slice/browser-upload-store.py" "Browser upload quota store"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-lifecycle.py" "$SLICE_NAME:/opt/chariox-slice/browser-lifecycle.py" "Browser lifecycle owner"
@@ -1011,6 +1053,7 @@ ensure_container() {
       --label "io.chariox.slice.id=$SLICE_ID"
       --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
       --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
+      --label "io.chariox.slice.runtime-name=$SLICE_NAME"
       --ulimit core=0:0
       --ulimit "nofile=$SLICE_DOCKER_NOFILE_LIMIT:$SLICE_DOCKER_NOFILE_LIMIT"
       --pids-limit "$SLICE_DOCKER_PIDS_LIMIT"
@@ -1408,20 +1451,12 @@ copy_provider_auth_file() {
     return 0
   fi
 
-  local target_dir
-  target_dir="$(dirname "$target_path")"
-  local backup_path="${target_path}.before-slice-auth"
-  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" bash -lc "
-    set -euo pipefail
-    mkdir -p '$target_dir'
-    rm -f '${target_path}.before-slice-auth-'*
-    if [[ -f '$target_path' ]]; then
-      cp '$target_path' '$backup_path'
-    fi
-    umask 077
-    cat > '$target_path'
-    chmod 600 '$target_path'
-  "
+  local auth_writer auth_program_q target_q
+  auth_writer="$(cat "$SCRIPT_DIR/provider-auth-file.cjs")"
+  printf -v auth_program_q '%q' "$auth_writer"
+  printf -v target_q '%q' "$target_path"
+  run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" \
+    bash -lc "node -e $auth_program_q import $target_q"
   log "imported $label auth into $target_path"
 }
 
@@ -1519,7 +1554,11 @@ import_codex_auth() {
 }
 
 remove_codex_auth() {
-  exec_slice bash -lc "rm -f '$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json'"
+  local auth_writer auth_program_q target_q
+  auth_writer="$(cat "$SCRIPT_DIR/provider-auth-file.cjs")"
+  printf -v auth_program_q '%q' "$auth_writer"
+  printf -v target_q '%q' "$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json"
+  exec_slice bash -lc "node -e $auth_program_q remove $target_q"
   log "removed Codex auth from slice"
 }
 
@@ -1758,8 +1797,6 @@ stop_container() {
       screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
       screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
       /opt/chariox-slice/slice-screen.sh stop >/dev/null 2>&1 || true
-      pkill -f 'codex app-server' >/dev/null 2>&1 || true
-      pkill -f 'opencode serve' >/dev/null 2>&1 || true
     " || true
     docker stop "$SLICE_NAME" >/dev/null
   else

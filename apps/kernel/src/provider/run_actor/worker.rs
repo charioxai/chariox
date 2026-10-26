@@ -50,11 +50,14 @@ pub(super) enum ProviderRunActorCommand {
         envelope: PromptEnvelope,
         timeout: Duration,
         policy: ProviderUtilityExecutionPolicy,
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+        cancellation: Option<super::utility_cancellation::MetadataUtilityCancellation>,
         response: mpsc::Sender<Result<String, DaemonError>>,
     },
     Abort {
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
         run: RuntimeProviderRun,
     },
     Terminate {
@@ -146,6 +149,7 @@ impl ProviderRunWorkerDeps {
             ProviderRunActorCommand::Abort {
                 session_id,
                 provider_run_id,
+                prompt_id,
                 run,
             } => {
                 let result = execute_abort_command(&self.runtime_registry, run);
@@ -153,6 +157,7 @@ impl ProviderRunWorkerDeps {
                 let finished = FinishedProviderPromptAbortJob {
                     session_id,
                     provider_run_id: provider_run_id.clone(),
+                    prompt_id,
                     result,
                 };
                 push_finished_abort(&self.finished_aborts, finished);
@@ -164,10 +169,19 @@ impl ProviderRunWorkerDeps {
                 envelope,
                 timeout,
                 policy,
+                cancellation,
+                admission,
                 response,
             } => {
-                let result =
-                    execute_utility_command(&self.runtime_registry, run, envelope, timeout, policy);
+                let result = execute_utility_command(
+                    &self.runtime_registry,
+                    run,
+                    envelope,
+                    timeout,
+                    policy,
+                    cancellation,
+                    admission,
+                );
                 let _ = response.send(result);
                 self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
             }

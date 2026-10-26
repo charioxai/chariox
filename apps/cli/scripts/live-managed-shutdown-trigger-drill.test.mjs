@@ -380,7 +380,7 @@ for (const [scenario, expectedActions] of [
   ["shutdown_disabled", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path"]],
   ["shutdown_keep_running", ["start_agent_via_normal_path", "finish_agent_via_normal_provider_path", "keep_running_via_cloud_ui"]],
 ]) {
-  test(`${scenario} retains its no-stop negative at the existing observation deadline`, async (t) => {
+  test(`MP-09 ${scenario} observes no STOP through its required window`, async (t) => {
     const root = await scratch(t)
     const output = join(root, `${scenario}.json`)
     const policy = SHUTDOWN_SCENARIOS[scenario].policy
@@ -439,11 +439,15 @@ for (const [scenario, expectedActions] of [
     })
 
     assert.deepEqual(requestedActions, expectedActions)
-    assert.equal(monotonicNow, 120_000)
-    assert.deepEqual(pauses, Array(12).fill(10_000))
+    const expectedUntil = scenario === "shutdown_keep_running" ? 1_022_000 : 120_000
+    assert.equal(monotonicNow, expectedUntil)
+    assert.equal(pauses.reduce((sum, value) => sum + value, 0), expectedUntil)
     const finalReady = result.observations.findLast(({ environment: observed }) => observed.observedState === "ready")
     assert.ok(finalReady)
-    assert.equal(finalReady.capturedAt, atSecond(120))
+    assert.equal(finalReady.capturedAt, atSecond(expectedUntil / 1_000))
+    assert.ok(result.snapshotCoverage.workflow.samples >= pauses.length)
+    assert.equal(result.snapshotCoverage.workflow.lastCompletedAt, finalReady.capturedAt)
+    assert.ok(result.requiredUserActions.every(action => typeof action.acknowledgedAt === "string"))
     assert.equal(result.operations.some(({ kind }) => kind === "stop"), false)
     assert.deepEqual(product.calls.filter(([name]) => name === "RequestManagedEnvironmentLifecycle")
       .map(([, request]) => request.action), ["delete"])
@@ -763,4 +767,254 @@ test("MP-09 permanently failed exact delete still expires without an acceptance 
   assert.equal(capture.operations.find(operation => operation.kind === "delete").status, "failed")
   assert.equal(capture.failures.at(-1).stage, "cleanup")
   assert.equal(capture.observations.some(row => row.environment.observedState === "deleted"), false)
+})
+
+// MP-09/MP-10: this clock and owner-IPC fixture never establishes live VM timing.
+async function shutdownFixture(t, scenario, hooks = {}) {
+  const root = await scratch(t)
+  const output = join(root, "observation.json")
+  const options = parseArguments(argumentsFor(output, scenario))
+  const product = fakeProductPath({ policy: options.descriptor.policy })
+  let elapsed = 0
+  const deps = {
+    client: { send: request => deps.send(request), close: async () => {} },
+    requests: product.requests,
+    send: async request => {
+      const response = await product.send(request)
+      return hooks.read ? hooks.read(request, response, elapsed, product) : response
+    },
+    id: () => `${scenario}-fixture`,
+    monotonic: () => elapsed,
+    now: () => new Date(Date.parse(baseTime) + elapsed),
+    pause: async milliseconds => {
+      elapsed += milliseconds
+      product.advanceAutomaticStop(atSecond(elapsed / 1_000))
+    },
+    ask: async message => {
+      if (message.includes("start exactly one agent")) {
+        product.updateCurrent({ runningAgentCount: 1, lastActivityReportedAt: atSecond(1),
+          lastActivityChangedAt: atSecond(1), updatedAt: atSecond(1) })
+      } else if (message.includes("Finish that agent")) {
+        const delay = options.descriptor.policy.idleDelaySeconds
+        const deadline = delay === null ? null : atSecond(Math.max(
+          options.descriptor.policy.minimumRuntimeSeconds, 2 + delay, 2 + MANAGED_SHUTDOWN_WARNING_SECONDS))
+        product.updateCurrent({ runningAgentCount: 0, lastActivityReportedAt: atSecond(2),
+          lastActivityChangedAt: atSecond(2), updatedAt: atSecond(2), autoStopDeadlineAt: deadline,
+          autoStopWarningAt: deadline === null ? null : atSecond((Date.parse(deadline) - Date.parse(baseTime)) / 1_000 - MANAGED_SHUTDOWN_WARNING_SECONDS) })
+      } else if (message.includes("Keep running")) {
+        product.updateCurrent({ autoStopDeadlineAt: null, autoStopWarningAt: null })
+      } else if (message.includes("Stop this disposable environment")) {
+        await product.send(product.requests.requestManagedEnvironmentLifecycleRequest({
+          environmentId: "environment-fixture-1", action: "stop", idempotencyKey: "fixture-ui-stop" }))
+      } else if (!message.includes("signed managed-kernel deployment")) {
+        assert.fail(`unexpected fixture action: ${message}`)
+      }
+    },
+    ...hooks.deps,
+  }
+  return { product, output, options, deps, elapsed: () => elapsed,
+    run: () => runManagedShutdownTrigger(options, deps) }
+}
+
+for (const scenario of ["shutdown_idle_15m", "shutdown_idle_30m", "shutdown_custom", "shutdown_deployment_reconciliation"]) {
+  test(`MP-09/MP-10 ${scenario} retains exact deadline, binding and STOP-before-DELETE observations`, async t => {
+    const f = await shutdownFixture(t, scenario)
+    const capture = await f.run()
+    const stop = capture.operations.find(operation => operation.kind === "stop")
+    assert.equal(stop.createdAt, atSecond(2 + f.options.descriptor.policy.idleDelaySeconds))
+    assert.equal(stop.status, "succeeded")
+    assert.equal(stop.environmentId, capture.target.environmentId)
+    assert.equal(capture.operations.at(-1).kind, "delete")
+    assert.equal(capture.snapshotCoverage.workflow.maximumGapMs, 10_000)
+    assert.ok(capture.snapshotCoverage.workflow.samples > 50)
+    assert.equal(capture.requiredUserActions.every(action => action.acknowledgedAt), true)
+    assert.equal("passed" in capture, false)
+  })
+}
+
+test("MP-09 manual UI fixture retains disabled default policy and acknowledgement separately from STOP receipt", async t => {
+  const f = await shutdownFixture(t, "shutdown_manual")
+  const capture = await f.run()
+  assert.deepEqual(capture.requestedAutoStopPolicy, { minimumRuntimeSeconds: 0, idleDelaySeconds: null })
+  assert.deepEqual(capture.requiredUserActions.map(action => action.action), ["manual_stop_via_cloud_ui"])
+  assert.equal(capture.requiredUserActions[0].acknowledgedAt, baseTime)
+  assert.deepEqual(capture.operations.map(operation => operation.kind), ["create", "stop", "delete"])
+  assert.equal("passed" in capture, false)
+})
+
+for (const scenario of ["shutdown_agents_done", "shutdown_manual", "shutdown_explicit_lifecycle_reconciliation"]) {
+  test(`MP-09 ${scenario} STOP waits through exactly one failed attempt and retains both receipts`, async t => {
+    let failed = false
+    const f = await shutdownFixture(t, scenario, {
+      read(request, response) {
+        if (!request.GetManagedEnvironment) return response
+        const details = structuredClone(response.ManagedEnvironment)
+        const stop = details.operations.find(operation => operation.kind === "stop")
+        if (!stop) return response
+        if (!failed) {
+          failed = true
+          stop.status = "failed"
+          stop.completedAt = null
+          details.environment.observedState = "failed"
+          details.environment.observedRevision -= 1
+        } else stop.attempt = 2
+        return { ManagedEnvironment: details }
+      },
+    })
+    const capture = await f.run()
+    const transitions = capture.operationObservations.filter(row => row.operation.kind === "stop")
+    assert.deepEqual(transitions.map(row => [row.operation.operationId, row.operation.status, row.operation.attempt]),
+      [[scenario === "shutdown_agents_done" ? "auto-stop-op-2" : "stop-op-2", "failed", 1],
+        [scenario === "shutdown_agents_done" ? "auto-stop-op-2" : "stop-op-2", "succeeded", 2]])
+    assert.equal(capture.operations.filter(operation => operation.kind === "stop").length, 1)
+    assert.deepEqual(f.product.calls.filter(([name]) => name === "RequestManagedEnvironmentLifecycle")
+      .map(([, request]) => request.action), scenario === "shutdown_agents_done" ? ["delete"] : ["stop", "delete"])
+  })
+}
+
+test("MP-09 retry cannot replace the initially observed automatic STOP operation", async t => {
+  let observed = false
+  const f = await shutdownFixture(t, "shutdown_agents_done", {
+    read(request, response) {
+      if (!request.GetManagedEnvironment) return response
+      const details = structuredClone(response.ManagedEnvironment)
+      const stop = details.operations.find(operation => operation.kind === "stop")
+      if (!stop) return response
+      if (!observed) {
+        observed = true
+        stop.status = "failed"
+        stop.completedAt = null
+      } else stop.operationId = "replacement-stop"
+      return { ManagedEnvironment: details }
+    },
+  })
+  await assert.rejects(f.run(), /no acceptance verdict/)
+  const capture = JSON.parse(await readFile(f.output, "utf8"))
+  assert.equal(capture.failures[0].invariant, "exact managed operation is unavailable or ambiguous")
+  assert.equal(capture.operations.at(-1).kind, "delete")
+})
+
+test("MP-09 even a pending automatic STOP created before the deadline fails immediately", async t => {
+  const f = await shutdownFixture(t, "shutdown_agents_done", {
+    read(request, response, elapsed) {
+      if (!request.GetManagedEnvironment || elapsed < 10_000 || elapsed > 20_000) return response
+      const details = structuredClone(response.ManagedEnvironment)
+      if (details.environment.observedState !== "ready") return response
+      details.operations.push(operation("early-pending-stop", "stop", 2, "pending", atSecond(2)))
+      return { ManagedEnvironment: details }
+    },
+  })
+  await assert.rejects(f.run(), /no acceptance verdict/)
+  assert.equal(f.elapsed(), 10_000)
+  const capture = JSON.parse(await readFile(f.output, "utf8"))
+  assert.equal(capture.failures[0].invariant, "automatic stop operation is incomplete or out of order")
+  assert.equal(capture.operations.at(-1).kind, "delete")
+})
+
+test("MP-09 Keep running cannot hide an obsolete STOP after its former deadline", async t => {
+  const f = await shutdownFixture(t, "shutdown_keep_running", {
+    read(request, response, elapsed) {
+      if (!request.GetManagedEnvironment || elapsed < 902_000) return response
+      const details = structuredClone(response.ManagedEnvironment)
+      if (details.environment.observedState === "ready") {
+        details.operations.push(operation("obsolete-stop", "stop", 2, "pending", atSecond(902)))
+      }
+      return { ManagedEnvironment: details }
+    },
+  })
+  await assert.rejects(f.run(), /no acceptance verdict/)
+  const capture = JSON.parse(await readFile(f.output, "utf8"))
+  assert.equal(capture.failures[0].invariant, "a stop operation appeared after Keep running")
+})
+
+test("MP-09/MP-10 reviewed observation barrier runs after STOP and before normal DELETE", async t => {
+  const f = await shutdownFixture(t, "shutdown_explicit_lifecycle_reconciliation")
+  let inspected = false
+  f.deps.observeBeforeCleanup = async ({ target, scenario, signal, remainingMs }) => {
+    assert.equal(scenario, f.options.scenario)
+    assert.equal(signal.aborted, false)
+    assert.ok(remainingMs() > 0)
+    const result = await f.product.send(f.product.requests.getManagedEnvironmentRequest(target.environmentId))
+    assert.equal(result.ManagedEnvironment.environment.observedState, "stopped")
+    assert.equal(f.product.operations.some(operation => operation.kind === "delete"), false)
+    inspected = true
+    // Independent receipts are retained externally by the bridge, not trusted here.
+    return { passed: true, sensitive: "fixture-marker-not-retained" }
+  }
+  const capture = await f.run()
+  assert.equal(inspected, true)
+  assert.equal(capture.beforeCleanupObservation.completedAt, baseTime)
+  assert.equal(JSON.stringify(capture).includes("fixture-marker-not-retained"), false)
+  assert.equal(capture.operations.at(-1).kind, "delete")
+})
+
+test("MP-09/MP-10 expired observation barrier still reserves normal DELETE cleanup", async t => {
+  const f = await shutdownFixture(t, "shutdown_explicit_lifecycle_reconciliation")
+  let elapsed = 0, aborted = false
+  f.deps.monotonic = () => elapsed
+  f.deps.now = () => new Date(Date.parse(baseTime) + elapsed)
+  f.deps.setTimeout = (callback, milliseconds) => {
+    queueMicrotask(() => { elapsed += milliseconds; callback() })
+    return 1
+  }
+  f.deps.clearTimeout = () => {}
+  f.deps.observeBeforeCleanup = ({ signal }) => new Promise((_, reject) => {
+    signal.addEventListener("abort", () => { aborted = true; reject(new Error("fixture observation aborted")) }, { once: true })
+  })
+  await assert.rejects(f.run(), /no acceptance verdict/)
+  assert.equal(aborted, true)
+  assert.equal(elapsed, 300_000)
+  const capture = JSON.parse(await readFile(f.output, "utf8"))
+  assert.equal(capture.beforeCleanupObservation.completedAt, undefined)
+  assert.equal(capture.operations.at(-1).kind, "delete")
+  assert.equal(capture.operations.at(-1).status, "succeeded")
+})
+
+test("MP-09/MP-10 deduplicated reads retain sampling gaps and reject a regressing observer clock", async () => {
+  const { recordSnapshotCoverage } = await import("./lib/managed-shutdown-trigger-observation.mjs")
+  const capture = {}
+  recordSnapshotCoverage(capture, "workflow", baseTime, 0, 2)
+  recordSnapshotCoverage(capture, "workflow", atSecond(100), 99_990, 100_000)
+  assert.equal(capture.snapshotCoverage.workflow.maximumGapMs, 99_998)
+  assert.equal(capture.snapshotCoverage.workflow.maximumRequestMs, 10)
+  assert.throws(() => recordSnapshotCoverage(capture, "workflow", atSecond(90), 89_990, 90_000), /clock regressed/)
+  assert.equal(capture.snapshotCoverage.workflow.samples, 2)
+})
+
+for (const [minimum, delay, changed, reported, deadline] of [
+  [0, 0, 2, 2, 32],
+  [0, 900, 2, 2, 902],
+  [0, 1800, 2, 2, 1802],
+  [10800, 900, 2, 2, 10800],
+  [3600, 600, 4000, 4001, 4600],
+  [0, 0, 2, 50, 80],
+]) {
+  test(`MP-09 exact policy ${minimum}/${delay} preserves final finish and latest-report warning floor`, () => {
+    const summary = projectSummary({
+      ...environment({ policy: { minimumRuntimeSeconds: minimum, idleDelaySeconds: delay } }),
+      lastActivityChangedAt: atSecond(changed), lastActivityReportedAt: atSecond(reported),
+      autoStopDeadlineAt: atSecond(deadline),
+      autoStopWarningAt: atSecond(deadline - MANAGED_SHUTDOWN_WARNING_SECONDS),
+    })
+    assert.equal(verifyIdleDeadline(summary), atSecond(deadline))
+    assert.throws(() => verifyIdleDeadline({ ...summary, autoStopDeadlineAt: atSecond(deadline - 1) }), /Cloud deadline/)
+  })
+}
+
+test("MP-09 renewed activity cannot be credited as the original final-agent STOP", async t => {
+  const f = await shutdownFixture(t, "shutdown_agents_done", {
+    read(request, response, elapsed) {
+      if (!request.GetManagedEnvironment || elapsed < 10_000) return response
+      const details = structuredClone(response.ManagedEnvironment)
+      if (details.environment.observedState === "ready") {
+        Object.assign(details.environment, { runningAgentCount: 1, lastActivityChangedAt: atSecond(10),
+          lastActivityReportedAt: atSecond(10), autoStopDeadlineAt: null, autoStopWarningAt: null })
+      }
+      return { ManagedEnvironment: details }
+    },
+  })
+  await assert.rejects(f.run(), /no acceptance verdict/)
+  const capture = JSON.parse(await readFile(f.output, "utf8"))
+  assert.equal(capture.failures[0].invariant, "automatic stop no longer matches the idle activity transition")
+  assert.equal(capture.operations.at(-1).kind, "delete")
 })

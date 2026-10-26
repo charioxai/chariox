@@ -755,29 +755,41 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
     let f = Fixture::new(true);
     let receiver = f.critical("guarded").await;
     let cli = KernelCommandSource::LocalCli;
+    // A04: kernel agents are refused before any passkey handling.
+    // An external agent is refused by kernel access in its own words; every
+    // other class by the passkey gate.
+    let not_accepted = "PASSKEY_NOT_ACCEPTED";
     let refused = [
         (
             cli.clone(),
             local_caller(KernelConnectionClass::Unauthenticated),
+            not_accepted,
         ),
-        (cli.clone(), local_caller(KernelConnectionClass::Host)),
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::Host),
+            not_accepted,
+        ),
         (
             cli.clone(),
             local_caller(KernelConnectionClass::KernelAgent),
+            "agents cannot answer approvals",
         ),
         (
             cli.clone(),
             local_caller(KernelConnectionClass::ExternalAgent),
+            crate::runtime::kernel_access::Refusal::HumanOnly.message(),
         ),
         (
             KernelCommandSource::RelayClient,
             relay_caller(RelaySubjectKind::Kernel),
+            not_accepted,
         ),
     ];
     // Far more wrong passkeys than the owner's free failures, and the right
     // one: none is verified, audited or counted.
     for _ in 0..2 {
-        for (source, caller) in &refused {
+        for (source, caller, code) in &refused {
             for passkey in ["guess", PASSKEY] {
                 Fixture::refused_with(
                     f.answer_as(
@@ -789,7 +801,7 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
                         caller.clone(),
                     )
                     .await,
-                    "PASSKEY_NOT_ACCEPTED",
+                    code,
                 );
             }
         }

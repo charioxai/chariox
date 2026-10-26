@@ -167,3 +167,67 @@ test("terminal output record queue bounds retained records when producers outrun
   assert.equal(queue.pendingCount(), 0)
   assert.equal(queue.hasPendingFlush(), false)
 })
+
+// MP-08 / MP-10 (panes R8, PANE-11): the first record after a quiet window is
+// processed at once; records inside the window still coalesce on one timer.
+test("terminal output record queue processes the first record of a quiet stream immediately", () => {
+  const timers: FakeTimer[] = []
+  const processed: number[][] = []
+  let now = 1_000
+  const queue = createTerminalOutputRecordQueue<FakeTimer, number>({
+    delayMs: 25,
+    nowMs: () => now,
+    scheduleTimer(callback, delayMs) {
+      const timer = { callback, delayMs, cleared: false }
+      timers.push(timer)
+      return timer
+    },
+    clearTimer(timer) {
+      timer.cleared = true
+    },
+    processRecords(records) {
+      processed.push(records)
+    },
+  })
+
+  queue.queue([1])
+  assert.deepEqual(processed, [[1]])
+  assert.equal(timers.length, 0)
+
+  now += 5
+  queue.queue([2])
+  queue.queue([3])
+  assert.deepEqual(processed, [[1]])
+  assert.equal(timers.length, 1)
+  timers[0]?.callback()
+  assert.deepEqual(processed, [[1], [2, 3]])
+
+  now += 100
+  queue.queue([4])
+  assert.deepEqual(processed, [[1], [2, 3], [4]])
+})
+
+// MP-08 / MP-10: a status record and its first text share the leading budget.
+test("leading status and text are delivered together without unbounded bursts", () => {
+  let now = 0
+  const processed: string[][] = []
+  const timers: FakeTimer[] = []
+  const queue = createTerminalOutputRecordQueue<FakeTimer, string>({
+    delayMs: 48, nowMs: () => now, maxRecordsPerFlush: 2, maxPendingRecords: 4,
+    scheduleTimer(callback, delayMs) { const timer = {callback, delayMs, cleared: false}; timers.push(timer); return timer },
+    clearTimer(timer) { timer.cleared = true },
+    processRecords(records) { processed.push(records) },
+  })
+  queue.queue(["status", "first text", "next text"])
+  assert.deepEqual(processed, [["status", "first text"]])
+  assert.equal(queue.pendingCount(), 1)
+  queue.queue(["more text"])
+  assert.equal(timers.filter(t => !t.cleared).length, 1)
+  now = 48
+  timers.at(-1)!.callback()
+  assert.deepEqual(processed, [["status", "first text"], ["next text", "more text"]])
+  queue.queue(["drained"])
+  queue.drain()
+  queue.queue(["same burst"])
+  assert.equal(queue.pendingCount(), 1, "drain must update the quiet-window clock")
+})

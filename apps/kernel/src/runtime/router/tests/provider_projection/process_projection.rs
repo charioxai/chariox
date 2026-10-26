@@ -560,7 +560,21 @@ async fn teardown_provider_processes_refreshes_session_projection_without_app_lo
         _ => panic!("unexpected launch response"),
     };
 
-    let agent_guard = agent_store.write();
+    // MP-08 / MP-10 / MP-11: keep the intentional store barrier on a blocking
+    // worker, rather than retaining a synchronous guard in the async driver.
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let barrier = tokio::task::spawn_blocking(move || {
+        let guard = agent_store.write();
+        locked_tx
+            .send(())
+            .expect("store barrier should be observed");
+        release_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("test should release store barrier");
+        drop(guard);
+    });
+    locked_rx.await.expect("store barrier should be held");
     timeout(Duration::from_secs(2), async {
         loop {
             if provider_store
@@ -594,7 +608,8 @@ async fn teardown_provider_processes_refreshes_session_projection_without_app_lo
             .is_err(),
         "teardown must wait for in-flight provider launch settlement"
     );
-    drop(agent_guard);
+    release_tx.send(()).expect("store barrier should release");
+    barrier.await.expect("blocking store barrier should join");
     let teardown_response = timeout(Duration::from_secs(2), teardown_task)
         .await
         .expect("teardown should complete after launch settlement")

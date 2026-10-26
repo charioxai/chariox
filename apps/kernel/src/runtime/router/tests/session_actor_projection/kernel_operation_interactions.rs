@@ -6,7 +6,7 @@ fn setup() -> (CommandRouter, String) {
     setup_with(|_| {})
 }
 fn setup_with(prepare: impl FnOnce(&mut RuntimeSession)) -> (CommandRouter, String) {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let mut session = RuntimeSession::new(
         format!("kernel-decision-{:016x}", rand::random::<u64>()),
         None,

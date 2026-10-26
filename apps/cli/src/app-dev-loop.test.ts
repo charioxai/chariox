@@ -132,7 +132,8 @@ test("missing-key guidance uses protected paths and private directory modes with
   assert.match(instructions, /directory 0700, private file 0600/)
   assert.match(instructions, /same public fingerprint, and preserved backup history/)
   assert.match(instructions, /separately protected backup.*signing and verifying a synthetic challenge/)
-  assert.doesNotMatch(instructions, /\.chariox\/dev\//)
+  // MP-08/MP-10/MP-11: the synthetic HOME may itself live under the drill state root.
+  assert.doesNotMatch(instructions.replaceAll(home, "$HOME"), /\.chariox\/dev\//)
   assert.equal(h.packs.length, 0)
   assert.equal(h.workspaces.length, 0)
   await assert.rejects(stat(join(home, ".chariox")), /ENOENT/)

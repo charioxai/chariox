@@ -38,7 +38,6 @@ function formatSessionRuntimeSummary(session: RuntimeSession): string {
     `home ${formatSessionHomeKernelLabel(session, "unknown")}`,
     session.owner_user_id?.trim() ? `owner ${session.owner_user_id.trim()}` : null,
     "authority home-owned",
-    `live sync ${formatWorkspaceLiveSyncModeLabel(session.workspace_live_sync_mode)}`,
   ].filter(Boolean)
   return ` - ${parts.join(" - ")}`
 }

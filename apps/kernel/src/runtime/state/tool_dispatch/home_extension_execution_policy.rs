@@ -636,8 +636,7 @@ fn enforce_home_extension_value_size(value: &serde_json::Value) -> Result<(), Da
         return Err(DaemonError::LocalTransport {
             operation: "home extension result limit",
             message: format!(
-                "home extension result exceeded {} bytes ({size} bytes)",
-                HOME_EXTENSION_MAX_RESULT_BYTES
+                "home extension result exceeded {HOME_EXTENSION_MAX_RESULT_BYTES} bytes ({size} bytes)"
             ),
         });
     }

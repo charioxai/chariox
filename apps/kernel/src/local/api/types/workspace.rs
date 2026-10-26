@@ -241,3 +241,11 @@ pub struct WorkspacePullRequestRecord {
     pub draft: bool,
     pub generated_at_ms: u64,
 }
+
+/// MP-02 / MP-08: metadata travels in the same response as directory choices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceDirectoryGitSummary {
+    pub workspace_id: String,
+    pub repository_state: String,
+    pub workspace_label: Option<String>,
+}

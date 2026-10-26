@@ -1,5 +1,6 @@
-import { execFile } from "node:child_process"
-import { access, chmod, copyFile, mkdir, readFile, rm } from "node:fs/promises"
+import {copyPrivateCredential,requireScopedProviderPath} from "./private-drill-runtime.mjs"
+import { execFile, spawn } from "node:child_process"
+import { access, mkdir, readFile, rm, lstat } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -20,10 +21,43 @@ export function sshArgs(options, remoteCommand) {
 }
 
 export function remoteEnvCommand(env, command) {
+  if (Object.keys(env).some(name => /token|secret|password|credential|auth/i.test(name))) {
+    throw new Error("credential environment requires private stdin transport")
+  }
   const assignments = Object.entries(env)
     .map(([key, value]) => `${key}=${shellQuote(String(value))}`)
     .join(" ")
   return `cd ${shellQuote(env.CHARIOX_REMOTE_REPO)} && env ${assignments} bash -lc ${shellQuote(command)}`
+}
+
+// Only this fixed program appears in SSH argv; the environment and command use stdin.
+const privateRemoteLauncher = `import json,os,sys
+try:
+ data=json.load(sys.stdin)
+ env={str(k):str(v) for k,v in data["environment"].items()}
+ if any(not k or "=" in k or "\\0" in k+v for k,v in env.items()): raise ValueError()
+ env.setdefault("PATH","/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+ os.chdir(env["CHARIOX_REMOTE_REPO"])
+ os.execve("/bin/bash",["bash","-c",data["command"]],env)
+except Exception:
+ sys.stderr.write("private remote launch failed\\n")
+ sys.exit(1)`
+
+export function privateClientEnvironment(environment) {
+  return Object.fromEntries(Object.entries(environment).filter(([name]) =>
+    ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "TMPDIR", "TEMP", "TMP", "RUST_MIN_STACK", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG_DIR", "OPENCODE_DATA_HOME"].includes(name)
+      || name.startsWith("XDG_") || name.startsWith("CHARIOX_") || name.startsWith("LC_")))
+}
+
+export function spawnRemoteEnv(options, environment, command, spawnOptions = {}, spawnImpl = spawn) {
+  const child = spawnImpl("ssh", sshArgs(options, `python3 -c ${shellQuote(privateRemoteLauncher)}`), {
+    ...spawnOptions,
+    env: Object.fromEntries(["PATH", "HOME", "LANG", "SSH_AUTH_SOCK"].filter(name => process.env[name]).map(name => [name, process.env[name]])),
+    stdio: ["pipe", spawnOptions.stdio?.[1] ?? "ignore", "ignore"],
+  })
+  child.stdin.on("error", () => {})
+  child.stdin.end(JSON.stringify({ environment, command }))
+  return child
 }
 
 export async function assertHetznerCharioxBinaries(options) {
@@ -137,16 +171,6 @@ export async function runHetznerCommand(options, command) {
   return stdout
 }
 
-async function copyFileIfPresent(source, destination, mode) {
-  try {
-    await copyFile(source, destination)
-  } catch (error) {
-    if (error?.code === "ENOENT") return false
-    throw error
-  }
-  await chmod(destination, mode)
-  return true
-}
 
 async function filesArePresent(paths) {
   const present = await Promise.all(paths.map(async (candidate) => {
@@ -175,48 +199,43 @@ export async function seedLocalOpenCodeRuntimeProfile({
   const credentialPath = path.join(destinationDataHome, "auth.json")
   const destinationCatalogPaths = ["models.json", "version"]
     .map((filename) => path.join(destinationCacheHome, filename))
+  const published = []
   try {
-    const credentialCopied = await copyFileIfPresent(
-      path.join(sourceDataHome, "auth.json"),
-      credentialPath,
-      0o600,
+    const credentialCopied = await copyPrivateCredential(
+      path.join(sourceDataHome, "auth.json"), credentialPath,
     )
+    if (credentialCopied) published.push([credentialPath, await lstat(credentialPath)])
     const sourceCatalogPaths = ["models.json", "version"]
       .map((filename) => path.join(sourceCacheHome, filename))
     if (await filesArePresent(sourceCatalogPaths)) {
       for (let index = 0; index < sourceCatalogPaths.length; index += 1) {
-        await copyFile(sourceCatalogPaths[index], destinationCatalogPaths[index])
-        await chmod(destinationCatalogPaths[index], 0o600)
+        if (await copyPrivateCredential(sourceCatalogPaths[index], destinationCatalogPaths[index])) {
+          published.push([destinationCatalogPaths[index], await lstat(destinationCatalogPaths[index])])
+        }
       }
     }
     return credentialCopied ? credentialPath : null
   } catch (error) {
-    await Promise.all([
-      rm(credentialPath, { force: true }),
-      ...destinationCatalogPaths.map((candidate) => rm(candidate, { force: true })),
-    ])
+    for (const [candidate, owned] of published) {
+      const current=await lstat(candidate).catch(()=>null)
+      if(current&&current.dev===owned.dev&&current.ino===owned.ino)await rm(candidate)
+    }
     throw error
   }
 }
 
-export function hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot) {
+export function hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot, sourceDataHome) {
   if (!/^\/tmp\/arb-remote-native-tui-\d+-\d+$/.test(runtimeRoot)) {
-    throw new Error(`refusing unexpected Hetzner native TUI runtime root: ${runtimeRoot}`)
+    throw new Error("refusing unexpected Hetzner native TUI runtime root")
   }
-  const destinationDataHome = path.posix.join(runtimeRoot, "xdg-data", "opencode")
-  const destinationCacheHome = path.posix.join(runtimeRoot, "xdg-cache", "opencode")
-  const sourceDataHome = "/root/.local/share/opencode"
-  const sourceCacheHome = "/root/.cache/opencode"
-  return [
-    "set -e",
-    `install -d -m 700 ${shellQuote(destinationDataHome)} ${shellQuote(destinationCacheHome)}`,
-    `if test -s ${shellQuote(path.posix.join(sourceDataHome, "auth.json"))}; then install -m 600 ${shellQuote(path.posix.join(sourceDataHome, "auth.json"))} ${shellQuote(path.posix.join(destinationDataHome, "auth.json"))}; fi`,
-    `if test -s ${shellQuote(path.posix.join(sourceCacheHome, "models.json"))} && test -s ${shellQuote(path.posix.join(sourceCacheHome, "version"))}; then install -m 600 ${shellQuote(path.posix.join(sourceCacheHome, "models.json"))} ${shellQuote(path.posix.join(destinationCacheHome, "models.json"))}; install -m 600 ${shellQuote(path.posix.join(sourceCacheHome, "version"))} ${shellQuote(path.posix.join(destinationCacheHome, "version"))}; fi`,
-  ].join("; ")
+  const scope=requireScopedProviderPath({WORKER_OPENCODE_DATA_HOME:sourceDataHome},"WORKER_OPENCODE_DATA_HOME")
+  // Standard workers use their operator-provisioned account. No ambient auth copy.
+  return `test -f ${shellQuote(path.posix.join(scope,"auth.json"))}`
 }
 
 export async function seedHetznerOpenCodeRuntimeProfile(options, runtimeRoot) {
-  await runHetznerCommand(options, hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot))
+  const profile=requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_OPENCODE_DATA_HOME")
+  await runHetznerCommand(options, hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot,profile))
 }
 
 export async function assertHetznerTcpPortAvailable(options, port, label = "Hetzner TCP port") {
@@ -230,6 +249,9 @@ export async function assertHetznerTcpPortAvailable(options, port, label = "Hetz
 }
 
 export async function stopHetznerProcessByEnv(options, expectedEnv) {
+  if (!expectedEnv || !Object.keys(expectedEnv).length || Object.values(expectedEnv).some(value => typeof value !== "string" || !value)) {
+    throw new Error("owned remote process markers are required")
+  }
   const checks = Object.entries(expectedEnv).map(([key, value]) => (
     `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`${key}=${value}`)} || continue;`
   ))
@@ -237,10 +259,15 @@ export async function stopHetznerProcessByEnv(options, expectedEnv) {
     'for env_file in /proc/[0-9]*/environ; do',
     '  test -r "$env_file" || continue;',
     '  pid=${env_file#/proc/}; pid=${pid%/environ};',
+    '  case "$pid" in \"\"|*[!0-9]*|0|1) continue ;; esac;',
     '  env_text=$(tr "\\0" "\\n" < "$env_file" 2>/dev/null || true);',
     ...checks,
+    "  start=$(sed \"s/^.*) //\" \"/proc/$pid/stat\" 2>/dev/null | awk '{print $20}') || continue;",
+    '  case "$start" in ""|*[!0-9]*) continue ;; esac;',
     '  kill "$pid" 2>/dev/null || true;',
     '  for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done;',
+    "  current=$(sed \"s/^.*) //\" \"/proc/$pid/stat\" 2>/dev/null | awk '{print $20}') || continue;",
+    '  test "$current" = "$start" || continue;',
     '  kill -9 "$pid" 2>/dev/null || true;',
     'done',
   ].join(' ')).catch(() => {})

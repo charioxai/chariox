@@ -38,6 +38,12 @@ script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 staging_root=$(mktemp -d "${TMPDIR:-/tmp}/chariox-image-install.XXXXXX")
 chmod 0700 "$staging_root"
 cleanup() {
+  if [ "${access_policy_pending:-0}" = 1 ]; then
+    if ! restore_access_policy; then
+      echo "managed access policy restoration incomplete; retained recovery state at $staging_root" >&2
+      return 1
+    fi
+  fi
   if [ -n "${pending_release:-}" ] && [ -d "$pending_release" ]; then
     rm -rf -- "$pending_release"
   fi
@@ -366,28 +372,13 @@ fi
 if ! id chariox >/dev/null 2>&1; then
   useradd --system --gid chariox --home-dir /home/chariox --shell /usr/sbin/nologin chariox
 fi
-# Path 1: the VM is the boundary and chariox is its ordinary user. Providers
-# such as OpenCode run tools through the passwd login shell. Shared hosts keep
-# (or return to) nologin.
+# Login/sudo policy is activated with the release, after migration and setup succeed.
 chariox_login_shell=/usr/sbin/nologin
 if [ "$managed_provider_topology" = path1 ]; then
   chariox_login_shell=/bin/bash
 fi
-[ "$(getent passwd chariox | cut -d: -f7)" = "$chariox_login_shell" ] || usermod --shell "$chariox_login_shell" chariox
-# Path 1: agents operate their disposable single-tenant VM with full rights (plan,
-# locked decisions 2026-09-30). Shared hosts grant none, including former Path-1 hosts.
 chariox_sudoers=$install_root/etc/sudoers.d/90-chariox-path1
-if [ "$managed_provider_topology" = path1 ]; then
-  install -d -o root -g root -m 0750 "$install_root/etc/sudoers.d"
-  # sudo skips names containing a dot, so the staged file is inert until renamed.
-  chariox_sudoers_tmp=$(mktemp "$install_root/etc/sudoers.d/.chariox.XXXXXX")
-  printf '%s\n' 'chariox ALL=(ALL) NOPASSWD: ALL' >"$chariox_sudoers_tmp"
-  chmod 0440 "$chariox_sudoers_tmp"
-  visudo -cqf "$chariox_sudoers_tmp" || { rm -f "$chariox_sudoers_tmp"; echo "Path-1 sudoers drop-in is invalid" >&2; exit 1; }
-  mv -f "$chariox_sudoers_tmp" "$chariox_sudoers"
-else
-  rm -f "$chariox_sudoers"
-fi
+. "$script_root/access-policy-transaction.sh"
 chariox_home_from_passwd=$(getent passwd chariox | cut -d: -f6)
 if [ "$chariox_home_from_passwd" = "/var/lib/chariox/home" ]; then
   usermod --home /home/chariox chariox
@@ -650,6 +641,9 @@ restore_previous_current() {
   fi
 }
 
+begin_access_policy_transaction
+activate_access_policy || exit 1
+
 if ! atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"; then
   if restore_previous_current; then
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -675,3 +669,5 @@ if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-
   fi
   exit 1
 fi
+
+access_policy_pending=0

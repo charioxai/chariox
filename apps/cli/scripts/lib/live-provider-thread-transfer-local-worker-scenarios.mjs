@@ -1,3 +1,4 @@
+import { waitForProviderRunMcpAdmission } from './provider-run-mcp-admission.mjs'
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -196,15 +197,12 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
     result.checks.provider_thread_id_before = beforeThreadId
     result.checks.provider_thread_id_after = afterThreadId
     result.checks.provider_thread_id_preserved = beforeThreadId === afterThreadId
-    result.checks.mcp_loaded_after_reload = (afterRun.mcp_servers ?? []).some((server) => server.name === mcpName)
+    await waitForProviderRunMcpAdmission(client, afterRun.id, mcpName, options.timeoutMs)
+    result.checks.mcp_grant_preserved_after_reload = true
 
     if (!result.checks.provider_thread_id_preserved) {
       throw new Error(`provider thread id changed across reload: before=${beforeThreadId} after=${afterThreadId}`)
     }
-    if (!result.checks.mcp_loaded_after_reload) {
-      throw new Error(`reloaded run did not include MCP ${mcpName}`)
-    }
-
     if (!options.skipRecallPrompt) {
       const recallMarker = `${rememberMarker}_SECOND_TURN_RECALLED`
       logStep(result, provider, "submit-recall-marker", { marker: recallMarker })

@@ -21,11 +21,24 @@ pub(crate) const CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS: u64 = 300;
 /// How long the hook waits for the kernel's decision (`deadline` in the
 /// handler): past the interaction timeout plus a forwarded interaction's relay
 /// buffer, so the deny a timed-out interaction resolves to finds it waiting.
+#[allow(
+    dead_code,
+    reason = "Retains the compile-time ordering check against the native hook timeout"
+)]
 pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 330;
 /// Claude's timeout for the permission hook, past the hook's own wait.
 const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
+
+/// The bytes one more section can add to `hidden_context`, separator included,
+/// and still fit the chunked hook delivery. Every chunk but the last closes at
+/// least 5,997 bytes in, because a UTF-8 scalar is at most four bytes.
+pub(crate) fn claude_native_hidden_context_room(hidden_context: &str) -> usize {
+    let used = hidden_context.trim().len();
+    (CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3))
+        .saturating_sub(used + if used == 0 { 0 } else { 2 })
+}
 
 pub(crate) fn ensure_claude_native_hidden_context_fits(
     provider_run_id: &str,
@@ -56,6 +69,77 @@ pub(crate) fn ensure_claude_native_hidden_context_fits(
             CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES
         ),
     })
+}
+
+// MP-08 / MP-10 / MP-11: optional home replay is sized against the complete worker turn.
+pub(crate) fn fit_claude_native_hidden_context(
+    provider_run_id: &str,
+    hidden_context: String,
+) -> Result<String, DaemonError> {
+    if ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context).is_ok() {
+        return Ok(hidden_context);
+    }
+    let open = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
+    let close = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
+    let Some(start) = hidden_context.find(open) else {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    };
+    let body_start = start + open.len();
+    let Some(body_end) = hidden_context[body_start..]
+        .find(close)
+        .map(|end| body_start + end)
+    else {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    };
+    let prefix = &hidden_context[..start];
+    let suffix = &hidden_context[body_end + close.len()..];
+    let required = format!("{prefix}{suffix}");
+    // Mandatory origin, skill, attachment and prompt assembly instructions are never truncated.
+    ensure_claude_native_hidden_context_fits(provider_run_id, &required)?;
+    let capacity = CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * (CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES - 3);
+    let room = capacity.saturating_sub(required.len() + open.len() + close.len());
+    if room == 0 {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    }
+    let body = &hidden_context[body_start..body_end];
+    const TRUNCATED: &str = "[truncated]\n";
+    // Latest turn is last in the home packet. Retain that turn before older
+    // summaries, trimming the start at a UTF-8 boundary and disclosing the cut.
+    let keep = room.saturating_sub(TRUNCATED.len());
+    if keep == 0 {
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    }
+    let latest_start = body
+        .find("\nLatest turn:\n")
+        .map(|index| index + 1)
+        .or_else(|| body.starts_with("Latest turn:\n").then_some(0))
+        .unwrap_or(body.len());
+    let (prior, latest) = body.split_at(latest_start);
+    let mut latest_end = latest.len().min(keep);
+    while !latest.is_char_boundary(latest_end) {
+        latest_end -= 1;
+    }
+    if !latest.is_empty() && latest_end <= "Latest turn:\n".len() {
+        // A header without any latest-turn detail is not a usable replay.
+        ensure_claude_native_hidden_context_fits(provider_run_id, &hidden_context)?;
+        return Ok(hidden_context);
+    }
+    let prior_room = keep - latest_end;
+    let mut begin = prior.len().saturating_sub(prior_room);
+    while !prior.is_char_boundary(begin) {
+        begin += 1;
+    }
+    let fitted = format!(
+        "{prefix}{open}{TRUNCATED}{}{}{close}{suffix}",
+        &prior[begin..],
+        &latest[..latest_end]
+    );
+    ensure_claude_native_hidden_context_fits(provider_run_id, &fitted)?;
+    Ok(fitted)
 }
 
 pub(super) struct ClaudeNativeTuiFiles {
@@ -209,186 +293,7 @@ fn claude_native_hook_command(
 }
 
 fn claude_native_hook_handler() -> &'static str {
-    r#"#!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { setTimeout as setCallbackTimeout } from "node:timers"
-import { setTimeout as sleep } from "node:timers/promises"
-
-const hookWatchdog = setCallbackTimeout(() => {
-  try {
-    appendFileSync(`${process.env.CHARIOX_CLAUDE_NATIVE_EVENTS}.watchdog`, JSON.stringify({
-      at: new Date().toISOString(),
-      reason: "hook_event_not_resolved"
-    }) + "\n")
-  } catch {}
-  process.exit(0)
-}, 7000)
-
-async function readHookInput() {
-  const chunks = []
-  let settled = false
-  return await new Promise((resolve) => {
-    const finish = () => {
-      if (settled) return
-      settled = true
-      resolve(Buffer.concat(chunks).toString("utf8"))
-    }
-    process.stdin.on("data", (chunk) => chunks.push(chunk))
-    process.stdin.once("end", finish)
-    process.stdin.once("error", finish)
-    process.stdin.resume()
-    setCallbackTimeout(finish, 1000)
-  })
-}
-
-let nativePromptId = null
-try { nativePromptId = readFileSync(`${process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT}.approval-origin`, "utf8").trim() || null } catch {}
-const raw = await readHookInput()
-let input = {}
-try {
-  input = raw.trim() ? JSON.parse(raw) : {}
-} catch (error) {
-  input = { hook_event_name: "parse_error", raw, error: String(error) }
-}
-const eventName = input.hook_event_name ?? "unknown"
-const parsedContextChunkIndex = Number.parseInt(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK ?? "", 10)
-const contextChunkIndex = Number.isInteger(parsedContextChunkIndex) && parsedContextChunkIndex >= 0
-  ? parsedContextChunkIndex
-  : null
-const contextOnlyHook = contextChunkIndex !== null && contextChunkIndex > 0
-if (!contextOnlyHook && eventName === "SessionStart") {
-  try { unlinkSync(join(dirname(process.argv[1]), "mcp-config.json")) } catch {}
-}
-const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
-  ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
-  : null
-if (!contextOnlyHook) {
-  appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
-    at: new Date().toISOString(),
-    hook_event_name: eventName,
-    hook_context_request_id: hookContextRequestId,
-    native_prompt_id: nativePromptId,
-    prompt: input.prompt ?? null,
-    transcript_path: input.transcript_path ?? null,
-    permission_mode: input.permission_mode ?? null,
-    tool_name: input.tool_name ?? null,
-    tool_input: input.tool_input ?? null,
-    tool_response: input.tool_response ?? null,
-    error: input.error ?? null,
-    error_details: eventName === "StopFailure" ? input.error_details ?? null : null,
-    last_assistant_message: eventName === "StopFailure" ? input.last_assistant_message ?? null : null,
-  }) + "\n")
-}
-
-function utf8ContextChunk(value, chunkIndex, maximumBytes = 6000) {
-  const chunks = []
-  let chunk = ""
-  let chunkBytes = 0
-  for (const scalar of value) {
-    const scalarBytes = Buffer.byteLength(scalar, "utf8")
-    if (chunk && chunkBytes + scalarBytes > maximumBytes) {
-      chunks.push(chunk)
-      chunk = ""
-      chunkBytes = 0
-    }
-    chunk += scalar
-    chunkBytes += scalarBytes
-  }
-  if (chunk) chunks.push(chunk)
-  return chunks[chunkIndex] ?? ""
-}
-
-if (eventName === "UserPromptSubmit") {
-  let additionalContext = ""
-  try {
-    additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
-  } catch {}
-  if (!additionalContext && contextChunkIndex === 0 && hookContextRequestId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
-    const responseFile = join(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES, `${hookContextRequestId}.txt`)
-    const deadline = Date.now() + 5000
-    while (Date.now() < deadline) {
-      if (existsSync(responseFile)) {
-        additionalContext = readFileSync(responseFile, "utf8")
-        writeFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, additionalContext)
-        try { unlinkSync(responseFile) } catch {}
-        break
-      }
-      await sleep(50)
-    }
-  }
-  if (!additionalContext && contextOnlyHook) {
-    const deadline = Date.now() + 5000
-    while (Date.now() < deadline) {
-      try {
-        additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
-      } catch {}
-      if (additionalContext) break
-      await sleep(50)
-    }
-  }
-  additionalContext = utf8ContextChunk(additionalContext, contextChunkIndex ?? 0)
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: "UserPromptSubmit",
-      additionalContext
-    }
-  }))
-  process.exit(0)
-} else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
-  if (input.permission_mode === "bypassPermissions") {
-    if (eventName === "PermissionRequest") {
-      // PermissionRequestHookSpecificOutput nests the PermissionResult under
-      // `decision`. PreToolUse uses a separate event-specific output shape.
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PermissionRequest",
-          decision: {
-            behavior: "allow"
-          }
-        }
-      }))
-    }
-    process.exit(0)
-  }
-  // The kernel bridges only events that name a tool; waiting on any other
-  // event would hold Claude for the full decision deadline.
-  if (typeof input.tool_name !== "string" || !input.tool_name.trim()) {
-    process.exit(0)
-  }
-  clearTimeout(hookWatchdog)
-  const responseDir = process.env.CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES
-  const responseFile = responseDir && hookContextRequestId
-    ? join(responseDir, `${hookContextRequestId}.json`)
-    : null
-  if (responseFile) {
-    // CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS
-    const deadline = Date.now() + 330000
-    while (Date.now() < deadline) {
-      if (existsSync(responseFile)) {
-        try {
-          const decision = JSON.parse(readFileSync(responseFile, "utf8"))
-          try { unlinkSync(responseFile) } catch {}
-          if (decision?.behavior) {
-            process.stdout.write(JSON.stringify({
-              hookSpecificOutput: {
-                hookEventName: eventName,
-                decision: {
-                  behavior: decision.behavior,
-                  ...(decision.behavior === "deny" ? { message: decision.message ?? "Denied through Chariox." } : {})
-                }
-              }
-            }))
-          }
-        } catch {}
-        break
-      }
-      await sleep(50)
-    }
-  }
-}
-process.exit(0)
-"#
+    include_str!("native_tui_hook.mjs")
 }
 
 pub(super) fn claude_native_tui_args(
@@ -461,7 +366,7 @@ mod tests {
     };
 
     use super::{
-        claude_native_hook_handler, claude_native_tui_args,
+        claude_native_hidden_context_room, claude_native_hook_handler, claude_native_tui_args,
         ensure_claude_native_hidden_context_fits, prepare_claude_native_tui_files,
         CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES, CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS,
         CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES,
@@ -887,224 +792,216 @@ mod tests {
     }
 
     #[test]
-    fn user_prompt_hooks_deliver_large_hidden_context_without_persisted_output_fallback() {
-        if Command::new("node").arg("--version").output().is_err() {
-            return;
-        }
+    fn print_prompt_hooks_use_the_current_dispatched_context() {
         let request = LaunchProviderRequest::new(
-            "session-large-context",
+            "session-print-context",
+            "claude",
+            "claude-p",
+            "default",
+            "sonnet",
+        );
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let hook = native
+            .events_file
+            .parent()
+            .unwrap()
+            .join("hook-handler.mjs");
+        // MP-08 / MP-10 / MP-11: print turns have already entered the kernel;
+        // their dispatched envelope must not wait for a native prompt request.
+        for context in [
+            format!("{}🦀END", "current-envelope\n".repeat(2000)),
+            String::new(),
+            "next envelope".into(),
+        ] {
+            fs::write(&native.context_file, &context).unwrap();
+            let children = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS).map(|index| {
+                let mut child = Command::new("node").arg(&hook)
+                    .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", index.to_string())
+                    .env("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE", "dispatched")
+                    .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+                    .spawn().unwrap();
+                child.stdin.take().unwrap().write_all(
+                    br#"{"hook_event_name":"UserPromptSubmit","session_id":"print","prompt":"same prompt"}"#,
+                ).unwrap();
+                child
+            }).collect::<Vec<_>>();
+            let mut chunks = Vec::new();
+            for child in children {
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "dispatched print context must not require a native response: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                chunks.push(
+                    value["hookSpecificOutput"]["additionalContext"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                );
+            }
+            assert_eq!(chunks.concat(), context);
+        }
+    }
+
+    #[test]
+    fn user_prompt_hooks_deliver_only_the_current_response_to_every_chunk() {
+        let request = LaunchProviderRequest::new(
+            "session-fresh-context",
             "claude",
             "claude-headless",
             "default",
             "opus",
         );
-        let native =
-            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
-        let context = format!("{}🦀END", "reviewer-instruction\n".repeat(750));
-        fs::write(&native.context_file, &context).expect("hidden context should write");
-        let hook_handler = native
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let hook = native
             .events_file
             .parent()
-            .expect("events file should have a root")
+            .unwrap()
             .join("hook-handler.mjs");
-        let mut reconstructed = String::new();
-        let mut context_chunks = Vec::new();
-
-        for chunk_index in 0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS {
-            let mut child = Command::new("node")
-                .arg(&hook_handler)
-                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
-                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
-                .env(
-                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
-                    &native.context_response_dir,
-                )
-                .env(
-                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
-                    &native.permission_response_dir,
-                )
-                .env(
-                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK",
-                    chunk_index.to_string(),
-                )
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("hook handler should start");
-            child
-                .stdin
-                .take()
-                .expect("hook stdin should be piped")
-                .write_all(
-                    br#"{"hook_event_name":"UserPromptSubmit","prompt":"review exact head"}"#,
-                )
-                .expect("hook input should write");
-            let output = child.wait_with_output().expect("hook should finish");
-            assert!(
-                output.status.success(),
-                "hook failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let response: serde_json::Value =
-                serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
-            let chunk = response["hookSpecificOutput"]["additionalContext"]
-                .as_str()
-                .expect("context chunk should be present");
-            assert!(chunk.len() <= CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES);
-            reconstructed.push_str(chunk);
-            context_chunks.push(chunk.to_string());
-        }
-
-        assert_eq!(reconstructed, context);
-        assert_eq!(
-            fs::read_to_string(&native.events_file)
-                .expect("hook events should read")
-                .lines()
-                .count(),
-            1,
-            "context-only hooks must not duplicate prompt acknowledgements"
-        );
-        let settings: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(native.settings_file).unwrap()).unwrap();
-        let hooks = settings["hooks"]["UserPromptSubmit"][0]["hooks"]
-            .as_array()
-            .expect("prompt hooks should be an array");
-        assert_eq!(hooks.len(), CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS);
-        for (index, hook) in hooks.iter().enumerate() {
-            assert!(hook["command"]
-                .as_str()
-                .is_some_and(|command| command
-                    .contains(&format!("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK={index}"))));
-        }
-
-        fs::write(&native.context_file, "").expect("context should clear");
-        let mut waiting_child = Command::new("node")
-            .arg(&hook_handler)
-            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
-            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
-            .env(
-                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
-                &native.context_response_dir,
-            )
-            .env(
-                "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
-                &native.permission_response_dir,
-            )
-            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("context-only hook should start");
-        waiting_child
-            .stdin
-            .take()
-            .expect("hook stdin should be piped")
-            .write_all(br#"{"hook_event_name":"UserPromptSubmit","prompt":"review exact head"}"#)
-            .expect("hook input should write");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        fs::write(&native.context_file, &context).expect("dynamic context should publish");
-        let waiting_output = waiting_child
-            .wait_with_output()
-            .expect("context-only hook should finish");
-        assert!(waiting_output.status.success());
-        let waiting_response: serde_json::Value = serde_json::from_slice(&waiting_output.stdout)
-            .expect("context-only hook response should be JSON");
-        assert_eq!(
-            waiting_response["hookSpecificOutput"]["additionalContext"].as_str(),
-            Some(context_chunks[1].as_str())
-        );
-
-        fs::write(&native.context_file, "").expect("context should clear");
-        fs::write(&native.events_file, "").expect("events should clear");
-        let spawn_context_hook = |chunk_index: usize| {
-            let mut child = Command::new("node")
-                .arg(&hook_handler)
-                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
-                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
-                .env(
-                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
-                    &native.context_response_dir,
-                )
-                .env(
-                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
-                    &native.permission_response_dir,
-                )
-                .env(
-                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK",
-                    chunk_index.to_string(),
-                )
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("context hook should start");
-            child
-                .stdin
-                .take()
-                .expect("hook stdin should be piped")
-                .write_all(br#"{"hook_event_name":"UserPromptSubmit","prompt":"dynamic context"}"#)
-                .expect("hook input should write");
-            child
-        };
-        let response_hook = spawn_context_hook(0);
-        let response_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let request_id = loop {
-            if let Some(request_id) =
-                fs::read_to_string(&native.events_file)
-                    .ok()
-                    .and_then(|events| {
-                        events.lines().find_map(|line| {
-                            serde_json::from_str::<serde_json::Value>(line)
-                                .ok()?
-                                .get("hook_context_request_id")?
-                                .as_str()
-                                .map(str::to_string)
+        let large = format!("{}🦀END", "exact-record\n".repeat(3000));
+        for wanted in [Some(large.as_str()), Some(""), Some("next response"), None] {
+            fs::write(&native.context_file, "STALE PREVIOUS TURN").unwrap();
+            fs::write(&native.events_file, "").unwrap();
+            let children = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS).rev().map(|index| {
+                let mut child = Command::new("node").arg(&hook)
+                    .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", index.to_string())
+                    .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS", "1")
+                    .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+                    .spawn().expect("official hook should start");
+                child.stdin.take().unwrap().write_all(
+                    br#"{"hook_event_name":"UserPromptSubmit","session_id":"native","prompt":"same prompt"}"#,
+                ).unwrap();
+                (index, child)
+            }).collect::<Vec<_>>();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let event = loop {
+                if let Some(event) =
+                    fs::read_to_string(&native.events_file)
+                        .ok()
+                        .and_then(|events| {
+                            events.lines().next().and_then(|line| {
+                                serde_json::from_str::<serde_json::Value>(line).ok()
+                            })
                         })
-                    })
-            {
-                break request_id;
+                {
+                    break event;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "primary hook did not request fresh context"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            if let Some(context) = wanted {
+                let id = event["hook_context_request_id"].as_str().unwrap();
+                fs::write(
+                    native.context_response_dir.join(format!("{id}.txt")),
+                    context,
+                )
+                .unwrap();
             }
-            assert!(
-                std::time::Instant::now() < response_deadline,
-                "primary hook should publish its response request id"
+            let mut chunks = vec![String::new(); CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS];
+            for (index, child) in children {
+                let output = child.wait_with_output().unwrap();
+                if wanted.is_none() {
+                    assert_eq!(
+                        output.status.code(),
+                        Some(2),
+                        "missing current context must block the prompt"
+                    );
+                    assert!(output.stdout.is_empty());
+                } else {
+                    assert!(
+                        output.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    let response: serde_json::Value =
+                        serde_json::from_slice(&output.stdout).unwrap();
+                    let chunk = response["hookSpecificOutput"]["additionalContext"]
+                        .as_str()
+                        .unwrap();
+                    assert!(chunk.len() <= CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES);
+                    chunks[index] = chunk.to_string();
+                }
+            }
+            if let Some(context) = wanted {
+                assert_eq!(chunks.concat(), context);
+            }
+            let events = fs::read_to_string(&native.events_file)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e["hook_event_name"] == "UserPromptSubmit")
+                    .count(),
+                1,
+                "chunk hooks must record the actual native prompt once"
             );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
-        let sibling_hook = spawn_context_hook(1);
-        fs::write(
-            native
-                .context_response_dir
-                .join(format!("{request_id}.txt")),
-            &context,
-        )
-        .expect("dynamic context response should publish");
-        let response_output = response_hook
-            .wait_with_output()
-            .expect("primary response hook should finish");
-        let sibling_output = sibling_hook
-            .wait_with_output()
-            .expect("sibling response hook should finish");
-        assert!(response_output.status.success());
-        assert!(sibling_output.status.success());
-        let response: serde_json::Value = serde_json::from_slice(&response_output.stdout)
-            .expect("primary response should be JSON");
-        let sibling: serde_json::Value = serde_json::from_slice(&sibling_output.stdout)
-            .expect("sibling response should be JSON");
-        assert_eq!(
-            response["hookSpecificOutput"]["additionalContext"].as_str(),
-            Some(context_chunks[0].as_str())
-        );
-        assert_eq!(
-            sibling["hookSpecificOutput"]["additionalContext"].as_str(),
-            Some(context_chunks[1].as_str())
-        );
-        assert_eq!(
-            fs::read_to_string(&native.context_file).expect("context file should read"),
-            context,
-            "the primary response hook must publish the full context for sibling chunks"
-        );
+            if wanted.is_none() {
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| e["hook_event_name"] == "CharioxContextFailed"
+                            && e["hook_context_request_id"] == event["hook_context_request_id"]),
+                    "failed hook did not notify the kernel"
+                );
+            }
+            let receipts = events
+                .iter()
+                .filter(|e| e["hook_event_name"] == "CharioxContextDelivered")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                receipts.len(),
+                usize::from(wanted.is_some()),
+                "failed delivery must not acknowledge context"
+            );
+            if let Some(receipt) = receipts.first() {
+                assert_eq!(
+                    receipt["hook_context_request_id"],
+                    event["hook_context_request_id"]
+                );
+                assert_eq!(receipt["session_id"], "native");
+            }
+            assert!(fs::read_dir(native.events_file.parent().unwrap())
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".sock")));
+        }
+    }
+
+    #[test]
+    fn hidden_context_room_always_fits_the_chunked_delivery() {
+        let ascii = "x".repeat(20_000);
+        let multibyte = "🦀".repeat(5_000);
+        for base in ["", "x", ascii.as_str(), multibyte.as_str()] {
+            let room = claude_native_hidden_context_room(base);
+            for fill in ["x", "é", "🦀"] {
+                let section = fill.repeat(room / fill.len());
+                let joined = if base.is_empty() {
+                    section
+                } else {
+                    format!("{base}\n\n{section}")
+                };
+                ensure_claude_native_hidden_context_fits("run-room", &joined)
+                    .expect("a section within the room should fit");
+            }
+        }
+        assert_eq!(claude_native_hidden_context_room(&"x".repeat(60_000)), 0);
     }
 
     #[test]
@@ -1212,6 +1109,68 @@ mod tests {
         assert!(std::fs::read_to_string(&native.events_file)
             .expect("hook event should be recorded")
             .contains("SessionStart"));
+    }
+
+    #[test]
+    fn native_session_start_preserves_session_identity_without_a_transcript() {
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "haiku");
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let hook = native
+            .events_file
+            .parent()
+            .unwrap()
+            .join("hook-handler.mjs");
+        let mut child = Command::new("node")
+            .arg(hook)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"SessionStart","source":"clear","session_id":"fresh-session-before-any-turn"}"#).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let event: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(native.events_file).unwrap()).unwrap();
+        assert_eq!(event["session_id"], "fresh-session-before-any-turn");
+    }
+
+    #[test]
+    fn native_session_start_writes_an_independent_identity_receipt() {
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "haiku");
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let hook = native
+            .events_file
+            .parent()
+            .unwrap()
+            .join("hook-handler.mjs");
+        let mut child = Command::new("node")
+            .arg(hook)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"SessionStart","source":"clear","session_id":"fresh-session-before-any-turn"}"#).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let event: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&native.events_file).unwrap()).unwrap();
+        assert_eq!(event["session_id"], "fresh-session-before-any-turn");
+        fs::write(&native.events_file, "").unwrap();
+        assert_eq!(
+            fs::read_to_string(format!(
+                "{}.session-start-id",
+                native.context_file.display()
+            ))
+            .unwrap(),
+            "fresh-session-before-any-turn"
+        );
     }
 
     #[test]

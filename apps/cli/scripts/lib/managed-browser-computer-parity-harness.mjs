@@ -1,3 +1,4 @@
+import { syntheticVaultEvidenceFailure } from "./managed-parity-credential-evidence.mjs"
 import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
@@ -96,8 +97,8 @@ export async function runManagedBrowserComputerParityHarness({
     }, { bound: false })
     validatePreflight(preflight, config)
 
-    await exerciseBackend({ backend: "selkies", run, expected: config.expected, fullAcceptance: true })
-    await exerciseBackend({ backend: "novnc", run, expected: config.expected, fullAcceptance: false })
+    await exerciseBackend({ runId: config.runId, backend: "selkies", run, expected: config.expected, fullAcceptance: true })
+    await exerciseBackend({ runId: config.runId, backend: "novnc", run, expected: config.expected, fullAcceptance: false })
     rollback = { status: "rollback_only", backend: "novnc" }
   } catch (error) {
     failure = error instanceof HarnessFailure
@@ -203,7 +204,7 @@ async function runIndependentInspection(inspector, config, timeoutMs) {
   }
 }
 
-async function exerciseBackend({ backend, run, expected, fullAcceptance }) {
+async function exerciseBackend({ backend, run, expected, fullAcceptance, runId }) {
   const prefix = backend
   const created = await run(`${prefix}.create`, {
     displayBackend: backend === "selkies" ? null : "novnc",
@@ -249,9 +250,8 @@ async function exerciseBackend({ backend, run, expected, fullAcceptance }) {
     const vault = await run(`${prefix}.vault`, { displayBackend: backend, fixture: "synthetic-vault-marker-v1" })
     validateBoundTarget(vault, expected, backend)
     requireTrueFields(vault, ["syntheticValueInserted", "valueObservedOnlyAtTarget"], `${prefix}.vault`, "synthetic_vault_check_failed")
-    if (!vault.leakScan || Object.values(vault.leakScan).some((count) => count !== 0)) {
-      fail("synthetic_vault_leak_detected", `${prefix}.vault`)
-    }
+    const vaultEvidenceFailure = syntheticVaultEvidenceFailure(vault, runId)
+    if (vaultEvidenceFailure) fail(vaultEvidenceFailure, `${prefix}.vault`)
 
     const git = await run(`${prefix}.git`, { displayBackend: backend })
     validateBoundTarget(git, expected, backend)

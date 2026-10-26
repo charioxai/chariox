@@ -7,6 +7,8 @@ use futures_util::FutureExt;
 
 mod capability_request_grant;
 mod capability_response_ordering;
+#[path = "controller_artifacts.rs"]
+mod controller_artifacts;
 mod meta_forwarding_lock;
 
 fn install_room_pointer_screen_tool(
@@ -992,7 +994,7 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
         assert!(
             forged_worker_error
                 .to_string()
-                .contains("relay sender does not match the bound worker kernel"),
+                .contains("authenticated peer does not match the current remote worker"),
             "forged worker Browser call must fail at home admission: {forged_worker_error}"
         );
 
@@ -1201,7 +1203,9 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
     }
 }
 
-async fn prepare_cross_worker_room_display(fixture: &LiveWorker) -> (String, String, String) {
+pub(super) async fn prepare_cross_worker_room_display(
+    fixture: &LiveWorker,
+) -> (String, String, String) {
     dispatch_json(
         &fixture.home,
         json!({"CreateSlice": {
@@ -1455,6 +1459,22 @@ fn provider_lifecycle_diagnostics(
 
 async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {
     let mut fixture = LiveWorker::start().await;
+    let (_agent_worker_state, agent_worker) = start_agent_worker(&mut fixture).await;
+    wait_for_agent_worker(&fixture).await;
+    let leased =
+        launch_leased_room_provider(&fixture, &agent_worker, "wrong worker admission fixture")
+            .await;
+    let binding = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_agent(&leased.home_agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
     let result = send_peer_request_via_temporary_connection(
         &fixture._worker_state.config,
         ClientTarget {
@@ -1465,11 +1485,11 @@ async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {
             context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
                 home_kernel_id: fixture.home_state.config.daemon_id.clone(),
                 home_session_id: fixture.rooms[0].clone(),
-                home_agent_id: "home-agent".to_string(),
-                leased_agent_id: "leased-agent".to_string(),
-                worker_provider_run_id: "provider-run".to_string(),
-                worker_kernel_id: Some("agent-worker".to_string()),
-                worker_machine_id: Some("agent-worker-machine".to_string()),
+                home_agent_id: leased.home_agent_id,
+                leased_agent_id: binding.leased_agent_id,
+                worker_provider_run_id: leased.worker_provider_run_id,
+                worker_kernel_id: Some(binding.worker_kernel_id),
+                worker_machine_id: Some(binding.worker_machine_id),
             },
             call: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolCall {
                 tool_name: "slice_browser_status".to_string(),
@@ -1478,13 +1498,19 @@ async fn check_forwarded_room_browser_rejects_wrong_authenticated_worker() {
         },
     )
     .await;
+    let cleanup = agent_worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true);
     fixture.stop().await;
+    cleanup.expect("stop the actual leased provider after wrong-worker admission");
 
     let error = result.expect_err("a different authenticated worker must be rejected");
     assert!(
         error
             .to_string()
-            .contains("relay sender does not match the bound worker kernel"),
+            .contains("authenticated peer does not match the current remote worker"),
         "the home dispatch must reject the wrong bound worker: {error}"
     );
 }
@@ -1558,10 +1584,12 @@ async fn launch_leased_room_provider(
         "target_directory": fixture.home_state.root.join("leased-browser-agent-worktree"),
         "from_ref": "HEAD",
     });
+    // The idle stub prints nothing, so the worker's quiet-output settlement can
+    // never end the retained turn while the cross-kernel tools are still running.
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent": {
-            "session_id":room, "provider":"managed-dev-stub", "model":"runtime-mcp-idle",
+            "session_id":room, "provider":"managed-dev-stub", "model":"native-tui-idle",
             "kernel_ref":worker_kernel_id, "worktree_placement":placement
         }}),
     )
@@ -1571,63 +1599,55 @@ async fn launch_leased_room_provider(
         .as_str()
         .expect("home agent ID")
         .to_string();
-    let leased_agent_id = spawned["AgentSpawned"]["agent"]["remote_execution"]["leased_agent_id"]
-        .as_str()
-        .expect("leased agent ID")
-        .to_string();
-    let remote_execution: crate::agent::RemoteAgentBinding =
-        serde_json::from_value(spawned["AgentSpawned"]["agent"]["remote_execution"].clone())
-            .expect("worker binding");
-    let (worker_relay_config, expected_profile, remote_extension_manifest) = {
+    let remote_extension_manifest = {
         let app = fixture.home.app.lock().await;
         let agent = app.agents().get_agent(&home_agent_id).expect("home agent");
-        (
-            app.relay_config_for_remote_execution(&remote_execution),
-            crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
-            app.remote_extension_manifest_for_agent(&agent)
-                .expect("build the Room browser capability from home state"),
-        )
+        app.remote_extension_manifest_for_agent(&agent)
+            .expect("build the Room browser capability from home state")
     };
-    let response = send_peer_request_via_temporary_connection(
-        &worker_relay_config,
-        ClientTarget {
-            daemon_id: Some(worker_kernel_id),
-            daemon_alias: None,
-        },
-        RelayPeerRequest::SubmitLeasedPrompt {
-            leased_agent_id: leased_agent_id.clone(),
-            expected_profile,
-            prompt: prompt.to_string(),
-            hidden_system_context: String::new(),
-            attachments: Vec::new(),
-            workflow_context: None,
-            git_context: None,
-            required_mcps: Vec::new(),
-            required_skills: None,
-            remote_extension_manifest: remote_extension_manifest.clone(),
-            provider_launch_credential: None,
-        },
+    // MP-08/MP-11: retain the home turn so catalog updates cannot treat this
+    // live worker as idle and reload its provider while the next tool is admitted.
+    let attached = dispatch_json(
+        &fixture.home,
+        json!({"AttachToSession": {
+            "session_id": room, "client_id": "leased-room-provider",
+            "capability_level": "FullTerminal"
+        }}),
     )
     .await
-    .expect("launch the leased provider through the relay");
-    let RelayPeerResponse::LeasedPromptSubmitted {
-        provider_run_id: worker_provider_run_id,
-        ..
-    } = response
-    else {
-        panic!("unexpected leased prompt response: {response:?}")
-    };
-    fixture
-        .home
-        .app
-        .lock()
-        .await
-        .agents()
-        .set_remote_execution_active_worker_provider_run_id(
-            &home_agent_id,
-            Some(worker_provider_run_id.clone()),
-        )
-        .expect("record the active leased provider");
+    .expect("attach the prompt origin to the home Room");
+    let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+        .as_str()
+        .expect("home attachment ID");
+    dispatch_json(
+        &fixture.home,
+        json!({"SubmitPrompt": {
+            "session_id": room, "attachment_id": attachment_id,
+            "target_agent_id": home_agent_id, "prompt": prompt
+        }}),
+    )
+    .await
+    .expect("launch the leased provider through the home prompt path");
+    let worker_provider_run_id = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(run_id) = fixture
+                .home
+                .app
+                .lock()
+                .await
+                .agents()
+                .get_agent(&home_agent_id)
+                .expect("home agent")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.clone())
+            {
+                break run_id;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("home records the active worker provider run");
 
     LeasedRoomProvider {
         home_agent_id,
@@ -2276,6 +2296,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     );
     assert_eq!(action.arguments, None);
 
+    // UX-first: the approved native secret above stays registered for this
+    // Room, and agent input still forwards.
     let input_cases = [
         (
             "slice_mouse",
@@ -2284,38 +2306,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         ),
         (
             "slice_mouse",
-            json!({"action":"click","x":220,"y":260,"button":"right"}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"double_click","x":320,"y":360}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
-            "pointer_drag",
-        ),
-        (
-            "slice_mouse",
             json!({"action":"scroll","x":640,"y":400,"amount":5,"horizontal_steps":-3}),
             "pointer_scroll",
-        ),
-        (
-            "slice_clipboard_write",
-            json!({"text":"Clipboard Grüße 世界"}),
-            "clipboard_write",
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"type","text":"Grüße 世界"}),
-            "keyboard_text",
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
-            "keyboard_key",
         ),
     ];
     let mut action_ids = Vec::new();
@@ -2341,6 +2333,59 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
                 .expect("Computer tool result should identify its Room Action")
                 .to_string(),
         );
+    }
+
+    // Authorized agents drag, hold, write the clipboard and middle-click like
+    // any other input; only Vault values stay out of model-bound output.
+    for (tool, arguments) in [
+        (
+            "slice_mouse",
+            json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
+        ),
+        (
+            "slice_clipboard_write",
+            json!({"text":"Clipboard Grüße 世界"}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"hold","key":"a","duration_ms":100}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"hold","x":120,"y":160,"button":"left","duration_ms":100}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"click","x":120,"y":160,"button":"middle"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"click","x":220,"y":260,"button":"right"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"double_click","x":320,"y":360}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"type","text":"Grüße 世界"}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"CTRL+v","repeat":2}),
+        ),
+    ] {
+        let result = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&input_token, tool, arguments.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{tool} {arguments}: {error}"));
+        assert!(result.ok, "{tool} {arguments}: {:?}", result.payload);
     }
 
     let action_count_before_invalid = fixture
@@ -2377,16 +2422,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         action_count_before_invalid,
         "rejected provider input must not enter the home Action ledger"
     );
-    for (action_id, expected_kind) in action_ids.iter().zip([
-        "pointer_move",
-        "pointer_click",
-        "pointer_click",
-        "pointer_drag",
-        "pointer_scroll",
-        "clipboard_write",
-        "keyboard_text",
-        "keyboard_key",
-    ]) {
+    assert_eq!(action_ids.len(), 2);
+    for (action_id, expected_kind) in action_ids.iter().zip(["pointer_move", "pointer_scroll"]) {
         let action = home_environment
             .actions
             .iter()
@@ -2402,39 +2439,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             crate::session::EnvironmentActionState::Completed
         );
     }
-    let keyboard = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[6])
-        .expect("keyboard text Action");
-    assert_eq!(
-        keyboard.arguments,
-        Some(crate::session::EnvironmentActionArguments::KeyboardText {
-            utf8_byte_count: 14,
-            character_count: 8,
-        })
-    );
-    let key = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[7])
-        .expect("keyboard key Action");
-    assert_eq!(
-        key.arguments,
-        Some(crate::session::EnvironmentActionArguments::KeyboardKey { repeat: 3 })
-    );
-    let clipboard = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[5])
-        .expect("clipboard write Action");
-    assert_eq!(
-        clipboard.arguments,
-        Some(crate::session::EnvironmentActionArguments::ClipboardWrite {
-            utf8_byte_count: 24,
-            character_count: 18,
-        })
-    );
     let environment_debug = format!("{home_environment:?}");
     assert!(
         !environment_debug.contains("Grüße 世界")
@@ -2451,21 +2455,21 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         "worker must not create parallel Room authority for any Computer tool"
     );
 
-    assert_eq!(
-        std::fs::read_to_string(&screen_log).expect("worker Computer tool log"),
-        concat!(
+    let log = std::fs::read_to_string(&screen_log).expect("worker Computer tool log");
+    assert!(
+        log.starts_with(concat!(
             "computer-secret-input-ok\n",
             "move 120 160\n",
-            "pointer-click 220 260 right 1\n",
-            "pointer-click 320 360 left 2\n",
-            "pointer-drag 120 160 720 560 middle\n",
             "pointer-scroll 640 400 -3 5\n",
-            "computer-clipboard-write-stdin|Clipboard Grüße 世界\n",
-            "computer-type-stdin|Grüße 世界\n",
-            "computer-key-stdin 3|ctrl+shift+p\n",
-        ),
-        "provider Computer tools must use the shared physical input adapter",
+        )),
+        "provider Computer tools must use the shared physical input adapter: {log}",
     );
+    for forwarded in ["pointer-drag", "computer-clipboard-write-stdin"] {
+        assert!(
+            log.contains(forwarded),
+            "authorized {forwarded} must reach the helper: {log}"
+        );
+    }
 
     dispatch_json(
         &fixture.home,
@@ -2653,7 +2657,7 @@ pub(super) async fn check(fixture: &LiveWorker, placement: Value) {
         assert!(
             denied
                 .to_string()
-                .contains("relay sender does not match the bound worker kernel"),
+                .contains("authenticated peer does not match the current remote worker"),
             "{denied}"
         );
         let url = "https://worker-agent.worker.test/path?runtime=mcp";

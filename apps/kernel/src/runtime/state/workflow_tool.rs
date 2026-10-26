@@ -642,6 +642,7 @@ fn call_agent_app_http_action(
 ) -> Result<AgentAppHttpActionResponse, String> {
     validate_agent_app_action_url(url, options.allow_external)?;
     let agent = ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout(std::time::Duration::from_millis(options.timeout_ms))
         .build();
     let input_json = serde_json::to_string(input).map_err(|error| error.to_string())?;
@@ -671,10 +672,13 @@ fn call_agent_app_http_action(
         Err(error) => return Err(error.to_string()),
     };
     let status = response.status();
+    if (300..400).contains(&status) {
+        return Err("agent app action redirects are forbidden".to_string());
+    }
     let content_type = response.content_type().to_string();
     let text = read_limited_response_body(response, options.max_response_bytes)?;
     let body = if content_type.contains("application/json") {
-        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::String(text))
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
     } else {
         serde_json::Value::String(text)
     };

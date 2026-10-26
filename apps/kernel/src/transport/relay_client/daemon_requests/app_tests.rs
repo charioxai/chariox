@@ -25,6 +25,8 @@ async fn request_decode_refusal_uses_existing_relay_message_field() {
             Some(caller("alice")),
             encrypted,
             &cache,
+            &Default::default(),
+            None,
         )
         .await;
         assert!(outcome.encrypted_response.is_none());
@@ -89,7 +91,7 @@ async fn dispatch(
     let result = dispatch_relay_client_request(
         router,
         &AtomicU64::new(1),
-        owner.map(caller),
+        KernelCaller::for_relay_request(owner.map(caller)),
         request,
         Some(command_id.into()),
         cache,
@@ -386,6 +388,7 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         failed(AppRequestErrorCode::InvalidRequest)
     );
     let configure = LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
+        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         installation_id: "installed".into(),
         automation_id: "reminders".into(),
         expected_revision: 0,
@@ -1037,6 +1040,343 @@ fn full_receipt_journal_uninstalls_and_fences_replayed_generation() {
                             .generation,
                         removed.generation
                     );
+                });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let cache = CommandResultCache::default();
+    let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        command: crate::local::KernelBrowserCommand::Open {
+            url: "about:blank".into(),
+        },
+    });
+    let command = KernelCommand::from_local_request_with_caller(
+        "browser-retry",
+        KernelCommandSource::RelayClient,
+        KernelCaller::from_relay_identity(caller("alice")),
+        None,
+        None,
+        &request,
+    );
+    let revision = router
+        .runtime_state()
+        .kernel_browser_receipt_revision(&command, &request)
+        .unwrap();
+    let fingerprint = CommandFingerprint::from_command_and_request(&command, &request)
+        .with_browser_protection_revision(revision);
+    assert!(matches!(
+        cache.reserve("browser-retry", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    let response = serde_json::json!({"KernelBrowser":{"result":{"tab_id":"alice-private-tab"}}});
+    cache
+        .complete(
+            "browser-retry".into(),
+            fingerprint,
+            &KernelOutgoingFrame::Response {
+                request_id: "browser-retry".into(),
+                response: Box::new(Some(response.clone())),
+                error: None,
+            },
+        )
+        .await;
+    let sequence = AtomicU64::new(1);
+    let replay = |identity| {
+        dispatch_relay_client_request(
+            &router,
+            &sequence,
+            KernelCaller::for_relay_request(identity),
+            request.clone(),
+            Some("browser-retry".into()),
+            &cache,
+        )
+    };
+    // Same admitted caller gets the original receipt, so an open/input is not repeated.
+    match replay(Some(caller("alice"))).await {
+        RelayDispatchOutcome::Response(value) => assert_eq!(value, response),
+        _ => panic!("same caller lost its browser retry receipt"),
+    }
+    match replay(Some(caller("bob"))).await {
+        RelayDispatchOutcome::RelayError(error) => {
+            assert_eq!(error.code, "duplicate_command_conflict")
+        }
+        _ => panic!("another user received Alice's browser receipt"),
+    }
+    for identity in [
+        None,
+        Some(RelayCallerIdentity {
+            user_id: None,
+            ..caller("alice")
+        }),
+        Some(RelayCallerIdentity {
+            subject_kind: chariox_relay::auth::RelaySubjectKind::Service,
+            ..caller("alice")
+        }),
+    ] {
+        match replay(identity).await {
+            RelayDispatchOutcome::RelayError(error) => assert_eq!(error.code, "unauthorized"),
+            _ => panic!("browser cache bypassed terminal admission"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
+    for pixels in [false, true] {
+        let root = TestRoot::new();
+        let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+        let router =
+            CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 2);
+        let state = router.runtime_state();
+        state.install_kernel_browser_fixture("alice", &root.0);
+        let cache = CommandResultCache::default();
+        let sequence = AtomicU64::new(1);
+        let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: if pixels {
+                crate::local::KernelBrowserCommand::Screenshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            } else {
+                crate::local::KernelBrowserCommand::Snapshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            },
+        });
+        assert!(matches!(
+            dispatch_relay_client_request(
+                &router,
+                &sequence,
+                KernelCaller::from_relay_identity(caller("alice")),
+                request.clone(),
+                Some("MD5-receipt".into()),
+                &cache
+            )
+            .await,
+            RelayDispatchOutcome::Response(_)
+        ));
+        state.register_kernel_browser_fixture_value("alice", "MD5-sensitive-fixture");
+        assert!(
+            matches!(
+                dispatch_relay_client_request(
+                    &router,
+                    &sequence,
+                    KernelCaller::from_relay_identity(caller("alice")),
+                    request.clone(),
+                    Some("MD5-receipt".into()),
+                    &cache
+                )
+                .await,
+                RelayDispatchOutcome::RelayError(_)
+            ),
+            "MD-5: changed Vault protection must reject the old text/pixel receipt"
+        );
+        state.fence_kernel_browser_fixture("alice");
+        assert!(
+            matches!(
+                dispatch_relay_client_request(
+                    &router,
+                    &sequence,
+                    KernelCaller::from_relay_identity(caller("alice")),
+                    request,
+                    Some("MD5-receipt".into()),
+                    &cache
+                )
+                .await,
+                RelayDispatchOutcome::RelayError(_)
+            ),
+            "MD-5: a fenced registry cannot replay an observation"
+        );
+        state.shutdown_cleanup().await.unwrap();
+    }
+}
+
+#[test]
+fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let root = TestRoot::new();
+                    let mut config = root.config();
+                    config.relay_url = Some("ws://127.0.0.1:1".into());
+                    config.relay_token = Some("synthetic-operator-transport".into());
+                    config.cloud_relay = None;
+                    let app = crate::DaemonApp::bootstrap(config.clone()).unwrap();
+                    let router = CommandRouter::with_interactive_capacity(
+                        Arc::new(tokio::sync::Mutex::new(app)),
+                        8,
+                    );
+                    let receiver = relay_crypto::public_key_from_private_key_base64(
+                        &router.relay_private_key(),
+                    )
+                    .unwrap();
+                    let sender = relay_crypto::generate_private_key_base64();
+                    let sender_public =
+                        relay_crypto::public_key_from_private_key_base64(&sender).unwrap();
+                    let pin =
+                        crate::runtime::terminal_pairings::public_key_thumbprint(&sender_public);
+                    let cache = Arc::new(CommandResultCache::default());
+                    let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+                        crate::local::GetWaitingRoomPublicSnapshotRequest,
+                    );
+                    let encrypted = relay_crypto::encrypt_payload_for_peer(
+                        &sender,
+                        &receiver,
+                        &serde_json::to_vec(&request).unwrap(),
+                    )
+                    .unwrap();
+                    let refused = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(1),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
+                    assert_eq!(refused.error.unwrap().code, "authorization_denied");
+                    let create = LocalDaemonRequest::CreateTerminalPairingLink(
+                        crate::local::CreateTerminalPairingLinkRequest {
+                            terminal_type: Some(crate::local::TerminalType::Cli),
+                            alias: None,
+                            expires_in_ms: Some(60_000),
+                        },
+                    );
+                    let local = KernelCommand::from_local_request("create", None, None, &create);
+                    let created = router.dispatch(local, create).await.unwrap();
+                    let crate::local::LocalDaemonResponse::TerminalPairingLinkCreated { pairing } =
+                        created
+                    else {
+                        panic!("expected pairing link")
+                    };
+                    let join = LocalDaemonRequest::JoinTerminalPairingLink(
+                        crate::local::JoinTerminalPairingLinkRequest {
+                            pairing_link: pairing.pairing_link.clone(),
+                            terminal_id: Some(pairing.terminal_id.clone()),
+                            terminal_type: Some(crate::local::TerminalType::Cli),
+                            alias: None,
+                            public_key_thumbprint: Some(pin.clone()),
+                        },
+                    );
+                    let join_bytes = serde_json::to_vec(
+                        &serde_json::json!({"command_id":"same-join-id","request":join}),
+                    )
+                    .unwrap();
+                    let encrypted =
+                        relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
+                            .unwrap();
+                    let joined = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(2),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
+                    assert!(joined.error.is_none(), "Cloud-free join must be admitted");
+                    let reply = relay_crypto::decrypt_payload_for_private_key(
+                        &sender,
+                        &joined.encrypted_response.unwrap(),
+                    )
+                    .unwrap();
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&reply.plaintext).unwrap();
+                    assert_eq!(value["TerminalPairingLinkJoined"]["kernel_pairing"], true);
+                    assert!(value["TerminalPairingLinkJoined"]
+                        .get("relay_token")
+                        .is_none());
+                    let encrypted = relay_crypto::encrypt_payload_for_peer(
+                        &sender,
+                        &receiver,
+                        &serde_json::to_vec(&request).unwrap(),
+                    )
+                    .unwrap();
+                    let allowed = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(3),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
+                    assert!(allowed.error.is_none());
+                    assert!(allowed.encrypted_response.is_some());
+                    let foreign = relay_crypto::generate_private_key_base64();
+                    let encrypted =
+                        relay_crypto::encrypt_payload_for_peer(&foreign, &receiver, &join_bytes)
+                            .unwrap();
+                    let refused = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(4),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
+                    assert_eq!(refused.error.unwrap().code, "unauthorized");
+                    crate::runtime::self_host_terminal_grants::revoke(
+                        &config,
+                        &pairing.terminal_id,
+                    )
+                    .unwrap();
+                    assert!(router.admit_self_host_terminal(&sender_public).is_err());
+                    let replay =
+                        relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
+                            .unwrap();
+                    let replayed = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(99),
+                        None,
+                        replay,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
+                    assert!(
+                        replayed.error.is_some(),
+                        "cached pairing approval must recheck current revocation"
+                    );
+
+                    let encrypted = relay_crypto::encrypt_payload_for_peer(
+                        &sender,
+                        &receiver,
+                        &serde_json::to_vec(&request).unwrap(),
+                    )
+                    .unwrap();
+                    let refused = handle_daemon_request(
+                        &router,
+                        &AtomicU64::new(5),
+                        None,
+                        encrypted,
+                        &cache,
+                        &Default::default(),
+                        None,
+                    )
+                    .await;
+                    assert_eq!(refused.error.unwrap().code, "authorization_denied");
                 });
         })
         .unwrap()

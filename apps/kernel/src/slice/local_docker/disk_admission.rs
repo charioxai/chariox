@@ -14,6 +14,7 @@ use super::{broker::docker_command, local_docker_container_name, LocalDockerSlic
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
 const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
+#[cfg(any(test, windows))]
 const WINDOWS_DISK_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerDiskAdmission";
 static PROCESS_DISK_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -444,10 +445,12 @@ fn acquire_disk_admission_lock() -> Result<DiskAdmissionLock, DaemonError> {
     }
 }
 
+#[cfg(any(test, windows))]
 fn windows_disk_admission_lock_name() -> &'static str {
     WINDOWS_DISK_ADMISSION_LOCK_NAME
 }
 
+#[cfg(any(test, windows))]
 fn windows_disk_admission_lock_name_wide() -> Vec<u16> {
     windows_disk_admission_lock_name()
         .encode_utf16()

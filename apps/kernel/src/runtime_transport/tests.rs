@@ -1,11 +1,15 @@
 use super::*;
 
+#[cfg(unix)]
+mod kernel_browser_terminals;
+mod task_subscriptions;
+
 use std::path::{Path, PathBuf};
 
 use crate::local::{
     CreateSliceRequest, LocalDaemonRequest, ReleaseRoomEnvironmentInputRequest,
-    RequestRoomEnvironmentInputTakeoverRequest, RestoreSliceBackupRequest, SliceCreateBase,
-    SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope,
+    RequestRoomEnvironmentInputTakeoverRequest, SliceCreateBase, SliceStateSaveMode,
+    SliceStateSaveRequest, SliceStateSaveScope,
 };
 use crate::session::{
     agent_environment_actor_id, human_environment_actor_id, ActionAdmission, CanonicalViewport,
@@ -231,6 +235,97 @@ fn process_admission_scales_with_cpu_inside_bounded_limits() {
     );
 }
 
+#[test]
+fn saturated_connection_leaves_process_capacity_for_other_connections() {
+    // A host with four or fewer CPUs runs with the minimum process limit.
+    let admission = InboundRequestAdmission::new(MIN_PROCESS_INBOUND_REQUEST_LIMIT);
+    let saturated = Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
+    let held = std::iter::from_fn(|| {
+        admission
+            .try_acquire(&saturated, &KernelCommandPriority::Normal)
+            .ok()
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(
+        held.len(),
+        CONNECTION_INBOUND_REQUEST_LIMIT,
+        "only the connection limit should stop one client's non-interactive requests"
+    );
+
+    let other = Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
+    let normal = admission
+        .try_acquire(&other, &KernelCommandPriority::Normal)
+        .expect("another connection's health request should still be admitted");
+    let interactive = admission
+        .try_acquire(&other, &KernelCommandPriority::Interactive)
+        .expect("another connection's interactive request should still be admitted");
+    drop((held, normal, interactive));
+}
+
+#[tokio::test]
+async fn connection_closing_for_backpressure_admits_no_more_requests() {
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests())
+                .expect("daemon bootstrap should succeed"),
+        )),
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+    let (priority_tx, mut priority_rx) = mpsc::channel(8);
+    let (event_tx, _event_rx) = mpsc::channel(8);
+    let outgoing = KernelOutgoingSender::new(priority_tx, event_tx);
+    let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let payload = serde_json::to_vec(&KernelIncomingFrame::Request {
+        request_id: "pipelined-after-backpressure-close".to_string(),
+        command_id: None,
+        causation_id: None,
+        correlation_id: None,
+        request: LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+    })
+    .expect("transport request should encode");
+
+    handle_incoming_payload(
+        IncomingConnection {
+            runtime: &runtime,
+            router: &router,
+            connection_state: &Arc::new(Mutex::new(ConnectionState {
+                local_terminal_id: "amint-closing-connection".into(),
+                terminal_lifetime: Default::default(),
+                browser_terminal_contexts: Default::default(),
+                subscription: None,
+                watch_task: None,
+            })),
+            inbound_request_admission: &InboundRequestAdmission::new(
+                MIN_PROCESS_INBOUND_REQUEST_LIMIT,
+            ),
+            connection_inbound_request_permits: &Arc::new(Semaphore::new(
+                CONNECTION_INBOUND_REQUEST_LIMIT,
+            )),
+            outgoing_tx: &outgoing,
+            close_tx: &close_tx,
+            close_requested: &Arc::new(AtomicBool::new(true)),
+            connection_class: KernelConnectionClass::Unauthenticated,
+            peer: None,
+            bound_grant: &Arc::default(),
+        },
+        &payload,
+    )
+    .await;
+
+    let transport = runtime.transport_health.snapshot(1, 1, 1);
+    assert_eq!(
+        transport.incoming_requests, 0,
+        "a connection already closing for backpressure must not admit pipelined requests"
+    );
+    assert!(
+        timeout(Duration::from_millis(500), priority_rx.recv())
+            .await
+            .is_err(),
+        "a request from a closing connection must not be dispatched"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn kernel_local_auth_file_is_opened_without_following_symlinks() {
@@ -374,18 +469,33 @@ fn connection_admission_prevents_one_client_from_consuming_process_capacity() {
 }
 
 #[test]
+fn panes_stream_kernel_event_writer_sends_first_frame_without_a_hold() {
+    // MP-08 / MP-10: the first ready record must not wait for the burst window.
+    let mut writer = EventWriteCoalescer::new(35);
+    let now = TokioInstant::now();
+    assert_eq!(
+        writer.push_event("first assistant record", now),
+        Some("first assistant record")
+    );
+    assert_eq!(writer.ready_at(), None);
+}
+
+#[test]
 fn kernel_event_writer_coalesces_event_lane_with_stable_deadline() {
     let now = TokioInstant::now();
     let mut coalescer = EventWriteCoalescer::new(33);
 
-    assert!(coalescer.push_event("event-1", now).is_none());
-    assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
+    assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
+    assert_eq!(coalescer.ready_at(), None);
     assert!(coalescer
         .push_event("event-2", now + Duration::from_millis(10))
         .is_none());
     assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
 
-    assert_eq!(coalescer.drain_ready(), vec!["event-1", "event-2"]);
+    assert_eq!(
+        coalescer.drain_ready(now + Duration::from_millis(33)),
+        vec!["event-2"]
+    );
     assert_eq!(coalescer.ready_at(), None);
 }
 
@@ -396,7 +506,7 @@ fn kernel_event_writer_can_disable_event_coalescing_for_tests() {
 
     assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
     assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.drain_ready().is_empty());
+    assert!(coalescer.drain_ready(now).is_empty());
 }
 
 #[tokio::test]
@@ -1218,8 +1328,16 @@ async fn slice_pending_backup_restore_interruption_rolls_back_on_restart() {
             include_str!("../../slice-linux-docker/slice-command-guard.py"),
         ),
         (
+            "owned_process_signals.py",
+            include_str!("../../slice-linux-docker/owned_process_signals.py"),
+        ),
+        (
             "home-archive-policy.json",
             include_str!("../../slice-linux-docker/home-archive-policy.json"),
+        ),
+        (
+            "owned_process_signals.py",
+            include_str!("../../slice-linux-docker/owned_process_signals.py"),
         ),
     ] {
         std::fs::write(root.path().join(name), contents)
@@ -1263,6 +1381,8 @@ set -eu
 root=$CHARIOX_RESTORE_INTERRUPTION_ROOT
 printf '%s %s\n' "$1" "$CHARIOX_SLICE_DOCKER_IMAGE" >> "$root/provisioner.log"
 if [ "$1" = restore-state ] && [ ! -f "$root/interruption-triggered" ]; then
+  case "$PPID" in ''|*[!0-9]*) exit 1 ;; esac
+  [ "$PPID" -gt 1 ] || exit 1
   : > "$root/partial-target-runtime"
   : > "$root/interruption-triggered"
   kill -9 "$PPID"
@@ -2087,6 +2207,34 @@ async fn dispatch_transport_test_request(
     request: LocalDaemonRequest,
     receive_response: bool,
 ) -> Option<KernelOutgoingFrame> {
+    dispatch_transport_test_request_on_connection(
+        runtime,
+        router,
+        request_id,
+        command_id,
+        request,
+        receive_response,
+        Arc::new(Mutex::new(ConnectionState {
+            local_terminal_id: "MD-3-test-connection".into(),
+            terminal_lifetime: Default::default(),
+            browser_terminal_contexts: Default::default(),
+            subscription: None,
+            watch_task: None,
+        })),
+    )
+    .await
+}
+
+#[cfg(unix)]
+async fn dispatch_transport_test_request_on_connection(
+    runtime: Arc<KernelTransportRuntime>,
+    router: Arc<CommandRouter>,
+    request_id: &str,
+    command_id: &str,
+    request: LocalDaemonRequest,
+    receive_response: bool,
+    connection_state: Arc<Mutex<ConnectionState>>,
+) -> Option<KernelOutgoingFrame> {
     let (priority_tx, mut priority_rx) = mpsc::channel(8);
     let (event_tx, _event_rx) = mpsc::channel(8);
     let outgoing = KernelOutgoingSender::new(priority_tx, event_tx);
@@ -2094,6 +2242,11 @@ async fn dispatch_transport_test_request(
         priority_rx.close();
     }
     let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let connection_class = if matches!(&request, LocalDaemonRequest::KernelBrowser(_)) {
+        KernelConnectionClass::Terminal
+    } else {
+        KernelConnectionClass::Unauthenticated
+    };
     let payload = serde_json::to_vec(&KernelIncomingFrame::Request {
         request_id: request_id.to_string(),
         command_id: Some(command_id.to_string()),
@@ -2106,10 +2259,7 @@ async fn dispatch_transport_test_request(
         IncomingConnection {
             runtime: &runtime,
             router: &router,
-            connection_state: &Arc::new(Mutex::new(ConnectionState {
-                subscription: None,
-                watch_task: None,
-            })),
+            connection_state: &connection_state,
             inbound_request_admission: &InboundRequestAdmission::new(
                 process_inbound_request_limit(),
             ),
@@ -2119,7 +2269,7 @@ async fn dispatch_transport_test_request(
             outgoing_tx: &outgoing,
             close_tx: &close_tx,
             close_requested: &Arc::new(AtomicBool::new(false)),
-            connection_class: KernelConnectionClass::Unauthenticated,
+            connection_class,
             peer: None,
             bound_grant: &Arc::default(),
         },
@@ -2455,3 +2605,175 @@ mod wake_pressure;
 mod kernel_access_grants;
 
 mod ka_validation;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn md5_local_cached_browser_observations_obey_current_vault_policy() {
+    for pixels in [false, true] {
+        let root = crate::test_support::TestWorktree::new("MD5-local-cache");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let state = router.runtime_state();
+        let caller = router
+            .local_terminal_caller(
+                crate::runtime::command::KernelCommandSource::LocalCli,
+                "MD-3-test-connection",
+            )
+            .await;
+        let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: if pixels {
+                crate::local::KernelBrowserCommand::Screenshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            } else {
+                crate::local::KernelBrowserCommand::Snapshot {
+                    tab_id: "host-tab-fixture".into(),
+                    generation: 1,
+                }
+            },
+        });
+        let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+            "fixture",
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        let (user, _) = state.kernel_browser_terminal_context(&command).unwrap();
+        state.install_kernel_browser_fixture(&user, root.path());
+        let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+        let first = dispatch_transport_test_request(
+            runtime.clone(),
+            router.clone(),
+            "first",
+            "MD5-receipt",
+            request.clone(),
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            first,
+            KernelOutgoingFrame::Response { error: None, .. }
+        ));
+        state.register_kernel_browser_fixture_value(&user, "MD5-sensitive-fixture");
+        let replay = dispatch_transport_test_request(
+            runtime.clone(),
+            router.clone(),
+            "replay",
+            "MD5-receipt",
+            request.clone(),
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(replay, KernelOutgoingFrame::Response { response, error: Some(_), .. } if response.is_none()),
+            "MD-5: local replay bypassed changed Vault protection"
+        );
+        state.fence_kernel_browser_fixture(&user);
+        let replay = dispatch_transport_test_request(
+            runtime,
+            router,
+            "fenced",
+            "MD5-receipt",
+            request,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(replay, KernelOutgoingFrame::Response { response, error: Some(_), .. } if response.is_none())
+        );
+        state.shutdown_cleanup().await.unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn md3_transport_disconnect_fences_input_queued_behind_vault_barrier() {
+    let root = crate::test_support::TestWorktree::new("MD3-queued-socket");
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        2,
+    ));
+    let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+        command: crate::local::KernelBrowserCommand::Input {
+            tab_id: "host-tab-fixture".into(),
+            generation: 1,
+            input: crate::local::KernelBrowserInput::Text {
+                text: "fixture".into(),
+            },
+        },
+    });
+    let caller = router
+        .local_terminal_caller(
+            crate::runtime::command::KernelCommandSource::LocalCli,
+            "MD-3-test-connection",
+        )
+        .await;
+    let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+        "fixture",
+        crate::runtime::command::KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    let state = router.runtime_state();
+    let (user, _) = state.kernel_browser_terminal_context(&command).unwrap();
+    state.install_kernel_browser_fixture(&user, root.path());
+    let barrier = state
+        .kernel_browser_fixture_barrier(&user)
+        .write_owned()
+        .await;
+    let connection = Arc::new(Mutex::new(ConnectionState {
+        local_terminal_id: "MD-3-test-connection".into(),
+        terminal_lifetime: Default::default(),
+        browser_terminal_contexts: Default::default(),
+        subscription: None,
+        watch_task: None,
+    }));
+    let queued_router = router.clone();
+    let queued_connection = connection.clone();
+    let pending = tokio::spawn(async move {
+        dispatch_transport_test_request_on_connection(
+            Arc::new(KernelTransportRuntime::default()),
+            queued_router,
+            "queued",
+            "queued",
+            request,
+            true,
+            queued_connection,
+        )
+        .await
+    });
+    timeout(Duration::from_secs(2), async {
+        while connection.lock().await.browser_terminal_contexts.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    disconnect_browser_terminal(&router, &connection).await;
+    drop(barrier);
+    let response = pending.await.unwrap().unwrap();
+    assert!(
+        matches!(response, KernelOutgoingFrame::Response { response, error: Some(_), .. } if response.is_none()),
+        "MD-3: detached dispatch sent input after socket retirement"
+    );
+    assert!(!root.path().join("input").exists());
+    assert!(state.kernel_browser_fixture_actors(&user)["actors"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    state.shutdown_cleanup().await.unwrap();
+}
+
+mod provider_account_portability;

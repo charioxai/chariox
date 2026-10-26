@@ -43,6 +43,7 @@ impl KernelRuntimeOwnedState {
         expected_provider_run_id: Option<&str>,
         allow_queue: bool,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         let session_id = prepared.session_id.clone();
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let source_attachment =
@@ -62,11 +63,6 @@ impl KernelRuntimeOwnedState {
         if target_agent.remote_execution().is_some() {
             return Ok(None);
         }
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
-            &target_agent,
-            "submit prompt",
-        )?;
         let session = self.session_store.get_session(&session_id)?;
         let queued_while_active = self
             .prompt_state_owner
@@ -91,6 +87,15 @@ impl KernelRuntimeOwnedState {
                 .get_run_for_agent(&session_id, &target_agent_id)
                 .map(|run| run.id().to_string()),
         };
+        let selected_run = provider_run_id
+            .as_deref()
+            .map(|id| self.ensure_provider_run_in_session(&session_id, id))
+            .transpose()?;
+        self.require_agent_account_authenticated(
+            &target_agent,
+            selected_run.as_ref(),
+            "submit prompt",
+        )?;
         if !queued_while_active && provider_run_id.is_none() {
             return Ok(None);
         }
@@ -111,22 +116,42 @@ impl KernelRuntimeOwnedState {
         let force_queue = prepared.force_queue || provider_run_is_starting;
         let will_queue = force_queue || queued_while_active;
         let prompt = if let Some(source_attachment) = source_attachment.as_ref() {
-            prepared.prompt.clone().with_source_attribution(
-                source_attachment.client_id(),
-                source_attachment.owner_user_id(),
-            )
+            prepared
+                .prompt
+                .clone()
+                .with_source_attachment(source_attachment)
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue {
+        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
         };
+        let sudo_deferred = self.sudo_work_defers(&session, &target_agent_id, prompt.id());
         let _admission = self.begin_managed_activity_admission()?;
         let outcome = self
             .prompt_state_owner
             .submit_prepared_prompt_with_queue_policy(&session, prompt, force_queue, allow_queue)?;
+        self.note_sudo_deferred_prompt(sudo_deferred, &outcome, &session_id, &target_agent_id);
+        if let crate::session::PromptSubmissionOutcome::Queued { prompt } = &outcome {
+            let current_state = provider_run_id
+                .as_deref()
+                .and_then(|id| self.provider_store.get_run(id).ok())
+                .map(|run| format!("{:?}", run.state()));
+            crate::logging::debug_with_fields(
+                "daemon.prompt_queue",
+                "local prompt queued admission trace",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": target_agent_id,
+                    "prompt_id": prompt.id(),
+                    "provider_run_id": provider_run_id,
+                    "starting_observed": provider_run_is_starting,
+                    "current_provider_state": current_state,
+                }),
+            );
+        }
         self.agent_store
             .clear_local_prompt_error(&target_agent_id)?;
         let outcome_agent_id = match &outcome {
@@ -135,9 +160,15 @@ impl KernelRuntimeOwnedState {
                 prompt.target_agent_id().to_string()
             }
         };
+        // One prompt-state commit carries the started prompt and its start time.
+        let started_at_ms = crate::session::unix_epoch_ms();
+        if let crate::session::PromptSubmissionOutcome::Started { .. } = &outcome {
+            self.note_started_prompt_sent_at(&session_id, &outcome_agent_id, started_at_ms)?;
+        }
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, &outcome_agent_id);
+        timing.mark("validate_and_mutate");
         self.mirror_prompt_owner_agent_state(
             &session_id,
             &outcome_agent_id,
@@ -145,36 +176,24 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
         )?;
 
+        timing.mark("durable_commit");
         let prompt_sent_at_ms =
             if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
-                let prompt_sent_at_ms = self.record_started_user_prompt(
+                self.append_started_user_prompt_history(
                     &session_id,
                     prompt.source_attachment_id(),
                     prompt,
+                    started_at_ms,
                 )?;
-                let provider_run_id =
-                    provider_run_id
-                        .as_deref()
-                        .ok_or_else(|| DaemonError::NoActiveProviderRun {
-                            session_id: session_id.clone(),
-                        })?;
-                if let Ok(provider_run) = self.provider_store.get_run(provider_run_id) {
-                    self.capture_git_turn_snapshot_for_started_prompt(
-                        &session,
-                        &target_agent_id,
-                        &provider_run,
-                        prompt,
-                        Some(prompt_sent_at_ms),
-                    );
-                }
-                self.persist_prompt_session_state(
-                    &self.session_store.get_session(&session_id)?,
-                    &outcome_agent_id,
-                )?;
-                Some(prompt_sent_at_ms)
+                timing.mark("history");
+                // MP-08 / MP-10: admission persists and echoes the prompt;
+                // the dispatch owner captures Git on its blocking lane before
+                // provider input. Repository I/O must not delay other clients.
+                Some(started_at_ms)
             } else {
                 None
             };
+        timing.mark("git_snapshot");
         let mut dispatch = None;
         match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt } => {
@@ -234,6 +253,8 @@ impl KernelRuntimeOwnedState {
         } else {
             self.session_snapshot_without_projection_update(&session_id)?
         };
+        timing.mark("projection");
+        timing.finish("prompt_admission", &outcome_agent_id);
         Ok(Some(crate::app::KernelPromptSubmission {
             outcome,
             session,
@@ -286,6 +307,44 @@ impl KernelRuntimeOwnedState {
         };
         if let Some(snapshot) = crate::git_observer::capture_turn_snapshot(context) {
             self.git_turn_snapshots.insert(snapshot);
+        }
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// A04 causal fence, for local and leased agents alike (A10): a held agent
+    /// starts only its sudo work's kernel-correlated prompts; anything else
+    /// queues visibly.
+    pub(super) fn sudo_work_defers(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+        prompt: &str,
+    ) -> bool {
+        self.prompt_state_owner.sudo_work_held(session, agent)
+            && !self.admit_sudo_work_prompt(session, agent, prompt)
+    }
+
+    pub(super) fn note_sudo_deferred_prompt(
+        &self,
+        deferred: bool,
+        outcome: &crate::session::PromptSubmissionOutcome,
+        session_id: &str,
+        agent: &str,
+    ) {
+        if deferred
+            && matches!(
+                outcome,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            )
+        {
+            self.record_notice_for_agent(
+                session_id,
+                None,
+                Some(agent),
+                self.attachment_store.list_session_attachment_ids(session_id),
+                format!("Deferred prompt for agent {agent}: it is running sudo-bound work for its owner. The prompt stays queued and runs as a regular turn once that work ends, its window expires or it is revoked."),
+            );
         }
     }
 }

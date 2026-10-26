@@ -19,6 +19,14 @@ test("waiting room state creation normalizes provider model, variant, and theme"
   assert.equal(state.themeId, "opencode")
 })
 
+test("MP-08/MP-11 local fallback metadata cannot replace the kernel configured model and effort", () => {
+  const catalog = fallbackProviderCatalog({ source: "local_fallback" })
+  const initial = createWaitingRoomState([], catalog, "opencode", "default", "")
+  const state = normalizeWaitingRoomState({ ...initial, providerId: "codex", modelId: "codex/gpt-6.1-sol", effort: "high" }, [], catalog)
+  assert.equal(state.modelId, "codex/gpt-6.1-sol")
+  assert.equal(state.effort, "high")
+})
+
 test("waiting room state normalization bounds indexes and redirects unavailable focus", () => {
   const catalog = fallbackProviderCatalog()
   const sessions = [

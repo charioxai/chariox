@@ -172,6 +172,8 @@ export type SkillImportSkip = KernelSkillImportSkip
 export type SkillImportOutcome = KernelSkillImportOutcome
 
 export type RuntimeSession = KernelRuntimeSession & {
+  room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory | undefined
+  room_workflows_fresh?: boolean | undefined
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
@@ -405,6 +407,7 @@ export type CliOptions = {
   automationSocket?: string
   relayUrl?: string
   relayToken?: string
+  relayTokenIssuer?: { endpoint: string; daemonId: string }
   targetDaemonId?: string
   targetDaemonAlias?: string
   detached?: boolean
@@ -425,14 +428,46 @@ export type SessionBinding = {
   session: RuntimeSession
   attachment: RuntimeAttachment
   providerRun: RuntimeProviderRun | null
-  providerLaunchIssue?: "credential_vault_locked" | null
   createdSession: boolean
   historyEntries: TranscriptEntry[]
   promptHistoryEntries: string[]
   nextHistoryCursor: SessionHistoryCursorState
 }
 
+export type ComposerInventory = {
+  catalogRevisions?: import("./ipc-requests.js").ClientCatalogRevisions
+  sessionId: string
+  providerCatalog: ProviderCatalog
+  providerCommandCatalogs: ProviderCommandCatalogs
+  terminalCommandCatalog: TerminalCommandCatalog
+  promptHistoryEntries: string[]
+  reconciliation?: Promise<ComposerInventory>
+}
+
+export type AttachLaunch = {
+  providerLaunch?: BootstrapDeferredState["providerLaunch"]
+  sessionId: string
+  session: RuntimeSession | null
+  providerRun: RuntimeProviderRun | null
+  issue: "credential_vault_locked" | null
+}
+
 export type BootstrapDeferredState = {
+  // attachedHistory comes from the attach reply, so it is available without another request.
+  historyIsBundled?: true
+  attachLaunch?: Promise<AttachLaunch>
+  composerScopeKey?: () => string
+  loadPromptInputHistory?: (sessionId: string) => Promise<{ sessionId: string; entries: string[] }>
+  loadComposer?: () => Promise<ComposerInventory>
+
+  promptInputHistory?: Promise<{ sessionId: string; entries: string[] }>
+  providerLaunch?: {
+    sessionId: string
+    agentId: string | null
+    isPending: () => boolean
+    start: () => Promise<{ providerRun: RuntimeProviderRun | null }>
+  }
+  waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
   terminalCommandCatalog?: Promise<TerminalCommandCatalog>
@@ -442,11 +477,14 @@ export type BootstrapDeferredState = {
     agentEntries: Record<string, TranscriptEntry[]>
     historyEntries: TranscriptEntry[]
     promptHistoryEntries: string[]
+    includesPromptHistory?: boolean
     nextHistoryCursor: SessionHistoryCursorState
   }>
 }
 
 export type BootstrapState = {
+  isTranscriptViewCovered?: () => boolean
+  onTranscriptFrame?: () => void
   client: LocalIpcClient
   binding: SessionBinding | null
   sessions: RuntimeSession[]

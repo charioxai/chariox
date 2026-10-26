@@ -649,7 +649,7 @@ fn remote_extension_sync_health_counts_only_home_proxy_grants() {
         snapshot.issues[0].home_proxy_grants,
         vec!["connector:status-api"]
     );
-    assert_eq!(snapshot.issues[0].pending_revoke, true);
+    assert!(snapshot.issues[0].pending_revoke);
     assert_eq!(
         snapshot.issues[0].active_worker_provider_run_id.as_deref(),
         Some("worker-run-1")
@@ -674,7 +674,7 @@ fn remote_extension_sync_health_reports_pending_revoke_after_last_grant_removed(
     assert_eq!(snapshot.issues.len(), 1);
     assert_eq!(snapshot.issues[0].agent_id, "agent-revoked");
     assert_eq!(snapshot.issues[0].state, "failed");
-    assert_eq!(snapshot.issues[0].pending_revoke, true);
+    assert!(snapshot.issues[0].pending_revoke);
     assert!(snapshot.issues[0].home_proxy_grants.is_empty());
 }
 

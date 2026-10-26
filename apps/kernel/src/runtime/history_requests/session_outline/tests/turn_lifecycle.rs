@@ -51,6 +51,7 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
             session_id: "session-1".into(),
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
+            include_prefetched_content: false,
             cursor: None,
         },
     )
@@ -118,6 +119,60 @@ fn outline_turn_joins_trailing_assistant_fragments_into_complete_summary() {
     );
     assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
     assert_eq!(turn.completed_at_ms, None);
+}
+
+#[test]
+fn outline_turn_keeps_whitespace_only_fragments_inside_a_streamed_message() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+        context.clone(),
+    );
+    let fragments = [
+        ("msg-1", "Step"),
+        ("msg-1", " "),
+        ("msg-1", "1"),
+        ("msg-1", " done"),
+        ("msg-2", "Final."),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (merge_key, text))| {
+        HistoryEvent::transcript(
+            11 + index as u64,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some(merge_key.to_string()),
+                text,
+            ),
+            context.clone(),
+        )
+    })
+    .collect::<Vec<_>>();
+    let mut events = vec![prompt.clone()];
+    events.extend(fragments);
+
+    let turn = outline_turn_from_events(&prompt, events, false).expect("turn should be outlined");
+
+    assert_eq!(
+        turn.entries
+            .iter()
+            .filter(|entry| entry.entry.merge_key.as_deref() == Some("msg-1"))
+            .map(|entry| entry.entry.text.as_str())
+            .collect::<String>(),
+        "Step 1 done"
+    );
 }
 
 #[test]
@@ -1239,7 +1294,7 @@ fn agent_outline_completes_bounded_external_turns_without_client_repair() {
             Some(&format!("run-{index}")),
             "agent-1",
             SessionHistoryEntryKind::UserPrompt,
-            &format!("external prompt {index}"),
+            format!("external prompt {index}"),
             "codex",
             "thread-1",
             Some(format!("turn-{index}")),
@@ -1254,7 +1309,7 @@ fn agent_outline_completes_bounded_external_turns_without_client_repair() {
             Some(&format!("run-{index}")),
             "agent-1",
             SessionHistoryEntryKind::ProviderOutput,
-            &format!("external output {index}"),
+            format!("external output {index}"),
             "codex",
             "thread-1",
             Some(format!("turn-{index}")),
@@ -2199,4 +2254,133 @@ fn blob_content_hides_external_observer_state_signals() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+// MP-08/MP-10: the goal loop's completion check is agent-only. Its instruction
+// and receipt reply never reach the outline, and the reply never folds into
+// the work turn that precedes it.
+#[tokio::test]
+async fn outline_hides_goal_completion_check_turn() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-check-history-{}-{}.db",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let context = |prompt: &str| HistoryEventTurnContext {
+        session_id: Some("session-1".into()),
+        agent_id: Some("agent-1".into()),
+        turn_id: Some(prompt.into()),
+        prompt_id: Some(prompt.into()),
+        provider_run_id: Some("run-1".into()),
+        ..HistoryEventTurnContext::default()
+    };
+    let output = |sequence, text: &str, prompt: &str, origin| {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                text,
+            )
+            .with_prompt_origin(origin),
+            context(prompt),
+        )
+    };
+    {
+        let store = OperationalHistoryStore::open(path.clone()).expect("open history");
+        let work = HistoryEvent::transcript(
+            1,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "do work"),
+            context("prompt-1"),
+        );
+        let check = HistoryEvent::transcript(
+            3,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "This turn has origin completion_check.",
+            )
+            .with_prompt_origin(Some(crate::session::PromptOrigin::CompletionCheck)),
+            context("goal-check-task-1-1-1"),
+        );
+        store
+            .append_many(&[
+                work,
+                output(2, "work answer", "prompt-1", None),
+                check,
+                output(
+                    4,
+                    r#"{"status":"achieved","final_answer":"x","evidence":["y"]}"#,
+                    "goal-check-task-1-1-1",
+                    Some(crate::session::PromptOrigin::CompletionCheck),
+                ),
+                // The achieved check's final answer is ordinary agent text.
+                HistoryEvent::transcript(
+                    5,
+                    &SessionHistoryEntry::provider_output(
+                        "session-1",
+                        "run-1",
+                        Some("agent-1"),
+                        TerminalOutputKind::ProviderOutput,
+                        None,
+                        "published final answer",
+                    ),
+                    HistoryEventTurnContext {
+                        session_id: Some("session-1".into()),
+                        agent_id: Some("agent-1".into()),
+                        provider_run_id: Some("run-1".into()),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ),
+            ])
+            .expect("persist turns");
+    }
+    let store = OperationalHistoryStore::open(path.clone()).expect("reopen history");
+    let response = execute_session_history_outline_request(
+        store.clone(),
+        GetSessionHistoryOutlineRequest {
+            session_id: "session-1".into(),
+            agent_ids: Some(vec!["agent-1".into()]),
+            latest_prompt_count: Some(4),
+            include_prefetched_content: false,
+            cursor: None,
+        },
+    )
+    .await
+    .expect("history response");
+    let LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } =
+        execute_session_history_blob_content_request(
+            store,
+            GetSessionHistoryBlobContentRequest {
+                session_id: "session-1".into(),
+                agent_id: "agent-1".into(),
+                blob_id: blob_id(1, 5),
+            },
+        )
+        .await
+        .expect("blob response")
+    else {
+        panic!("expected blob content");
+    };
+    let blob = serde_json::to_string(&entries).expect("serialize blob");
+    assert!(!blob.contains("completion_check"), "{blob}");
+    assert!(!blob.contains("final_answer"), "{blob}");
+    assert!(blob.contains("work answer"), "{blob}");
+    assert!(blob.contains("published final answer"), "{blob}");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+        panic!("expected history outline");
+    };
+    let rendered = serde_json::to_string(&agents).expect("serialize outline");
+    assert_eq!(agents[0].turns.len(), 1, "{rendered}");
+    assert!(!rendered.contains("completion_check"), "{rendered}");
+    assert!(!rendered.contains("final_answer"), "{rendered}");
+    assert!(rendered.contains("work answer"), "{rendered}");
+    assert!(rendered.contains("published final answer"), "{rendered}");
 }

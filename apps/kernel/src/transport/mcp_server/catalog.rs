@@ -9,9 +9,11 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::*;
 
+/// Arms continuations and reloads for real catalog changes; notification
+/// streams compare the full listed `snapshot` instead.
 pub(super) struct CatalogMonitor {
     changes: broadcast::Receiver<()>,
-    catalogs: std::collections::BTreeMap<String, Value>,
+    catalogs: std::collections::BTreeMap<String, Vec<(String, String, Value)>>,
 }
 
 impl CatalogMonitor {
@@ -34,7 +36,7 @@ impl CatalogMonitor {
         for token in router.runtime_tool_catalog_auth_tokens() {
             self.catalogs
                 .entry(token.clone())
-                .or_insert_with(|| snapshot(router, &token));
+                .or_insert_with(|| router.runtime_catalog_signature(&token));
         }
     }
 
@@ -43,7 +45,7 @@ impl CatalogMonitor {
         let tokens = router.runtime_tool_catalog_auth_tokens();
         self.catalogs.retain(|token, _| tokens.contains(token));
         for token in tokens {
-            let next = snapshot(router, &token);
+            let next = router.runtime_catalog_signature(&token);
             if let Some(previous) = self.catalogs.insert(token.clone(), next.clone()) {
                 if previous != next {
                     router.runtime_tool_catalog_changed_for_auth_token(&token);

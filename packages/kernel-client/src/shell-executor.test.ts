@@ -41,9 +41,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.match(result.message ?? "", /session list\|status\|new\|attach\|use\|members\|invites\|invite\|join\|revoke-invite\|mode\|permissions/)
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /agent list\|spawn \[--count <n>\]\|focus\|inspect\|cycle\|mode\|permissions\|substitute/)
-  assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)
   assert.match(result.message ?? "", /extension import providers\|grant\|revoke\|grants\|sync-status\|sync-retry\|audit/)
-  assert.match(result.message ?? "", /workspace sync status\|doctor\|targets\|conflicts\|ignore\|audit\|off\|managed\|tracked\|default\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|audit\|state\|save-state\|backup\|reset-state\|start\|stop\|delete\|auth import\|auth remove\|auth login\|screen/)
   assert.match(result.message ?? "", /slice auth import copies a selected provider account into the slice; auth login starts provider login inside the slice; auth remove purges the selected slice-local account/)
   assert.match(result.message ?? "", /provider status\|login\|setup-token\|logout\|reauth\|processes \[provider\]\|processes teardown <provider>/)
@@ -159,8 +157,6 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.match(result.message ?? "", /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run: active remote agent has no worker run/)
   assert.match(result.message ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(result.message ?? "", /remote runtime affected: agents=agent-remote/)
-  assert.match(result.message ?? "", /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
-  assert.match(result.message ?? "", /workspace live sync managed capability: unavailable \(managed mode needs selective write fencing\); tracked\/off modes unaffected/)
   assert.doesNotMatch(result.message ?? "", /next: select tracked mode on this worker or run the managed provider on a supported host/)
 })
 
@@ -244,13 +240,10 @@ test("executeShellCommand accepts kernel remote runtime aliases", async () => {
 
   assert.equal(remoteRuntime.ok, true)
   assert.match(remoteRuntime.message ?? "", /^remote runtime/)
-  assert.match(remoteRuntime.message ?? "", /remote runtime authority: home kernel owns sessions, prompts, grants, and live sync; workers execute leased provider runs and projected tools/)
   assert.match(remoteRuntime.message ?? "", /provider runs: projected=0 active=0 chariox=0 native_tui=0/)
   assert.match(remoteRuntime.message ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(remoteRuntime.message ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.equal(runtime.ok, true)
-  assert.match(runtime.message ?? "", /workspace live sync:/)
-  assert.match(runtime.message ?? "", /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
 })
 
 test("executeShellCommand reports degraded remote runtime attention", async () => {
@@ -427,7 +420,6 @@ test("executeShellCommand renders attached session runtime context before kernel
   const result = await executeShellCommand(parseShellCommand("kernel health"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /^session runtime:\n  session: session-1\n  home kernel: home-kernel-1@home-machine-1\n  owner: user-1\n  authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools\n  agent: agent-1\nkernel health/)
   assert.deepEqual(fake.requests, [
     { GetDaemonHealth: null },
     { GetSessionState: { session_id: "session-1" } },
@@ -554,8 +546,7 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /session: session-1/)
   assert.match(contextResult.message ?? "", /home kernel: home-kernel-1@home-machine-1/)
   assert.match(contextResult.message ?? "", /session owner: user-1/)
-  assert.match(contextResult.message ?? "", /runtime authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools/)
-  assert.match(contextResult.message ?? "", /workspace live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
+  assert.match(contextResult.message ?? "", /runtime authority: home owns sessions, prompts, and grants; workers execute leases and projected tools/)
   assert.match(contextResult.message ?? "", /agent: agent-1 \(busy\)/)
   assert.match(contextResult.message ?? "", /agent placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=worker-run-1\)/)
   assert.match(contextResult.message ?? "", /provider run: session=session-run-1, worker=worker-run-1/)
@@ -743,7 +734,7 @@ test("executeShellCommand context keeps home machine visible without daemon id",
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /home kernel: home-machine-1/)
   assert.match(result.message ?? "", /session owner: -/)
-  assert.match(result.message ?? "", /runtime authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools/)
+  assert.match(result.message ?? "", /runtime authority: home owns sessions, prompts, and grants; workers execute leases and projected tools/)
 })
 
 test("executeShellCommand does not infer provider run ownership from focused agent", async () => {
@@ -897,8 +888,6 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
   const result = await executeShellCommand(parseShellCommand("session list"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /`main` \(`session-1`\) - running - 1 CLI - main - home home-kernel-1@home-machine-1 - owner user-1 - authority home-owned - live sync managed \(selected workspace\/worktree only; other repositories unrestricted\) current/)
-  assert.match(result.message ?? "", /`session-2` - parked - 0 CLIs - feature - home home-machine-2 - owner user-2 - authority home-owned - live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) - remote 1 agent, 1 slice, 1 worker run gap - next run \/kernel remote-runtime; run \/agent inspect remote-1; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
 })
 
 test("executeShellCommand shows current session runtime status", async () => {
@@ -985,7 +974,6 @@ test("executeShellCommand shows current session runtime status", async () => {
   assert.match(result.message ?? "", /^session runtime/)
   assert.match(result.message ?? "", /session: main \(session-1\)/)
   assert.match(result.message ?? "", /home kernel: home-kernel@home-machine/)
-  assert.match(result.message ?? "", /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /remote runtime: 1 agent, 1 worker, 1 slice, 1 worker run gap/)
   assert.match(result.message ?? "", /home-proxy extensions: 1 agent, 1 sync issue, 0 pending revokes/)
   assert.match(result.message ?? "", /agent runtime:\n  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=slice:linux-dev slice_status=running slice_worktree=\/repo\/main slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; script=1\) manifest=stale hash=hash-1 error=worker offline/)

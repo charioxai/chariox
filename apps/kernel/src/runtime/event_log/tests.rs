@@ -112,6 +112,38 @@ async fn retention_does_not_clone_snapshot_without_persistent_compaction() {
     );
 }
 
+static SERIALIZE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Debug)]
+struct SerializeCountedEvent(&'static str);
+
+impl Serialize for SerializeCountedEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        SERIALIZE_COUNT.fetch_add(1, Ordering::SeqCst);
+        serializer.serialize_str(self.0)
+    }
+}
+
+#[tokio::test]
+async fn retention_drops_events_without_reserializing_them() {
+    let log = EventLog::new(1);
+    log.append("session:a", SerializeCountedEvent("first"))
+        .await
+        .expect("first event should append");
+    SERIALIZE_COUNT.store(0, Ordering::SeqCst);
+
+    log.append("session:a", SerializeCountedEvent("second"))
+        .await
+        .expect("second event should append");
+
+    // A cap crossing drops thousands of events on the append path; their
+    // sizes are known from when they were retained.
+    assert_eq!(SERIALIZE_COUNT.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn persistent_event_ids_resume_above_previous_high_water() {
     let root = std::env::temp_dir().join(format!(
@@ -206,6 +238,10 @@ async fn persistent_event_store_recovers_after_transient_append_failure() {
     let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
         .expect("persistent event store should initialize");
 
+    // Startup already owns the descriptor. Close it before injecting a path
+    // open failure; replacing the pathname alone cannot invalidate that fd.
+    log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
     log.append("session:a", "failed".to_string())
         .await
@@ -270,6 +306,7 @@ async fn persistent_event_store_failure_does_not_stall_replay_for_other_streams(
         .expect("stable event should append");
     std::fs::remove_file(&events_path).expect("event store file should be replaceable");
     std::fs::create_dir(&events_path).expect("event store path should become unwritable");
+    log.close_persistent_file_for_tests().await;
 
     let gate = log.pause_next_persistent_append_for_tests();
     let first_task = {
@@ -324,6 +361,10 @@ async fn persistent_event_store_cancelled_failed_append_is_never_replay_visible(
         EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
             .expect("persistent event store should initialize"),
     );
+    // Startup already owns the descriptor. Close it before injecting a path
+    // open failure; replacing the pathname alone cannot invalidate that fd.
+    log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
 
     let gate = log.pause_next_persistent_append_for_tests();
@@ -571,14 +612,12 @@ async fn persistent_event_store_compacts_by_total_bytes() {
             .await
             .expect("persistent writer should flush before reading event store");
         let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
-        if !stored.contains("\"first\"") {
-            assert!(
-                stored.len() as u64
-                    <= super::persistent_compaction_target_bytes(
-                        retention.max_total_bytes.unwrap()
-                    ),
-                "event store should compact with headroom after bounded file growth: {stored}"
-            );
+        // Compaction runs beside appends; one that is still running when the
+        // next compaction is due defers it to a later append.
+        if !stored.contains("\"first\"")
+            && stored.len() as u64
+                <= super::persistent_compaction_target_bytes(retention.max_total_bytes.unwrap())
+        {
             let _ = std::fs::remove_dir_all(root);
             return;
         }
@@ -652,13 +691,13 @@ fn compaction_serializes_borrowed_events_in_global_order() {
     for (stream_id, event_ids) in [("a", vec![2, 4]), ("b", vec![1, 3])] {
         let mut stream = super::EventStream::default();
         for event_id in event_ids {
-            stream.retained.push_back(LoggedEvent {
+            stream.retained.push_back(Box::new(LoggedEvent {
                 event_id,
                 stream_id: stream_id.to_string(),
                 stream_seq: event_id,
                 recorded_at_ms: 1,
                 event: BorrowOnlyEvent("payload"),
-            });
+            }));
         }
         streams.insert(stream_id.to_string(), stream);
     }
@@ -677,4 +716,330 @@ fn compaction_serializes_borrowed_events_in_global_order() {
         vec![1, 2, 3, 4]
     );
     assert!(events.iter().all(|event| event.event == "payload"));
+}
+
+fn scratch_root(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "chariox-event-store-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ))
+}
+
+#[tokio::test]
+async fn persistent_event_store_appends_through_one_open_file() {
+    let root = scratch_root("open-file");
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+        .expect("persistent event store should initialize");
+    log.append("session:a", "first".to_string())
+        .await
+        .expect("first event should append");
+
+    // The writer keeps its descriptor: no open, stat or tail read per append.
+    let moved_path = root.join("moved.jsonl");
+    std::fs::rename(&events_path, &moved_path).expect("event file should move");
+    log.append("session:a", "second".to_string())
+        .await
+        .expect("second event should append");
+    log.flush_persistence_for_tests()
+        .await
+        .expect("persistent writer should flush");
+
+    let moved = std::fs::read_to_string(&moved_path).expect("open event file should remain");
+    assert_eq!(moved.lines().count(), 2, "{moved}");
+    assert!(!events_path.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persistent_event_store_compaction_does_not_block_appends() {
+    use std::io::Read;
+
+    let root = scratch_root("compaction-off-append");
+    let counter_path = root.join("counter.json");
+    let events_path = root.join("events.jsonl");
+    std::fs::create_dir_all(&root).expect("event store root should create");
+    // A compaction side file that cannot be opened stalls only the compactor.
+    let stalled_side_files = [
+        events_path.with_extension("jsonl.tmp"),
+        events_path.with_extension("jsonl.compact"),
+    ];
+    for side_file in &stalled_side_files {
+        let path = std::ffi::CString::new(side_file.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    }
+    let retention = EventRetentionPolicy {
+        max_stream_events: 16,
+        max_total_bytes: Some(400),
+        max_age_ms: None,
+    };
+    let log = EventLog::<String>::new_with_persistent_event_store_and_retention(
+        retention,
+        &counter_path,
+        &events_path,
+    )
+    .expect("persistent event store should initialize");
+    for index in 0..24 {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            log.append("session:a", format!("event-{index:02}")),
+        )
+        .await
+        .expect("append must not wait for event log compaction")
+        .expect("event should append");
+    }
+
+    // Release the stalled compactor. A pipe cannot be synced and its path is
+    // gone, so that compaction fails cleanly and the next append starts afresh.
+    let stalled = stalled_side_files[1].clone();
+    let drain = std::thread::spawn(move || {
+        let mut side = std::fs::File::open(&stalled).expect("stalled side file should open");
+        // The failed compactor may already have removed its side file.
+        let _ = std::fs::remove_file(&stalled);
+        let mut discarded = Vec::new();
+        side.read_to_end(&mut discarded)
+            .expect("stalled side file should drain");
+    });
+    std::fs::remove_file(&stalled_side_files[0]).expect("unused side file should unlink");
+    tokio::task::spawn_blocking(move || drain.join().expect("drain should finish"))
+        .await
+        .expect("drain task should join");
+    log.flush_persistence_for_tests()
+        .await
+        .expect("stalled compaction should settle");
+    // Appends that arrive while a compaction runs defer the next one to a
+    // later append, so the file converges to the retention budget.
+    let mut latest = None;
+    for index in 0..16 {
+        latest = Some(
+            log.append("session:a", format!("after-{index:02}"))
+                .await
+                .expect("append should start a fresh compaction"),
+        );
+        log.flush_persistence_for_tests()
+            .await
+            .expect("fresh compaction should settle");
+        let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
+        if !stored.contains("event-") && stored.len() as u64 <= retention.max_total_bytes.unwrap() {
+            break;
+        }
+    }
+    let latest = latest.unwrap();
+    let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
+    assert!(
+        stored.len() as u64 <= retention.max_total_bytes.unwrap() && !stored.contains("event-"),
+        "event store should compact: {stored}"
+    );
+    assert!(stored.ends_with("\n"));
+    let restarted = EventLog::<String>::new_with_persistent_event_store_and_retention(
+        retention,
+        &counter_path,
+        &events_path,
+    )
+    .expect("compacted event store should restart");
+    match restarted
+        .replay_after("session:a", latest.event_id - 1)
+        .await
+    {
+        ReplayOutcome::Replayed(events) => {
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_id, latest.event_id);
+        }
+        ReplayOutcome::Gap(gap) => panic!("latest event should replay: {gap:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_file_is_open_before_first_append() {
+    let root = scratch_root("warm-event-file");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let log =
+        EventLog::<String>::new_with_persistent_event_store(16, root.join("counter.json"), &path)
+            .unwrap();
+    assert!(
+        path.is_file(),
+        "startup must open the event file before admission begins"
+    );
+    // Renaming an already opened file must not force the first append to do
+    // path lookup, directory creation or torn-tail recovery.
+    let moved = root.join("opened.jsonl");
+    std::fs::rename(&path, &moved).unwrap();
+    log.append("a", "first".to_string()).await.unwrap();
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_to_string(&moved).unwrap().lines().count(), 1);
+    drop(log);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compaction_keeps_the_replacement_open_and_returns_the_retired_inode() {
+    use std::sync::{atomic::AtomicU64, Arc};
+    let root = scratch_root("retire-event-inode");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let side = root.join("events.jsonl.compact");
+    let mut writer = super::EventFileWriter {
+        path: path.clone(),
+        file: None,
+        file_bytes: Arc::new(AtomicU64::new(0)),
+        append_space: None,
+        space_reservation_started: false,
+    };
+    writer.append(b"first\nsecond\n").unwrap();
+    std::fs::write(&side, b"second\n").unwrap();
+    let retired = writer
+        .swap_compacted(&side, 13)
+        .unwrap()
+        .expect("the compactor must receive the old inode");
+    assert_eq!(retired.metadata().unwrap().len(), 13);
+    assert!(
+        writer.file.is_some(),
+        "the next append must reuse the replacement descriptor"
+    );
+    writer.append(b"third\n").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"second\nthird\n");
+    // On the fixed path, this owns the unlinked inode until the compactor
+    // retires it; the writer never performs its last close on an append.
+    drop(retired);
+    drop(writer);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn growing_a_wrapped_retention_queue_does_not_relocate_existing_payloads() {
+    let mut stream = super::EventStream::default();
+    stream.retained.reserve(8);
+    let capacity = stream.retained.capacity();
+    let event = |id| LoggedEvent {
+        event_id: id,
+        stream_id: "a".to_string(),
+        stream_seq: id,
+        recorded_at_ms: 1,
+        event: id,
+    };
+    for id in 0..capacity as u64 {
+        stream.retain(event(id), 1);
+    }
+    for id in 0..capacity as u64 / 2 {
+        stream.drop_oldest();
+        stream.retain(event(capacity as u64 + id), 1);
+    }
+    let pointers = stream
+        .retained
+        .iter()
+        .map(|event| (event.event_id, std::ptr::from_ref(&event.event)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    stream.retain(event(2 * capacity as u64), 1);
+    assert!(stream.retained.capacity() > capacity);
+    for event in &stream.retained {
+        if let Some(previous) = pointers.get(&event.event_id) {
+            assert_eq!(*previous, std::ptr::from_ref(&event.event));
+        }
+    }
+}
+
+#[test]
+fn reserving_append_space_preserves_logical_bytes_and_append_position() {
+    use std::io::{Seek, Write};
+    let root = scratch_root("reserve-event-space");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"first\n").unwrap();
+    let position = file.stream_position().unwrap();
+    super::reserve_event_file_space(&file, 1024 * 1024);
+    assert_eq!(file.metadata().unwrap().len(), 6);
+    assert_eq!(file.stream_position().unwrap(), position);
+    file.write_all(b"second\n").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"first\nsecond\n");
+    drop(file);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn byte_retention_keeps_the_newest_global_ids_across_many_streams() {
+    let mut streams = std::collections::BTreeMap::new();
+    for id in 1..=12_000_u64 {
+        let key = format!("stream-{}", id % 300);
+        streams
+            .entry(key.clone())
+            .or_insert_with(super::EventStream::default)
+            .retain(
+                LoggedEvent {
+                    event_id: id,
+                    stream_id: key,
+                    stream_seq: id / 300 + 1,
+                    recorded_at_ms: 1,
+                    event: (),
+                },
+                1,
+            );
+    }
+    let dropped = super::apply_retention(
+        &mut streams,
+        EventRetentionPolicy {
+            max_stream_events: usize::MAX,
+            max_total_bytes: Some(10_000),
+            max_age_ms: None,
+        },
+        1,
+    );
+    assert_eq!(
+        dropped.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+        (1..=4_500).collect::<Vec<_>>()
+    );
+    let mut retained = streams
+        .values()
+        .flat_map(|s| s.retained.iter().map(|e| e.event_id))
+        .collect::<Vec<_>>();
+    retained.sort_unstable();
+    assert_eq!(retained, (4_501..=12_000).collect::<Vec<_>>());
+    assert_eq!(super::retained_events_jsonl_bytes(&streams), 7_500);
+}
+
+#[test]
+fn compaction_finishes_all_data_bursts_before_handoff() {
+    use std::io::Write;
+    let root = scratch_root("compaction-data-bursts");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let side = root.join("events.jsonl.compact");
+    let mut file = std::fs::File::create(&path).unwrap();
+    let mut kept = std::collections::HashSet::new();
+    let mut expected = Vec::new();
+    for id in 1..=1024 {
+        let event = LoggedEvent {
+            event_id: id,
+            stream_id: format!("stream-{}", id % 16),
+            stream_seq: id,
+            recorded_at_ms: 1,
+            event: format!("{id}:{}", "x".repeat(1024)),
+        };
+        let payload = super::logged_event_jsonl_payload(&event).unwrap();
+        file.write_all(&payload).unwrap();
+        if id % 3 != 0 {
+            kept.insert(id);
+            expected.extend_from_slice(&payload);
+        }
+    }
+    file.sync_all().unwrap();
+    let bytes = file.metadata().unwrap().len();
+    assert!(expected.len() > 8 * super::COMPACTION_WRITEBACK_BYTES);
+    super::write_compacted_side_file(&path, &side, bytes, &kept, None).unwrap();
+    assert_eq!(std::fs::read(&side).unwrap(), expected);
+    drop(file);
+    std::fs::remove_dir_all(root).unwrap();
 }

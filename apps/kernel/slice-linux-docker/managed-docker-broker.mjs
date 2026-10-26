@@ -1791,7 +1791,7 @@ async function execute(request) {
     return {status: 0, stdoutBase64: "", stderrBase64: ""}
   }
   let releaseDiskQuota = false
-  let retainedQuotaHomes = []
+  let retainedHomes = []
   let unboundedQuotaIdentity
   let unboundedQuotaStatusVerified = false
   if (request.kind === "home_archive_capture") {
@@ -1855,6 +1855,11 @@ async function execute(request) {
       }
     }
   }
+  if (request.kind === "provisioner" && request.action === "destroy") {
+    // MP-03/MP-08/MP-10/MP-11: retained generations belong to the slice
+    // lifecycle, including unbounded DEV homes with no quota reservation.
+    retainedHomes = protectedLayouts.retainedHomeVolumes(request.environment.CHARIOX_SLICE_NAME)
+  }
   if (quotaCoordinated && request.kind === "provisioner" && request.action === "destroy") {
     const quota = provisionerQuotaRequest(request.environment)
     releaseDiskQuota = diskQuotaMarkerPresent(quota.identity.containerName)
@@ -1868,7 +1873,6 @@ async function execute(request) {
     } catch (error) {
       if (!new Set(["ENOENT", "ECONNREFUSED"]).has(error?.code)) releaseDiskQuota = true
     }
-    if (releaseDiskQuota) retainedQuotaHomes = protectedLayouts.retainedHomeVolumes(quota.identity.containerName)
   }
   let prepared
   try {
@@ -2013,15 +2017,19 @@ async function execute(request) {
         })
       }
       releasePersistentHandles(request.environment.CHARIOX_SLICE_NAME)
-      if (releaseDiskQuota) {
+      // MP-03/MP-08/MP-10/MP-11: an empty unbounded cleanup needs no quota
+      // identity or allocator. Recorded homes still retire before release.
+      if (retainedHomes.length > 0 || releaseDiskQuota) {
         const quota = provisionerQuotaRequest(request.environment)
-        retireProtectedQuotaHomes(retainedQuotaHomes, quota.identity,
+        retireProtectedQuotaHomes(retainedHomes, quota.identity,
           args => spawnControl("/usr/bin/docker", args, {env: dockerEnvironment(), timeout: 30_000, maxBuffer: 1024 * 1024}))
-        await requestSliceDiskQuota({
-          protocolVersion: 1,
-          operation: "release",
-          identity: quota.identity,
-        })
+        if (releaseDiskQuota) {
+          await requestSliceDiskQuota({
+            protocolVersion: 1,
+            operation: "release",
+            identity: quota.identity,
+          })
+        }
       }
     }
     if (request.kind === "provisioner" && new Set(["provision", "restore-state"]).has(request.action)) {

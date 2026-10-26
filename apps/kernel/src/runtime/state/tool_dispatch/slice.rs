@@ -5,6 +5,8 @@ use wait_timeout::ChildExt;
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
+mod computer_hold;
+pub(crate) use computer_hold::run_room_computer_hold;
 mod computer_secret;
 mod controller_browser;
 mod controller_browser_compatibility;
@@ -218,7 +220,7 @@ impl KernelRuntimeState {
                 ensure_browser_target_matches_expectations(&browser_status, &args)?;
                 let selector = browser_selector(args.selector.as_deref(), args.field_id.as_deref());
                 ensure_browser_fill_target(&browser_status, selector.as_deref())?;
-                ensure_browser_secret_target_is_masked(&browser_status, selector.as_deref())?;
+                ensure_browser_secret_target_is_editable(&browser_status, selector.as_deref())?;
                 let secret = match self
                     .resolve_remote_home_credential_secret(
                         provider_run,
@@ -648,6 +650,9 @@ pub(in crate::runtime::state) async fn execute_room_computer_observation(
     prune: impl Fn(&[u64]) -> Result<(), DaemonError>,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let args = match &call {
+        crate::transport::relay_peer::RemoteRoomComputerObservationCall::Snapshot { .. } => {
+            unreachable!("snapshot uses the owned controller")
+        }
         crate::transport::relay_peer::RemoteRoomComputerObservationCall::ScreenStatus => {
             vec!["status".to_string()]
         }
@@ -837,6 +842,13 @@ async fn run_slice_screen_command_inner_with_output_policy(
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
     let sensitive_output = preserve_stdout || stdin.is_some();
+    // Status only reports metadata and never reads a capture policy. Its fast
+    // exit can close the pipe before the parent writes, despite a valid result.
+    let stdin = if args.first().is_some_and(|arg| arg == "status") {
+        None
+    } else {
+        stdin
+    };
     tokio::task::spawn_blocking(move || {
         let _capture_guard = capture_guard;
         if let Some(cancellation) = cancellation.as_ref() {
@@ -850,6 +862,15 @@ async fn run_slice_screen_command_inner_with_output_policy(
             .args(&args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // MP-11: actor comes from the kernel's admitted action, never stdin.
+        if cancellation
+            .as_ref()
+            .is_some_and(|value| value.is_agent_input())
+        {
+            command.env("CHARIOX_COMPUTER_AGENT_INPUT", "1");
+        } else {
+            command.env_remove("CHARIOX_COMPUTER_AGENT_INPUT");
+        }
         if stdin.is_some() {
             command.stdin(std::process::Stdio::piped());
         }
@@ -992,6 +1013,17 @@ async fn run_slice_screen_command_inner_with_output_policy(
         if !status.success() && cancellation.as_ref().is_some_and(|value| value.requested()) {
             return Err(computer_input_cancelled());
         }
+        if !status.success()
+            && cancellation
+                .as_ref()
+                .is_some_and(|value| value.is_agent_input())
+            && stderr.trim() == "user_domain_sensitive_requires_focus"
+        {
+            return Err(crate::error::HostFailure::Refused(
+                crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+            )
+            .into_daemon("room_computer"));
+        }
         Ok(SliceScreenCommandOutput {
             success: status.success(),
             status_code: status.code(),
@@ -1093,6 +1125,10 @@ pub(crate) async fn run_room_pointer_move(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_room_pointer_drag operation signature and explicit context arguments"
+)]
 pub(crate) async fn run_room_pointer_drag(
     from_x: u32,
     from_y: u32,
@@ -1671,6 +1707,7 @@ mod tests {
     #[test]
     fn slice_mouse_args_map_to_screen_script_commands() {
         let args = crate::transport::runtime_tools::SliceMouseArgs {
+            duration_ms: None,
             action: "drag".to_string(),
             x: Some(10),
             y: Some(20),
@@ -1696,6 +1733,7 @@ mod tests {
     #[test]
     fn slice_keyboard_args_require_text_for_type() {
         let args = crate::transport::runtime_tools::SliceKeyboardArgs {
+            duration_ms: None,
             action: "type".to_string(),
             text: None,
             key: None,
@@ -1807,6 +1845,36 @@ mod tests {
             error.to_string(),
             "local transport `run_slice_screen_command` failed: slice screen stdout is not valid UTF-8"
         );
+    }
+
+    #[tokio::test]
+    async fn slice_screen_status_does_not_write_unused_capture_policy() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let worktree = crate::test_support::TestWorktree::new("slice-status-pipe");
+        let script = worktree.path().join("slice-screen-status.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'available=true\\nscreen=1024x600\\n'\n",
+        )
+        .expect("status helper should write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+                .expect("status helper should be executable");
+        }
+        std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+        let result = run_slice_screen_command_with_stdin(
+            vec!["status".to_string()],
+            zeroize::Zeroizing::new("x".repeat(256 * 1024)),
+        )
+        .await;
+        std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+        let output = result.expect("metadata-only status must succeed without reading stdin");
+        assert_eq!(output.status_code, Some(0));
+        assert!(output.stdout.contains("available=true"));
+        assert!(output.sensitive_output, "retain the caller's output policy");
     }
 
     #[tokio::test]

@@ -128,13 +128,41 @@ impl KernelRuntimeState {
             .computer_input_executions
             .capture_guard()
             .map_err(computer_observation_error)?;
+        if let RemoteRoomComputerObservationCall::Snapshot { observer } = &call {
+            if observer.is_empty() || observer.len() > 256 {
+                return Err(computer_observation_error("invalid observer"));
+            }
+            let policy = self
+                .owned
+                .room_secret_observations
+                .capture_policy(session_id)?;
+            let policy: serde_json::Value = serde_json::from_str(&policy)
+                .map_err(|_| computer_observation_error("protection unavailable"))?;
+            let processes = self.owned.browser_controller_processes.clone();
+            let room = session_id.to_string();
+            let params = serde_json::json!({"observer":observer,"policy":policy});
+            let result = tokio::task::spawn_blocking(move || {
+                processes.room_computer_request(&room, "computer.snapshot", params)
+            })
+            .await
+            .map_err(|_| computer_observation_error("snapshot task failed"))?
+            .map_err(|_| computer_observation_error("accessibility snapshot unavailable"))?;
+            return self.owned.room_secret_observations.scrub(
+                session_id,
+                RuntimeToolResult {
+                    ok: true,
+                    payload: result,
+                },
+            );
+        }
         // Preserve opaque-artifact ownership checks without reading old pixels.
         let artifact_id = match &call {
             RemoteRoomComputerObservationCall::Ocr { artifact_id }
             | RemoteRoomComputerObservationCall::FindText { artifact_id, .. } => {
                 artifact_id.as_deref()
             }
-            RemoteRoomComputerObservationCall::ScreenStatus => None,
+            RemoteRoomComputerObservationCall::ScreenStatus
+            | RemoteRoomComputerObservationCall::Snapshot { .. } => None,
         };
         if let Some(artifact_id) = artifact_id {
             super::room_screenshot::load_room_screenshot_artifact(

@@ -365,6 +365,10 @@ mod tests {
     fn approval_does_not_cover_changed_identity_scope_or_overwrite() {
         let now = Instant::now();
         let original = binding();
+        #[allow(
+            clippy::type_complexity,
+            reason = "Keep the explicit changes state or return type at the existing boundary"
+        )]
         let changes: Vec<Box<dyn Fn(&mut ImportBinding)>> = vec![
             Box::new(|b| b.user_id = "other-user".into()),
             Box::new(|b| b.source_attachment_id = "other-connector".into()),

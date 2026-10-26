@@ -140,7 +140,7 @@ test("command center marks hard account exhaustion red and allowance-only Claude
       },
     }] as never,
   })[0]
-  assert.equal(fullyExhausted?.label, "Codex account (exhausted)")
+  assert.match(fullyExhausted?.label ?? "", /^Codex account · usage limit until \d+ \w{3}$/)
   assert.equal(fullyExhausted?.tone, "danger")
   assert.match(fullyExhausted?.description ?? "", /allowance and credits exhausted/)
 })

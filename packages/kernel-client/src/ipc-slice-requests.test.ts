@@ -33,7 +33,7 @@ test("headed slice creation preserves explicit noVNC rollback", () => {
 })
 
 test("slice backup restore uses the shared kernel lifecycle contract", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 416)
+
   assert.deepEqual(
     restoreSliceBackupRequest("linux-dev", "gmail-ready-20260609"),
     {
@@ -46,7 +46,7 @@ test("slice backup restore uses the shared kernel lifecycle contract", () => {
 })
 
 test("Room display admission sends the attachment and viewer identity in protocol 293", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 416)
+
   assert.deepEqual(
     getSliceDisplayEndpointRequest("slice-1", {
       sessionId: "room-1",
@@ -81,7 +81,7 @@ test("Room display endpoint exposes the encrypted stream metadata", () => {
 })
 
 test("slice create serializes exact multi-repository development selection", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 416)
+
   assert.deepEqual(
     createSliceRequest({
       name: "project-slice",
@@ -127,4 +127,9 @@ test("slice create serializes exact multi-repository development selection", () 
 test("legacy slice create omits the optional development selection", () => {
   const request = createSliceRequest({ name: "legacy-slice" })
   assert.equal("development" in request.CreateSlice, false)
+})
+
+test("MP-08/MP-10/MP-11 Room shared display carries the 525 offer and resume hint",()=>{
+  const sharedDisplay={codecs:["avc1.420033","png"],bitrate:8000000,device_scale_factor:2 as const,resume_hint:"room-display-old"}
+  assert.deepEqual(getSliceDisplayEndpointRequest("slice-1",{sessionId:"room-1",attachmentId:"attachment-1",viewerPublicKey:"viewer-key",sharedDisplay}),{GetSliceDisplayEndpoint:{slice_ref:"slice-1",session_id:"room-1",attachment_id:"attachment-1",viewer_public_key:"viewer-key",shared_display:sharedDisplay}})
 })

@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import type {
   AgentInstance,
   RuntimeProviderRun,
@@ -22,6 +23,7 @@ import { providerRunRecoveryActions } from "@chariox/kernel-client/provider-run-
 import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
 
 export type NativeTuiRuntimeBannerInput = {
+  readonly connectionLabel?: string | null
   readonly surface: string
   readonly session: RuntimeSession
   readonly agent: AgentInstance
@@ -44,11 +46,12 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  chariox session: ${formatSession(input.session)}`,
     `  chariox agent:   ${formatAgent(input.agent)}`,
     `  home kernel:    ${formatHomeKernel(input.session)}`,
+    ...(input.connectionLabel ? [`  connection:     ${input.connectionLabel}`] : []),
     ...formatSessionOwnerLines(input.session),
     `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,
     `  placement:      ${formatAgentPlacement(input.agent, slice)}`,
     ...formatSliceLines(slice, input.agent, input.sliceLookupError),
-    `  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`,
+    ...(workspaceLiveSyncUiEnabled ? [`  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`] : []),
     `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [], remoteNativeRun)}`,
     `  ext runtime:    ${formatNativeExtensionRuntime(extensionGrants, input.agent, remoteNativeRun)}`,
     `  ext boundary:   ${formatNativeExtensionBoundary(extensionGrants, input.agent, remoteNativeRun)}`,

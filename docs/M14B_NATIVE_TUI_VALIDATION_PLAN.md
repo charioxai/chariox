@@ -53,9 +53,14 @@ on the worker.
 2026-05-15 implementation update: the first remote-backed native provider-run
 path is in progress. Native launchers accept `--machine`/`--kernel-ref` and
 move the native TUI agent onto a worker lease before launching the provider run.
-For remote placement, Codex/OpenCode require `--server-in-kernel` and Claude
-requires `--remote-rendered`, so provider execution is worker-owned rather than
-handed a local provider endpoint. The home kernel forwards native provider-run
+MP-08 / MP-10 update: Codex now always launches through the kernel-managed
+provider adapter, in local and remote placement; `--server-in-kernel` is a
+compatibility flag. OpenCode still requires `--server-in-kernel` for remote
+placement, and Claude requires `--remote-rendered`, so provider execution is
+worker-owned rather than handed a local provider endpoint. Native Codex MCP
+discovery/invocation through the entry point and proxy has a credential-free
+fixture regression in `apps/cli/src/native-tui/codex-launch.test.ts`; it does
+not establish authentic provider-model invocation or signed acceptance. The home kernel forwards native provider-run
 launches for remote-backed agents to the worker kernel over relay peer transport.
 The live drill now has a `--standard-home-worker` mode for an isolated
 same-host home/worker relay topology and a `--hetzner-worker` mode for a real

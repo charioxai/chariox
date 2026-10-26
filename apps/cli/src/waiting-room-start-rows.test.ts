@@ -34,7 +34,6 @@ test("waiting room start rows render configuration labels and join action", () =
     "effort",
     "workspace",
     "worktree",
-    "live-sync",
     "collaborators",
     "slice",
     "managed-development",
@@ -45,10 +44,10 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "launch-kernel")?.value, "local")
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
-  assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "gpt-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
-  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
+  assert.equal(rows.find((row) => row.id === "live-sync"), undefined)
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing codex)")
   assert.equal(rows.find((row) => row.id === "managed-development")?.value, "Empty")
@@ -93,6 +92,16 @@ test("waiting room start rows place project selection below Kernel", () => {
   assert.equal(rows[3]?.value, "Frontend")
 })
 
+test("MP-08/MP-11 configured model remains visible while live model metadata loads", () => {
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ providerId: "codex", modelId: "codex/gpt-6.1-sol", effort: "high" }),
+    { providerId: "codex", model: null, effort: "high", providerCatalogFallback: true },
+    { modelOptions: [], inventoryLoading: false, loadingText: "loading", visibleSessionCount: 1, titleWidth: 24 },
+  )
+  assert.equal(rows.find(row => row.id === "model")?.value, "codex/gpt-6.1-sol (refreshing)")
+  assert.match(rows.find(row => row.id === "effort")?.value ?? "", /High/)
+})
+
 test("waiting room start rows render loading placeholders before inventory arrives", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
@@ -108,11 +117,13 @@ test("waiting room start rows render loading placeholders before inventory arriv
     },
   )
 
-  assert.equal(rows.find((row) => row.id === "model")?.value, "No models available")
-  assert.equal(rows.find((row) => row.id === "effort")?.value, "Default")
+  assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "launch-kernel")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "loading..")
+  assert.equal(rows.find((row) => row.id === "effort")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
-  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
+  assert.equal(rows.find((row) => row.id === "live-sync"), undefined)
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "loading..")
@@ -138,7 +149,7 @@ test("waiting room start rows hint cloud collaborator setup when cloud-linked", 
   assert.equal(rows.find((row) => row.id === "collaborators")?.focused, true)
 })
 
-test("waiting room start rows explain managed and tracked live sync modes", () => {
+test("MP-08 OWNER-20 start rows hide discontinued sync modes", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
 
@@ -176,9 +187,9 @@ test("waiting room start rows explain managed and tracked live sync modes", () =
     },
   )
 
-  assert.equal(offRows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
-  assert.equal(managedRows.find((row) => row.id === "live-sync")?.value, "managed (selected workspace/worktree only; other repositories unrestricted)")
-  assert.equal(trackedRows.find((row) => row.id === "live-sync")?.value, "tracked (turn-end; selected workspace/worktree only; other repositories unrestricted)")
+  assert.equal(offRows.find((row) => row.id === "live-sync"), undefined)
+  assert.equal(managedRows.find((row) => row.id === "live-sync"), undefined)
+  assert.equal(trackedRows.find((row) => row.id === "live-sync"), undefined)
 })
 
 test("waiting room start rows mark provider choices from local fallback catalog", () => {
@@ -202,7 +213,7 @@ test("waiting room start rows mark provider choices from local fallback catalog"
   )
 
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (local list)")
-  assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4 (local list)")
+  assert.equal(rows.find((row) => row.id === "model")?.value, "gpt-5.4 (local list)")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High (local list)")
 })
 
@@ -234,7 +245,7 @@ test("waiting room start rows include selected slice provider account", () => {
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
 })
 
-test("waiting room account row shows only the public alias", () => {
+test("waiting room account row shows the public alias and sign-in state", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "codex")
   const rows = waitingRoomStartRows(

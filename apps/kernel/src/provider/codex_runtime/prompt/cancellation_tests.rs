@@ -23,19 +23,24 @@ impl Drop for CloseFixtureSocket {
 
 #[test]
 fn cancelled_codex_turn_preserves_thread_when_hidden_context_changes() {
-    cancelled_codex_turn_continuity(false, "context after cancellation");
+    cancelled_codex_turn_continuity(false, "context after cancellation", false);
 }
 
 #[test]
 fn kernel_cancel_active_prompt_preserves_codex_thread_for_follow_up() {
-    cancelled_codex_turn_continuity(true, "context after cancellation");
+    cancelled_codex_turn_continuity(true, "context after cancellation", false);
 }
 
 // Existing Codex threads receive hidden context as injected developer items
 // (release F). An empty context injects nothing; the thread is still kept.
 #[test]
 fn cancelled_codex_turn_without_hidden_context_keeps_thread_and_injects_nothing() {
-    cancelled_codex_turn_continuity(false, "");
+    cancelled_codex_turn_continuity(false, "", false);
+}
+
+#[test]
+fn cancelled_codex_turn_idle_cleanup_discards_pending_tool_snapshot() {
+    cancelled_codex_turn_continuity(false, "", true);
 }
 
 async fn await_fixture_acknowledgement(
@@ -80,7 +85,7 @@ fn missing_fixture_completion_times_out_and_unblocks_the_server() {
     assert_eq!(server.join().unwrap().unwrap(), 0);
 }
 
-fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
+fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str, idle_cleanup: bool) {
     use crate::local::*;
     let worktree = crate::test_support::TestWorktree::new("codex-cancel-continuity");
     let harness = crate::local::test_support::LocalRouterTestHarness::new();
@@ -151,7 +156,14 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
                     turn_count += 1;
                     json!({"turn": {"id": format!("turn-{}", methods.len())}})
                 }
-                "turn/interrupt" => json!({}),
+                "turn/interrupt" => {
+                    // MP-08 / MP-10: The kernel targets the active managed
+                    // provider turn, preserving its conversation for follow-up.
+                    assert_eq!(request["params"]["threadId"], "thread-original");
+                    assert_eq!(request["params"]["turnId"], "turn-2");
+                    json!({})
+                }
+                "thread/backgroundTerminals/clean" => json!({}),
                 other => panic!("unexpected RPC {other}"),
             };
             socket
@@ -201,6 +213,37 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
         ),
     )
     .unwrap();
+    // MP-08 / MP-10: already accepted output can be waiting in the
+    // snapshot window when cancellation is acknowledged.
+    let snapshot_at = std::time::Instant::now();
+    let snapshot = |output: &str| super::super::CodexOutputChunk {
+        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+        merge_key: Some("cancelled-command".to_string()),
+        bytes: serde_json::to_vec(&json!({"status":"running", "output":output})).unwrap(),
+    };
+    if !idle_cleanup {
+        assert_eq!(
+            state
+                .tool_snapshots
+                .coalesce(
+                    vec![snapshot("first")],
+                    false,
+                    snapshot_at,
+                    &state.output_notifier
+                )
+                .len(),
+            1
+        );
+        assert!(state
+            .tool_snapshots
+            .coalesce(
+                vec![snapshot("must not enter the retry")],
+                false,
+                snapshot_at,
+                &state.output_notifier
+            )
+            .is_empty());
+    }
     if through_kernel {
         run.mark_running();
         harness.with_app_mut(|app| {
@@ -249,6 +292,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
                     session_id: session.id().to_string(),
                     attachment_id: attachment.id().to_string(),
                     target_agent_id: Some(agent.id().to_string()),
+                    expected_prompt_id: None,
                 },
             ))
             .unwrap();
@@ -329,6 +373,49 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
         });
     } else {
         super::abort_codex_turn(run.id(), &mut state).unwrap();
+        assert!(
+            state
+                .tool_snapshots
+                .coalesce(
+                    Vec::new(),
+                    false,
+                    snapshot_at + Duration::from_millis(200),
+                    &state.output_notifier
+                )
+                .is_empty(),
+            "an acknowledged cancellation must discard queued tool snapshots"
+        );
+        if idle_cleanup {
+            let at = std::time::Instant::now();
+            state.tool_snapshots.coalesce(
+                vec![snapshot("first")],
+                false,
+                at,
+                &state.output_notifier,
+            );
+            assert!(state
+                .tool_snapshots
+                .coalesce(
+                    vec![snapshot("must not survive idle cleanup")],
+                    false,
+                    at,
+                    &state.output_notifier
+                )
+                .is_empty());
+            super::abort_codex_turn(run.id(), &mut state).unwrap();
+            assert!(
+                state
+                    .tool_snapshots
+                    .coalesce(
+                        Vec::new(),
+                        false,
+                        at + Duration::from_millis(200),
+                        &state.output_notifier
+                    )
+                    .is_empty(),
+                "idle terminal cleanup must also discard queued tool snapshots"
+            );
+        }
         super::submit_codex_prompt(
             &run,
             &mut state,
@@ -355,10 +442,17 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
     let (methods, applied_context) = server.join().unwrap();
     if !through_kernel && next_context.is_empty() {
         assert_eq!(applied_context, "context before cancellation");
-        assert_eq!(
-            methods,
-            ["thread/start", "turn/start", "turn/interrupt", "turn/start"]
-        );
+        let mut expected = vec![
+            "thread/start",
+            "turn/start",
+            "turn/interrupt",
+            "thread/backgroundTerminals/clean",
+        ];
+        if idle_cleanup {
+            expected.push("thread/backgroundTerminals/clean");
+        }
+        expected.push("turn/start");
+        assert_eq!(methods, expected);
         return;
     }
     assert_ne!(
@@ -374,6 +468,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str) {
             "thread/start",
             "turn/start",
             "turn/interrupt",
+            "thread/backgroundTerminals/clean",
             "thread/inject_items",
             "turn/start"
         ]

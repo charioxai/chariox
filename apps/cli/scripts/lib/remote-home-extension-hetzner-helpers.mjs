@@ -3,7 +3,7 @@ import path from "node:path"
 import { waitForTcpPort } from "./drill-runtime-helpers.mjs"
 import {
   assertHetznerCharioxBinaries,
-  remoteEnvCommand,
+  spawnRemoteEnv,
   runHetznerCommand,
   shellQuote,
   sshArgs,
@@ -173,7 +173,7 @@ export async function startRemoteHomeExtensionHetznerRelay({
 }) {
   await assertRemoteRelayPortFree(options, relayPort)
   const relayPidFile = path.posix.join(remoteRoot, "relay.pid")
-  const relay = spawn("ssh", sshArgs(options, remoteEnvCommand({
+  const relay = spawnRemoteEnv(options, {
     CHARIOX_REMOTE_REPO: options.hetznerRepo,
     CHARIOX_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
     CHARIOX_RELAY_HOST: "127.0.0.1",
@@ -183,7 +183,7 @@ export async function startRemoteHomeExtensionHetznerRelay({
       CHARIOX_RELAY_SCOPED_ISSUER: issuer,
       CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret,
     } : {}),
-  }, `echo $$ > ${shellQuote(relayPidFile)}; exec ./apps/relay/target/debug/chariox-relay`)), { stdio: ["ignore", "ignore", "inherit"] })
+  }, `echo $$ > ${shellQuote(relayPidFile)}; exec ./apps/relay/target/debug/chariox-relay`, { stdio: ["ignore", "ignore", "inherit"] })
   const tunnel = spawn("ssh", [
     "-i",
     options.hetznerKey,
@@ -219,7 +219,7 @@ export function spawnRemoteHomeExtensionHetznerWorker({
     options.hetznerRepo,
     workerKernelBinary,
   )
-  return spawn("ssh", sshArgs(options, remoteEnvCommand({
+  return spawnRemoteEnv(options, {
     CHARIOX_REMOTE_REPO: options.hetznerRepo,
     CHARIOX_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
     PATH: "/root/.cargo/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -247,7 +247,7 @@ export function spawnRemoteHomeExtensionHetznerWorker({
     remoteRoot,
     workerWorktree,
     workerKernelBinary: resolvedWorkerKernelBinary,
-  }))), {
+  }), {
     stdio: ["ignore", "ignore", "inherit"],
   })
 }

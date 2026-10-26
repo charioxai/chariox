@@ -390,6 +390,10 @@ impl SessionService {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing add_workflow_edge_owned operation signature and explicit context arguments"
+    )]
     pub fn add_workflow_edge_owned(
         &mut self,
         session_id: &str,
@@ -413,6 +417,10 @@ impl SessionService {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing add_workflow_edge_owned_with_sides operation signature and explicit context arguments"
+    )]
     pub fn add_workflow_edge_owned_with_sides(
         &mut self,
         session_id: &str,

@@ -22,6 +22,7 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),
@@ -35,6 +36,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -65,6 +69,9 @@ pub(crate) fn request_session_scope(
             .as_ref()
             .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
         LocalDaemonRequest::AttachToSession(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AttachSessionView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
@@ -138,6 +145,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelActivePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SteerActivePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::SteerQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -168,6 +178,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RespondToInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::RespondToHandoff(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -186,6 +199,15 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::RoomBrowserArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CaptureVisibleRegion(request) => match &request.surface {
+            crate::local::ScreenshotSurface::Room { session_id, .. } => {
+                Some(SessionMembershipScope::SessionId(session_id.clone()))
+            }
+            _ => None,
+        },
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -259,6 +281,9 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetSessionHistoryBlobContents(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetPromptInputHistory(request) => Some(
@@ -339,6 +364,18 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::DetachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::ListWorkflowNotifications(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
         LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -480,6 +517,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::PauseWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -541,12 +581,35 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::AcceptAppHostAction(_)
+        // MD-stack: user-domain admission lives in each authenticated service.
+        LocalDaemonRequest::Notes(_)
+        | LocalDaemonRequest::KernelBrowser(_)
+        | LocalDaemonRequest::OpenUserAppView(_)
+        | LocalDaemonRequest::ListUserAppViews(_)
+        | LocalDaemonRequest::CloseUserAppView(_)
+        | LocalDaemonRequest::GetUserAppViewFrontend(_)
+        | LocalDaemonRequest::CallUserAppView(_)
+        | LocalDaemonRequest::SubscribeUserAppViews(_)
+        | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+        | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::AdjustProjectEnvironment(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
         | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::DetectProjectEnvironment(_)
+        | LocalDaemonRequest::PreviewEnvironmentDiff(_)
+        | LocalDaemonRequest::SaveProjectEnvironmentRevision(_)
+        | LocalDaemonRequest::PlanProjectEnvironment(_)
+        | LocalDaemonRequest::ApplyProjectEnvironment(_)
+        | LocalDaemonRequest::CheckProjectEnvironment(_)
+        | LocalDaemonRequest::GetEnvironmentOperation(_)
+        | LocalDaemonRequest::CancelEnvironmentOperation(_)
+        | LocalDaemonRequest::RetryEnvironmentOperation(_)
+        | LocalDaemonRequest::ExportProjectEnvironment(_)
+        | LocalDaemonRequest::PreviewEnvironmentImport(_)
+        | LocalDaemonRequest::CommitEnvironmentImport(_)
+        | LocalDaemonRequest::GetProjectEnvironment(_)
         | LocalDaemonRequest::GetProjectEnvironmentManifest(_)
         | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
         | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
@@ -596,6 +659,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::JoinSessionInvite(_)
         | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::SetProjectPinned(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)
@@ -613,6 +677,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::GetProviderRun(_)
         | LocalDaemonRequest::GetProviderCatalog(_)
+        | LocalDaemonRequest::GetClientCatalogSnapshot(_)
+        | LocalDaemonRequest::GetClientCatalogRevisions(_)
         | LocalDaemonRequest::GetProviderCommandCatalogs(_)
         | LocalDaemonRequest::ListProviderAccountProfiles(_)
         | LocalDaemonRequest::GetProviderAccountProfile(_)
@@ -690,6 +756,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetCredentialVaultStatus(_)
         | LocalDaemonRequest::LockCredentialVault(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
+        | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)

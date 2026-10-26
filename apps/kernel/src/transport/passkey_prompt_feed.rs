@@ -2,7 +2,7 @@
 //! subscription, session or waiting room, local or relayed, carries the
 //! popups of its user when its connection may submit a passkey, so a
 //! terminal gets them whether or not it is attached to the prompt's session.
-use crate::local::{KernelConnectionClass, PasskeyPrompt};
+use crate::local::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptClosure};
 use crate::runtime::router::CommandRouter;
 use crate::transport::kernel_protocol::KernelEvent;
 
@@ -60,8 +60,31 @@ impl PasskeyPromptFeed {
         if self.sent.as_ref() == Some(&prompts) {
             return None;
         }
+        let closed = self
+            .sent
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|previous| {
+                !prompts.iter().any(|prompt| {
+                    prompt.session_id == previous.session_id
+                        && prompt.interaction_id == previous.interaction_id
+                })
+            })
+            .map(|previous| PasskeyPromptClosure {
+                session_id: previous.session_id.clone(),
+                interaction_id: previous.interaction_id.clone(),
+                kind: previous.kind,
+                expires_at_ms: previous.expires_at_ms,
+                reason: router.passkey_prompt_closure_reason(previous),
+            })
+            .collect();
         self.sent = Some(prompts.clone());
-        Some(KernelEvent::PasskeyPromptsChanged { prompts })
+        Some(KernelEvent::PasskeyPromptsChanged {
+            prompts,
+            kernel_now_ms: crate::session::unix_epoch_ms(),
+            closed,
+        })
     }
 
     /// Resolves once the prompts may have changed since `next_event`; never

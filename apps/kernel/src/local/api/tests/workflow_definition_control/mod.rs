@@ -61,16 +61,6 @@ fn find_python_for_workflow_code_local_api_test() -> Option<PathBuf> {
     })
 }
 
-fn node_supports_workflow_code_typescript(node: &std::path::Path) -> bool {
-    std::process::Command::new(node)
-        .arg("--no-warnings")
-        .arg("--input-type=module")
-        .arg("-e")
-        .arg("const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)")
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 fn workflow_code_test_sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()

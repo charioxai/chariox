@@ -13,6 +13,10 @@ pub struct UserConfigSchemaEntry {
     pub description: String,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing entry operation signature and explicit context arguments"
+)]
 fn entry(
     path: &str,
     value_type: &str,
@@ -74,6 +78,8 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("history.archive.archive_before_delete", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Archive-before-delete flag; deletion flow does not currently consume it."),
         entry("history.archive.delete_operational_after_verified_archive", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Delete-after-archive flag; no archive cleanup flow currently consumes it."),
         entry("history.archive.require_durable_acceptance", "bool", &["true", "false"], true, true, "none", "live", "Require durable archive acceptance for history events."),
+        entry("history.handoff.codex_brief_model", "string", &[], true, true, "none", "live", "Model that writes provider-switch handoff briefs on Codex; unset uses gpt-6-luna."),
+        entry("history.handoff.claude_brief_model", "string", &[], true, true, "none", "live", "Model that writes provider-switch handoff briefs on Claude; unset uses the source or target model."),
         entry("artifacts.operational.backend", "enum", &["filesystem"], true, false, "none", "live", "Operational artifact storage backend."),
         entry("artifacts.operational.root", "string", &[], true, true, "none", "live", "Operational artifact filesystem root."),
         entry("artifacts.operational.index_path", "string", &[], true, true, "none", "live", "Operational artifact SQLite index path."),
@@ -93,7 +99,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("slices.linux.build_image", "enum", &["auto", "always", "never"], true, true, "none", "live", "Linux slice image build policy."),
         entry("slices.linux.extension_dockerfile", "string", &[], true, true, "none", "live", "Optional user Dockerfile layered on top of the Linux slice image."),
         entry("slices.linux.allow_unconfined_seccomp", "bool", &["true", "false"], true, true, "none", "live", "Allow local Docker slices to disable Docker's seccomp profile for Chromium sandbox compatibility."),
-        entry("slices.linux.allow_provider_sandbox_compatibility", "bool", &["true", "false"], true, true, "none", "live", "Allow local Docker slices to relax seccomp, AppArmor, and masked system paths so official provider sandboxes can create their inner namespace."),
+        entry("slices.linux.allow_provider_sandbox_compatibility", "bool", &["true", "false"], true, true, "none", "live", "Explicit opt-in for local Docker slices whose official provider sandbox needs an inner namespace. Adds SYS_ADMIN, NET_ADMIN and SYS_PTRACE and relaxes seccomp, AppArmor, and masked system paths. Defaults to false; set true to enable; recreate the slice after changing this setting. Managed hosts retain their rootless Docker boundary."),
         entry("slices.linux.memory_mb", "u32", &[], true, true, "2048", "live", "Docker memory limit for new Linux slice containers; unset uses the 2048 MiB safety default."),
         entry("slices.linux.cpus", "string", &[], true, true, "none", "live", "Optional Docker CPU limit for new Linux slice containers."),
         entry("slices.linux.disk_layer_mb", "u32", &[], true, true, "none", "live", "Requested writable-layer hard quota for bounded Linux slices; pair with disk_home_mb. Provisioning fails closed until both effective hard quotas are verified."),
@@ -101,8 +107,8 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("slices.linux.idle_timeout_minutes", "u32", &[], true, true, "no_runtime_effect", "unwired", "Future idle-stop timeout for Linux slices."),
         entry("slices.linux.screen_width", "u32", &[], true, true, "none", "live", "Linux slice virtual screen width."),
         entry("slices.linux.screen_height", "u32", &[], true, true, "none", "live", "Linux slice virtual screen height."),
-        entry("kernel_access.grant_default_minutes", "u32", &[], true, true, "runtime_policy", "live", "Default access-grant term in minutes; defaults to 30."),
-        entry("kernel_access.grant_max_minutes", "u32", &[], true, true, "runtime_policy", "live", "Maximum access-grant term in minutes; defaults to 240."),
+        entry("kernel_access.grant_default_minutes", "u32", &[], true, true, "runtime_policy", "live", "Default access-grant term in minutes; defaults to 480."),
+        entry("kernel_access.grant_max_minutes", "u32", &[], true, true, "runtime_policy", "live", "Maximum access-grant term in minutes; defaults to 1440; cannot exceed 1440."),
         entry("kernel_access.grant_extend_notice_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes before expiry to offer an extension; defaults to 5."),
         entry("kernel_access.request_timeout_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes to wait for an access-request answer; defaults to 10."),
         entry("kernel.websocket_host", "string", &[], true, true, "restart_required", "boot", "Kernel websocket bind host."),

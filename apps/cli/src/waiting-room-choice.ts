@@ -90,7 +90,7 @@ export function waitingRoomChoice(
       state.projectSelectionId,
       remote.projects,
       remote.workspaceId,
-    )),
+    ), state.projectNameDraft),
     providerCatalogFallback: providerCatalogIsLocalFallback(catalog),
   }
 }

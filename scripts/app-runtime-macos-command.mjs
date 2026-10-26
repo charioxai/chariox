@@ -1,5 +1,5 @@
 // Separate from Linux's hard-cgroup builder. This runs only trusted build tools.
-import { spawn } from 'node:child_process';
+import { spawnOwned as spawn, signalOwnedProcessGroup } from '../apps/kernel/slice-linux-docker/owned-process-signals.mjs';
 import { fileURLToPath } from 'node:url';
 import { startMacResourceWatch, readMacBuildSample, resourceFailure } from './app-runtime-macos-watch.mjs';
 
@@ -7,12 +7,14 @@ const OWNER = fileURLToPath(new URL('./app-runtime-macos-command.py', import.met
 
 // 'close' can follow 'exit' when another process holds the stdio socket. The
 // PID stops being our signaling authority as soon as exit/reaping is observed.
-export function ownedGroupSignaler(child, send = process.kill) {
+export function ownedGroupSignaler(child, sendGroup = signalOwnedProcessGroup) {
   let exited = false;
   child.once('exit', () => { exited = true; });
   return signal => {
-    if (!exited && child.pid) {
-      try { send(-child.pid, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    if (child.pid === undefined) return; // Spawn failed; there is no process to signal.
+    if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error("invalid owned process identity");
+    if (!exited) {
+      try { sendGroup(child, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; }
     }
   };
 }

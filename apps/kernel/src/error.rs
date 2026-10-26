@@ -1,10 +1,24 @@
 use thiserror::Error;
+mod user_domain_refusal;
+pub(crate) use user_domain_refusal::HostFailure;
+pub use user_domain_refusal::UserDomainRefusalReason;
 
 use crate::provider::ProviderRunState;
 use crate::session::SessionStatus;
 
+// MP-08 / MP-11: code-based explanations contain no provider/parser values.
+// Keep executor, MCP and final socket/cache projections consistent.
+pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
+    match code {
+        "session_not_found" => "session not found; check its name or list available sessions",
+        _ => "external request failed; details are available only in the host terminal",
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("User-domain request refused")]
+    UserDomainRefused { reason: UserDomainRefusalReason },
     #[error("invalid daemon configuration for `{field}`: {message}")]
     InvalidConfig {
         field: &'static str,
@@ -17,6 +31,10 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    /// MP-08 / MP-11: preserve mapped executor semantics for external grants
+    /// and sudo without retaining any diagnostic values or source error.
+    #[error("{}", external_request_failure_message(.code))]
+    ExternalRequestFailed { code: String, retryable: bool },
     #[error(
         "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"
     )]
@@ -25,6 +43,15 @@ pub enum DaemonError {
         code: String,
         message: String,
         retryable: bool,
+    },
+    /// Internal provenance for a definitive cleanup absence reply. The relay
+    /// authenticates/routes the response from its pending request's target;
+    /// this is not a new wire error or an end-to-end signed error payload.
+    #[error("worker `{worker_kernel_id}` reported `{resource_id}` absent ({code})")]
+    RelayPeerCleanupAbsent {
+        worker_kernel_id: String,
+        resource_id: String,
+        code: &'static str,
     },
     #[error("kernel runtime role `{role}` does not allow `{operation}`")]
     KernelRuntimeRoleDenied {
@@ -285,6 +312,14 @@ pub enum DaemonError {
     NoActiveProviderRun { session_id: String },
     #[error("provider run `{provider_run_id}` has no PTY process")]
     PtyProcessNotFound { provider_run_id: String },
+
+    /// Internal proof that a steer was not submitted or was explicitly rejected.
+    /// Unclassified errors may follow a provider write and cannot authorize replay.
+    #[error("provider did not accept steering: {source}")]
+    ProviderPromptSteerRejected {
+        #[source]
+        source: Box<DaemonError>,
+    },
     #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
     ProviderProtocol {
         provider_run_id: String,
@@ -396,6 +431,16 @@ pub enum DaemonError {
 }
 
 impl DaemonError {
+    pub(crate) fn steer_not_submitted(self, steering: bool) -> Self {
+        if steering {
+            Self::ProviderPromptSteerRejected {
+                source: Box::new(self),
+            }
+        } else {
+            self
+        }
+    }
+
     /// True when a worker reports that the prompt it was asked to settle is no
     /// longer active. Relay peers carry that error as text, so the relay
     /// transport message is matched as well as the local variants.

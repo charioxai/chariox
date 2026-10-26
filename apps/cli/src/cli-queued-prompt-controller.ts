@@ -22,6 +22,9 @@ import {
   selectedQueuedPromptIndex,
 } from "@chariox/kernel-client/queued-prompt-selection"
 
+import { syncActivePromptTranscriptEntriesForAgent } from "@chariox/kernel-client/active-prompt-transcript-state"
+import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
+
 type AnyFn = (...args: any[]) => any
 
 export type CliQueuedPromptControllerDeps = Record<string, any> & {
@@ -43,7 +46,15 @@ export function createCliQueuedPromptController(deps: CliQueuedPromptControllerD
 
   function syncQueuedPromptsForSession(session: RuntimeSession) {
     let changed = false
-    const byAgent = syncQueuedPromptEntriesByAgent(deps.agentPaneEntries(), session)
+    const byAgent = syncQueuedPromptEntriesByAgent<TranscriptEntry>(deps.agentPaneEntries(), session)
+    for (const agent of session.agents) {
+      const active = syncActivePromptTranscriptEntriesForAgent<TranscriptEntry>(byAgent.entriesByAgent[agent.id] ?? [], session, agent.id)
+      if (active.changed) {
+        byAgent.changed = true
+        byAgent.entriesByAgent[agent.id] = active.entries
+        byAgent.previews[agent.id] = formatTranscriptPreview(active.entries)
+      }
+    }
     if (byAgent.changed) {
       changed = true
       deps.setAgentPaneEntries(reconcile(byAgent.entriesByAgent))
@@ -61,14 +72,15 @@ export function createCliQueuedPromptController(deps: CliQueuedPromptControllerD
       }
       return
     }
-    const visibleSync = syncQueuedPromptEntriesForAgent(
+    const visibleSync = syncQueuedPromptEntriesForAgent<TranscriptEntry>(
       deps.transcriptEntryProjectionController.renderableEntries(),
       session,
       visibleAgentId,
     )
-    if (visibleSync.changed) {
+    const activeSync = syncActivePromptTranscriptEntriesForAgent<TranscriptEntry>(visibleSync.entries, session, visibleAgentId)
+    if (visibleSync.changed || activeSync.changed) {
       changed = true
-      deps.replaceTranscriptEntries(visibleSync.entries, visibleAgentId)
+      deps.replaceTranscriptEntries(activeSync.entries, visibleAgentId)
     }
     if (changed) {
       deps.renderAgentInteractions()

@@ -20,6 +20,71 @@ const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
 
 type PtyOutputFilter = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
 
+// MP-08 / MP-10 / MP-11: retain the terminal descriptor in the ordered input
+// writer so cancelling an owned, unacknowledged composer also discards unread
+// prompt/Enter bytes. Provider-native drafts never use this operation.
+#[cfg(unix)]
+fn clone_input_terminal(master: &dyn MasterPty) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::fd::BorrowedFd;
+    master
+        .as_raw_fd()
+        .map(|fd| {
+            // The master remains alive throughout this clone.
+            unsafe { BorrowedFd::borrow_raw(fd) }
+                .try_clone_to_owned()
+                .map(Into::into)
+        })
+        .transpose()
+}
+
+#[cfg(not(unix))]
+fn clone_input_terminal(_master: &dyn MasterPty) -> std::io::Result<Option<std::fs::File>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn discard_unread_input(terminal: Option<&std::fs::File>) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let terminal =
+        terminal.ok_or_else(|| std::io::Error::other("PTY input flush is unavailable"))?;
+    // Flush the slave's unread input, never the master's input (provider output).
+    // Open only for this operation so provider exit still produces PTY EOF.
+    #[cfg(target_os = "linux")]
+    let slave_fd = unsafe {
+        libc::ioctl(
+            terminal.as_raw_fd(),
+            libc::TIOCGPTPEER,
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let slave_fd = {
+        static NAME_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = NAME_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("PTY name lock is poisoned"))?;
+        let name = unsafe { libc::ptsname(terminal.as_raw_fd()) };
+        if name.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        unsafe { libc::open(name, libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) }
+    };
+    if slave_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+    if unsafe { libc::tcflush(slave.as_raw_fd(), libc::TCIFLUSH) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()> {
+    Err(std::io::Error::other("PTY input flush is unavailable"))
+}
+
 #[cfg(unix)]
 fn disable_pty_input_echo(
     master: &dyn MasterPty,
@@ -89,6 +154,7 @@ pub(crate) struct PtyInputWriter {
 struct PtyInputRequest {
     provider_run_id: String,
     bytes: Vec<u8>,
+    discard_unread: bool,
     completion_tx: Option<SyncSender<Result<(), String>>>,
 }
 
@@ -418,6 +484,11 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
         disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
+        let input_terminal =
+            clone_input_terminal(pair.master.as_ref()).map_err(|error| DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            })?;
 
         let mut command = CommandBuilder::new(request.program);
         for arg in request.args {
@@ -477,7 +548,13 @@ impl PtyManager {
             .name(format!("chariox-pty-writer-{}", request.provider_run_id))
             .stack_size(PTY_WRITER_STACK_BYTES)
             .spawn(move || {
-                run_pty_writer(writer, input_rx, writer_process_key, writer_output_signal)
+                run_pty_writer(
+                    writer,
+                    input_terminal,
+                    input_rx,
+                    writer_process_key,
+                    writer_output_signal,
+                )
             });
         if let Err(error) = writer_thread {
             let _ = child.kill();
@@ -607,6 +684,7 @@ impl PtyInputWriter {
         self.send_request(PtyInputRequest {
             provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
+            discard_unread: false,
             completion_tx: Some(completion_tx),
         })?;
         completion_rx
@@ -625,6 +703,16 @@ impl PtyInputWriter {
         self.send_request(PtyInputRequest {
             provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
+            discard_unread: false,
+            completion_tx: None,
+        })
+    }
+
+    pub(crate) fn enqueue_owned_composer_abort(&self, input: &[u8]) -> Result<(), DaemonError> {
+        self.send_request(PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
+            bytes: input.to_vec(),
+            discard_unread: true,
             completion_tx: None,
         })
     }
@@ -647,15 +735,20 @@ impl PtyInputWriter {
 
 fn run_pty_writer(
     mut writer: Box<dyn Write + Send>,
+    input_terminal: Option<std::fs::File>,
     input_rx: Receiver<PtyInputRequest>,
     process_key: String,
     output_signal: PtyOutputSignal,
 ) {
     while let Ok(request) = input_rx.recv() {
         output_signal.prefer_alias(&process_key, &request.provider_run_id);
-        let result = writer
-            .write_all(&request.bytes)
-            .and_then(|_| writer.flush());
+        let result = if request.discard_unread {
+            discard_unread_input(input_terminal.as_ref())
+        } else {
+            Ok(())
+        }
+        .and_then(|_| writer.write_all(&request.bytes))
+        .and_then(|_| writer.flush());
         let result = result.map_err(|error| error.to_string());
         let failed = result.is_err();
         if let Some(completion_tx) = request.completion_tx {
@@ -761,6 +854,17 @@ impl PtyManager {
     /// public output queue so launch-failure cleanup cannot erase the only
     /// useful Bubblewrap/provider diagnostic.
     pub(crate) fn early_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
+        self.exited_output_diagnostic(provider_run_id).or_else(|| {
+            self.poll_process_state(provider_run_id)
+                .ok()?
+                .is_exited()
+                .then(|| "managed provider process exited before endpoint readiness".to_string())
+        })
+    }
+
+    /// A bounded retained tail, including when the output pump already drained
+    /// the queue. An empty exit must not manufacture an endpoint-startup cause.
+    pub(crate) fn exited_output_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
         let state = self.poll_process_state(provider_run_id).ok()?;
         if !state.is_exited() {
             return None;
@@ -774,11 +878,7 @@ impl PtyManager {
         let bytes = snapshot_pty_diagnostic_tail(&process.diagnostic_tail);
         let raw = String::from_utf8_lossy(&bytes);
         let diagnostic = crate::provider::sanitize_provider_diagnostic(&raw);
-        Some(if diagnostic.is_empty() {
-            "managed provider process exited before endpoint readiness".to_string()
-        } else {
-            diagnostic
-        })
+        (!diagnostic.is_empty()).then_some(diagnostic)
     }
 
     pub fn poll_process_state(
@@ -1523,7 +1623,9 @@ mod tests {
         impl Drop for DescendantGuard {
             fn drop(&mut self) {
                 if let Some(pid) = self.0 {
-                    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                    if let Some(pid) = i32::try_from(pid).ok().filter(|pid| *pid > 1) {
+                        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+                    }
                 }
             }
         }
@@ -1598,10 +1700,11 @@ mod tests {
 
         // MP-08/MP-10: an abrupt native harness exit must not leave its children alive.
         let leader = manager.process_id(provider_run_id).unwrap().unwrap();
-        assert_eq!(
-            unsafe { libc::kill(leader as libc::pid_t, libc::SIGKILL) },
-            0
-        );
+        let leader = i32::try_from(leader)
+            .ok()
+            .filter(|pid| *pid > 1)
+            .expect("fixture PTY leader must be a positive process PID");
+        assert_eq!(unsafe { libc::kill(leader, libc::SIGKILL) }, 0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !manager
             .poll_process_state(provider_run_id)
@@ -1651,9 +1754,9 @@ mod tests {
         impl Drop for Probe {
             fn drop(&mut self) {
                 if matches!(self.0.try_wait(), Ok(None)) {
-                    unsafe {
-                        libc::kill(-(self.0.id() as i32), libc::SIGKILL);
-                    }
+                    // The fixture's child and OS descendants belong to this
+                    // run; positive-PID traversal avoids process-group signals.
+                    crate::runtime::process_health::terminate_process_tree(self.0.id());
                     let _ = self.0.wait();
                 }
             }
@@ -1716,6 +1819,52 @@ mod tests {
         manager
             .remove_process(run.id())
             .expect("PTY process should stop");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_composer_abort_discards_unread_prompt_but_keeps_provider_output() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut master_fd = -1;
+        let mut slave_fd = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master_fd,
+                    &mut slave_fd,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+        let mut slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+        let mut attrs = std::mem::MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), attrs.as_mut_ptr()) },
+            0
+        );
+        let mut attrs = unsafe { attrs.assume_init() };
+        unsafe { libc::cfmakeraw(&mut attrs) };
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attrs) },
+            0
+        );
+        master.write_all(b"owned unacknowledged prompt\r").unwrap();
+        slave.write_all(b"retained provider output").unwrap();
+        // Wait for the PTY line discipline, without allowing the provider to read.
+        thread::sleep(Duration::from_millis(30));
+        super::discard_unread_input(Some(&master)).unwrap();
+        master.write_all(b"\x03\x15").unwrap();
+        let mut abort = [0; 2];
+        slave.read_exact(&mut abort).unwrap();
+        assert_eq!(abort, [3, 21]);
+        let mut output = [0; 24];
+        master.read_exact(&mut output).unwrap();
+        assert_eq!(&output, b"retained provider output");
     }
 
     #[test]
@@ -1855,6 +2004,7 @@ mod tests {
             move || {
                 run_pty_writer(
                     Box::new(probe),
+                    None,
                     input_rx,
                     process_key.to_string(),
                     output_signal,
@@ -1866,6 +2016,7 @@ mod tests {
             .send(PtyInputRequest {
                 provider_run_id: first_run.to_string(),
                 bytes: b"first input".to_vec(),
+                discard_unread: false,
                 completion_tx: Some(completion_tx),
             })
             .expect("probe input should queue");

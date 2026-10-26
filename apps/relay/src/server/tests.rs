@@ -1,8 +1,12 @@
+mod binary_event;
+mod client_renewal;
 mod daemon;
 mod display;
+mod display_resume_connect;
 mod metadata;
 mod peer;
 mod registry;
+mod renewal;
 mod routing;
 mod runtime_client;
 mod slice_identity;

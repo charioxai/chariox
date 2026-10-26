@@ -63,12 +63,10 @@ test("installs matching MCP and skill capabilities on a relay-addressed Hetzner 
   assert.deepEqual(workerRequests, homeRequests)
   assert.equal(
     workerRequests[0].InstallMcpServer.config.transport.command,
-    "node",
-  )
-  assert.equal(
-    workerRequests[0].InstallMcpServer.config.transport.args[0],
     synced[0].mcpServerPath,
   )
+  // MP-11: the scoped executable fixture is the command; no generic Node argv.
+  assert.deepEqual(workerRequests[0].InstallMcpServer.config.transport.args, [])
   assert.equal(workerRequests[1].InstallSkill.source_path, synced[0].skillSource)
 
   await cleanupNativeDrillCapabilities(workspace, installed)

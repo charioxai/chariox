@@ -1,5 +1,9 @@
+#[cfg(test)]
+pub(crate) use account_credential::provider_account_credential_uses_vault;
 use std::time::Duration;
 
+mod utility_admission;
+pub(crate) use utility_admission::ProviderUtilityAdmission;
 mod account_credential;
 mod claude;
 mod claude_runtime;
@@ -26,12 +30,16 @@ mod opencode;
 mod opencode_binding;
 mod opencode_client;
 mod opencode_runtime;
+pub(crate) mod output_ready;
 mod process_info;
 mod prompt_signals;
+mod public_run;
 mod registry;
 pub(crate) mod renewal_failure;
+mod reported_transcript_file;
 mod run_actor;
 mod runtime_run;
+pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
 mod termination;
@@ -41,16 +49,21 @@ mod workspace_write_fence;
 
 pub(crate) use account_credential::{
     launch_uses_vault_credential, provider_account_credential_id,
-    provider_account_credential_registered, provider_account_credential_uses_vault,
-    resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
-    store_provider_account_credential, validate_provider_account_credential_input,
-    CLAUDE_OAUTH_TOKEN_ENV,
+    provider_account_credential_registered, resolve_provider_account_credentials,
+    resolve_provider_account_credentials_for_launch, store_provider_account_credential,
+    validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
-pub(crate) use claude::probe_claude_account_usage;
+pub(crate) use claude::claude_provider_catalog_with_environment;
+pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
+pub(crate) use claude::{
+    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
+    fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
-    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+    probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
+    ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
@@ -78,9 +91,10 @@ pub use command_catalog::{
 };
 pub(crate) use credential_environment::ProviderCredentialEnvironment;
 pub(crate) use external_observation::{
-    clean_observed_turn_text, clean_provider_prompt, normalized_observed_prompt_text,
-    observed_role, text_from_content, ExternalProviderObservationPolicy,
-    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
+    claude_native_pasted_prompt_body, clean_observed_turn_text, clean_provider_prompt,
+    normalized_observed_prompt_text, observed_role, text_from_content,
+    ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
+    ObservedExternalProviderTurnRole,
 };
 pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
@@ -97,8 +111,8 @@ pub(crate) use managed_isolation::{
     managed_isolated_utility_command, managed_isolated_utility_launch,
     managed_provider_control_env_remove, managed_provider_isolation_env_remove,
     managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
-    provider_reported_path_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
-    MANAGED_SLICE_SERVICE_ROOT_ENV,
+    provider_account_environment_on_kernel, provider_reported_transcript_on_kernel,
+    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
@@ -144,7 +158,8 @@ pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
 pub(crate) use termination::{
-    provider_launch_failure_diagnostic, redact_provider_diagnostic, sanitize_provider_diagnostic,
+    provider_exit_before_delivery_message, provider_launch_failure_diagnostic,
+    redact_provider_diagnostic, sanitize_provider_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
@@ -179,6 +194,75 @@ pub(crate) fn canonical_provider_family(provider: &str) -> Option<&'static str> 
         "claude" | "claude-headless" | "claude-p" => Some("claude"),
         _ => None,
     }
+}
+
+/// First-party harness windows: Codex's effective 258,400-token window and
+/// current Claude Code defaults. Claude `/context` and the official model
+/// configuration docs verify the alias and explicit-ID table below.
+pub(crate) fn model_context_window_tokens(provider: &str, model: &str) -> u64 {
+    match canonical_provider_family(provider) {
+        Some("codex") => 258_400,
+        Some("claude") => {
+            let normalized = model.trim().to_ascii_lowercase();
+            let model = match normalized.split_once('/') {
+                Some((namespace, model))
+                    if canonical_provider_family(namespace) == Some("claude") =>
+                {
+                    model
+                }
+                _ => normalized.as_str(),
+            };
+            // Current first-party Claude Code defaults, verified with `/context`.
+            // Older explicit IDs stay 200k unless extended context is selected.
+            if model.ends_with("[1m]")
+                || matches!(model, "default" | "sonnet" | "opus" | "opusplan" | "fable")
+                || [
+                    "claude-sonnet-5",
+                    "claude-opus-4-7",
+                    "claude-opus-4-8",
+                    "claude-opus-5",
+                    "claude-fable-5",
+                ]
+                .iter()
+                .any(|prefix| model == *prefix || model.starts_with(&format!("{prefix}-")))
+            {
+                1_000_000
+            } else {
+                200_000
+            }
+        }
+        _ => 128_000,
+    }
+}
+
+/// Apply the account's native CLI cap to both the switch guard and its packet.
+pub(crate) fn effective_model_context_window_tokens(
+    provider: &str,
+    model: &str,
+    disable_1m: bool,
+) -> u64 {
+    let window = model_context_window_tokens(provider, model);
+    if disable_1m && canonical_provider_family(provider) == Some("claude") {
+        window.min(200_000)
+    } else {
+        window
+    }
+}
+
+pub(crate) fn claude_1m_context_disabled(run: &RuntimeProviderRun) -> bool {
+    run.pty_env()
+        .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+        .cloned()
+        .or_else(|| {
+            (!run
+                .pty_env_remove()
+                .iter()
+                .any(|key| key == "CLAUDE_CODE_DISABLE_1M_CONTEXT"))
+            .then(|| std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT").ok())
+            .flatten()
+        })
+        .as_deref()
+        == Some("1")
 }
 
 pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
@@ -308,6 +392,9 @@ pub(crate) enum ProviderUtilityExecutionPolicy {
     ReadOnlyDiscovery,
     /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
     MetadataOnlyDiscovery,
+    /// A provider command on the run's own session, such as Claude's
+    /// `/compact`: sent bare, and it answers with no assistant text.
+    SessionCommand,
 }
 
 impl ProviderUtilityExecutionPolicy {
@@ -317,6 +404,11 @@ impl ProviderUtilityExecutionPolicy {
 
     pub(crate) fn is_read_only_discovery(self) -> bool {
         matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
+    }
+
+    /// The prompt goes out as given, without the kernel's turn context.
+    pub(crate) fn sends_bare_prompt(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery | Self::SessionCommand)
     }
 }
 
@@ -328,14 +420,48 @@ pub(crate) fn run_blocking_provider_utility_prompt(
     operation: &'static str,
     policy: ProviderUtilityExecutionPolicy,
 ) -> Result<String, crate::error::DaemonError> {
+    run_blocking_provider_utility_prompt_with_admission(
+        run,
+        visible_user_prompt,
+        hidden_system_context,
+        timeout,
+        operation,
+        policy,
+        None,
+    )
+}
+
+pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
+    run: &RuntimeProviderRun,
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    admission: Option<ProviderUtilityAdmission>,
+) -> Result<String, crate::error::DaemonError> {
     match run.adapter_key() {
-        "codex" => codex_runtime::run_codex_utility_prompt(
-            run,
-            visible_user_prompt,
-            hidden_system_context,
-            timeout,
-            policy,
-        ),
+        "codex" => match admission {
+            Some(admission) => codex_runtime::run_codex_utility_prompt_with_admission(
+                run,
+                visible_user_prompt,
+                hidden_system_context,
+                timeout,
+                policy,
+                Some(admission),
+            ),
+            None => codex_runtime::run_codex_utility_prompt(
+                run,
+                visible_user_prompt,
+                hidden_system_context,
+                timeout,
+                policy,
+            ),
+        },
+        "opencode" if admission.is_some() => Err(crate::error::DaemonError::LocalTransport {
+            operation,
+            message: "protected utility submission is unavailable for the OpenCode adapter".into(),
+        }),
         "opencode" => opencode_binding::run_opencode_utility_prompt(
             run,
             visible_user_prompt,
@@ -372,6 +498,54 @@ mod tests {
         ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
         RuntimeProviderRun,
     };
+
+    #[test]
+    fn claude_provider_mode_namespaces_keep_the_same_context_window() {
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            for model in ["sonnet", "claude-sonnet-5-5", "haiku"] {
+                let qualified = format!("{provider}/{model}");
+                assert_eq!(
+                    super::model_context_window_tokens(provider, &qualified),
+                    super::model_context_window_tokens(provider, model),
+                    "MP-08 MP-10 MP-11 {qualified} must retain its native window"
+                );
+            }
+        }
+        assert_eq!(
+            super::model_context_window_tokens("claude", "codex/sonnet"),
+            200_000
+        );
+    }
+
+    #[test]
+    fn claude_context_windows_match_official_cli_context_probes() {
+        for model in [
+            "sonnet",
+            "opus",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-opus-4-7",
+            "claude/sonnet[1m]",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                1_000_000,
+                "{model}"
+            );
+        }
+        for model in [
+            "haiku",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                200_000,
+                "{model}"
+            );
+        }
+    }
 
     #[test]
     fn claude_headless_provider_mode_is_provider_policy() {

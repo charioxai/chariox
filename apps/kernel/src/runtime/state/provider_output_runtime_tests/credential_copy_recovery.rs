@@ -7,6 +7,11 @@ async fn mp08_mp10_mp11_fake_oauth_copy_notice_login_and_resume_stay_on_worker()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_mp10_mp11_sudo_recovery_opens_login_without_another_permission_choice() {
+    isolated_case(RecoveryCase::SudoPrompt).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker() {
     isolated_case(RecoveryCase::Startup).await;
 }
@@ -24,6 +29,7 @@ async fn mp08_mp10_mp11_login_relaunch_stall_settles_prompt_without_late_spawn()
 #[derive(Clone, Copy)]
 enum RecoveryCase {
     Prompt,
+    SudoPrompt,
     Startup,
     RelaunchFailure,
     RelaunchStall,
@@ -35,6 +41,9 @@ async fn isolated_case(recovery: RecoveryCase) {
     let case = match recovery {
         RecoveryCase::Prompt => {
             "mp08_mp10_mp11_fake_oauth_copy_notice_login_and_resume_stay_on_worker"
+        }
+        RecoveryCase::SudoPrompt => {
+            "mp08_mp10_mp11_sudo_recovery_opens_login_without_another_permission_choice"
         }
         RecoveryCase::Startup => {
             "mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker"
@@ -104,6 +113,7 @@ async fn isolated_case(recovery: RecoveryCase) {
 }
 
 async fn run_case(recovery: RecoveryCase) {
+    let sudo_recovery = matches!(recovery, RecoveryCase::SudoPrompt);
     let startup_failure = matches!(recovery, RecoveryCase::Startup);
     let relaunch_failure = matches!(recovery, RecoveryCase::RelaunchFailure);
     let relaunch_stall = matches!(recovery, RecoveryCase::RelaunchStall);
@@ -235,6 +245,43 @@ async fn run_case(recovery: RecoveryCase) {
         .get_run_for_agent(session.id(), agent.id())
         .unwrap();
     assert_eq!(run.account_profile(), copied.profile_id);
+    if sudo_recovery {
+        std::fs::write(target_home.join("synthetic-hold-sudo"), "hold").unwrap();
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent.id())
+            .unwrap();
+        let entry = crate::local::KernelSudoTurn {
+            entry_id: "sudo:login-recovery".into(),
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+            owner_user_id: session.owner_user_id().into(),
+            terminal_id: attachments[0].id().into(),
+            requester: None,
+            prompt_id: Some(prompt.id().into()),
+            provider_run_id: Some(run.id().into()),
+            task_id: None,
+            duration_minutes: 60,
+            expires_at_ms: Some(crate::session::unix_epoch_ms() + 3_600_000),
+            revision: 1,
+            warning_sent: false,
+            deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(3600)),
+            placement: None,
+        };
+        assert!(runtime.owned.prompt_state_owner.bind_sudo_turn(
+            &session,
+            agent.id(),
+            prompt.id(),
+            &entry.entry_id,
+        ));
+        runtime
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .insert(entry.entry_id.clone(), entry);
+    }
     if let Some(started) = failed_launch.as_ref() {
         runtime
             .fail_provider_launch(
@@ -250,7 +297,7 @@ async fn run_case(recovery: RecoveryCase) {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if startup_failure {
-                runtime.publish_credential_copy_notices(session.id());
+                runtime.publish_credential_copy_notices(session.id()).await;
             } else {
                 let _ = runtime
                     .pump_owned_provider_output(
@@ -267,6 +314,10 @@ async fn run_case(recovery: RecoveryCase) {
                 .get_session(session.id())
                 .unwrap();
             if let Some(interaction) = snapshot.active_interaction_for_agent(agent.id()) {
+                if sudo_recovery {
+                    assert!(interaction.provider_login().is_some(), "already authorized recovery must open official login, not another Log in choice");
+                    break;
+                }
                 assert_eq!(interaction.title(), Some("Log in to Codex on this machine"));
                 runtime
                     .resolve_runtime_interaction(session.id(), interaction.id(), "login", None)
@@ -512,6 +563,41 @@ async fn run_case(recovery: RecoveryCase) {
         .await
         .expect("the same admitted turn should resume after login");
     }
+    if sudo_recovery {
+        // MP-08 / MP-10 / MP-11: completing login must preserve the existing
+        // exact-prompt grant on the real replacement run, including its effect.
+        let replacement = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .unwrap();
+        assert_ne!(replacement.id(), run.id());
+        let turn = runtime
+            .sudo_for_provider_run(replacement.id())
+            .expect("login recovery dropped the approved sudo work");
+        let request =
+            crate::local::LocalDaemonRequest::AliasSession(crate::local::AliasSessionRequest {
+                session_id: session.id().into(),
+                alias: "sudo-after-login".into(),
+            });
+        runtime
+            .authorize_sudo_request(&turn.entry_id, &request)
+            .unwrap();
+        let scoped = runtime.with_external_command_authority(Some((&turn.entry_id, &request)));
+        scoped
+            .alias_session(session.id(), "sudo-after-login".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap()
+                .alias(),
+            Some("sudo-after-login")
+        );
+    }
     assert_eq!(std::fs::read(&source_auth).unwrap(), original);
     assert!(runtime
         .owned
@@ -531,6 +617,11 @@ async fn run_case(recovery: RecoveryCase) {
                 .filter(|n| n.message.contains("were copied from"))
                 .count(),
             1
+        );
+        assert_eq!(
+            notices.iter().filter(|n| n.message.contains("Signed in to Codex on daemon-test")).count(),
+            1,
+            "MP-08/MP-11: the execution kernel must project its verified login result to every terminal"
         );
     }
     assert!(registry

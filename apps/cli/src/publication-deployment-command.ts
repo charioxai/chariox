@@ -8,17 +8,12 @@ import {
   type PublicationDeploymentMode,
   type PublicationDeploymentSummary,
 } from "./publication-deployment-api.js"
-import {
-  loadPreferences,
-  relayCloudProfile,
-} from "./preferences.js"
+import { loadCloudClientControlProfile } from "./cloud-client.js"
+import type { CloudControlProfile } from "./cloud-control-auth.js"
 
 export async function runPublicationDeploymentCommand(argv: readonly string[]): Promise<boolean> {
   if (argv[0] !== "publication") return false
-  const profile = relayCloudProfile(await loadPreferences())
-  if (!profile) {
-    throw new Error("cloud is not linked. Run /cloud login from the TUI before deploying publications.")
-  }
+  const profile = await loadCloudClientControlProfile()
   const command = argv[1]
   if (command === "deploy") {
     const packagePath = argv[2]
@@ -46,7 +41,7 @@ export async function runPublicationDeploymentCommand(argv: readonly string[]): 
 }
 
 async function runDeploymentsCommand(
-  profile: NonNullable<ReturnType<typeof relayCloudProfile>>,
+  profile: CloudControlProfile,
   argv: readonly string[],
 ): Promise<void> {
   const command = argv[0] ?? "list"

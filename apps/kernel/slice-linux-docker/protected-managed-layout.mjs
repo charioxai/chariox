@@ -212,8 +212,17 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       const existing = receipt(container)
       if (existing) generations.resolveInitialization(container, existing)
       if (action !== "restore-state" && existing) {
-        environment.CHARIOX_SLICE_HOME_VOLUME = this.homeVolume(container)
-        return
+        const home = this.homeVolume(container)
+        const volumes = docker(["volume", "ls", "--format", "{{.Name}}"])
+        if (volumes.status !== 0) refuse()
+        if (String(volumes.stdout).split("\n").includes(home)) {
+          environment.CHARIOX_SLICE_HOME_VOLUME = home
+          return
+        }
+        // A retained receipt is not proof that its Docker home still exists.
+        // Recreate only after both home and container are absent; an existing
+        // container with a missing home requires explicit recovery.
+        if (containerInfo(container)) refuse()
       }
       const image = docker(["image", "inspect", environment.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"])
       if (image.status !== 0) refuse()
@@ -224,7 +233,10 @@ export function createManagedLayoutController({root, sourceDigest, docker, dataO
       const pending = prior && prior.phase !== "resolved"
         ? generations.prepareRollback({container, archiveDigest, imageId: images[0].Id,
           origin: readProtectedLayoutReceipt(join(root, "capture-origins"), originKey(prior.oldContainerId, archiveDigest))})
-        : generations.begin({container, oldHomeVolume: this.homeVolume(container), oldContainerId: existing?.containerId,
+        : generations.begin({container, oldHomeVolume: this.homeVolume(container),
+          // Normal Start recreates an absent container, without a kernel backup
+          // transaction. Resolve it through the existing initialization barrier.
+          oldContainerId: action === "restore-state" ? existing?.containerId : undefined,
           archiveDigest, imageId: images[0].Id, targetOrigin: captureOrigin(existing ? container : undefined, archiveDigest)})
       environment.CHARIOX_SLICE_HOME_VOLUME = pending.newHomeVolume
       environment.CHARIOX_SLICE_RESTORE_GENERATION = pending.token

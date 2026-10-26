@@ -1,6 +1,7 @@
 import { mkdir, realpath, stat, statfs } from "node:fs/promises";
 import path from "node:path";
-import { assertNotCancelled } from "./browser-controller-actions.mjs";
+import { assertNotCancelled, performBrowserAction } from "./browser-controller-actions.mjs";
+import { assertBrowserFramesUnchanged } from "./browser-controller-frames.mjs";
 import { stageBrowserUploadFiles } from "./browser-controller-upload-staging.mjs";
 
 const MAX_UPLOAD_FILES = 20;
@@ -166,6 +167,7 @@ export async function uploadBrowserFiles({
   assertContext = async () => {},
   signal,
   stageUploads = stageBrowserUploadFiles,
+  clickChooser = performBrowserAction,
 }) {
   assertNotCancelled(signal);
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
@@ -225,6 +227,10 @@ export async function uploadBrowserFiles({
       error?.code === "browser_upload_staging_unavailable" ? error.message : "upload staging could not prepare private files");
   });
   let objectId;
+  let chooserIntercepted = false;
+  let chooserWait;
+  let assertChooserContext = async () => {};
+  let chooserDocument;
   try {
     await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
@@ -242,8 +248,56 @@ export async function uploadBrowserFiles({
       awaitPromise: false,
     }, sessionId);
     if (inspected?.exceptionDetails || inspected?.result?.value !== "file") {
-      if (inspected?.result?.value === "invalid") throw invalidUpload("browser upload requires a file input");
-      throw staleFileInput();
+      if (inspected?.result?.value === "invalid") {
+        // MP-08/MP-10/MP-11: only a real chooser opened by the observed,
+        // actionable control can bind its hidden input. Never guess a selector.
+        await assertContext();
+        const tree = await connection.send("Page.getFrameTree", {}, sessionId);
+        if (tree?.frameTree?.frame?.loaderId !== documentId) throw staleFileInput();
+        chooserDocument = await owningDocument(connection, sessionId, objectId);
+        if (!findFrame(tree.frameTree, chooserDocument.frameId)) throw staleFileInput();
+        // Local child frames share this renderer session and ordinary backend
+        // refs. Fence the owning loader and every ancestor, plus any isolated
+        // renderer parents supplied by withBrowserActionFrame.
+        assertChooserContext = async () => {
+          await assertContext();
+          await assertBrowserFramesUnchanged(connection, [{ sessionId, tree: tree.frameTree }]);
+        };
+        await assertChooserContext();
+        await connection.send("Runtime.releaseObject", { objectId }, sessionId);
+        objectId = undefined;
+        await connection.send("Page.setInterceptFileChooserDialog", { enabled: true }, sessionId);
+        chooserIntercepted = true;
+        const abort = () => chooserWait?.cancel();
+        signal?.addEventListener("abort", abort, { once: true });
+        let event;
+        try {
+          await clickChooser({ connection, sessionId, targetId, documentId, nodeRef,
+            action: { kind: "click" }, assertContext: assertChooserContext, signal,
+            withInput: operation => {
+              chooserWait = connection.waitForEvent("Page.fileChooserOpened", 5_000, sessionId);
+              return operation();
+            } });
+          event = await chooserWait?.promise;
+        } finally { signal?.removeEventListener("abort", abort); }
+        assertNotCancelled(signal);
+        await assertContext();
+        await assertCurrentDocument(connection, sessionId, targetId, documentId);
+        await assertChooserContext();
+        if (event?.sessionId !== sessionId || event?.params?.frameId !== chooserDocument.frameId
+            || !Number.isSafeInteger(event?.params?.backendNodeId) || event.params.backendNodeId <= 0
+            || !["selectSingle", "selectMultiple"].includes(event.params.mode)
+            || (event.params.mode === "selectSingle" && files.length !== 1)) {
+          throw invalidUpload("observed control did not open a matching bounded file chooser");
+        }
+        const chosen = await connection.send("DOM.resolveNode", { backendNodeId: event.params.backendNodeId }, sessionId);
+        objectId = chosen?.object?.objectId;
+        if (!objectId) throw staleFileInput();
+        const inputDocument = await owningDocument(connection, sessionId, objectId);
+        if (inputDocument.frameId !== chooserDocument.frameId || inputDocument.backendNodeId !== chooserDocument.backendNodeId) throw staleFileInput();
+      } else {
+        throw staleFileInput();
+      }
     }
     // Resolving and inspecting the node cross asynchronous renderer calls.
     // Recheck both the owning document and its parents before exposing files.
@@ -252,7 +306,9 @@ export async function uploadBrowserFiles({
     assertNotCancelled(signal);
     // Dispatch may have succeeded even if its reply is lost. Retain these
     // browser-owned File backing bytes across CDP/controller reconnects.
+    await assertChooserContext();
     await staged.markExposed();
+    await assertChooserContext();
     await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
     assertNotCancelled(signal);
@@ -265,6 +321,8 @@ export async function uploadBrowserFiles({
     if (error?.code !== "browser_cdp_command_failed") throw error;
     throw staleFileInput();
   } finally {
+    chooserWait?.cancel();
+    if (chooserIntercepted) await connection.send("Page.setInterceptFileChooserDialog", { enabled: false }, sessionId).catch(() => {});
     if (objectId) await connection.send("Runtime.releaseObject", { objectId }, sessionId).catch(() => {});
     await staged.discard();
   }
@@ -274,6 +332,34 @@ export async function uploadBrowserFiles({
     file_count: files.length,
     total_bytes: totalBytes,
   };
+}
+
+// MP-08/MP-10/MP-11: CDP resolves the observed control's actual Document,
+// without URL/origin guessing or trusting a page-selected frame identifier.
+async function owningDocument(connection, sessionId, objectId) {
+  const resolved = await connection.send("Runtime.callFunctionOn", {
+    objectId, functionDeclaration: "function() { return this.isConnected ? this.ownerDocument : null; }",
+    returnByValue: false, awaitPromise: false,
+  }, sessionId);
+  const documentObject = resolved?.result?.objectId;
+  if (resolved?.exceptionDetails || !documentObject) throw staleFileInput();
+  try {
+    const { node } = await connection.send("DOM.describeNode", { objectId: documentObject }, sessionId);
+    if (!Number.isSafeInteger(node?.backendNodeId) || node.backendNodeId <= 0) throw staleFileInput();
+    // DOM.describeNode does not expose frameId on Document nodes. The
+    // multi-document snapshot binds that Document backend ID to its CDP frame.
+    const snapshot = await connection.send("DOMSnapshot.captureSnapshot", { computedStyles: [] }, sessionId);
+    const document = snapshot.documents?.find(doc => doc.nodes?.backendNodeId?.[0] === node.backendNodeId);
+    const frameId = snapshot.strings?.[document?.frameId];
+    if (typeof frameId !== "string" || !frameId) throw staleFileInput();
+    return { frameId, backendNodeId: node.backendNodeId };
+  } finally {
+    await connection.send("Runtime.releaseObject", { objectId: documentObject }, sessionId).catch(() => {});
+  }
+}
+function findFrame(tree, frameId) {
+  if (tree?.frame?.id === frameId) return tree.frame;
+  for (const child of tree?.childFrames ?? []) { const frame = findFrame(child, frameId); if (frame) return frame; }
 }
 
 function staleFileInput() {

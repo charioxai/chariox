@@ -5,6 +5,7 @@ use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
 mod profile_transition;
+mod queue_promotion;
 pub(crate) use profile_transition::AgentProfileTransitionClaim;
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
@@ -26,13 +27,57 @@ pub(crate) fn prompt_claims_provider_run(
 struct OwnedAgentPromptState {
     // Ephemeral: never copied from the durable session mirror.
     sudo_entry_id: Option<String>,
+    // MP-08/MP-10/MP-11 F5: captured at each running sudo prompt binding.
+    sudo_process_cutoff: Option<u64>,
+    // MP-08/MP-10/MP-11 A04: while a sudo window's work is open, only its
+    // kernel-correlated prompts may start; others stay queued (causal fence).
+    sudo_work: Option<SudoWorkHold>,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SudoWorkHold {
+    entry_id: String,
+    prompts: BTreeSet<String>,
+}
+
 impl OwnedAgentPromptState {
+    /// Whether `prompt` may become active now; a held work prompt is bound.
+    fn sudo_admits(&self, prompt: &str) -> bool {
+        self.sudo_work
+            .as_ref()
+            .is_none_or(|hold| hold.prompts.contains(prompt))
+    }
+
+    /// A prompt bound to a held sudo window starts ahead of a backlog that
+    /// the window itself keeps from running.
+    fn sudo_holds(&self, prompt: &str) -> bool {
+        self.sudo_work
+            .as_ref()
+            .is_some_and(|hold| hold.prompts.contains(prompt))
+    }
+
+    fn bind_sudo_work(&mut self) {
+        let Some(active) = self.active_prompt.as_ref() else {
+            return;
+        };
+        if let Some(hold) = self
+            .sudo_work
+            .as_ref()
+            .filter(|hold| hold.prompts.contains(active.id()))
+        {
+            if self.sudo_entry_id.as_deref() != Some(hold.entry_id.as_str()) {
+                self.sudo_process_cutoff =
+                    crate::runtime::kernel_access::process::birth_cutoff().ok();
+            }
+            self.sudo_entry_id = Some(hold.entry_id.clone());
+        }
+    }
+
     fn take_active_prompt(&mut self) -> Option<PromptQueueItem> {
         self.sudo_entry_id = None;
+        self.sudo_process_cutoff = None;
         self.active_prompt.take()
     }
 
@@ -41,6 +86,7 @@ impl OwnedAgentPromptState {
             != prompt.as_ref().map(PromptQueueItem::id)
         {
             self.sudo_entry_id = None;
+            self.sudo_process_cutoff = None;
         }
         self.active_prompt = prompt;
     }
@@ -51,6 +97,8 @@ impl OwnedAgentPromptState {
             .get(agent_id)
             .map(|state| Self {
                 sudo_entry_id: None,
+                sudo_process_cutoff: None,
+                sudo_work: None,
                 active_prompt: state.active_prompt().cloned(),
                 queued_prompts: state.queued_prompts().clone(),
             })
@@ -97,7 +145,7 @@ impl Drop for PromptDeliverySettlementClaim {
 struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
     profile_transitions: BTreeMap<PromptStateKey, Arc<()>>,
-    next_pending_prompt_number: u64,
+    queue_promotions: BTreeSet<PromptStateKey>,
 }
 
 impl PromptStateOwner {
@@ -222,6 +270,7 @@ impl PromptStateOwner {
         }
         if next_status == PromptStatus::Cancelling {
             state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
         }
         active.set_status(next_status);
         active.set_durable_delivery_failure_pending(next_status == PromptStatus::Cancelling);
@@ -435,9 +484,23 @@ impl PromptStateOwner {
         let profile_transition_pending = owner
             .profile_transitions
             .contains_key(&PromptStateKey::new(session.id(), &agent_id));
+        // A paused task parks its notes on purpose; they resume with the task and
+        // must not hold back the owner's own prompt.
+        let backlog_parked = session
+            .metaagent_task(&agent_id)
+            .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused);
         let should_start = {
             let state = owner.ensure_agent_state(session, &agent_id);
-            !force_queue && !profile_transition_pending && state.active_prompt.is_none()
+            // Detached queue promotion can still be preparing Project/Vault
+            // inputs after a profile claim is released or a run becomes ready.
+            // Its backlog reserves admission until the oldest turn is activated.
+            !force_queue
+                && !profile_transition_pending
+                && state.active_prompt.is_none()
+                && (state.queued_prompts.is_empty()
+                    || backlog_parked
+                    || state.sudo_holds(prompt.id()))
+                && state.sudo_admits(prompt.id())
         };
         if should_start {
             let state = owner.ensure_agent_state(session, &agent_id);
@@ -449,6 +512,7 @@ impl PromptStateOwner {
             );
             prompt.set_status(PromptStatus::Running);
             state.set_active_prompt(Some(prompt.clone()));
+            state.bind_sudo_work();
             Ok(PromptSubmissionOutcome::Started { prompt })
         } else {
             if !allow_queue {
@@ -457,7 +521,11 @@ impl PromptStateOwner {
                     message: "target agent is busy; retry when its provider is ready".to_string(),
                 });
             }
-            let pending_prompt_id = owner.next_pending_prompt_id();
+            let pending_prompt_id = if prompt.durable_operation_id().is_some() {
+                prompt.id().to_string()
+            } else {
+                owner.next_pending_prompt_id()
+            };
             let state = owner.ensure_agent_state(session, &agent_id);
             if state.queued_prompts.len() >= PROMPT_QUEUE_LIMIT {
                 crate::logging::warn_with_fields(
@@ -505,6 +573,52 @@ impl PromptStateOwner {
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
         self.complete_active_prompt_if_matches(session, agent_id, None)
+    }
+
+    /// Keep prompt replacement fenced while a synchronous, authorized operation uses it.
+    pub(crate) fn with_current_prompt<R>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+        operation: impl FnOnce() -> Result<R, crate::error::DaemonError>,
+    ) -> Result<R, crate::error::DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        if state.active_prompt.as_ref().map(PromptQueueItem::id) != expected_prompt_id
+            || state
+                .active_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.status() != PromptStatus::Running)
+        {
+            return Err(crate::error::DaemonError::LocalTransport {
+                operation: "revalidate forwarded prompt",
+                message: "forwarded prompt changed before resource use".into(),
+            });
+        }
+        operation()
+    }
+
+    /// Run a synchronous ownership transition while the active prompt cannot change.
+    pub(crate) fn with_active_prompt<R>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        operation: impl FnOnce(Option<&PromptQueueItem>) -> Result<R, DaemonError>,
+    ) -> Result<R, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operation(
+            owner
+                .ensure_agent_state(session, agent_id)
+                .active_prompt
+                .as_ref(),
+        )
     }
 
     pub(crate) fn complete_active_prompt_if_matches(
@@ -562,6 +676,9 @@ impl PromptStateOwner {
         {
             return false;
         }
+        if state.sudo_entry_id.as_deref() != Some(entry) {
+            state.sudo_process_cutoff = crate::runtime::kernel_access::process::birth_cutoff().ok();
+        }
         state.sudo_entry_id = Some(entry.into());
         true
     }
@@ -584,55 +701,116 @@ impl PromptStateOwner {
                 .is_some_and(|active| active.id() == prompt)
     }
 
-    pub(crate) fn sudo_turn_live(
+    /// The running prompt bound to a sudo window, as `(entry_id, prompt_id)`.
+    pub(crate) fn sudo_bound_prompt(
         &self,
         session: &RuntimeSession,
         agent: &str,
-        prompt: &str,
-        entry: &str,
-    ) -> bool {
+    ) -> Option<(String, String)> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent);
-        state.sudo_entry_id.as_deref() == Some(entry)
-            && state.active_prompt.as_ref().is_some_and(|active| {
-                active.id() == prompt && active.status() == PromptStatus::Running
-            })
+        let entry = state.sudo_entry_id.clone()?;
+        state
+            .active_prompt
+            .as_ref()
+            .filter(|active| active.status() == PromptStatus::Running)
+            .map(|active| (entry, active.id().to_owned()))
     }
 
-    /// Linearize a sudo decision against yield and interruption. The prompt
-    /// owner cannot replace or cancel this turn until the decision is consumed.
-    pub(crate) fn with_running_prompt<R>(
+    /// Returns the cutoff only for the exact running prompt/window binding.
+    pub(crate) fn sudo_bound_process_cutoff(
         &self,
         session: &RuntimeSession,
-        agent_id: &str,
-        prompt_id: &str,
-        sudo_entry_id: &str,
-        action: impl FnOnce() -> Result<R, DaemonError>,
-    ) -> Result<R, DaemonError> {
+        agent: &str,
+        entry: &str,
+        prompt: &str,
+    ) -> Option<u64> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = owner.ensure_agent_state(session, agent_id);
-        if state.sudo_entry_id.as_deref() != Some(sudo_entry_id) {
-            return Err(DaemonError::LocalTransport {
-                operation: "sudo",
-                message: "sudo turn no longer authorized".into(),
-            });
+        let state = owner.ensure_agent_state(session, agent);
+        if state.sudo_entry_id.as_deref() != Some(entry)
+            || !state.active_prompt.as_ref().is_some_and(|active| {
+                active.id() == prompt && active.status() == PromptStatus::Running
+            })
+        {
+            return None;
         }
-        let active = state.active_prompt.as_ref();
-        if active.is_none_or(|prompt| {
-            prompt.id() != prompt_id || prompt.status() != PromptStatus::Running
-        }) {
-            return Err(DaemonError::LocalTransport {
-                operation: "sudo",
-                message: "sudo turn yielded or was interrupted".into(),
-            });
+        state.sudo_process_cutoff
+    }
+
+    /// Hold `agent` for one sudo window's work; `prompt` is its first turn.
+    pub(crate) fn hold_sudo_work(
+        &self,
+        session: &RuntimeSession,
+        agent: &str,
+        entry: &str,
+        prompt: &str,
+    ) {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner.ensure_agent_state(session, agent).sudo_work = Some(SudoWorkHold {
+            entry_id: entry.into(),
+            prompts: BTreeSet::from([prompt.to_owned()]),
+        });
+    }
+
+    /// Admit a kernel-correlated continuation of the held work.
+    pub(crate) fn admit_sudo_work_prompt(
+        &self,
+        session: &RuntimeSession,
+        agent: &str,
+        entry: &str,
+        prompt: &str,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(hold) = owner
+            .ensure_agent_state(session, agent)
+            .sudo_work
+            .as_mut()
+            .filter(|hold| hold.entry_id == entry)
+        else {
+            return false;
+        };
+        hold.prompts.insert(prompt.into());
+        true
+    }
+
+    pub(crate) fn sudo_work_held(&self, session: &RuntimeSession, agent: &str) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner.ensure_agent_state(session, agent).sudo_work.is_some()
+    }
+
+    /// End the window's hold and any binding; regular work keeps running.
+    pub(crate) fn release_sudo_work(&self, session: &RuntimeSession, agent: &str, entry: &str) {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent);
+        if state
+            .sudo_work
+            .as_ref()
+            .is_some_and(|hold| hold.entry_id == entry)
+        {
+            state.sudo_work = None;
         }
-        action()
+        if state.sudo_entry_id.as_deref() == Some(entry) {
+            state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
+        }
     }
 
     pub(crate) fn begin_cancelling_active_prompt(
@@ -655,10 +833,12 @@ impl PromptStateOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
         let active = state.active_prompt.as_mut()?;
-        if expected.is_some_and(|id| active.id() != id) {
+        // MP-08/MP-10: compare under the same lock that marks cancellation.
+        if expected.is_some_and(|id| active.id() != id && active.pending_prompt_id() != Some(id)) {
             return None;
         }
         state.sudo_entry_id = None;
+        state.sudo_process_cutoff = None;
         active.set_status(PromptStatus::Cancelling);
         Some(active.clone())
     }
@@ -871,13 +1051,24 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
+        self.finalize_active_prompt_cancellation_if_matches(session, agent_id, None)
+    }
+
+    pub(crate) fn finalize_active_prompt_cancellation_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+    ) -> Option<PromptQueueItem> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
-        let active_status = state.active_prompt.as_ref()?.status();
-        if active_status != PromptStatus::Cancelling {
+        let active = state.active_prompt.as_ref()?;
+        if active.status() != PromptStatus::Cancelling
+            || expected_prompt_id.is_some_and(|expected| active.id() != expected)
+        {
             return None;
         }
         let mut cancelled = state.take_active_prompt()?;
@@ -1031,12 +1222,11 @@ impl PromptStateOwner {
         Ok(Some(active))
     }
 
-    pub(crate) fn activate_next_queued_prompt_with_prompt_id(
+    pub(crate) fn activate_next_queued_prompt_for_dispatch(
         &self,
         session: &RuntimeSession,
         agent_id: &str,
         expected_prompt_id: Option<&str>,
-        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut owner = self
             .state
@@ -1049,7 +1239,7 @@ impl PromptStateOwner {
             return Ok(None);
         }
         let state = owner.ensure_agent_state(session, agent_id);
-        Self::activate_owned_queued_prompt(state, agent_id, expected_prompt_id, prompt_id)
+        Self::activate_owned_queued_prompt(state, agent_id, expected_prompt_id)
     }
 
     /// Opportunistic queue dispatch claims only the head it observed, while idle.
@@ -1057,12 +1247,11 @@ impl PromptStateOwner {
     /// not reenter the prompt owner. This keeps workspace claims with the winner.
     /// Another admission or completion may win between the caller's peek and
     /// this lock; that is deferred work, not a provider initialization failure.
-    pub(crate) fn try_activate_next_queued_prompt_with_prompt_id(
+    pub(crate) fn try_activate_next_queued_prompt_for_dispatch(
         &self,
         session: &RuntimeSession,
         agent_id: &str,
         expected_prompt_id: &str,
-        prompt_id: String,
         prepare: impl FnOnce(&PromptQueueItem) -> Result<(), DaemonError>,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut owner = self
@@ -1078,7 +1267,9 @@ impl PromptStateOwner {
         let state = owner.ensure_agent_state(session, agent_id);
         if state.active_prompt.is_some()
             || state.queued_prompts.front().is_none_or(|front| {
-                front.id() != expected_prompt_id || front.remote_steer_reserved()
+                front.id() != expected_prompt_id
+                    || front.remote_steer_reserved()
+                    || !state.sudo_admits(front.id())
             })
         {
             return Ok(None);
@@ -1089,14 +1280,13 @@ impl PromptStateOwner {
             .expect("eligible head checked above");
         validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
         prepare(front)?;
-        Self::activate_owned_queued_prompt(state, agent_id, Some(expected_prompt_id), prompt_id)
+        Self::activate_owned_queued_prompt(state, agent_id, Some(expected_prompt_id))
     }
 
     fn activate_owned_queued_prompt(
         state: &mut OwnedAgentPromptState,
         agent_id: &str,
         expected_prompt_id: Option<&str>,
-        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         if let Some(active_prompt) = state.active_prompt.as_ref() {
             return Err(DaemonError::LocalTransport {
@@ -1110,7 +1300,7 @@ impl PromptStateOwner {
         let Some(front) = state.queued_prompts.front() else {
             return Ok(None);
         };
-        if front.remote_steer_reserved() {
+        if front.remote_steer_reserved() || !state.sudo_admits(front.id()) {
             return Ok(None);
         }
         if let Some(expected_prompt_id) = expected_prompt_id {
@@ -1126,13 +1316,15 @@ impl PromptStateOwner {
             }
         }
         validate_prompt_target_agent("activate queued prompt", agent_id, front)?;
+        let queued_id = front.id().to_string();
         let mut active = state
             .queued_prompts
             .pop_front()
             .expect("queue front checked above")
-            .with_id(prompt_id);
+            .with_id(queued_id);
         active.set_status(PromptStatus::Dispatching);
         state.set_active_prompt(Some(active.clone()));
+        state.bind_sudo_work();
         Ok(Some(active))
     }
 
@@ -1168,6 +1360,7 @@ impl PromptStateOwner {
         Ok(prompt)
     }
 
+    #[cfg(test)]
     pub(crate) fn sync_external_active_prompt(
         &self,
         session: &RuntimeSession,
@@ -1285,6 +1478,7 @@ impl PromptStateOwner {
         agent_id: &str,
         prompt_id: &str,
         prompt: impl Into<String>,
+        editor: &crate::attachment::RuntimeAttachment,
     ) -> Option<PromptQueueItem> {
         let mut owner = self
             .state
@@ -1295,7 +1489,13 @@ impl PromptStateOwner {
             .queued_prompts
             .iter_mut()
             .find(|queued| queued.id() == prompt_id)?;
-        queued.set_prompt(prompt);
+        queued.set_prompt(crate::prompt_notes::with_note_request(
+            prompt.into(),
+            queued.attachments(),
+        ));
+        // MP-08/MP-11 R1: text and acquisition provenance change under one
+        // queue lock. An automated edit cannot keep a human owner's request.
+        *queued = queued.clone().with_source_attachment(editor);
         Some(queued.clone())
     }
 
@@ -1346,12 +1546,36 @@ impl PromptStateOwner {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-        owner.states.retain(|key, _| {
-            key.session_id != session.id() || restored_agent_ids.contains(&key.agent_id)
+        owner.states.retain(|key, state| {
+            if key.session_id != session.id() || restored_agent_ids.contains(&key.agent_id) {
+                return true;
+            }
+            // Keep only an idle agent's sudo hold; the mirror has no prompts.
+            state.sudo_entry_id = None;
+            state.sudo_process_cutoff = None;
+            state.active_prompt = None;
+            state.queued_prompts.clear();
+            state.sudo_work.is_some()
         });
         for agent_id in session.prompt_states().keys() {
-            let restored = OwnedAgentPromptState::from_session(session, agent_id);
-            if restored.active_prompt.is_none() && restored.queued_prompts.is_empty() {
+            let mut restored = OwnedAgentPromptState::from_session(session, agent_id);
+            // A live sudo hold is kernel memory, not mirror state: keep the fence.
+            if let Some(previous) = owner
+                .states
+                .get(&PromptStateKey::new(session.id(), agent_id))
+            {
+                restored.sudo_work = previous.sudo_work.clone();
+                if previous.active_prompt.as_ref().map(PromptQueueItem::id)
+                    == restored.active_prompt.as_ref().map(PromptQueueItem::id)
+                {
+                    restored.sudo_entry_id = previous.sudo_entry_id.clone();
+                    restored.sudo_process_cutoff = previous.sudo_process_cutoff;
+                }
+            }
+            if restored.active_prompt.is_none()
+                && restored.queued_prompts.is_empty()
+                && restored.sudo_work.is_none()
+            {
                 owner
                     .states
                     .remove(&PromptStateKey::new(session.id(), agent_id));
@@ -1495,12 +1719,10 @@ impl PromptStateOwnerState {
         agent_ids
     }
 
-    fn next_pending_prompt_id(&mut self) -> String {
-        self.next_pending_prompt_number = self.next_pending_prompt_number.wrapping_add(1);
-        format!(
-            "pending-prompt-{:016x}",
-            crate::session::unix_epoch_ms() ^ self.next_pending_prompt_number.rotate_left(17)
-        )
+    fn next_pending_prompt_id(&self) -> String {
+        // These identities survive promotion and persistence; independent
+        // owners and restarts must not reuse a time/counter-derived value.
+        format!("pending-prompt-{:032x}", rand::random::<u128>())
     }
 
     fn ensure_agent_state(
@@ -1754,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn opportunistic_queue_claim_defers_busy_and_consumed_heads_without_losing_successors() {
+    fn mp08_mp10_queue_promotion_preserves_identity_and_claim_fences() {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
@@ -1783,11 +2005,10 @@ mod tests {
         }
         assert_eq!(queued_ids.len(), 2);
         assert!(owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 &queued_ids[0],
-                "busy-claim".to_string(),
                 |_| Ok(()),
             )
             .expect("busy is ordinary contention")
@@ -1796,24 +2017,23 @@ mod tests {
             .complete_active_prompt_only(&session, "agent-1")
             .expect("complete active turn");
         let first = owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(&queued_ids[0]),
-                "rival-first".to_string(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(&queued_ids[0]))
             .expect("another dispatcher claims the first head")
             .expect("first queued turn");
         assert_eq!(first.prompt(), "first");
+        assert_eq!(
+            first.id(),
+            queued_ids[0],
+            "promotion keeps the native display binding"
+        );
         owner
             .complete_active_prompt_only(&session, "agent-1")
             .expect("complete rival turn");
         assert!(owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 &queued_ids[0],
-                "stale-claim".to_string(),
                 |_| Ok(()),
             )
             .expect("consumed head is ordinary contention")
@@ -1826,16 +2046,20 @@ mod tests {
             queued_ids[1]
         );
         let second = owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 &queued_ids[1],
-                "second-dispatch".to_string(),
                 |_| Ok(()),
             )
             .expect("current idle head can progress")
             .expect("second queued turn");
         assert_eq!(second.prompt(), "second");
+        assert_eq!(
+            second.id(),
+            queued_ids[1],
+            "each queued turn retains its own identity"
+        );
         assert!(owner.peek_next_queued_prompt(&session, "agent-1").is_none());
     }
 
@@ -2080,16 +2304,11 @@ mod tests {
         assert_eq!(completed.id(), "draft-active");
 
         let started = owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(&pending_prompt_id),
-                "prompt-real-2".to_string(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(&pending_prompt_id))
             .expect("queued prompt should activate")
             .expect("queued prompt should exist");
 
-        assert_eq!(started.id(), "prompt-real-2");
+        assert_eq!(started.id(), pending_prompt_id);
         assert_eq!(started.pending_prompt_id(), None);
         assert_eq!(started.prompt(), "queued");
         assert_eq!(started.status(), PromptStatus::Dispatching);
@@ -2098,7 +2317,7 @@ mod tests {
         let running = owner
             .mark_active_prompt_running(&session, "agent-1")
             .expect("dispatching prompt should become running");
-        assert_eq!(running.id(), "prompt-real-2");
+        assert_eq!(running.id(), pending_prompt_id);
         assert_eq!(running.status(), PromptStatus::Running);
     }
 
@@ -2180,11 +2399,10 @@ mod tests {
                 completion_owner
                     .complete_active_prompt_only(completion_session, "agent-1")
                     .expect("active prompt should complete after reservation commits");
-                completion_owner.activate_next_queued_prompt_with_prompt_id(
+                completion_owner.activate_next_queued_prompt_for_dispatch(
                     completion_session,
                     "agent-1",
                     Some(completion_queued.id()),
-                    "prompt-real-2".to_string(),
                 )
             });
             activation_start.wait();
@@ -2217,16 +2435,11 @@ mod tests {
         );
         assert_eq!(
             owner
-                .activate_next_queued_prompt_with_prompt_id(
-                    &session,
-                    "agent-1",
-                    Some(queued.id()),
-                    "prompt-real-2".to_string(),
-                )
+                .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(queued.id()),)
                 .expect("released prompt should be activatable")
                 .expect("queued prompt should remain in place")
                 .id(),
-            "prompt-real-2"
+            queued.id()
         );
     }
 
@@ -2276,12 +2489,7 @@ mod tests {
             .complete_active_prompt_if_matches(&session, "agent-1", Some("prompt-first"))
             .expect("the matching first prompt should complete");
         owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(&pending_prompt_id),
-                "prompt-second".to_string(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(&pending_prompt_id))
             .expect("queued prompt activation should succeed")
             .expect("queued prompt should promote");
 
@@ -2292,7 +2500,7 @@ mod tests {
             owner
                 .active_prompt_for_agent(&session, "agent-1")
                 .map(|prompt| prompt.id().to_string()),
-            Some("prompt-second".to_string())
+            Some(pending_prompt_id)
         );
     }
 
@@ -2692,17 +2900,18 @@ mod tests {
                 PromptStateKey::new(session.id(), "agent-1"),
                 OwnedAgentPromptState {
                     sudo_entry_id: None,
+                    sudo_process_cutoff: None,
+                    sudo_work: None,
                     active_prompt: None,
                     queued_prompts: VecDeque::from([queued_prompt]),
                 },
             );
 
         let error = owner
-            .activate_next_queued_prompt_with_prompt_id(
+            .activate_next_queued_prompt_for_dispatch(
                 &session,
                 "agent-1",
                 Some("prompt-wrong-agent"),
-                "prompt-real-1".to_string(),
             )
             .expect_err("mismatched queued prompt target must be rejected");
 

@@ -50,14 +50,15 @@ impl ProviderRunActorMailbox {
         }
     }
 
-    pub(crate) fn run_utility(
+    pub(crate) fn enqueue_utility(
         &self,
         provider_run_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
         timeout: std::time::Duration,
         policy: ProviderUtilityExecutionPolicy,
-    ) -> Result<String, DaemonError> {
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         let (response_tx, response_rx) = std::sync::mpsc::channel();
@@ -67,6 +68,10 @@ impl ProviderRunActorMailbox {
             envelope,
             timeout,
             policy,
+            admission,
+            cancellation: policy
+                .is_metadata_only()
+                .then(|| self.utility_cancellations.for_run(&provider_run_id)),
             response: response_tx,
         }) {
             Ok(()) => self.operation_lanes.record_command_enqueued(),
@@ -80,25 +85,23 @@ impl ProviderRunActorMailbox {
                 ));
             }
         }
-        response_rx
-            .recv()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "run structured utility prompt",
-                message: format!("provider run actor utility response failed: {error}"),
-            })?
+        Ok(response_rx)
     }
 
     pub(crate) fn spawn_abort(
         &self,
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
         run: RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
+        self.utility_cancellations.cancel(&provider_run_id);
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Abort {
             session_id,
             provider_run_id: provider_run_id.clone(),
+            prompt_id,
             run,
         }) {
             Ok(()) => {
@@ -268,6 +271,8 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn stop_run(&self, provider_run_id: &str) {
+        self.utility_cancellations
+            .cancel_and_forget(provider_run_id);
         self.operation_lanes.forget(provider_run_id);
         self.output_poll_delays
             .lock()
@@ -311,6 +316,14 @@ impl ProviderRunActorMailbox {
         });
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_finished_abort_for_test(&self, finished: FinishedProviderPromptAbortJob) {
+        crate::provider::run_actor::finished_jobs::push_finished_abort(
+            &self.finished_aborts,
+            finished,
+        );
+    }
+
     pub(crate) fn drain_finished_aborts(&self) -> Vec<FinishedProviderPromptAbortJob> {
         drain_finished_aborts(&self.finished_aborts)
     }
@@ -323,6 +336,16 @@ impl ProviderRunActorMailbox {
 
     pub(crate) fn drain_finished_output_polls(&self) -> Vec<FinishedProviderOutputPollJob> {
         drain_finished_output_polls(&self.finished_output_polls)
+    }
+
+    pub(crate) fn drain_finished_output_polls_for_run(
+        &self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        super::finished_jobs::drain_finished_output_polls_for_run(
+            &self.finished_output_polls,
+            run_id,
+        )
     }
 
     #[cfg(test)]
@@ -621,6 +644,7 @@ mod tests {
             .spawn_abort(
                 "session-1".to_string(),
                 "run-1".to_string(),
+                "prompt-1".to_string(),
                 runtime_run("run-1"),
             )
             .expect_err("full provider actor queue should reject abort");

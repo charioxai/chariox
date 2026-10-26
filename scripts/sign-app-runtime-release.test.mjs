@@ -270,3 +270,15 @@ test('only macOS releases take a codesigned copy', async t => {
   await assert.rejects(signRuntimeRelease({ ...f.options, codesigned: f.input }), /only macOS releases/);
   await assert.rejects(lstat(f.options.output), { code: 'ENOENT' });
 });
+
+test('MP-11-RD-F3 developer release signs with the pinned identity after its path is replaced', async t => {
+  const f = await fixture(t);
+  const replacement = generateKeyPairSync('ed25519');
+  await writeFile(f.options.signingKey, pem(replacement.privateKey, 'pkcs8'));
+  const receipt = await signRuntimeRelease({ ...f.options, developerRuntime: true, signingKey: f.release.privateKey });
+  const bytes = await readFile(join(f.options.output, 'runtime-inventory.json'));
+  const signature = Buffer.from(await readFile(join(f.options.output, 'runtime-inventory.sig'), 'utf8'), 'hex');
+  assert.equal(receipt.publicKeyHex, f.release.publicKey.export({ type: 'spki', format: 'der' }).subarray(12).toString('hex'));
+  assert.equal(verify(null, bytes, f.release.publicKey, signature), true);
+  assert.equal(verify(null, bytes, replacement.publicKey, signature), false);
+});

@@ -40,8 +40,8 @@ export function buildEmptyTranscriptRenderable(renderer: RenderContext) {
   return buildAsciiCanvasRenderable(renderer, "Type your first prompt below.", theme.textMuted)
 }
 
-export function buildLoadingTranscriptRenderable(renderer: RenderContext) {
-  return buildAsciiCanvasRenderable(renderer, "Loading session...", theme.warning)
+export function buildLoadingTranscriptRenderable(renderer: RenderContext, label?: string) {
+  return buildAsciiCanvasRenderable(renderer, label ? `Loading session ${label}…` : "Loading session...", theme.warning)
 }
 
 export function buildWorkflowOutlineRenderable(

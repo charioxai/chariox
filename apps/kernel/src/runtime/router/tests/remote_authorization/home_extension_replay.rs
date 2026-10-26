@@ -208,7 +208,10 @@ async fn forwarded_home_script_invocation_uses_shared_timeout_policy() {
     assert_eq!(hinted_tool.timeout_sec, Some(1));
 
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
         "provider-run-1",
         "home-slow",

@@ -11,7 +11,6 @@ pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
     last_heartbeat_at_ms: BTreeMap<String, u64>,
     events: Vec<AttachmentEvent>,
-    next_attachment_number: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -332,8 +331,9 @@ impl AttachmentService {
     }
 
     fn next_attachment_id(&mut self) -> String {
-        self.next_attachment_number += 1;
-        format!("attachment-{}", self.next_attachment_number)
+        // Clients can retain their old IDs across kernel restarts. A fresh
+        // service must never assign one of those IDs to another client.
+        format!("attachment-{:032x}", rand::random::<u128>())
     }
 }
 
@@ -362,6 +362,16 @@ mod tests {
             .expect("session should be created")
             .id()
             .to_string()
+    }
+
+    #[test]
+    fn attachment_ids_do_not_alias_after_a_service_restart() {
+        let previous = AttachmentService::new().next_attachment_id();
+        let current = AttachmentService::new().next_attachment_id();
+        assert_ne!(
+            previous, current,
+            "a stale client attachment must not identify a new client"
+        );
     }
 
     #[test]

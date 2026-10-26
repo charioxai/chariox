@@ -114,14 +114,97 @@ impl ProviderProcessServiceStore {
         self.read().native_interaction_bridge()
     }
 
+    pub(crate) fn output_ready_signal(
+        &self,
+    ) -> crate::provider::output_ready::ProviderOutputReadySignal {
+        self.read().output_ready_signal()
+    }
+
     pub(crate) fn run_actor_completion_signal(
         &self,
     ) -> crate::provider::ProviderRunActorCompletionSignal {
         self.read().run_actor_completion_signal()
     }
 
+    /// The same authority mutex linearizes credential-bearing spawn against run retirement/replacement.
+    /// Callbacks must not call back into this store.
+    pub(crate) fn with_current_live_launch<T>(
+        &self,
+        expected: &RuntimeProviderRun,
+        action: impl FnOnce(&RuntimeProviderRun) -> Result<T, DaemonError>,
+    ) -> Result<Option<T>, DaemonError> {
+        let service = self.read();
+        let current = service.get_run(expected.id())?;
+        if !matches!(
+            expected.state(),
+            crate::provider::ProviderRunState::Starting
+                | crate::provider::ProviderRunState::Running
+        ) || current.state() != expected.state()
+            || current.started_at_ms() != expected.started_at_ms()
+            || current.agent_instance_id() != expected.agent_instance_id()
+            || expected.agent_instance_id().is_some_and(|agent| {
+                service
+                    .get_run_for_agent(expected.session_id(), agent)
+                    .is_none_or(|run| run.id() != expected.id())
+            })
+        {
+            return Ok(None);
+        }
+        action(&current).map(Some)
+    }
+
+    pub(crate) fn finish_current_launch(
+        &self,
+        expected: &RuntimeProviderRun,
+        binding: Option<ProviderRuntimeBinding>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let mut service = self.write();
+        let current = service.get_run(expected.id())?;
+        if current.state() != crate::provider::ProviderRunState::Starting
+            || current.started_at_ms() != expected.started_at_ms()
+            || expected.agent_instance_id().is_some_and(|agent| {
+                service
+                    .get_run_for_agent(expected.session_id(), agent)
+                    .is_none_or(|run| run.id() != expected.id())
+            })
+        {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: expected.id().into(),
+                state: current.state(),
+                operation: "finish current provider launch",
+            });
+        }
+        if let Some(binding) = binding {
+            service.apply_runtime_binding(expected.id(), binding)?;
+        }
+        service.mark_run_running(expected.id())
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.read().get_run(run_id)
+    }
+
+    /// Presentation may use its last published projection while credential-bearing
+    /// launch holds the authority mutex. Admission and run mutation must keep using
+    /// the blocking authority reads.
+    pub(crate) fn try_get_run_for_projection(&self, run_id: &str) -> Option<RuntimeProviderRun> {
+        match self.inner.try_lock() {
+            Ok(service) => service.get_run(run_id).ok(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("provider service mutex poisoned"),
+        }
+    }
+
+    pub(crate) fn try_get_agent_run_for_projection(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        match self.inner.try_lock() {
+            Ok(service) => service.get_run_for_agent(session_id, agent_id),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("provider service mutex poisoned"),
+        }
     }
 
     #[doc(hidden)]
@@ -408,6 +491,10 @@ impl ProviderProcessServiceStore {
         self.write().clear_runtime(provider_run_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
+    )]
     pub(crate) fn enqueue_structured_prompt_submit(
         &self,
         session_id: String,
@@ -420,6 +507,7 @@ impl ProviderProcessServiceStore {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
+        private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
     ) -> Result<(), DaemonError> {
         self.write().enqueue_structured_prompt_submit(
@@ -433,6 +521,7 @@ impl ProviderProcessServiceStore {
             hidden_system_context,
             attachments,
             mode,
+            private_assessment_evidence,
             steering,
         )
     }
@@ -445,22 +534,53 @@ impl ProviderProcessServiceStore {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
-        self.write().run_structured_utility_prompt(
+        self.run_structured_utility_prompt_with_admission(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
             policy,
+            None,
         )
+    }
+
+    pub(crate) fn run_structured_utility_prompt_with_admission(
+        &self,
+        run: &RuntimeProviderRun,
+        visible_user_prompt: &str,
+        hidden_system_context: &str,
+        timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<String, DaemonError> {
+        let response_rx = self.write().enqueue_structured_utility_prompt(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+            policy,
+            admission,
+        )?;
+        response_rx
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "run structured utility prompt",
+                message: format!("provider run actor utility response failed: {error}"),
+            })?
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(
         &self,
         session_id: String,
         provider_run_id: String,
+        prompt_id: String,
     ) -> Result<(), DaemonError> {
         self.write()
-            .enqueue_structured_prompt_abort(session_id, provider_run_id)
+            .enqueue_structured_prompt_abort(session_id, provider_run_id, prompt_id)
+    }
+
+    pub(crate) fn structured_submit_epoch(&self) -> u64 {
+        self.read().structured_submit_epoch()
     }
 
     pub(crate) fn drain_finished_structured_prompt_submit_jobs(
@@ -548,6 +668,14 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> Vec<FinishedProviderOutputPollJob> {
         self.write().drain_finished_structured_output_poll_jobs()
+    }
+
+    pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
+        &self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        self.write()
+            .drain_finished_structured_output_poll_jobs_for_run(run_id)
     }
 
     pub(crate) fn apply_structured_output_metadata(

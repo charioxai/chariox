@@ -10,6 +10,7 @@ use crate::local::{
     LocalDaemonResponse, ProviderLoginProcessState, ProviderLoginStatus,
     SetProviderAccountCredentialRequest, StartProviderLoginRequest,
 };
+use crate::provider::ClaudeCredentialCheckError;
 use crate::runtime::state::{
     ClaudeSetupTokenStoreOutcome, ClaudeSetupTokenVaultPrompt, KernelRuntimeState,
     ProviderLoginProcessRecord, SetupTokenScan,
@@ -36,21 +37,26 @@ pub(super) async fn start(
         "claude",
         &request.account_profile,
     )?;
-    if !request.overwrite {
-        let credential_id =
-            crate::provider::provider_account_credential_id(&owner, "claude", &profile.profile_id);
-        let exists = tokio::task::spawn_blocking(move || {
-            crate::credential::CharioxCredentialRegistry::user()?
-                .get(&credential_id)
-                .map(|value| value.is_some())
-        })
-        .await
-        .map_err(|error| login_error(&format!("check setup token replacement: {error}")))??;
-        if exists {
-            return Err(login_error("A setup token already exists for this profile; use --replace to authorize replacement"));
-        }
-    }
-    super::provider_auth_control::execute_start_provider_login_with_overwrite(
+    ensure_replacement_allowed(&owner, &profile.profile_id, request.overwrite).await?;
+    let target = if let Some(session_id) = request
+        .session_id
+        .as_deref()
+        .or(command.session_id.as_deref())
+    {
+        Some((
+            session_id,
+            runtime_state
+                .vault_prompt_agent(
+                    session_id,
+                    request.agent_id.as_deref().or(command.agent_id.as_deref()),
+                    "Claude authorization",
+                )
+                .await?,
+        ))
+    } else {
+        None
+    };
+    let response = super::provider_auth_control::execute_start_provider_login_with_overwrite(
         runtime_state,
         &owner,
         StartProviderLoginRequest {
@@ -60,7 +66,40 @@ pub(super) async fn start(
         },
         request.overwrite,
     )
+    .await?;
+    if let (Some((session_id, agent_id)), LocalDaemonResponse::ProviderLoginStarted { login }) =
+        (target, &response)
+    {
+        runtime_state.spawn_provider_login_workflow(session_id, &agent_id, &owner, login.clone());
+    }
+    Ok(response)
+}
+
+/// Check the public credential handle before unlock prompts or a billed turn.
+/// Storage still rechecks replacement policy when publishing the credential.
+pub(super) async fn ensure_replacement_allowed(
+    owner_user_id: &str,
+    account_profile: &str,
+    overwrite: bool,
+) -> Result<(), DaemonError> {
+    if overwrite {
+        return Ok(());
+    }
+    let credential_id =
+        crate::provider::provider_account_credential_id(owner_user_id, "claude", account_profile);
+    let exists = tokio::task::spawn_blocking(move || {
+        crate::credential::CharioxCredentialRegistry::user()?
+            .get(&credential_id)
+            .map(|value| value.is_some())
+    })
     .await
+    .map_err(|error| login_error(&format!("check setup token replacement: {error}")))??;
+    if exists {
+        return Err(login_error(
+            "A setup token already exists for this profile. Choose Log in in Provider Accounts to authorize a replacement.",
+        ));
+    }
+    Ok(())
 }
 
 /// Finishes the login after a successful CLI exit and the reader's final
@@ -138,13 +177,15 @@ pub(super) async fn reconcile(
         "Verifying the setup token with Claude…",
         crate::session::unix_epoch_ms(),
     )?;
-    if let Err(error) = verify(runtime_state, owner_user_id, record, &token).await {
-        return fail(
-            runtime_state,
-            owner_user_id,
-            record,
-            &format!("Claude did not accept the setup token; nothing was stored: {error}"),
-        );
+    if let Err(message) = verify(
+        runtime_state,
+        owner_user_id,
+        &record.account_profile,
+        &token,
+    )
+    .await
+    {
+        return fail(runtime_state, owner_user_id, record, &message);
     }
     store_token(runtime_state, owner_user_id, record, token, None).await
 }
@@ -217,39 +258,140 @@ pub(super) async fn submit_vault_passphrase(
     .await
 }
 
-async fn verify(
+/// Checks a setup token with Claude before it is stored. The error is the
+/// user-facing reason; nothing is stored when it fails.
+pub(super) async fn verify(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
-    record: &ProviderLoginProcessRecord,
+    account_profile: &str,
+    token: &Zeroizing<String>,
+) -> Result<(), String> {
+    verify_account_token(runtime_state, owner_user_id, account_profile, token)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// MP-08 / MP-11: direct import and captured login verify the same profile-scoped
+/// official model turn before storing or observing authentication.
+pub(super) async fn verify_account_token(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
     token: &Zeroizing<String>,
 ) -> Result<(), DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
-    let account_profile = record.account_profile.clone();
+    let account_profile = account_profile.to_string();
     let token = token.clone();
     tokio::task::spawn_blocking(move || {
         let mut environment =
             registry.resolve_environment(&owner_user_id, "claude", &account_profile)?;
+        let executable = crate::provider::resolve_claude_executable()?;
         environment.insert(
             crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
             token.to_string(),
         );
-        let executable = crate::provider::resolve_claude_executable()?;
-        let verified = crate::provider::probe_claude_account_usage(
-            &executable,
-            &account_profile,
-            &environment,
-        );
+        let verified = crate::provider::verify_claude_setup_token(&executable, &environment);
         if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
             zeroize::Zeroize::zeroize(value);
         }
-        verified.map(|_| ())
+        verified.map_err(ClaudeCredentialCheckError::into_daemon_error)
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
         operation: "verify Claude setup token",
         message: error.to_string(),
     })?
+}
+
+/// Preserve the official harness verdict so first use distinguishes network
+/// trouble from a credential rejection without parsing user-facing text.
+pub(in crate::runtime) async fn check(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: &Zeroizing<String>,
+) -> Result<(), ClaudeCredentialCheckError> {
+    check_credential(
+        runtime_state,
+        owner_user_id,
+        account_profile,
+        Some(token.clone()),
+    )
+    .await
+}
+
+pub(in crate::runtime) async fn check_native(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+) -> Result<(), ClaudeCredentialCheckError> {
+    check_credential(runtime_state, owner_user_id, account_profile, None).await
+}
+
+async fn check_credential(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: Option<Zeroizing<String>>,
+) -> Result<(), ClaudeCredentialCheckError> {
+    let registry = runtime_state.provider_account_profile_registry().clone();
+    let owner_user_id = owner_user_id.to_string();
+    let account_profile = account_profile.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut environment = registry
+            .resolve_environment(&owner_user_id, "claude", &account_profile)
+            .map_err(|error| ClaudeCredentialCheckError::Inconclusive(error.to_string()))?;
+        let executable = crate::provider::resolve_claude_executable()
+            .map_err(|error| ClaudeCredentialCheckError::Inconclusive(error.to_string()))?;
+        environment.remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV);
+        if let Some(token) = token {
+            environment.insert(
+                crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
+                token.to_string(),
+            );
+        }
+        let checked = crate::provider::verify_claude_account_credential(&executable, &environment);
+        if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+            zeroize::Zeroize::zeroize(value);
+        }
+        checked
+    })
+    .await
+    .unwrap_or_else(|error| Err(ClaudeCredentialCheckError::Inconclusive(error.to_string())))
+}
+
+/// Records a verified, stored setup token: the account can run agents.
+pub(super) async fn record_verified_token(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+) {
+    // Vault storage is already committed. Observation publication must not
+    // turn that successful operation into a failed login or refused retry.
+    if let Err(error) = runtime_state
+        .provider_account_profile_registry()
+        .update_observation(
+            owner_user_id,
+            "claude",
+            account_profile,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+    {
+        crate::logging::warn_with_fields(
+            "daemon.provider_auth",
+            "Claude setup token stored; account observation could not be updated",
+            serde_json::json!({"account_profile": account_profile, "error": error.to_string()}),
+        );
+    }
+    runtime_state
+        .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+        .await;
+    runtime_state.record_waiting_room_change();
 }
 
 async fn store_token(
@@ -309,35 +451,9 @@ async fn store_token(
                 "Claude setup token verified and stored in the Chariox Vault. Unattended agents can now use this account.",
                 now_ms,
             )?;
-            if let Err(error) = runtime_state
-                .provider_account_profile_registry()
-                .update_observation(
-                    owner_user_id,
-                    "claude",
-                    &record.account_profile,
-                    crate::account_profile::ProviderAccountAuthState::Authenticated,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            {
-                crate::logging::warn_with_fields(
-                    "provider.account",
-                    "recording a verified Claude setup token failed",
-                    serde_json::json!({
-                        "account_profile": record.account_profile,
-                        "login_id": record.login_id,
-                        "error": error.to_string(),
-                    }),
-                );
-            }
-            let login = finish(runtime_state, owner_user_id, record, ProviderLoginProcessState::Succeeded)?;
-            runtime_state
-                .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
-                .await;
-            runtime_state.record_waiting_room_change();
-            Ok(login)
+            runtime_state.invalidate_claude_token_check(owner_user_id, &record.account_profile).await;
+            record_verified_token(runtime_state, owner_user_id, &record.account_profile).await;
+            finish(runtime_state, owner_user_id, record, ProviderLoginProcessState::Succeeded)
         }
     }
 }

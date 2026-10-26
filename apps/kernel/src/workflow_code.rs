@@ -23,6 +23,8 @@ use crate::session::{
 mod artifact_registry;
 mod common;
 mod compiler;
+mod compiler_isolation;
+mod compiler_process;
 mod compiler_runtime;
 mod definition;
 mod model;
@@ -32,6 +34,7 @@ mod source_export;
 mod tests;
 mod validation;
 mod workflow_registry;
+mod workflow_registry_publication;
 
 pub use common::workflow_code_definition_sha256_hex;
 pub use compiler::*;

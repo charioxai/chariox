@@ -13,9 +13,17 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const WORKER_ENTITLEMENTS = join(dirname(fileURLToPath(import.meta.url)), 'macos-app-worker.entitlements');
+export const CLI_ENTITLEMENTS = join(dirname(fileURLToPath(import.meta.url)), 'macos-cli.entitlements');
 const JIT_ENTITLEMENT = 'com.apple.security.cs.allow-jit';
-// V8 in the App worker is the only JIT. Every other artifact runs without entitlements.
-const JIT_EXECUTABLES = new Set(['chariox-app-worker']);
+const LIBRARY_ENTITLEMENT = 'com.apple.security.cs.disable-library-validation';
+// V8 in the App worker and Bun's JavaScriptCore in the compiled CLI/TUI are the only JITs. The CLI also loads the
+// OpenTUI renderer, which Bun extracts unsigned at run time, so it needs library validation off. Every other artifact
+// runs without entitlements.
+const ENTITLED = new Map([
+  ['chariox-setup', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
+  ['chariox-app-worker', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
+  ['chariox', { role: 'cli-executable', file: CLI_ENTITLEMENTS, keys: [JIT_ENTITLEMENT, LIBRARY_ENTITLEMENT] }],
+]);
 // A Chariox inventory signed before platform signing describes the wrong bytes.
 const STALE = new Set(['runtime-inventory.json', 'runtime-inventory.sig', '.runtime-lease']);
 const MACH_O = new Set(['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca']);
@@ -75,8 +83,10 @@ async function header(path) {
 function role(path, magic) {
   if (!MACH_O.has(magic)) return 'data';
   if (path.endsWith('.dylib')) return 'library';
-  return JIT_EXECUTABLES.has(basename(path)) ? 'jit-executable' : 'executable';
+  return ENTITLED.get(basename(path))?.role ?? 'executable';
 }
+
+const entitled = file => ENTITLED.get(basename(file.path));
 
 async function artifacts(input) {
   const files = [];
@@ -120,7 +130,7 @@ export async function releasePlan({ input, output, identity, keychainProfile }) 
     { phase: 'copy', command: [TOOLS.chmod, '-R', 'u+w', output] },
     ...code.map(file => ({ phase: 'sign', file, command: [TOOLS.codesign, '--force', '--sign', identity,
       '--timestamp', '--options', 'runtime',
-      ...(file.role === 'jit-executable' ? ['--entitlements', WORKER_ENTITLEMENTS] : []), target(file)] })),
+      ...(entitled(file) ? ['--entitlements', entitled(file).file] : []), target(file)] })),
     ...code.map(file => ({ phase: 'verify', file, command: [TOOLS.codesign, '--verify', '--strict', '--verbose=2', target(file)] })),
     ...code.map(file => ({ phase: 'describe', file, command: [TOOLS.codesign, '--display', '--verbose=2', target(file)] })),
     ...code.map(file => ({ phase: 'entitlements', file, command: [TOOLS.codesign, '--display', '--entitlements', '-', '--xml', target(file)] })),
@@ -175,9 +185,10 @@ function describe(result, step, { identity, teamId }) {
 }
 
 function entitlements(result, step) {
-  const jit = step.file.role === 'jit-executable';
+  const expected = entitled(step.file)?.keys ?? [];
   const keys = [...result.stdout.matchAll(/<key>([^<]+)<\/key>/gu)].map(match => match[1]);
-  if (jit ? keys.length !== 1 || keys[0] !== JIT_ENTITLEMENT : keys.length)
+  const flags = new Map([...result.stdout.matchAll(/<key>([^<]+)<\/key>\s*<(true|false)\s*\/>/gu)].map(match => [match[1], match[2]]));
+  if (keys.length !== expected.length || keys.some(key => !expected.includes(key)) || expected.some(key => flags.get(key) !== 'true'))
     throw new Error(`${step.file.path} has unexpected entitlements: ${keys.join(', ') || 'none'}`);
 }
 
@@ -225,7 +236,7 @@ export async function signMacosRelease(options, { run = runCommand, platform = p
       if ((file.role === 'data') !== (signed === file.unsignedSha256))
         throw new Error(`${file.path} ${file.role === 'data' ? 'changed during signing' : 'was not re-signed'}`);
       files.push({ ...file, size: bytes.length, sha256: signed,
-        entitlements: file.role === 'jit-executable' ? [JIT_ENTITLEMENT] : [] });
+        entitlements: entitled(file)?.keys ?? [] });
     }
     return { plan, receipt: {
       schema: 'chariox.macos-release-signing.v1', identity: options.identity, teamId: options.teamId,

@@ -30,6 +30,10 @@ export type PrimaryTranscriptRenderControllerDeps<
   TEntryRenderable extends PrimaryTranscriptEntryRenderable<TChild>,
 > = {
   getScrollbox: () => TScrollbox | undefined
+  /** A live text selection exists that a refresh of this view would destroy. */
+  preserveTextSelection?: () => boolean
+  /** The view about to be built keeps selections across refreshes. */
+  textSelectionView?: () => boolean
   getEmptyRenderable: () => TChild | undefined
   setEmptyRenderable: (renderable: TChild | undefined) => void
   renderables: Map<number, TEntryRenderable>
@@ -82,15 +86,26 @@ export function createPrimaryTranscriptRenderController<
     }
   }
 
+  // Only the mounted waiting-room view defers refreshes; a deferred refresh
+  // runs once the selection ends, never leaving the view stale.
+  let selectionViewScrollbox: TScrollbox | undefined
+  let rebuildDeferred = false
+
   const rebuildTranscript = () => {
+    const scrollbox = deps.getScrollbox()
+    if (scrollbox && scrollbox === selectionViewScrollbox && deps.preserveTextSelection?.()) {
+      rebuildDeferred = true
+      return
+    }
+    rebuildDeferred = false
     deps.logViewDebug("rebuild transcript:start", {
       visible_entries: deps.visibleEntries().length,
     })
-    const scrollbox = deps.getScrollbox()
     if (!scrollbox) {
       deps.logViewDebug("rebuild transcript:missing scrollbox")
       return
     }
+    selectionViewScrollbox = deps.textSelectionView?.() ? scrollbox : undefined
 
     for (const child of [...scrollbox.getChildren()]) {
       scrollbox.remove(child.id)
@@ -168,5 +183,8 @@ export function createPrimaryTranscriptRenderController<
     reconcileMountedTranscript,
     updateEntry,
     rebuildTranscript,
+    flushDeferredRebuild: () => {
+      if (rebuildDeferred) rebuildTranscript()
+    },
   }
 }

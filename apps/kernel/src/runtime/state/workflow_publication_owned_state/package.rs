@@ -462,8 +462,7 @@ fn workflow_publication_readme(
     readme.push_str("- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n");
     if uses_http_ingress {
         readme.push_str(&format!(
-            "- `public/`: editable browser assets\n\n## Invoke\n\n```bash\nBASE_URL=http://127.0.0.1:3000\ncurl -sS \"$BASE_URL{}\"\n```\n\n",
-            example_path
+            "- `public/`: editable browser assets\n\n## Invoke\n\n```bash\nBASE_URL=http://127.0.0.1:3000\ncurl -sS \"$BASE_URL{example_path}\"\n```\n\n"
         ));
     }
     readme.push_str("## Hooks\n\n```json\n");

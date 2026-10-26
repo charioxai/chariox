@@ -129,6 +129,7 @@ export type NativeInteractionOrigin =
   | { scope: "provider_startup"; provider_run_id: string }
 
 export type RuntimeInteraction = RuntimeInteractionSubject & {
+  requester?: KernelAccessRequester | null
   provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
   project_environment_review?: ProjectEnvironmentReview | null
   id: string
@@ -142,6 +143,8 @@ export type RuntimeInteraction = RuntimeInteractionSubject & {
   default_on_timeout?: string | null
   native_origin?: NativeInteractionOrigin | null
   requested_at_ms: number
+  /** Protocol 477: a protected owner hand-off (safe metadata only). */
+  handoff?: import("./owner-handoff.js").RuntimeHandoff | null
 }
 
 export type RuntimeInteractionChoice = {
@@ -158,10 +161,42 @@ export type RuntimeInteractionChoice = {
  * Every field is what the kernel established. It is answered with
  * `RespondToInteraction`: the approve choice with the passkey, or the refuse
  * choice without it. */
+/** Protocol 470: OS-established grant holder, never parsed from display text.
+ * The start identity is an opaque decimal string (Linux start ticks or macOS
+ * process unique ID). Harness is informational, not vendor/signature attestation. */
+export type KernelAccessRequester = {
+  executable: string
+  pid: number
+  process_start_id: string
+  process_exec_version: number
+  provider_harness?: "codex" | "claude" | "opencode" | null
+}
+
+/** MP-08 / MP-11 protocol 538: kernel-authored presentation, never authority. */
+export type SudoRequestPresentation = {
+  requester_name: string
+  agent_name: string
+  session_name: string
+  task_summary: string
+  task: string
+  grant_id?: string | null
+  terminal_id: string
+}
+export type PasskeyPromptClosure = {
+  session_id: string
+  interaction_id: string
+  kind: PasskeyPrompt["kind"]
+  expires_at_ms: number
+  reason: "expired" | "answered" | "revoked"
+}
+
 export type PasskeyPrompt = {
+  sudo_request?: SudoRequestPresentation | null
+  requester?: KernelAccessRequester | null
   kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
   lifetime_minutes?: number | null
   max_lifetime_minutes?: number | null
+  /** Protocol 451: access decisions use the kernel-wide routing id `kernel-access`. */
   session_id: string
   session_alias?: string | null
   interaction_id: string
@@ -262,6 +297,10 @@ export type CharioxUserConfig = {
     workspace_live_sync?: "off" | "managed" | "tracked" | "unrestricted"
   }
   history?: {
+    handoff?: {
+      codex_brief_model?: string
+      claude_brief_model?: string
+    }
     operational?: {
       backend?: "sqlite"
       path?: string
@@ -354,6 +393,8 @@ export type UserConfigMutationEffect = {
 }
 
 export type AgentInstance = {
+  /** Unknown legacy lineage is never inferred from controller links. */
+  spawned_by_agent_id?: string | null
   id: string
   agent_ref: string
   session_id: string
@@ -439,7 +480,6 @@ export type RuntimeAttachment = {
 
 export type KernelAccessGrant = {
   grant_id: string
-  session_id: string
   owner_user_id: string
   holder_pid: number
   holder_executable: string
@@ -448,9 +488,17 @@ export type KernelAccessGrant = {
 }
 export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
+export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
 
-export type KernelSudoTurn = { entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string; requester?: KernelAccessGrant; prompt_id: string | null; provider_run_id: string | null }
+export type KernelSudoTurn = {
+  entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string
+  requester?: KernelAccessGrant; prompt_id: string | null; provider_run_id: string | null
+  // Protocol 460: an hour-scale window bound to one owner-authorized task.
+  task_id?: string | null; duration_minutes?: number; expires_at_ms?: number | null; revision?: number; warning_sent?: boolean
+}
+export type ExtendKernelSudoRequest = { session_id: string; attachment_id: string; entry_id: string; revision: number }
+export type KernelSudoExtendedResponse = { KernelSudoExtended: { turn: KernelSudoTurn } }
 
 export type RequestKernelSudoRequest = { agent_id: string; prompt: string }
 export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: string } }

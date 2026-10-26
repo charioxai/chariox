@@ -198,7 +198,7 @@ async fn failing_turn_with(
     substitutes: &[(&str, &str, Option<&str>)],
     workflow: bool,
 ) -> FailingTurn {
-    let worktree = std::env::temp_dir().join(format!(
+    let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-turn-substitute-{:016x}",
         rand::random::<u64>()
     ));
@@ -693,13 +693,56 @@ async fn assert_conversation_crosses_the_substitute(turn: &FailingTurn, substitu
     turn.record_history(Some(&turn.failed_run_id), "The parser lives in parse.rs.");
     turn.record_history(None, "review this change");
 
+    turn.record_history(
+        Some(&turn.failed_run_id),
+        "Partial review: parse.rs is half migrated.",
+    );
+    for (kind, text) in [
+        (
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            "edited parse.rs; ran cargo check; committed abc123",
+        ),
+        (
+            crate::terminal::TerminalOutputKind::ProviderError,
+            "server_overloaded after the file edit",
+        ),
+    ] {
+        let entry = crate::history::SessionHistoryEntry::provider_output(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Some(&turn.agent_id),
+            kind,
+            None,
+            text,
+        );
+        turn.runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    }
+
     turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
 
     let substitute = turn.assert_rerun_on(0, substitute_model);
+    let inputs = turn.provider_inputs(&substitute);
     assert!(
-        turn.provider_inputs(&substitute)
-            .contains("The parser lives in parse.rs."),
+        inputs.contains("The parser lives in parse.rs."),
         "the substitute receives the conversation it never saw"
+    );
+    for text in [
+        "Partial review: parse.rs is half migrated.",
+        "edited parse.rs; ran cargo check; committed abc123",
+        "server_overloaded after the file edit",
+        "Interrupted attempt of the current request",
+    ] {
+        assert!(
+            inputs.contains(text),
+            "the substitute must see the interrupted attempt: {inputs}"
+        );
+    }
+    assert_eq!(
+        inputs.matches("review this change").count(),
+        1,
+        "the retried prompt is the request, not part of the handoff: {inputs}"
     );
     turn.record_history(
         Some(&substitute),
@@ -725,13 +768,18 @@ async fn assert_conversation_crosses_the_substitute(turn: &FailingTurn, substitu
     assert_eq!(next_run.model(), PRIMARY_MODEL);
     assert!(next_run.turn_substitute().is_none());
 
-    let next_prompt = turn.runtime.owned.prompt_with_pending_context_handoff(
-        &turn.session_id,
-        &turn.agent_id,
-        "substitute-test",
-        &next_run,
-        "implement that solution",
-    );
+    let next_prompt = turn
+        .runtime
+        .owned
+        .prompt_with_pending_context_handoff(
+            &turn.session_id,
+            &turn.agent_id,
+            &next_run,
+            "prompt-next",
+            "implement that solution",
+            false,
+        )
+        .unwrap();
     assert!(
         next_prompt.contains("Proposed fix: rename parse_all to parse."),
         "the primary's next turn carries the substitute's answer: {next_prompt}"
@@ -1011,7 +1059,8 @@ async fn a_follow_up_promoted_by_a_structured_abort_acknowledgement_reaches_the_
         .session_store
         .get_session(&turn.session_id)
         .unwrap();
-    turn.runtime
+    let cancelling_prompt = turn
+        .runtime
         .owned
         .prompt_state_owner
         .begin_cancelling_active_prompt(&session, &turn.agent_id)
@@ -1025,7 +1074,11 @@ async fn a_follow_up_promoted_by_a_structured_abort_acknowledgement_reaches_the_
     turn.runtime
         .owned
         .provider_store
-        .enqueue_structured_prompt_abort(turn.session_id.clone(), substitute.clone())
+        .enqueue_structured_prompt_abort(
+            turn.session_id.clone(),
+            substitute.clone(),
+            cancelling_prompt.id().to_string(),
+        )
         .expect("the abort is sent");
     tokio::time::timeout(
         std::time::Duration::from_secs(10),

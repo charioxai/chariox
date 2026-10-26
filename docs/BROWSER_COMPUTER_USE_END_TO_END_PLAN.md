@@ -91,8 +91,16 @@ Web View, and remains observable and controllable from local and remote TUI
 clients. Human takeover must not create a second browser session. Save and
 restart must preserve the browser profile, installed programs, desktop state,
 provider thread, and idle agents through a full container destroy and recreate.
-Vault-backed credentials must remain absent from model context, terminal
-transcripts, relay and Cloud data, logs, traces, screenshots, and helper output.
+Vault-backed credentials stay out of tool arguments, logs, traces and terminal
+transcripts. MP-08/MP-11 visual protection follows Miguel's fill-target decision
+of 2026-10-09: record the exact field when the kernel fills from the Vault;
+mask its rendered box with small device-pixel padding only while it is a plain
+text field. Password fields already render dots and receive no mask. Recheck
+type on every capture, including show-password toggles. Browser identity is
+frame + backend node + document/generation; native identity is window + AT-SPI
+object path. Retire tracking when the document/generation changes, the element
+is removed, or its value is cleared/replaced by the user. No text-echo,
+container/order/bidi/budget, iframe or media masking remains.
 Client disconnect and reconnect must not duplicate provider runs or split Room
 state. Every drill must remove everything it created.
 

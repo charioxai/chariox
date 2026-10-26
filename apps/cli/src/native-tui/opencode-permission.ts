@@ -6,12 +6,15 @@ export async function resolveActiveOpenCodePermissionInteraction(
   sessionId: string,
   agentId: string,
   choiceId: string,
+  requestId?: string,
 ): Promise<boolean> {
-  return resolveActiveNativePermissionInteraction(client, sessionId, agentId, choiceId)
+  return resolveActiveNativePermissionInteraction(client, sessionId, agentId, choiceId,
+    requestId === undefined ? undefined : `opencode-permission-${requestId}`)
 }
 
-export function openCodeNativePermissionChoice(body: Record<string, unknown>): string {
+export function openCodeNativePermissionChoice(body: Record<string, unknown>): string | null {
   const raw = [
+    body.reply,
     body.response,
     body.decision,
     body.choice,
@@ -19,7 +22,8 @@ export function openCodeNativePermissionChoice(body: Record<string, unknown>): s
     body.status,
   ].find((value) => typeof value === "string")
   const value = typeof raw === "string" ? raw.toLowerCase() : ""
-  if (value.includes("always") || value.includes("session")) return "allow_session"
-  if (value.includes("reject") || value.includes("deny") || value.includes("decline")) return "deny"
-  return "allow_once"
+  if (["always", "session", "allow_session"].includes(value)) return "allow_session"
+  if (["reject", "deny", "decline"].includes(value)) return "deny"
+  if (["once", "allow_once", "allow", "approve", "approved"].includes(value)) return "allow_once"
+  return null
 }

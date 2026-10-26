@@ -128,8 +128,8 @@ function redactEnvironmentValue(name, value) {
       const config = JSON.parse(value)
       return {
         kind: 'json',
-        keys: Object.keys(config).sort(),
-        mcp_names: Object.keys(config?.mcp ?? {}).sort(),
+        key_count: Object.keys(config).length,
+        mcp_count: Object.keys(config?.mcp ?? {}).length,
         plugin_count: Array.isArray(config?.plugin) ? config.plugin.length : 0,
         sha256_like: value.length,
       }
@@ -138,11 +138,11 @@ function redactEnvironmentValue(name, value) {
     }
   }
   if (/AUTH|TOKEN|SECRET|PASSWORD|CREDENTIAL|COOKIE|KEY/i.test(name)) return '[redacted]'
-  return value
+  return { present: true, length: typeof value === "string" ? value.length : 0 }
 }
 
-function summarizeEnvironment(environment) {
-  return Object.fromEntries(Object.keys(environment || {}).sort().map((name) => [
+export function summarizeEnvironment(environment) {
+  return Object.fromEntries(Object.keys(environment || {}).filter(name => replayEnvironmentKeys.has(name)).sort().map((name) => [
     name,
     redactEnvironmentValue(name, environment[name]),
   ]))
@@ -277,7 +277,7 @@ function summarizeResolvedConfig(config) {
     }])),
     plugin_entries: plugins.map((plugin) => typeof plugin === 'string' && plugin.endsWith('native-marker-plugin.mjs')
       ? 'native-marker-plugin'
-      : typeof plugin === 'string' ? plugin : '[tuple]'),
+      : typeof plugin === 'string' ? '[external-plugin]' : '[tuple]'),
     agent_names: Object.keys(agents).sort(),
     agent_permission_stars: Object.fromEntries(Object.entries(agents).map(([name, value]) => [
       name,
@@ -288,11 +288,11 @@ function summarizeResolvedConfig(config) {
   }
 }
 
-function summarizeMcpStatus(status) {
-  if (!status || typeof status !== 'object' || Array.isArray(status)) return { raw: status }
+export function summarizeMcpStatus(status) {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return { invalid_status: true }
   return Object.fromEntries(Object.entries(status).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => [name, {
     status: value?.status ?? null,
-    error: value?.error ?? null,
+    error: value?.error == null ? null : "native_mcp_failed",
     tools: Array.isArray(value?.tools) ? value.tools.map((tool) => tool?.name ?? null) : null,
   }]))
 }
@@ -463,9 +463,7 @@ function debugConfig(env, cwd, { pure = false } = {}) {
     if (!result.resolved) result.parse_error = true
   } catch (error) {
     result.exit_code = error.status ?? null
-    result.error = error.message
-    result.stdout_tail = String(error.stdout ?? '').slice(-2000)
-    result.stderr_tail = String(error.stderr ?? '').slice(-2000)
+    result.error = 'native_provider_probe_failed'
   }
   return result
 }
@@ -490,7 +488,7 @@ async function launchServer(label, env, cwd, { pure = false } = {}) {
     return { label, port, baseUrl, child, health, stdout, stderr }
   } catch (error) {
     await stopServer({ child })
-    throw new Error(`${label}: ${error.message}; stderr=${stderr.slice(-1000)}`)
+    throw new Error('native_provider_start_failed')
   }
 }
 
@@ -555,7 +553,7 @@ async function runCase({ label, cwd, statePath, pluginEventsPath, env, pure = fa
     await sleep(350)
     result.server = { port: run.port, base_url: run.baseUrl }
   } catch (error) {
-    result.error = error.message
+    result.error = 'native_provider_probe_failed'
   } finally {
     await stopServer(run)
     await sleep(150)
@@ -948,7 +946,7 @@ async function main() {
     }
   } catch (error) {
     report.passed = false
-    report.error = error.stack ?? error.message
+    report.error = 'native_config_probe_failed'
   } finally {
     if (configFixture) {
       const authMetadataAfter = await fileMetadata(authPath)
@@ -963,4 +961,4 @@ async function main() {
   if (!report.passed) process.exitCode = 1
 }
 
-await main()
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) await main()

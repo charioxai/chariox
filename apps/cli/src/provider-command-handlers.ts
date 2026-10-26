@@ -1,3 +1,4 @@
+import { providerLoginUrl, providerLoginUrls, type ProviderLoginLinkOptions } from "./provider-login-link.js"
 import type {
   ProviderAuthStatus,
   ProviderAccountProfile,
@@ -10,7 +11,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import { isBackendProviderId } from "./provider-catalog.js"
 import {
   providerAccountDisplayLabel,
-  providerAccountsForProvider,
+  resolveProviderAccountSelection,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
 
@@ -20,6 +21,9 @@ export type ProviderCommandHandlerDeps = {
   currentProviderId: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
+  showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
+  /** Follows the kernel's login status and reports its final result. */
+  trackProviderLogin?: (login: { login_id: string; provider: string; account_profile: string }) => void
   applyProviderSelection?: (value: string) => Promise<void>
   getProviderAuthStatus?: (provider: string, accountProfile?: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (
@@ -78,12 +82,12 @@ export async function handleProviderSlashCommand(
     await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
     return
   }
-  if (action === "setup-token" && !parts.includes("--run")) {
+  if (action === "setup-token" && parts.includes("--paste")) {
     const args = parts.slice(2)
     const profile = args.find((value) => !value.startsWith("--")) ?? "default"
     if (parts[1] !== "claude" || args.filter((value) => !value.startsWith("--")).length > 1
-      || args.some((value) => value.startsWith("--") && value !== "--replace")) {
-      deps.flashFooter("usage: /provider setup-token claude [account-profile] [--replace]", "error")
+      || args.some((value) => value.startsWith("--") && !["--replace", "--paste"].includes(value))) {
+      deps.flashFooter("usage: /provider setup-token claude [account-profile] --paste [--replace] (advanced)", "error")
       return
     }
     if (!deps.readSecret || !deps.storeProviderSetupToken) {
@@ -94,15 +98,21 @@ export async function handleProviderSlashCommand(
     if (resolved === null) return
     const value = (await deps.readSecret("Claude setup token: ")).trim()
     if (!value) { deps.flashFooter("Claude setup token must not be empty", "error"); return }
-    const stored = await deps.storeProviderSetupToken(resolved ?? "default", value, args.includes("--replace"))
-    deps.flashFooter(`Claude setup token ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`, "info")
+    try {
+      const stored = await deps.storeProviderSetupToken(resolved ?? "default", value, args.includes("--replace"))
+      deps.flashFooter(`Claude setup token verified and ${stored.replaced ? "replaced" : "stored"} in Chariox Vault`, "info")
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).replaceAll(value, "<redacted>")
+      deps.appendNotice(message)
+      deps.flashFooter("Claude setup token failed; see the notice above", "error")
+    }
     return
   }
   if (action === "setup-token") {
     const args = parts.slice(2)
     const profile = args.find((value) => !value.startsWith("--")) ?? "default"
-    if (parts[1] !== "claude" || !args.includes("--run") || args.filter((value) => !value.startsWith("--")).length > 1 || args.some((value) => value.startsWith("--") && !["--run", "--replace"].includes(value))) {
-      deps.flashFooter("usage: /provider setup-token claude [account-profile] --run [--replace]", "error")
+    if (parts[1] !== "claude" || args.filter((value) => !value.startsWith("--")).length > 1 || args.some((value) => value.startsWith("--") && !["--run", "--replace"].includes(value))) {
+      deps.flashFooter("usage: /provider setup-token claude [account-profile] [--replace] (advanced: --paste)", "error")
       return
     }
     if (!deps.runProviderSetupToken) { deps.flashFooter("Claude setup token capture is unavailable", "error"); return }
@@ -112,6 +122,7 @@ export async function handleProviderSlashCommand(
     const message = formatProviderLoginNotice(login, "setup token authorization started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
     deps.appendNotice(message)
     deps.flashFooter(message, "info")
+    await presentLoginLink(deps, login)
     return
   }
   if (action === "login-status") {
@@ -234,10 +245,13 @@ async function startProviderLogin(
   }
   const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
   if (resolvedAccount === null) return
-  const login = await deps.startProviderLogin(provider, resolvedAccount, method)
+  const login = provider.startsWith("claude") && (!method || method === "setup_token") && deps.runProviderSetupToken
+    ? await deps.runProviderSetupToken(resolvedAccount ?? "default", true)
+    : await deps.startProviderLogin(provider, resolvedAccount, method)
   const message = formatProviderLoginNotice(login, "login started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
+  await presentLoginLink(deps, login)
 }
 
 async function showProviderLoginStatus(
@@ -250,7 +264,13 @@ async function showProviderLoginStatus(
   }
   const login = await deps.getProviderLoginStatus(loginId)
   const output = Buffer.from(login.terminal_output_base64, "base64").toString("utf8").trimEnd()
-  if (output) deps.appendNotice(output)
+  const urls = providerLoginUrls(output)
+  let summary = output
+  for (const url of urls) summary = summary.replaceAll(url, "[authorization link below]")
+  if (summary) deps.appendNotice(summary)
+  // Status output is cumulative; only a waiting login hands off, and links
+  // scraped from provider output are never opened automatically.
+  for (const url of urls) await presentUrl(deps, url, login.state === "running" ? { autoOpen: false } : null)
   const accountLabel = await providerAccountPublicLabel(deps, login.provider, login.account_profile)
   deps.flashFooter(`${providerAccountSubject(login.provider, accountLabel)} login ${login.state}`, login.state === "failed" ? "error" : "info")
 }
@@ -310,6 +330,10 @@ async function reauthProvider(
   accountProfile?: string,
   method?: string,
 ): Promise<void> {
+  if (provider.startsWith("claude") && (!method || method === "setup_token")) {
+    await startProviderLogin(deps, provider, accountProfile, method)
+    return
+  }
   if (!deps.logoutProvider || !deps.startProviderLogin) {
     deps.flashFooter("provider reauth is not available in this daemon", "error")
     return
@@ -321,12 +345,14 @@ async function reauthProvider(
     const message = formatProviderLoginNotice(logout.workflow, "logout started; finish it before reauth", await providerAccountPublicLabel(deps, logout.workflow.provider, logout.workflow.account_profile))
     deps.appendNotice(message)
     deps.flashFooter(message, "info")
+    await presentLoginLink(deps, logout.workflow, false)
     return
   }
   const login = await deps.startProviderLogin(provider, resolvedAccount, method)
   const message = formatProviderLoginNotice(login, "reauth started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
+  await presentLoginLink(deps, login)
 }
 
 async function handleProviderAccountsCommand(
@@ -374,6 +400,7 @@ async function handleProviderAccountsCommand(
       )
       deps.appendNotice(message)
       deps.flashFooter(message, "info")
+      await presentLoginLink(deps, login)
       return
     }
   } else if (action === "import-native" && !profile && deps.importNativeProviderAccountProfile) {
@@ -421,7 +448,7 @@ export async function resolveProviderAccountAlias(
     deps.flashFooter("provider account management is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(
+  const profile = findProviderAccountByReference(
     await deps.listProviderAccountProfiles(provider),
     provider,
     alias,
@@ -481,16 +508,29 @@ function formatProviderLoginNotice(
 ): string {
   return [
     `${providerAccountSubject(login.provider, accountLabel)} ${action}`,
-    login.login_kind.startsWith("terminal") && login.login_id
+    login.login_kind === "terminal_setup_token" ? "Open the authorization link when it appears" : login.login_kind.startsWith("terminal") && login.login_id
       ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
       : null,
     login.user_code ? `code ${login.user_code}` : null,
-    login.verification_url ?? login.auth_url ?? null,
+    providerLoginUrl(login.verification_url ?? login.auth_url ?? "") ? "authorization link below" : null,
   ].filter(Boolean).join(" • ")
 }
 
+async function presentLoginLink(deps: ProviderCommandHandlerDeps, login: ProviderLoginStart, signIn = true): Promise<void> {
+  if (signIn && login.login_id) deps.trackProviderLogin?.({ login_id: login.login_id, provider: login.provider, account_profile: login.account_profile })
+  const url = login.verification_url ?? login.auth_url
+  if (!url || !providerLoginUrl(url)) return
+  await presentUrl(deps, url, { userCode: login.user_code, autoOpen: true })
+}
+
+async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, handoff: ProviderLoginLinkOptions | null): Promise<void> {
+  // The transcript keeps the complete link after the link view closes.
+  deps.appendNotice(`\n${url}\n`)
+  if (handoff) await deps.showProviderLoginLink?.(url, handoff)
+}
+
 function providerAccountSubject(provider: string, accountLabel: string): string {
-  return accountLabel === "Account unavailable" ? provider : `${provider}/${accountLabel}`
+  return accountLabel === "Account status not checked" ? provider : `${provider}/${accountLabel}`
 }
 
 /// Extracts a `--method <name>` enrollment selection from the token stream,
@@ -537,19 +577,13 @@ function credentialKindLabel(profile: {
   }
 }
 
-function findProviderAccountByAlias(
+function findProviderAccountByReference(
   profiles: Awaited<ReturnType<NonNullable<ProviderCommandHandlerDeps["listProviderAccountProfiles"]>>>,
   provider: string,
   alias: string,
 ) {
-  const normalizedAlias = alias.trim()
-  const candidates = providerAccountsForProvider(profiles, provider)
-  const exactMatch = candidates.find((candidate) => candidate.label === normalizedAlias)
-  if (exactMatch) return exactMatch
-  const foldedMatches = candidates.filter(
-    (candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0,
-  )
-  return foldedMatches.length === 1 ? foldedMatches[0] : undefined
+  const selection = resolveProviderAccountSelection(profiles, provider, alias)
+  return selection.kind === "resolved" ? selection.profile : undefined
 }
 
 async function resolveProviderAccountReference(
@@ -563,7 +597,7 @@ async function resolveProviderAccountReference(
     deps.flashFooter("provider account selection is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(await deps.listProviderAccountProfiles(provider), provider, normalizedAlias)
+  const profile = findProviderAccountByReference(await deps.listProviderAccountProfiles(provider), provider, normalizedAlias)
   if (profile) return profile.profile_id
   deps.flashFooter(`provider account alias ${normalizedAlias} was not found for ${provider}`, "error")
   return null
@@ -574,13 +608,13 @@ async function providerAccountPublicLabel(
   provider: string,
   accountProfile: string | null | undefined,
 ): Promise<string> {
-  if (!deps.listProviderAccountProfiles) return "Account unavailable"
+  if (!deps.listProviderAccountProfiles) return "Account status not checked"
   const profile = selectedProviderAccount(
     await deps.listProviderAccountProfiles(provider),
     provider,
     accountProfile ?? undefined,
   )
-  return profile ? providerAccountDisplayLabel(profile) : "Account unavailable"
+  return profile ? providerAccountDisplayLabel(profile) : "Account status not checked"
 }
 
 async function handleProviderProcessesCommand(

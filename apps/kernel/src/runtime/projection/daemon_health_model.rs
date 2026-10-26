@@ -19,6 +19,10 @@ pub struct ActorQueueSnapshot {
 }
 
 impl ActorQueueSnapshot {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(lane_id: impl Into<String>, queue_limit: usize, queued_commands: usize) -> Self {
         Self {
             lane_id: lane_id.into(),
@@ -744,6 +748,10 @@ pub struct DaemonHealthProjection {
 }
 
 impl DaemonHealthProjection {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         last_event_id: u64,
         session_command_lanes: Vec<ActorQueueSnapshot>,

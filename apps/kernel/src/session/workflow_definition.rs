@@ -178,6 +178,8 @@ pub struct WorkflowDefinition {
     prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controlled_by_metaagent_id: Option<String>,
+    #[serde(default)]
+    created_by_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<WorkflowOrigin>,
     #[serde(default = "unix_epoch_ms")]
@@ -208,6 +210,7 @@ impl WorkflowDefinition {
             alias,
             prompt: None,
             controlled_by_metaagent_id: None,
+            created_by_agent_id: None,
             origin: None,
             created_at_ms: unix_epoch_ms(),
             revision: 0,
@@ -229,7 +232,9 @@ impl WorkflowDefinition {
         metaagent_id: impl Into<String>,
     ) -> Self {
         let mut workflow = Self::new(id, alias);
-        workflow.controlled_by_metaagent_id = Some(metaagent_id.into());
+        let creator = metaagent_id.into();
+        workflow.created_by_agent_id = Some(creator.clone());
+        workflow.controlled_by_metaagent_id = Some(creator);
         workflow
     }
 
@@ -248,6 +253,10 @@ impl WorkflowDefinition {
 
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
+    }
+
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
     }
 
     pub fn controlled_by_metaagent_id(&self) -> Option<&str> {

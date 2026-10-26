@@ -432,10 +432,7 @@ fn relay_aliases_differentiate_kernels_on_same_machine() {
     assert_eq!(machines.len(), 1);
     assert_eq!(machines[0].machine_id, "shared-machine");
     assert_eq!(machines[0].kernel_count, 2);
-    assert_eq!(
-        machines[0].machine_alias.as_deref(),
-        Some("machine 1 (macOS)")
-    );
+    assert_eq!(machines[0].machine_alias.as_deref(), Some("macOS computer"));
 
     let kernels = registry.live_kernels_for_machine("shared-machine");
     assert_eq!(kernels.len(), 2);
@@ -533,5 +530,124 @@ fn relay_metadata_ignores_temporary_peer_transport_registrations() {
     assert!(
         registry.live_kernel("home-kernel:peer-tmp:req-1").is_none(),
         "temporary peer transport sockets are not live kernels"
+    );
+}
+
+#[test]
+fn metadata_scope_counts_and_provider_metadata_include_only_permitted_targets() {
+    let mut registry = RelayRegistry::default();
+    let mut one = test_registration("kernel-one", "machine-one", "Linux", 10);
+    one.available_providers = vec!["codex".into()];
+    let mut two = one.clone();
+    two.daemon_id = "kernel-two".into();
+    // A foreign registration cannot borrow a permitted canonical ID as its alias.
+    two.kernel_alias = Some("kernel-one".into());
+    two.available_providers = vec!["claude".into()];
+    insert_live_registration(&mut registry, "realm-a", one, 10001);
+    insert_live_registration(&mut registry, "realm-a", two, 10002);
+    let targets = vec!["kernel-one".to_string()];
+    let machines = registry.live_machines_in_realm_with_targets("realm-a", Some(&targets));
+    assert_eq!(machines.len(), 1);
+    assert_eq!(machines[0].kernel_count, 1);
+    assert_eq!(machines[0].available_providers, vec!["codex"]);
+    let kernels = registry.live_kernels_for_machine_in_realm("realm-a", "machine-one");
+    let visible: Vec<_> = kernels
+        .into_iter()
+        .filter(|kernel| super::super::metadata_scope::kernel_is_permitted(kernel, Some(&targets)))
+        .collect();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].kernel_id, "kernel-one");
+    assert!(registry
+        .live_machines_in_realm_with_targets("realm-a", Some(&[]))
+        .is_empty());
+}
+
+// MP-08 / MP-10 / MP-11: registered names survive discovery and kernel churn.
+#[test]
+fn registered_machine_name_is_shared_by_every_presence_projection() {
+    let mut registry = RelayRegistry::default();
+    for (id, started, port) in [("omarchy.43119", 20, 11001), ("omarchy.43120", 30, 11002)] {
+        let mut registration = test_registration(id, "machine-omarchy", "Linux", started);
+        registration.machine_alias = (id == "omarchy.43119").then(|| "omarchy".into());
+        insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, registration, port);
+    }
+    let assert_name = |registry: &RelayRegistry| {
+        assert_eq!(
+            registry.live_machines()[0].machine_alias.as_deref(),
+            Some("omarchy")
+        );
+        let kernels = registry.live_kernels_for_machine("machine-omarchy");
+        assert_eq!(kernels.len(), 2);
+        assert_eq!(registry.live_kernels_for_machine("omarchy").len(), 2);
+        for kernel in kernels {
+            assert_eq!(kernel.machine_alias.as_deref(), Some("omarchy"));
+            assert_eq!(
+                registry
+                    .live_kernel(&kernel.kernel_id)
+                    .unwrap()
+                    .machine_alias
+                    .as_deref(),
+                Some("omarchy")
+            );
+        }
+    };
+    assert_name(&registry);
+    insert_live_registration(
+        &mut registry,
+        DEFAULT_RELAY_REALM_ID,
+        test_registration("unrelated", "another-machine", "Linux", 1),
+        11003,
+    );
+    assert_eq!(
+        registry
+            .live_machines()
+            .iter()
+            .find(|machine| machine.machine_id == "machine-omarchy")
+            .unwrap()
+            .machine_alias
+            .as_deref(),
+        Some("omarchy")
+    );
+    for kernel in registry.live_kernels_for_machine("machine-omarchy") {
+        assert_eq!(kernel.machine_alias.as_deref(), Some("omarchy"));
+    }
+}
+
+// MP-08 / MP-11: an unnamed machine shows a plain label, never its raw machine id.
+#[test]
+fn unnamed_machine_label_is_friendly_and_does_not_depend_on_inventory_order() {
+    let mut registry = RelayRegistry::default();
+    let mut registration = test_registration("kernel-a", "stable-machine-id", "Linux", 20);
+    registration.machine_alias = Some("   ".into());
+    insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, registration, 11004);
+    assert_eq!(
+        registry.live_machines()[0].machine_alias.as_deref(),
+        Some("Linux computer")
+    );
+    assert_eq!(
+        registry
+            .live_kernel("kernel-a")
+            .unwrap()
+            .machine_alias
+            .as_deref(),
+        Some("Linux computer")
+    );
+    let mut nameless = test_registration("kernel-b", "other-machine-id", "Linux", 10);
+    nameless.os_name = None;
+    insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, nameless, 11005);
+    let label = |machine_id: &str| {
+        registry
+            .live_machines()
+            .into_iter()
+            .find(|machine| machine.machine_id == machine_id)
+            .and_then(|machine| machine.machine_alias)
+    };
+    assert_eq!(
+        label("other-machine-id").as_deref(),
+        Some("Unnamed computer")
+    );
+    assert_eq!(
+        label("stable-machine-id").as_deref(),
+        Some("Linux computer")
     );
 }

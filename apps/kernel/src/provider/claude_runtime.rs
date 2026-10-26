@@ -23,6 +23,7 @@ mod events;
 mod input;
 mod process;
 mod runtime_tool_wait;
+mod session_restart;
 mod state;
 mod tool_transcript;
 pub(crate) mod usage;
@@ -80,6 +81,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let usage_file = env.get("CHARIOX_CLAUDE_USAGE_FILE").map(PathBuf::from);
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
+    let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
         &program,
@@ -89,6 +91,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
         &env_remove,
         working_directory.as_ref(),
         "initialize_claude_runtime",
+        &output_notifier,
     )?;
 
     Ok(ClaudeRuntimeBinding {
@@ -103,6 +106,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             settings_file,
             usage_file,
             last_usage_file_contents: None,
+            last_context_tokens: None,
             mcp_config_file,
             process_identity: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::runtime::kernel_access::process::inspect(child.id())
@@ -112,11 +116,14 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             child,
             stdin,
             receiver,
+            output_notifier,
             active_model: run.model().to_string(),
             active_variant: run.variant().map(str::to_string),
             active_execution_mode: run.execution_mode(),
             active_permission_level: run.permission_level(),
-            session_id: Some(session_id),
+            // A requested --session-id is not yet a resumable conversation.
+            // Only a restored ID or Claude's native init confirms one.
+            session_id: run.resume_state().claude_session_id().map(str::to_string),
             active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
@@ -184,14 +191,19 @@ pub(crate) fn submit_claude_prompt(
     write_claude_hidden_context(run.id(), state, &envelope.hidden_system_context)?;
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
+    let private_prompt = envelope.private_assessment_prompt();
+    let input = private_prompt
+        .as_ref()
+        .map_or(envelope.visible_user_prompt.as_str(), |p| p.as_str());
     let message = json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": claude_user_content(&envelope.visible_user_prompt, &envelope.attachments)
+            "content": claude_user_content(input, &envelope.attachments)
         }
     });
     write_json_line(&mut state.stdin, &message)?;
+    state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
@@ -350,6 +362,7 @@ fn retry_stalled_claude_turn(
     write_json_line(&mut state.stdin, &message)?;
     let turn_id = format!("turn-{}", state.next_turn_number);
     state.next_turn_number += 1;
+    state.last_context_tokens = None;
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.record_restart(Instant::now());
@@ -468,10 +481,6 @@ fn restart_claude_runtime(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     stop_child(&mut state.child);
-    let resume_session_id = state
-        .session_id
-        .as_deref()
-        .or_else(|| run.resume_state().claude_session_id());
     let base_args = claude_args_with_execution_config(
         &claude_args_without_resume(&state.args),
         run.execution_mode(),
@@ -479,12 +488,15 @@ fn restart_claude_runtime(
         state.mcp_config_file.is_some() && run.runtime_mcp_auth_token().is_some(),
     );
     let mut args = base_args.clone();
-    if let Some(session_id) = resume_session_id {
-        args.extend(["--resume".to_string(), session_id.to_string()]);
+    if let Some((argument, session_id)) =
+        session_restart::claude_restart_session_argument(run, state)
+    {
+        args.extend([argument.to_string(), session_id.to_string()]);
     }
     let env = run.pty_env().clone();
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
+    let output_notifier = state.output_notifier.clone();
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
         &state.program,
@@ -494,6 +506,7 @@ fn restart_claude_runtime(
         &env_remove,
         working_directory.as_ref(),
         operation,
+        &output_notifier,
     )?;
     *state
         .process_identity
@@ -575,9 +588,9 @@ fn write_claude_hidden_context(
     let Some(path) = &state.context_file else {
         return Ok(());
     };
-    crate::provider::ensure_claude_native_hidden_context_fits(
+    let hidden_system_context = crate::provider::fit_claude_native_hidden_context(
         provider_run_id,
-        hidden_system_context.trim(),
+        hidden_system_context.trim().to_string(),
     )?;
     std::fs::write(path, hidden_system_context.trim()).map_err(|error| {
         DaemonError::ProviderProtocol {
@@ -590,6 +603,7 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    mod model_observation;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
     mod tool_results;
@@ -640,11 +654,13 @@ mod tests {
                 settings_file: None,
                 usage_file: None,
                 last_usage_file_contents: None,
+                last_context_tokens: None,
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 child,
                 stdin,
                 receiver,
+                output_notifier: Default::default(),
                 active_model: "sonnet".to_string(),
                 active_variant: Some("low".to_string()),
                 active_execution_mode: AgentExecutionMode::Build,
@@ -870,6 +886,10 @@ cat >/dev/null
         assert!(latest.contains("\t--permission-mode\tplan"));
         assert!(!latest.contains("bypassPermissions"));
         assert!(!latest.contains("--allow-dangerously-skip-permissions"));
+        assert!(
+            !latest.contains("\t--resume\t"),
+            "a restart before native init must not resume a nonexistent conversation: {latest}"
+        );
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);
@@ -894,7 +914,19 @@ cat >/dev/null
 printf 'argv' >> "$CLAUDE_TEST_TRACE"
 for arg in "$@"; do printf '\t%s' "$arg" >> "$CLAUDE_TEST_TRACE"; done
 printf '\n' >> "$CLAUDE_TEST_TRACE"
-while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE"; done
+session_id=''; previous=''
+for arg in "$@"; do
+  case "$previous" in --session-id|--resume) session_id="$arg" ;; esac
+  previous="$arg"
+done
+started=false
+while IFS= read -r line; do
+  printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE"
+  if [ "$started" = false ]; then
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session_id"
+    started=true
+  fi
+done
 "#
                     .to_string(),
                     "fixture".to_string(),
@@ -909,7 +941,14 @@ while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE";
             },
         );
         let mut binding = initialize_claude_runtime(&run).unwrap();
-        let session_id = binding.state.session_id().unwrap().to_string();
+        assert!(binding.state.session_id().is_none());
+        let session_id = binding
+            .state
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--session-id")
+            .expect("fresh launch should request a session ID")[1]
+            .clone();
         let envelope = crate::prompt_assembly::PromptEnvelope::new(
             "remember cancelled context",
             "",
@@ -918,6 +957,15 @@ while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE";
         );
         submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
         wait_for_trace_lines(&trace, 2);
+        let native_init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while binding.state.session_id().is_none() {
+            super::drain_claude_events(&run, &mut binding.state).unwrap();
+            assert!(
+                std::time::Instant::now() < native_init_deadline,
+                "native init should acknowledge the session"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         super::abort_claude_turn(&run, &mut binding.state).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
@@ -1529,6 +1577,69 @@ while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE";
     }
 
     #[test]
+    fn claude_context_uses_the_last_api_call_across_batches() {
+        let (mut state, _) = parser_state();
+        for context in [371_000, 372_000] {
+            let mut batch = ProviderPromptSignalBatch::default();
+            apply_claude_message(
+                "run-1",
+                &mut state,
+                json!({"type":"assistant", "message":{
+                    "usage":{"input_tokens":2_000,"cache_read_input_tokens":context-2_000,"output_tokens":10},"content":[]
+                }}),
+                &mut batch,
+            );
+        }
+        let mut batch = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"stream_event", "event":{
+                "type":"message_delta","usage":{"output_tokens":20}
+            }}),
+            &mut batch,
+        );
+        assert_eq!(
+            batch.resolved_usage.as_ref().unwrap().context_tokens,
+            Some(372_000)
+        );
+        batch = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"result","subtype":"success",
+                "usage":{"input_tokens":4_000,"cache_read_input_tokens":740_000,"output_tokens":30}
+            }),
+            &mut batch,
+        );
+        let usage = batch.resolved_usage.unwrap();
+        assert_eq!(usage.context_tokens, Some(372_000));
+        assert_eq!(usage.total_tokens, Some(744_030));
+    }
+
+    #[test]
+    fn claude_stream_start_carries_input_context_and_result_only_is_unknown() {
+        let (mut state, mut batch) = parser_state();
+        apply_claude_message(
+            "run",
+            &mut state,
+            json!({"type":"result","subtype":"success","usage":{"input_tokens":744_000}}),
+            &mut batch,
+        );
+        assert_eq!(batch.resolved_usage.unwrap().context_tokens, None);
+        batch = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run",
+            &mut state,
+            json!({"type":"stream_event","event":{"type":"message_start","message":{
+                "usage":{"input_tokens":2_000,"cache_creation_input_tokens":3_000,"cache_read_input_tokens":35_000}
+            }}}),
+            &mut batch,
+        );
+        assert_eq!(batch.resolved_usage.unwrap().context_tokens, Some(40_000));
+    }
+
+    #[test]
     fn marks_result_completion_and_usage() {
         let (mut state, mut batch) = parser_state();
 
@@ -1704,3 +1815,7 @@ while IFS= read -r line; do printf 'input:%s\n' "$line" >> "$CLAUDE_TEST_TRACE";
             .contains("archive.bin"));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "claude_runtime/tests/cold_restart.rs"]
+mod cold_restart;

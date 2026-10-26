@@ -2,25 +2,35 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 use std::fs::OpenOptions;
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 use std::io::Write;
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 use std::path::PathBuf;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 use rand::RngCore;
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[path = "private_file_unix.rs"]
+mod unix;
+#[cfg(all(test, unix))]
+use std::os::unix::fs::PermissionsExt;
 
 pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "private file has no parent"))?;
     fs::create_dir_all(parent)?;
-    write_private_file_platform(path, parent, contents)
+    #[cfg(unix)]
+    {
+        unix::write(path, parent, contents)
+    }
+    #[cfg(not(unix))]
+    {
+        write_private_file_platform(path, parent, contents)
+    }
 }
 
 #[cfg(windows)]
@@ -30,7 +40,7 @@ fn write_private_file_platform(path: &Path, _parent: &Path, contents: &[u8]) -> 
     fs::write(path, contents)
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 fn write_private_file_platform(path: &Path, parent: &Path, contents: &[u8]) -> io::Result<()> {
     let temporary = temporary_path(path);
     let result = (|| {
@@ -54,7 +64,7 @@ fn write_private_file_platform(path: &Path, parent: &Path, contents: &[u8]) -> i
     result
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(unix)))]
 fn temporary_path(path: &Path) -> PathBuf {
     let mut suffix = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut suffix);

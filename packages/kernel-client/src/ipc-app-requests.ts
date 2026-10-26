@@ -96,13 +96,14 @@ export function listAppAutomationsRequest(installationId: string) {
 /** Expected revision zero creates the automation; replacements name the current revision. */
 export function configureAppAutomationRequest(options: {
   installationId: string; automationId: string; expectedRevision: number; eventName: string;
-  sessionId: string; publicationRef: string; queueRef?: string; scheduled?: boolean;
+  sessionId: string; publicationRef: string; queueRef?: string; scheduled?: boolean; deliveryMode?: "queue" | "inject";
 }) {
   return { ConfigureAppAutomation: {
     installation_id: options.installationId, automation_id: options.automationId,
     expected_revision: options.expectedRevision, event_name: options.eventName,
     session_id: options.sessionId, publication_ref: options.publicationRef,
     queue_ref: options.queueRef ?? null, scheduled: options.scheduled ?? false,
+    ...(options.deliveryMode === "inject" ? { delivery_mode: "inject" as const } : {}),
   } }
 }
 
@@ -211,4 +212,41 @@ export function acceptAppHostActionRequest(sessionId: string, operationId: strin
 export function restoreAppDataSnapshotRequest(installationId: string, expectedGeneration: string, snapshotId: string) {
   return { RestoreAppDataSnapshot: { installation_id: installationId,
     expected_generation: expectedGeneration, snapshot_id: snapshotId } }
+}
+
+export const userAppViewsMinimumProtocolVersion = 443
+
+/** User-domain views have no session, Room, slice or agent field. */
+export function openUserAppViewRequest(installationId: string, host?: "client_native" | "kernel_browser") {
+  return { OpenUserAppView: { installation_id: installationId, ...(host ? { host } : {}) } }
+}
+
+export function listUserAppViewsRequest() {
+  return { ListUserAppViews: {} }
+}
+
+export function closeUserAppViewRequest(viewId: string) {
+  return { CloseUserAppView: { view_id: viewId } }
+}
+
+export function getUserAppViewFrontendRequest(viewId: string) {
+  return { GetUserAppViewFrontend: { view_id: viewId } }
+}
+
+export function callUserAppViewRequest(viewId: string, method: string, input: unknown) {
+  return { CallUserAppView: { view_id: viewId, method, input } }
+}
+
+export function subscribeUserAppViewsRequest(after?: number, waitMs = 25_000) {
+  return { SubscribeUserAppViews: { after: after ?? null, wait_ms: waitMs } }
+}
+
+/** Trusted terminal action, never exposed to the App frame bridge. */
+export function answerUserDomainInteractionRequest(options: {
+  interactionId: string; choiceId: string; passkey?: string; passkeyRememberMinutes?: number
+}) {
+  return { AnswerUserDomainInteraction: {
+    interaction_id: options.interactionId, choice_id: options.choiceId,
+    passkey: options.passkey ?? null, passkey_remember_minutes: options.passkeyRememberMinutes ?? null,
+  } }
 }

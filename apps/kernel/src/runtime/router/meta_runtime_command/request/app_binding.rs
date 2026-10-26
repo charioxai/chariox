@@ -5,6 +5,7 @@ pub(in crate::runtime::router::meta_runtime_command) fn meta_app_binding_request
     metaagent: &crate::agent::AgentInstance,
     args: &[String],
     agents: &[crate::agent::AgentInstance],
+    room_tools: bool,
 ) -> Result<LocalDaemonRequest, DaemonError> {
     if args.len() != 4 || args[1] != "app" || !matches!(args[0].as_str(), "grant" | "revoke") {
         return Err(meta_command_error(
@@ -17,7 +18,7 @@ pub(in crate::runtime::router::meta_runtime_command) fn meta_app_binding_request
     {
         metaagent.clone()
     } else {
-        meta_owned_regular_agent_from_session(agents, metaagent, &args[2])?
+        room_command_agent(agents, metaagent, &args[2], room_tools)?
     };
     crate::extension::ExtensionGrant::app(&args[3]).validate_app_binding()?;
     if args[0] == "grant" {
@@ -70,15 +71,15 @@ mod tests {
         );
         agent.activate_meta_mode(None);
         let args = ["grant", "app", "meta-ref", "installed"].map(String::from);
-        let request = meta_app_binding_request(&session, &agent, &args, &[]).unwrap();
+        let request = meta_app_binding_request(&session, &agent, &args, &[], false).unwrap();
         assert!(
             matches!(request, LocalDaemonRequest::GrantAgentExtension(GrantAgentExtensionRequest { kind: ExtensionKind::App, agent_ref, .. }) if agent_ref == "meta")
         );
         let mut invalid = args.to_vec();
         invalid[2] = "other-agent".into();
-        assert!(meta_app_binding_request(&session, &agent, &invalid, &[]).is_err());
+        assert!(meta_app_binding_request(&session, &agent, &invalid, &[], false).is_err());
         let mut extra = args.to_vec();
         extra.extend(["--credential".into(), "secret".into()]);
-        assert!(meta_app_binding_request(&session, &agent, &extra, &[]).is_err());
+        assert!(meta_app_binding_request(&session, &agent, &extra, &[], false).is_err());
     }
 }

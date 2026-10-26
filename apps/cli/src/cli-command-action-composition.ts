@@ -1,3 +1,7 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
+import { getManagedContextTransferStatus } from "./managed-environment-api.js"
+import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
 import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
@@ -7,12 +11,13 @@ import type { AppPublisherEnrollment } from "./app-publisher-file.js"
 import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
-import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
+import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
-import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
+import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
+import type { SessionSelection } from "./session-lifecycle.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
@@ -33,12 +38,8 @@ import {
   updateAgentSubstitutes,
 } from "./agent-api.js"
 import {
-  acceptCloudSessionInvite,
-  createCloudSessionInvite,
   createSessionInvite,
   joinSessionInvite,
-  listCloudCollaborators,
-  listCloudSessionMembers,
 } from "./cloud-session-api.js"
 import {
   getUserConfig,
@@ -97,7 +98,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel, exportDebugBundle, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
+import { deleteKernel, exportDebugBundle, extendKernelSudo, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -105,6 +106,9 @@ import {
   saveRelayCloudProfile,
   saveUiPreferences,
 } from "./preferences.js"
+import type { CloudClient } from "./cloud-client.js"
+import { hasLocalKernel, startLocalKernelSetup } from "./local-kernel-setup.js"
+import { createCloudClientCommands } from "./cloud-client-command.js"
 import {
   getProviderAuthStatus,
   getProviderCatalog,
@@ -132,6 +136,8 @@ import {
   updateSessionConfig,
 } from "./provider-api.js"
 import {
+  addSshMachine,
+  removeSshMachine,
   approveRemoteMachine,
   forgetRemoteMachine,
   listRemoteMachineKernels,
@@ -141,8 +147,8 @@ import {
 import {
   configureRelay,
   connectKernelCloudRelay,
+  getKernelCloudRelayProfile,
   getRelayStatus,
-  issueKernelCloudRelayClientToken,
   logoutCloudRelay,
   pairKernelCloudRelayClient,
   pairKernelCloudRelayMachine,
@@ -162,7 +168,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -196,6 +202,9 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  userAppViews?: { handle(args: string[]): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
+  cloudClient?: CloudClient
+  kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
@@ -209,6 +218,7 @@ export type CliCommandActionCompositionDeps = {
   initialWorktreeTarget: string
   pendingWorkspaceTarget: AnyFn
   pendingWorktreeTarget: AnyFn
+  editWaitingRoomWorkspace: (path: string) => Promise<void>
   setPendingWorkspaceTarget: AnyFn
   setPendingWorktreeTarget: AnyFn
   isAttached: AnyFn
@@ -224,9 +234,12 @@ export type CliCommandActionCompositionDeps = {
   flashFooter: AnyFn
   appendNotice: AnyFn
   readSecret?: AnyFn
+  showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
+  providerLoginInteractions?: { track: (login: { login_id: string; provider: string; account_profile: string }) => void }
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
+  beginSessionSelection?: (session: { id: string }) => SessionSelection | null
   transitionToNoSession: AnyFn
   applyProviderSelection: AnyFn
   applyAccountSelection: AnyFn
@@ -450,7 +463,15 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     worktree: initialWorktreeTarget,
     getWorkspaceTarget: pendingWorkspaceTarget,
     getWorktreeTarget: pendingWorktreeTarget,
-    setWorkspaceTarget: setPendingWorkspaceTarget,
+    setWorkspaceTarget: (path: string) => {
+      if (isAttached()) {
+        setPendingWorkspaceTarget(path)
+        return
+      }
+      void deps.editWaitingRoomWorkspace(path)
+        .then(() => deps.rebuildTranscript())
+        .catch(error => flashFooter(deps.formatError(error), "error"))
+    },
     setWorktreeTarget: setPendingWorktreeTarget,
     accountProfile: options.accountProfile,
     clientId: options.clientId,
@@ -464,6 +485,24 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
+    submitGoalPrompt: async (text, targetAgentId) => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("goal needs an attached terminal")
+      const response = await client.send<{ PromptSubmitted?: { session: RuntimeSession }; SessionState?: { session: RuntimeSession }; AgentTaskUpdated?: { session_id: string; task: AgentTaskExecution } }>(submitPromptRequest(sessionState().id, attachment.id, targetAgentId, text, []))
+      if (response.AgentTaskUpdated) {
+        const update = response.AgentTaskUpdated
+        if (update.session_id !== sessionState().id || update.task.agent_id !== targetAgentId) throw new Error("foreign goal control confirmation")
+        deps.applySessionState(withAgentTaskUpdate(sessionState(), update.session_id, update.task))
+        requestRootRender()
+        return
+      }
+      const payload = response.PromptSubmitted ?? response.SessionState
+      if (!payload?.session) throw new Error("goal admission did not return session state")
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      deps.rebuildTranscript()
+      requestRootRender()
+    },
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -492,6 +531,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
@@ -507,13 +547,16 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
     joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
     attachBinding: (session, createdSession) => attachBinding(session, createdSession),
+    beginSessionSelection: reference => deps.beginSessionSelection?.({ id: reference }) ?? null,
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
     deleteKernel: () => deleteKernel(client),
     getDaemonHealth: () => getDaemonHealth(client),
+    getContextTransferStatus: contextId => getManagedContextTransferStatus(client, contextId),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
+    sendExtendKernelSudo: (request) => extendKernelSudo(client, request),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
@@ -554,6 +597,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),
     cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
     ...(readSecret ? { readSecret } : {}),
+    ...(deps.showProviderLoginLink ? { showProviderLoginLink: deps.showProviderLoginLink } : {}),
+    ...(deps.providerLoginInteractions ? { trackProviderLogin: deps.providerLoginInteractions.track } : {}),
     storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),
@@ -571,17 +616,29 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
-    getCloudRelayProfile: () => relayCloudProfile(preferencesState()),
+    ...(deps.cloudClient ? { handleClientCloudCommand: createCloudClientCommands({
+      offerSetup: async () => { if (!await hasLocalKernel()) appendCloudNotice("Set up a Chariox kernel on this machine? Run /cloud setup to continue.") },
+      setup: profile => startLocalKernelSetup(profile, appendCloudNotice),
+      client: deps.cloudClient,
+      isKernelConnected: () => deps.kernelConnected?.() ?? true,
+      apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",
+      notice: appendCloudNotice,
+      saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
+      refresh: refreshWaitingRoomData,
+      openUrl: openExternalUrl,
+      // MP-08 / MP-11: loopback is owner-authenticated; over relay only the session owner's own terminal reads kernel status.
+      ownsKernel: profile => !client.isRelayTransport() || Boolean(profile?.userId && isAttached() && sessionState().owner_user_id === profile.userId),
+    }) } : {}),
+    getCloudRelayProfile: async () => deps.kernelConnected?.() === false
+      ? await deps.cloudClient?.profile() ?? null
+      : await getKernelCloudRelayProfile(client),
+    getCloudControlProfile: () => getCloudClientControlProfile(deps.cloudClient, deps.kernelConnected?.() === false ? undefined : client),
+    getCloudCollaborationProfile: () => getCloudClientControlProfile(deps.cloudClient),
+    connectCloudRelay: () => connectKernelCloudRelay(client),
     saveCloudRelayProfile: async (profile) => {
       await saveRelayCloudProfile(profile)
       setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile))
     },
-    bootstrapCloudRelay: (apiUrl, email, accountSlug) =>
-      bootstrapCloudRelayProfile({
-        apiUrl,
-        email,
-        ...(accountSlug ? { accountSlug } : {}),
-      }),
     startCloudDeviceLogin: (apiUrl, input) => startCloudRelayLogin(client, apiUrl, input),
     pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
     openExternalUrl,
@@ -590,23 +647,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       pairKernelCloudRelayClient(client, clientId, alias),
     pairCloudRelayMachine: (_profile, machineId, alias) =>
       pairKernelCloudRelayMachine(client, machineId, alias),
-    issueCloudKernelRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudMachineRelayToken: async () => connectKernelCloudRelay(client),
-    issueCloudClientRelayToken: async (_profile, targetDaemonAlias, tokenOptions) => {
-      const relayIdentity = createCliRelayIdentityStore().getOrCreate()
-      return issueKernelCloudRelayClientToken(
-        client,
-        targetDaemonAlias,
-        options.clientId ?? "chariox-cli",
-        tokenOptions?.sessionId ?? null,
-        relayIdentity.publicKeyThumbprint,
-      )
-    },
-    createCloudSessionInvite: (sessionId, inviteOptions) =>
-      createCloudSessionInvite(client, sessionId, inviteOptions),
-    acceptCloudSessionInvite: (inviteToken) => acceptCloudSessionInvite(client, inviteToken),
-    listCloudSessionMembers: (sessionId) => listCloudSessionMembers(client, sessionId),
-    listCloudCollaborators: () => listCloudCollaborators(client),
+    issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
+    ...(deps.cloudClient ? {
+      createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),
+      acceptCloudSessionInvite: (inviteToken: string) => deps.cloudClient!.collaboration.acceptSessionInvite(inviteToken),
+      listCloudSessionMembers: (sessionId: string) => deps.cloudClient!.collaboration.sessionMembers(sessionId),
+      listCloudCollaborators: () => deps.cloudClient!.collaboration.collaborators(),
+    } : {}),
     getUserConfig: () => getUserConfig(client),
     getUserConfigSchema: () => getUserConfigSchema(client),
     setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
@@ -617,6 +664,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getRemoteMachines: remoteMachinesState,
     setRemoteMachines: setRemoteMachinesState,
     reconcileWaitingRoom: () => reconcileWaitingRoom(),
+    addSshMachine: (host, options) => addSshMachine(client, host, options),
+    removeSshMachine: (installId) => removeSshMachine(client, installId),
     listRemoteMachines: () => listRemoteMachines(client),
     listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),

@@ -17,6 +17,7 @@ pub(crate) use semantic::{
 };
 pub(crate) use session_outline::{
     execute_scoped_session_history_blob_content_request,
+    execute_scoped_session_history_blob_contents_request,
     execute_scoped_session_history_outline_request, execute_session_history_blob_content_request,
     execute_session_history_outline_request,
 };

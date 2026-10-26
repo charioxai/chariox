@@ -9,9 +9,11 @@ use tokio::sync::RwLock;
 use crate::auth::{RelayAuthVerifier, RelayRevocationRegistry};
 use crate::config::RelayConfig;
 
+mod client_renewal;
 mod connection;
 mod display;
 mod health;
+mod metadata_scope;
 use connection::handle_connection;
 use display::{handle_display_connection, is_display_http_request};
 use health::{handle_health_connection, is_health_http_request};
@@ -102,6 +104,8 @@ impl RelayServer {
                 _ = &mut shutdown => break,
                 accept = listener.accept() => {
                     let (stream, peer_addr) = accept?;
+                    // MP-08 / MP-10: encrypted interactive frames must not wait on Nagle.
+                    stream.set_nodelay(true)?;
                     let registry = Arc::clone(&self.registry);
                     let auth_verifier = self.auth_verifier.clone();
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);

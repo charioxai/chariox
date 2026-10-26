@@ -4,6 +4,8 @@ export type WorkingAnimationControllerDeps<TimerHandle> = {
   clearInterval: (handle: TimerHandle) => void
   incrementFrame: () => void
   sessionStatusMode: () => string
+  hasWaitingDeadline?: () => boolean
+  hasGoalClock?: () => boolean
   splitAgentResponseMode: () => boolean
   updateSessionChrome: () => void
   renderSplitPaneFooters: () => void
@@ -20,9 +22,13 @@ export function createWorkingAnimationController<TimerHandle>(
 ): WorkingAnimationController {
   let timer: TimerHandle | null = null
 
+  let deadlineElapsedMs = 0
   const tick = () => {
+    deadlineElapsedMs += deps.intervalMs
+    const countdownDue = Boolean(deps.hasWaitingDeadline?.()) && deadlineElapsedMs >= 1000
+    if (countdownDue) deadlineElapsedMs = 0
     deps.incrementFrame()
-    if (deps.sessionStatusMode() === "working") {
+    if (deps.sessionStatusMode() === "working" || countdownDue || deps.hasGoalClock?.()) {
       deps.updateSessionChrome()
     }
     if (deps.splitAgentResponseMode()) {

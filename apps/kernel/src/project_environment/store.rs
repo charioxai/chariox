@@ -9,6 +9,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// Parser bound for the stored manifest plus its per-file evidence inventory, which grows with the
+/// workspace (about 100 bytes per file); sized for several hundred thousand files.
+const MAX_STORED_ENVIRONMENT_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectEnvironmentEvidence {
@@ -66,22 +70,12 @@ impl ProjectEnvironmentEvidence {
         workspaces: &BTreeMap<String, PathBuf>,
         paths: &BTreeMap<String, Vec<String>>,
     ) -> Result<Self, DaemonError> {
-        if paths.len() > 32 {
-            return Err(environment_error(
-                "environment evidence exceeds workspace bounds",
-            ));
-        }
         let mut evidence = Self::default();
         let mut total = 0_u64;
         for (workspace, selected) in paths {
             let root = workspaces
                 .get(workspace)
                 .ok_or_else(|| environment_error("evidence workspace not selected"))?;
-            if selected.len() > 20_000 {
-                return Err(environment_error(
-                    "environment evidence exceeds file bounds",
-                ));
-            }
             let mut files = BTreeMap::new();
             for path in selected {
                 // The evidence inventory must never include value-bearing environment files.
@@ -153,7 +147,7 @@ pub struct StoredProjectEnvironment {
 
 #[derive(Debug, Clone)]
 pub struct ProjectEnvironmentStore {
-    root: PathBuf,
+    pub(super) root: PathBuf,
 }
 impl ProjectEnvironmentStore {
     pub fn new(private_state_root: &Path) -> Self {
@@ -161,7 +155,7 @@ impl ProjectEnvironmentStore {
             root: private_state_root.join("project-environments"),
         }
     }
-    fn path(&self, project: &str) -> PathBuf {
+    pub(super) fn path(&self, project: &str) -> PathBuf {
         self.root
             .join(format!("{:x}.json", Sha256::digest(project.as_bytes())))
     }
@@ -197,10 +191,10 @@ impl ProjectEnvironmentStore {
             ));
         }
         let mut bytes = Vec::new();
-        file.take(2 * 1024 * 1024 + 1)
+        file.take(MAX_STORED_ENVIRONMENT_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| environment_error("manifest read failed"))?;
-        if bytes.len() > 2 * 1024 * 1024 {
+        if bytes.len() as u64 > MAX_STORED_ENVIRONMENT_BYTES {
             return Err(environment_error("manifest exceeds bounds"));
         }
         let state: StoredProjectEnvironment = serde_json::from_slice(&bytes)
@@ -233,7 +227,7 @@ impl ProjectEnvironmentStore {
         }
         let bytes = serde_json::to_vec(state)
             .map_err(|_| environment_error("environment manifest encoding failed"))?;
-        if bytes.len() > 2 * 1024 * 1024 {
+        if bytes.len() as u64 > MAX_STORED_ENVIRONMENT_BYTES {
             return Err(environment_error("manifest exceeds bounds"));
         }
         let temporary = self.root.join(format!(".tmp-{}", rand::random::<u64>()));
@@ -264,6 +258,11 @@ impl ProjectEnvironmentStore {
         result
     }
     pub fn remove(&self, project: &str) -> Result<(), DaemonError> {
+        match fs::remove_file(self.path(project).with_extension("identity.json")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(environment_error("remove environment identity failed")),
+        }
         match fs::remove_file(self.path(project)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -293,15 +292,22 @@ impl std::fmt::Debug for ProjectEnvironmentLock {
 }
 impl ProjectEnvironmentStore {
     pub fn lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, false)
+        self.acquire_lock(project, false, "lock")
     }
     pub(crate) fn try_lock(&self, project: &str) -> Result<ProjectEnvironmentLock, DaemonError> {
-        self.acquire_lock(project, true)
+        self.acquire_lock(project, true, "lock")
+    }
+    pub(super) fn identity_lock(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.acquire_lock(project, false, "identity.lock")
     }
     fn acquire_lock(
         &self,
         project: &str,
         nonblocking: bool,
+        extension: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("environment manifest directory unavailable"))?;
@@ -311,7 +317,7 @@ impl ProjectEnvironmentStore {
             fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
                 .map_err(|_| environment_error("secure environment directory failed"))?;
         }
-        let path = self.path(project).with_extension("lock");
+        let path = self.path(project).with_extension(extension);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]

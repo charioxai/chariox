@@ -28,6 +28,10 @@ pub struct CodexThread {
 }
 
 impl CodexClient {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing thread_start operation signature and explicit context arguments"
+    )]
     pub fn thread_start(
         &self,
         socket: &mut CodexSocket,
@@ -93,7 +97,8 @@ impl CodexClient {
             self.log_thread_config_overrides("thread/start", &config_overrides);
             params["config"] = json!(config_overrides);
         }
-        if self.metadata_only_discovery {
+        // MP-08 / MP-11: Isolated discovery settles native notifications; no rollout is required.
+        if self.read_only_discovery_permissions {
             params["ephemeral"] = json!(true);
             params["persistExtendedHistory"] = json!(false);
         }
@@ -112,6 +117,10 @@ impl CodexClient {
         Ok(params)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing thread_resume operation signature and explicit context arguments"
+    )]
     pub fn thread_resume(
         &self,
         socket: &mut CodexSocket,
@@ -176,6 +185,10 @@ impl CodexClient {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing turn_start operation signature and explicit context arguments"
+    )]
     pub fn turn_start(
         &self,
         socket: &mut CodexSocket,
@@ -329,6 +342,30 @@ impl CodexClient {
         Ok(())
     }
 
+    /// MP-08 / MP-10: official Codex thread-scoped unified-exec teardown.
+    /// Requires initialize.capabilities.experimentalApi (already enabled).
+    pub fn thread_background_terminals_clean(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+        buffered_notifications: &mut Vec<CodexNotification>,
+    ) -> Result<(), DaemonError> {
+        let _: Value = self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "thread/backgroundTerminals/clean",
+            json!({ "threadId": thread_id }),
+            buffered_notifications,
+        )?;
+        crate::logging::debug_with_fields(
+            "daemon.provider.codex",
+            "codex thread terminals cleaned trace",
+            json!({"provider_run_id":self.provider_run_id}),
+        );
+        Ok(())
+    }
+
     pub fn thread_turns_list(
         &self,
         socket: &mut CodexSocket,
@@ -336,13 +373,41 @@ impl CodexClient {
         thread_id: &str,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
-        self.send_request_buffering_notifications(
+        let response = self.send_request_buffering_notifications(
             socket,
             next_request_id,
             "thread/turns/list",
             json!({ "threadId": thread_id }),
             buffered_notifications,
-        )
+        );
+        match response {
+            Err(DaemonError::ProviderProtocol {
+                operation: "thread/turns/list",
+                ref message,
+                ..
+            }) if message.contains("list_turns is not supported yet") => {
+                // Legacy Codex thread stores expose rollout history through
+                // thread/read, even when the paginated API is advertised.
+                let legacy: Value = self.send_request_buffering_notifications(
+                    socket,
+                    next_request_id,
+                    "thread/read",
+                    json!({ "threadId": thread_id, "includeTurns": true }),
+                    buffered_notifications,
+                )?;
+                let turns = legacy
+                    .pointer("/thread/turns")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        self.protocol_error(
+                            "thread/read",
+                            "Codex returned no turn history".to_string(),
+                        )
+                    })?;
+                Ok(json!({ "data": turns, "nextCursor": null }))
+            }
+            other => other,
+        }
     }
 
     pub(super) fn thread_config_overrides(

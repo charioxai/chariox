@@ -125,11 +125,6 @@ impl RemoteExtensionManifest {
             .map(|tool| tool.tool_name.as_str())
     }
 
-    pub fn without_mcp_tools(mut self) -> Self {
-        self.tools.retain(|tool| tool.kind != ExtensionKind::Mcp);
-        self
-    }
-
     pub fn home_proxy_tool(&self, tool_name: &str) -> Option<&RemoteExtensionTool> {
         self.tools.iter().find(|tool| {
             tool.execution_location == ExtensionExecutionLocation::Home
@@ -291,6 +286,91 @@ pub struct ExtensionGrant {
     pub credential: Option<String>,
     #[serde(default, alias = "maxSafety", skip_serializing_if = "Option::is_none")]
     pub max_safety: Option<String>,
+    /// MP-08/MP-11 A05: kernel-issued binding identity, scope and deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_grant: Option<AppCapabilityGrant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppCapabilityGrant {
+    pub grant_id: String,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_by_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_from_grant_id: Option<String>,
+}
+
+impl ExtensionGrant {
+    /// Bind an existing installation. This does not install or activate it.
+    pub fn app(installation_id: impl Into<String>) -> Self {
+        Self::new(ExtensionKind::App, installation_id)
+    }
+
+    pub(crate) fn validate_app_binding(&self) -> Result<(), crate::error::DaemonError> {
+        if self.kind != ExtensionKind::App
+            || self.name.is_empty()
+            || self.name.len() > 128
+            || self
+                .name
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+            || self.environment.is_some()
+            || self.credential.is_some()
+            || self.max_safety.is_some()
+            || self.app_grant.is_some()
+        {
+            return Err(crate::error::DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: "App bindings require only an installation ID; environment, credential and safety overrides are not accepted".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn new(kind: ExtensionKind, name: impl Into<String>) -> Self {
+        Self {
+            kind,
+            name: name.into(),
+            environment: None,
+            credential: None,
+            max_safety: None,
+            app_grant: None,
+        }
+    }
+
+    pub fn script(name: impl Into<String>, environment: impl Into<String>) -> Self {
+        Self {
+            kind: ExtensionKind::Script,
+            name: name.into(),
+            environment: Some(environment.into()),
+            credential: None,
+            max_safety: None,
+            app_grant: None,
+        }
+    }
+
+    pub fn connector(
+        name: impl Into<String>,
+        credential: Option<String>,
+        max_safety: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ExtensionKind::Connector,
+            name: name.into(),
+            environment: None,
+            credential,
+            max_safety: Some(max_safety.into()),
+            app_grant: None,
+        }
+    }
+
+    pub fn matches(&self, kind: &ExtensionKind, name: &str) -> bool {
+        &self.kind == kind && self.name == name
+    }
 }
 
 #[cfg(test)]
@@ -340,29 +420,6 @@ mod tests {
         );
         assert!(manifest.home_proxy_tool("home_script").is_some());
         assert!(manifest.home_proxy_tool("missing").is_none());
-    }
-
-    #[test]
-    fn native_worker_manifest_removes_mcp_tools_only() {
-        let manifest = RemoteExtensionManifest {
-            tools: vec![
-                tool(ExtensionKind::Script, "home_script"),
-                tool(ExtensionKind::Connector, "home_connector_lookup"),
-                tool(ExtensionKind::App, "home_app_action"),
-                tool(ExtensionKind::Mcp, "worker_browser"),
-            ],
-            ..RemoteExtensionManifest::default()
-        }
-        .without_mcp_tools();
-
-        assert_eq!(
-            manifest
-                .tools
-                .iter()
-                .map(|tool| tool.tool_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["home_script", "home_connector_lookup", "home_app_action"]
-        );
     }
 
     #[test]
@@ -435,70 +492,5 @@ mod tests {
         assert_ne!(first.invocation_id, second.invocation_id);
         assert!(first.invocation_id.starts_with("run-1:tool:"));
         assert!(second.invocation_id.starts_with("run-1:tool:"));
-    }
-}
-
-impl ExtensionGrant {
-    /// Bind an existing installation. This does not install or activate it.
-    pub fn app(installation_id: impl Into<String>) -> Self {
-        Self::new(ExtensionKind::App, installation_id)
-    }
-
-    pub(crate) fn validate_app_binding(&self) -> Result<(), crate::error::DaemonError> {
-        if self.kind != ExtensionKind::App
-            || self.name.is_empty()
-            || self.name.len() > 128
-            || self
-                .name
-                .chars()
-                .any(|c| c.is_whitespace() || c.is_control())
-            || self.environment.is_some()
-            || self.credential.is_some()
-            || self.max_safety.is_some()
-        {
-            return Err(crate::error::DaemonError::LocalTransport {
-                operation: "agent.extension.grant",
-                message: "App bindings require only an installation ID; environment, credential and safety overrides are not accepted".into(),
-            });
-        }
-        Ok(())
-    }
-
-    pub fn new(kind: ExtensionKind, name: impl Into<String>) -> Self {
-        Self {
-            kind,
-            name: name.into(),
-            environment: None,
-            credential: None,
-            max_safety: None,
-        }
-    }
-
-    pub fn script(name: impl Into<String>, environment: impl Into<String>) -> Self {
-        Self {
-            kind: ExtensionKind::Script,
-            name: name.into(),
-            environment: Some(environment.into()),
-            credential: None,
-            max_safety: None,
-        }
-    }
-
-    pub fn connector(
-        name: impl Into<String>,
-        credential: Option<String>,
-        max_safety: impl Into<String>,
-    ) -> Self {
-        Self {
-            kind: ExtensionKind::Connector,
-            name: name.into(),
-            environment: None,
-            credential,
-            max_safety: Some(max_safety.into()),
-        }
-    }
-
-    pub fn matches(&self, kind: &ExtensionKind, name: &str) -> bool {
-        &self.kind == kind && self.name == name
     }
 }

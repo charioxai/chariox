@@ -1,9 +1,11 @@
+import { localProtocolVersion, relayPeerProtocolVersion } from "./lib/protocol-versions.mjs"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
 const root = new URL("../", import.meta.url)
 const runtime = await readFile(new URL("apps/kernel/slice-linux-docker/docker/start-runtime.sh", root), "utf8")
@@ -35,7 +37,7 @@ async function launch(identity, extraArguments = []) {
     ].map(name => [name, "synthetic-fixture"]))
     const result = spawnSync("bash", ["-c", script], {
       encoding: "utf8", timeout: 5_000,
-      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, DAEMON_ID: identity.workerKernelRef, DAEMON_ALIAS: `slice:${identity.localName}`, MACHINE_ID: identity.machineId, SLICE_OWNER_KERNEL_ID: identity.ownerKernelId, SLICE_OWNER_MACHINE_ID: identity.machineId },
+      env: { PATH: process.env.PATH, ...variables, ROOT: scratch, LOGS: scratch, PRIVATE_RUNTIME_ROOT: join(scratch, "private"), DAEMON_ID: identity.workerKernelRef, DAEMON_ALIAS: `slice:${identity.localName}`, MACHINE_ID: identity.machineId, SLICE_OWNER_KERNEL_ID: identity.ownerKernelId, SLICE_OWNER_MACHINE_ID: identity.machineId },
     })
     assert.equal(result.status, 0, result.stderr)
     return result.stdout.trim().split("\n")
@@ -57,13 +59,14 @@ test("provider isolation probe uses the same canonical slice identity as the per
   ])
 })
 
-test("MP-08/MP-11 canonical signed relay admission is coordinated at local protocol 416 and peer protocol 70", async () => {
+test("MP-08/MP-11 canonical signed relay admission is coordinated at the current local and peer protocols", async () => {
   const [rust, client, peer] = await Promise.all([
     readFile(new URL("apps/kernel/src/local/api/types.rs", root), "utf8"),
     readFile(new URL("packages/kernel-client/src/kernel-types.ts", root), "utf8"),
     readFile(new URL("apps/kernel/src/transport/relay_peer.rs", root), "utf8"),
+    readFile(new URL("apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh", root), "utf8"),
   ])
-  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 416)
-  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), 416)
-  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), 70)
+  assert.equal(Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), localProtocolVersion)
+  assert.equal(Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1]), localProtocolVersion)
+  assert.equal(Number(peer.match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)?.[1]), relayPeerProtocolVersion)
 })

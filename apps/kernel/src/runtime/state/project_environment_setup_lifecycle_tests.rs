@@ -80,6 +80,12 @@ const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 #[cfg(unix)]
 const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
 
+/// The Get under test keeps one observation budget while the test holds the
+/// authenticated Retry and races a Cancel against it; 500 ms is too tight for a
+/// loaded builder.
+#[cfg(unix)]
+const SETUP_STALE_BINDING_CANCEL_RELAY_REQUEST_TIMEOUT_MS: u64 = 5_000;
+
 #[cfg(unix)]
 struct WorkerCommandGateCleanup {
     setup_release: PathBuf,
@@ -204,6 +210,130 @@ async fn pr364_public_setup_second_restart_binding_failure_restores_the_previous
         ProviderLifecycleFailureStage::Bind,
     )
     .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_provider_restore_is_atomic_with_client_liveness() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("ordinary-restore-liveness");
+    let fixture = UtilityProviderFixture::start(ProjectEnvironmentDefinition {
+        schema_version: 1,
+        origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+        source: ProjectEnvironmentDefinitionSource::Commands,
+        target_platform: actual_worker_platform(),
+        source_path: None,
+        inputs: Vec::new(),
+        path_entries: Vec::new(),
+        setup_steps: Vec::new(),
+        validation_commands: Vec::new(),
+    });
+    let mut app = crate::DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = app
+        .create_session(
+            worktree
+                .session_request()
+                .with_owner_user_id("user-1")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("opencode")),
+        )
+        .unwrap();
+    let request = LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode/test-model",
+    )
+    .with_agent_id(agent.id())
+    .with_owner_user_id("user-1");
+    let mut ordinary = RuntimeProviderRun::new(
+        "ordinary-restore-provider",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "ordinary-restore-fixture".into(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "sleep 60".into()],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(worktree.path().to_path_buf()),
+            structured_endpoint: Some(fixture.address()),
+        },
+    );
+    ordinary.mark_running();
+    app.providers_mut().insert_run_for_test(ordinary.clone());
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .spawn_for_launch(&ordinary)
+        .unwrap();
+    app.providers_mut()
+        .update_run_read_only_discovery(ordinary.id(), true)
+        .unwrap();
+    let runtime =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 1)
+            .runtime_state();
+    assert_restore_is_atomic_with_queued_liveness(&runtime, &ordinary).await;
+    runtime.owned.provider_store.clear_runtime(ordinary.id());
+    runtime
+        .with_app_side_effect(|app| {
+            crate::app::ProviderProcessTracker::new(app).remove_run(ordinary.id())
+        })
+        .await
+        .unwrap();
+}
+
+#[cfg(unix)]
+async fn assert_restore_is_atomic_with_queued_liveness(
+    runtime: &KernelRuntimeState,
+    ordinary_run: &RuntimeProviderRun,
+) {
+    let discovery_run = runtime
+        .owned
+        .provider_store
+        .get_run(ordinary_run.id())
+        .unwrap();
+    let app_guard = runtime.app.lock().await;
+    let restore_wait = Arc::new(tokio::sync::Notify::new());
+    let mut restore_runtime = runtime.clone();
+    restore_runtime.observe_app_lock_wait_for_test(Arc::clone(&restore_wait));
+    let original_run = ordinary_run.clone();
+    let restore = tokio::spawn(async move {
+        restore_runtime
+            .restore_previous_ordinary_provider_run(&discovery_run, &original_run)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), restore_wait.notified())
+        .await
+        .unwrap();
+
+    // Queue a client observation directly behind the first restoration app
+    // operation. FIFO locking makes a separate remove/relaunch gap observable.
+    let poll_wait = Arc::new(tokio::sync::Notify::new());
+    let mut poll_runtime = runtime.clone();
+    poll_runtime.observe_app_lock_wait_for_test(Arc::clone(&poll_wait));
+    let session_id = ordinary_run.session_id().to_string();
+    let run_id = ordinary_run.id().to_string();
+    let poll = tokio::spawn(async move {
+        poll_runtime
+            .reconcile_provider_run_exit(&session_id, &run_id)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), poll_wait.notified())
+        .await
+        .unwrap();
+    drop(app_guard);
+    let result = tokio::time::timeout(Duration::from_secs(10), restore)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "queued liveness must not interrupt ordinary restoration: {result:?}"
+    );
+    assert!(
+        !poll.await.unwrap().unwrap(),
+        "queued liveness must see the replacement child"
+    );
 }
 
 #[cfg(unix)]
@@ -4667,7 +4797,7 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
     config_home.relay_url = Some(relay_url.clone());
     config_home.relay_token = Some("setup-transport-recovery-home-token".to_string());
     config_home.relay_heartbeat_ms = 50;
-    config_home.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
+    config_home.relay_request_timeout_ms = SETUP_STALE_BINDING_CANCEL_RELAY_REQUEST_TIMEOUT_MS;
 
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "worker-kernel-stale-binding-cancel".to_string();
@@ -4675,7 +4805,7 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
     config_worker.relay_url = Some(relay_url.clone());
     config_worker.relay_token = Some("setup-transport-recovery-worker-token".to_string());
     config_worker.relay_heartbeat_ms = 50;
-    config_worker.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
+    config_worker.relay_request_timeout_ms = SETUP_STALE_BINDING_CANCEL_RELAY_REQUEST_TIMEOUT_MS;
     config_worker.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config_worker.accept_remote_leases = true;
     config_worker.remote_lease_capacity = Some(1);
@@ -5482,6 +5612,10 @@ fn spawn_external_worker_fixture(
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit spawn_external_worker_fixture_with_withheld_retry state or return type at the existing boundary"
+)]
 fn spawn_external_worker_fixture_with_withheld_retry(
     relay_url: String,
     registration: DaemonRegistration,

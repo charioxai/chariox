@@ -53,14 +53,8 @@ struct OwnedMaterialization {
 pub fn import_development_context(
     request: DevelopmentContextImportRequest,
 ) -> Result<DevelopmentContextImportResult, DaemonError> {
-    import_development_context_with_options(
-        request,
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
-        None,
-        None,
-    )
-    .map(|(result, _)| result)
+    import_development_context_with_options(request, UNBOUNDED_BYTES, u64::MAX, None, None)
+        .map(|(result, _)| result)
 }
 
 pub(crate) fn import_development_context_with_publication(
@@ -70,8 +64,8 @@ pub(crate) fn import_development_context_with_publication(
     validate_publication_id(&publication_id)?;
     let (_, receipt) = import_development_context_with_options(
         request,
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        UNBOUNDED_BYTES,
+        u64::MAX,
         Some(publication_id),
         None,
     )?;
@@ -86,8 +80,8 @@ pub(crate) fn import_development_context_with_environment(
     validate_publication_id(&publication_id)?;
     let (_, receipt) = import_development_context_with_options(
         request,
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        UNBOUNDED_BYTES,
+        u64::MAX,
         Some(publication_id),
         authority,
     )?;
@@ -483,7 +477,11 @@ pub(super) fn import_development_context_with_budgets(
     .map(|(result, _)| result)
 }
 
-fn import_development_context_with_options(
+fn checkout_room(maximum_project_checkout_bytes: u64, project_root: &Path) -> u64 {
+    maximum_project_checkout_bytes.min(crate::managed_context::limits::disk_budget(project_root))
+}
+
+pub(super) fn import_development_context_with_options(
     request: DevelopmentContextImportRequest,
     maximum_project_checkout_bytes: u64,
     maximum_project_materialized_entries: u64,
@@ -557,13 +555,8 @@ fn import_development_context_with_options(
         .map(|publication_id| materialization_ownership_path(&canonical_parent, publication_id));
     let mut cleanup = ImportCleanup::new(staging_root.clone(), ownership_path.clone());
     let archive_snapshot = staging_root.join("archive.snapshot.tar.gz");
-    let (archive_file, archive_size, archive_sha256) =
+    let (archive_file, _, archive_sha256) =
         snapshot_and_hash_archive(&request.archive_path, &archive_snapshot)?;
-    if archive_size > MAX_PACKAGE_BYTES {
-        return Err(context_error(format!(
-            "development context archive is {archive_size} bytes; maximum is {MAX_PACKAGE_BYTES}"
-        )));
-    }
     if archive_sha256 != request.expected_archive_sha256.to_ascii_lowercase() {
         return Err(context_error(
             "development context archive digest does not match the expected digest",
@@ -590,17 +583,25 @@ fn import_development_context_with_options(
             }
         }
     }
+    let materialization_artifacts = vault_artifacts::restore(
+        &manifest,
+        &artifacts_root,
+        &project_root,
+        environment_authority,
+    )?;
     let mut imported = Vec::with_capacity(manifest.repositories.len());
     let mut checkout_bytes = 0_u64;
     let mut materialized_entries = 0_u64;
     for repository in &manifest.repositories {
         let repository_root = project_root.join(&repository.target_directory);
-        let remaining_bytes = maximum_project_checkout_bytes.saturating_sub(checkout_bytes);
+        // Measured now: the archive snapshot, artifacts and earlier clones already use the volume.
+        let remaining_bytes = checkout_room(maximum_project_checkout_bytes, &project_root)
+            .saturating_sub(checkout_bytes);
         let remaining_entries =
             maximum_project_materialized_entries.saturating_sub(materialized_entries);
         let estimate = prepare_repository(
             repository,
-            &artifacts_root,
+            &materialization_artifacts,
             &repository_root,
             remaining_bytes,
             remaining_entries,
@@ -616,12 +617,28 @@ fn import_development_context_with_options(
             head_sha: repository.head_sha.clone(),
         });
     }
+    // Every clone is on disk now; the pending checkouts must still fit what is left.
+    let room = checkout_room(maximum_project_checkout_bytes, &project_root);
+    if checkout_bytes > room {
+        return Err(context_error(
+            crate::managed_context::limits::disk_shortage(
+                "development context checkout",
+                &project_root,
+                checkout_bytes,
+                room,
+            ),
+        ));
+    }
     for repository in &manifest.repositories {
         materialize_prepared_repository(
             repository,
-            &artifacts_root,
+            &materialization_artifacts,
             &project_root.join(&repository.target_directory),
         )?;
+    }
+    if materialization_artifacts != artifacts_root {
+        fs::remove_dir_all(&materialization_artifacts)
+            .map_err(|_| context_error("remove workspace Vault transfer artifacts"))?;
     }
     let prepared_environment = match &manifest.project_environment {
         Some(layer) => {
@@ -1018,6 +1035,10 @@ fn write_materialization_transaction(
     write_materialization_transaction_value(staging_root, &transaction)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing update_materialization_transaction operation signature and explicit context arguments"
+)]
 fn update_materialization_transaction(
     staging_root: &Path,
     materialization_root: &Path,
@@ -1102,10 +1123,10 @@ fn directory_identity(path: &Path) -> Result<MaterializationIdentity, DaemonErro
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return Ok(MaterializationIdentity {
+        Ok(MaterializationIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
-        });
+        })
     }
     #[cfg(not(unix))]
     {
@@ -1213,7 +1234,7 @@ fn read_materialization_ownership(path: &Path) -> Result<MaterializationOwnershi
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     let file = options
         .open(path)
@@ -1294,7 +1315,7 @@ pub(super) fn snapshot_and_hash_archive(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -1313,17 +1334,23 @@ pub(super) fn snapshot_and_hash_archive(
             "development context archive must remain a regular file",
         ));
     }
-    if opened_metadata.len() > MAX_PACKAGE_BYTES {
-        return Err(context_error(format!(
-            "development context archive is {} bytes; maximum is {MAX_PACKAGE_BYTES}",
-            opened_metadata.len()
-        )));
+    let declared_bytes = opened_metadata.len();
+    let room = crate::managed_context::limits::disk_budget(snapshot_path);
+    if declared_bytes > room {
+        return Err(context_error(
+            crate::managed_context::limits::disk_shortage(
+                "development context archive",
+                snapshot_path,
+                declared_bytes,
+                room,
+            ),
+        ));
     }
     let mut snapshot = private_create_new(snapshot_path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     let mut hashed_bytes = 0_u64;
-    let mut bounded = (&mut source).take(MAX_PACKAGE_BYTES.saturating_add(1));
+    let mut bounded = (&mut source).take(declared_bytes.saturating_add(1));
     loop {
         let read = bounded
             .read(&mut buffer)
@@ -1337,9 +1364,9 @@ pub(super) fn snapshot_and_hash_archive(
             .write_all(&buffer[..read])
             .map_err(|error| context_io_error("snapshot development context archive", error))?;
     }
-    if hashed_bytes > MAX_PACKAGE_BYTES {
+    if hashed_bytes > declared_bytes {
         return Err(context_error(format!(
-            "development context archive grew beyond {MAX_PACKAGE_BYTES} bytes while hashing"
+            "development context archive grew beyond its {declared_bytes} bytes while hashing"
         )));
     }
     snapshot
@@ -1676,7 +1703,7 @@ fn read_publication_receipt(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     let file = match options.open(path) {
         Ok(file) => file,
@@ -1728,7 +1755,6 @@ fn validate_publication_receipt(
         || receipt.project_id != request.expected_project_id
         || receipt.destination_root != canonical_destination
         || receipt.repositories.is_empty()
-        || receipt.repositories.len() > MAX_REPOSITORIES
         || receipt.source_repository_binding_sha256s.len() != receipt.repositories.len()
         || receipt
             .source_repository_binding_sha256s
@@ -1901,7 +1927,8 @@ impl Drop for ImportCleanup {
     fn drop(&mut self) {
         if !self.committed {
             if let Err(error) = cleanup_materialization_transaction(&self.staging_root) {
-                tracing::error!(error = %error, "managed materialization rollback during import drop failed");
+                tracing::error!(error = %error, "managed materialization rollback during import drop failed; recovery journal retained");
+                return;
             }
             if let Some(path) = self.ownership_path.as_deref() {
                 match fs::remove_file(path) {
@@ -1967,4 +1994,68 @@ pub(crate) fn recover_development_context_publication_with_environment(
         }
     }
     Ok(receipt)
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_materialization_ownership(&path).is_err()
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn mp11_failed_materialization_cleanup_keeps_recovery_journal_and_ownership() {
+    let root = std::env::temp_dir().join(format!("mp11-recovery-{:016x}", rand::random::<u64>()));
+    let staging = root.join("staging");
+    fs::create_dir_all(&staging).unwrap();
+    let journal = staging.join(MATERIALIZATION_TRANSACTION_FILE);
+    let ownership = root.join("ownership.json");
+    fs::write(&journal, b"invalid synthetic journal").unwrap();
+    fs::write(&ownership, b"synthetic ownership").unwrap();
+    drop(ImportCleanup::new(staging, Some(ownership.clone())));
+    let preserved = journal.exists() && ownership.exists();
+    fs::remove_dir_all(root).unwrap();
+    assert!(preserved, "failed rollback destroyed its recovery proof");
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_archive_and_publication_receipt_inputs_fail_without_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        let snapshot = path.with_extension("snapshot");
+        snapshot_and_hash_archive(&path, &snapshot).is_err()
+    });
+    crate::test_support::assert_fifo_rejected(|path| read_publication_receipt(&path).is_err());
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_identity_conflict_keeps_recovery_proof_across_restart() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-identity-recovery-{:016x}",
+        rand::random::<u64>()
+    ));
+    let staging = root.join("staging");
+    let materializations = root.join("workspace");
+    let source = root.join("source");
+    let destination = materializations.join("repo");
+    let replacement = root.join("replacement");
+    for directory in [&staging, &materializations, &source, &replacement] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    fs::write(replacement.join("user-file"), b"synthetic replacement").unwrap();
+    assert!(
+        test_reject_replaced_materialization(&staging, &source, &destination, &replacement)
+            .is_err()
+    );
+    let ownership = root.join("ownership.json");
+    fs::write(&ownership, b"synthetic ownership").unwrap();
+    drop(ImportCleanup::new(staging.clone(), Some(ownership.clone())));
+    assert!(staging.join(MATERIALIZATION_TRANSACTION_FILE).is_file() && ownership.is_file());
+    assert!(cleanup_materialization_transaction(&staging).is_err());
+    assert!(destination.join("user-file").is_file());
+    assert!(staging.join(MATERIALIZATION_TRANSACTION_FILE).is_file() && ownership.is_file());
+    fs::remove_dir_all(root).unwrap();
 }

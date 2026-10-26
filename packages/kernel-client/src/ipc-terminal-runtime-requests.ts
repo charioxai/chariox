@@ -222,12 +222,17 @@ export function completePromptRequest(sessionId: string) {
   }
 }
 
-export function cancelActivePromptRequest(sessionId: string, attachmentId: string, targetAgentId?: string | null) {
+// MP-08 / MP-10 / MP-11: old kernels can ignore the optional prompt fence.
+export const exactPromptCancellationMinimumProtocolVersion = 491
+export const exactPromptCancellationCapability = "exact_prompt_cancellation_v499"
+
+export function cancelActivePromptRequest(sessionId: string, attachmentId: string, targetAgentId?: string | null, expectedPromptId?: string | null) {
   return {
     CancelActivePrompt: {
       session_id: sessionId,
       attachment_id: attachmentId,
       ...(targetAgentId ? { target_agent_id: targetAgentId } : {}),
+      ...(expectedPromptId !== undefined ? { expected_prompt_id: expectedPromptId } : {}),
     },
   }
 }
@@ -246,6 +251,28 @@ export function steerQueuedPromptRequest(
       prompt_id: promptId,
     },
   }
+}
+
+// MP-08 / MP-10: Admission targets one home turn and never queues or starts
+// a replacement turn if it has already settled.
+export const activePromptSteeringMinimumProtocolVersion = 491
+
+export function steerActivePromptRequest(
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  expectedActivePromptId: string,
+  prompt: string,
+  attachments: PromptAttachmentPart[],
+) {
+  return { SteerActivePrompt: {
+    session_id: sessionId,
+    attachment_id: attachmentId,
+    target_agent_id: targetAgentId,
+    expected_active_prompt_id: expectedActivePromptId,
+    prompt,
+    attachments,
+  } }
 }
 
 export function cancelQueuedPromptRequest(

@@ -111,15 +111,26 @@ pub(crate) fn create_workspace_directory(path: &str) -> Result<String, DaemonErr
         std::env::current_dir()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "create workspace directory",
-                message: error.to_string(),
+                message: format!("cannot create workspace directory {trimmed}: cannot resolve current directory: {error}"),
             })?
             .join(expanded)
     };
-    if directory.exists() && !directory.is_dir() {
-        return Err(DaemonError::LocalTransport {
-            operation: "create workspace directory",
-            message: format!("{} exists and is not a directory", directory.display()),
-        });
+    for component in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        match std::fs::metadata(component) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(workspace_creation_error(
+                    &directory,
+                    component,
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "path exists and is not a directory",
+                    ),
+                ))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(workspace_creation_error(&directory, component, error)),
+        }
     }
     crate::git_worktree_placement::preflight_working_directory(
         &directory,
@@ -127,10 +138,7 @@ pub(crate) fn create_workspace_directory(path: &str) -> Result<String, DaemonErr
         true,
         &[],
     )?;
-    std::fs::create_dir_all(&directory).map_err(|error| DaemonError::LocalTransport {
-        operation: "create workspace directory",
-        message: error.to_string(),
-    })?;
+    create_workspace_components(&directory, &directory)?;
     crate::git_worktree_placement::preflight_working_directory(
         &directory,
         "create workspace directory",
@@ -138,6 +146,36 @@ pub(crate) fn create_workspace_directory(path: &str) -> Result<String, DaemonErr
         &[],
     )?;
     Ok(directory.display().to_string())
+}
+
+fn create_workspace_components(path: &Path, workspace: &Path) -> Result<(), DaemonError> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent().filter(|parent| *parent != path) {
+        create_workspace_components(parent, workspace)?;
+    }
+    std::fs::create_dir(path)
+        .or_else(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| workspace_creation_error(workspace, path, error))
+}
+
+fn workspace_creation_error(workspace: &Path, component: &Path, error: io::Error) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "create workspace directory",
+        message: format!(
+            "cannot create workspace directory {}: {} creating {}",
+            workspace.display(),
+            error,
+            component.display()
+        ),
+    }
 }
 
 fn workspace_search_roots() -> Result<Vec<PathBuf>, DaemonError> {
@@ -426,6 +464,45 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{append_matching_directory_children_from_result, search_workspace_directories};
+
+    #[test]
+    fn workspace_creation_error_names_requested_path_and_failed_component() {
+        let workspace = std::path::Path::new("/Users/miguel/x");
+        let component = std::path::Path::new("/Users");
+        let error = super::workspace_creation_error(
+            workspace,
+            component,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("cannot create workspace directory /Users/miguel/x"),
+            "{message}"
+        );
+        assert!(message.contains("creating /Users"), "{message}");
+        assert!(
+            message.to_lowercase().contains("permission denied"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn workspace_creation_reports_obstructing_component() {
+        let root = unique_test_dir("workspace-create-obstructed");
+        create_test_dir(root.clone());
+        let obstruction = root.join("file");
+        std::fs::write(&obstruction, "not a directory").unwrap();
+        let target = obstruction.join("workspace");
+        let message = super::create_workspace_directory(target.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(
+            message.contains(&format!("creating {}", obstruction.display())),
+            "{message}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn directory_completion_keeps_sibling_prefix_matches_for_existing_path() {

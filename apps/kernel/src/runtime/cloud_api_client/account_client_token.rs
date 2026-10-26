@@ -97,6 +97,9 @@ mod tests {
 
     fn profile(api_url: String) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url,
             account_id: "account-fixture".into(),
             user_id: "user-fixture".into(),
@@ -198,7 +201,7 @@ mod tests {
     async fn shared_relay_inventory_still_prefers_machine_auth_with_exact_metadata_scope() {
         let (api_url, server) = token_server();
         let profile = profile(api_url);
-        super::super::issue_cloud_relay_inventory_discovery_token(&profile, "owner-kernel")
+        super::super::issue_cloud_relay_inventory_discovery_token(&profile, "owner-kernel", None)
             .await
             .unwrap();
         let body = server.join().unwrap().unwrap();
@@ -209,5 +212,60 @@ mod tests {
         assert_eq!(body["subjectKind"], "client");
         assert_eq!(body["allowedActions"], json!(["client.metadata.read"]));
         assert_eq!(body["allowUnpairedClientSubject"], true);
+    }
+
+    // MP-08 / MP-10 / MP-11: exercise the registry caller and its wire token,
+    // rather than only the token factory used by ordinary inventory refresh.
+    #[tokio::test]
+    async fn registry_metadata_uses_inventory_client_token_instead_of_kernel_token() {
+        use chariox_relay::protocol::{RelayEnvelope, RelayMetadataQuery};
+        use futures_util::{SinkExt, StreamExt};
+
+        let (api_url, server) = token_server();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config =
+            crate::config::DaemonConfig::new("owner-kernel", "machine-fixture", "test");
+        config.cloud_relay = Some(profile(api_url));
+        config.relay_url = Some(format!("ws://{}", listener.local_addr().unwrap()));
+        config.relay_token = Some("synthetic-kernel-registration-token".into());
+        let original_token = config.relay_token.clone();
+        let relay = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let frame = socket.next().await.unwrap().unwrap();
+            let RelayEnvelope::ClientMetadataRequest {
+                request_id,
+                auth_token,
+                query,
+            } = serde_json::from_str(frame.to_text().unwrap()).unwrap()
+            else {
+                panic!("expected registry metadata request")
+            };
+            assert_eq!(auth_token, "synthetic-client-token");
+            assert_eq!(query, RelayMetadataQuery::ListLiveMachines);
+            let reply = RelayEnvelope::ClientMetadataResponse {
+                request_id,
+                machines: Some(Vec::new()),
+                kernels: None,
+                kernel: None,
+                error: None,
+            };
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    serde_json::to_string(&reply).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let machines = crate::runtime::remote_machine_registry::live_registry_machines(&config)
+            .await
+            .unwrap();
+        assert!(machines.is_empty());
+        relay.await.unwrap();
+        let body = server.join().unwrap().unwrap();
+        assert_eq!(body["subjectKind"], "client");
+        assert_eq!(body["subject"], "relay-inventory:owner-kernel");
+        assert_eq!(body["allowedActions"], json!(["client.metadata.read"]));
+        assert_eq!(config.relay_token, original_token);
     }
 }

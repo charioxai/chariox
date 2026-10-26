@@ -71,7 +71,8 @@ import type {
   ReleasePromotionResult,
 } from "./deployed-workflow-types.js"
 import type { RuntimeAttachment, RuntimeSession } from "./cli-types.js"
-import { loadPreferences, relayCloudProfile, type RelayCloudProfile } from "./preferences.js"
+import type { RelayCloudProfile } from "./preferences.js"
+import { loadCloudClientControlProfile } from "./cloud-client.js"
 
 export interface DeployedWorkflowCommandOutput {
   readonly notice: string
@@ -97,8 +98,7 @@ export interface DeployedWorkflowCommandRuntime {
 
 export async function runDeployedWorkflowCommand(argv: readonly string[]): Promise<boolean> {
   if (argv[0] !== "deployments" && argv[0] !== "deployed") return false
-  const profile = relayCloudProfile(await loadPreferences())
-  if (!profile) throw new Error("cloud is not linked. Run /cloud link from the TUI first.")
+  const profile = await loadCloudClientControlProfile()
   const result = await executeDeployedWorkflowCommand(profile, argv.slice(1))
   process.stdout.write(`${result.notice}\n`)
   return true

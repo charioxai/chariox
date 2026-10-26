@@ -7,8 +7,10 @@ use super::project_environment_setup_storage::{
     wait_for_process_group_absence, ValidationProcessIdentity,
 };
 
-pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = 120_000;
 pub(super) const VALIDATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+// Cold toolchain setup may need the full stage budget. Each command still
+// shares the earlier overall deadline, so a sequence cannot extend it.
+pub(super) const VALIDATION_COMMAND_TIMEOUT_MS: u64 = VALIDATION_TOTAL_TIMEOUT.as_millis() as u64;
 const VALIDATION_OUTPUT_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
 const VALIDATION_OUTPUT_UNSETTLED_PREFIX: &str =
     "validation cleanup incomplete: output pipes remained open after process settlement";
@@ -469,12 +471,14 @@ pub(super) fn canonical_worker_workspace(
     Ok(canonical)
 }
 
+#[cfg(test)]
 pub(super) fn worker_validation_environment(
     provider_run: &RuntimeProviderRun,
 ) -> BTreeMap<String, String> {
     worker_validation_environment_with_home(provider_run, None)
 }
 
+#[cfg(test)]
 pub(super) fn worker_validation_environment_with_home(
     provider_run: &RuntimeProviderRun,
     preparation_home: Option<&Path>,
@@ -590,8 +594,18 @@ pub(super) fn resolve_project_environment_input_attestations(
     workspace_root: &Path,
     definition: &ProjectEnvironmentDefinition,
 ) -> Result<ProjectEnvironmentDefinition, String> {
+    resolve_project_environment_input_attestations_before_open(workspace_root, definition, |_| {})
+}
+
+fn resolve_project_environment_input_attestations_before_open(
+    workspace_root: &Path,
+    definition: &ProjectEnvironmentDefinition,
+    mut before_open: impl FnMut(&Path),
+) -> Result<ProjectEnvironmentDefinition, String> {
     definition.validate_for_utility_output()?;
     let mut resolved = definition.clone();
+    let root = crate::managed_context::development::directory::open_root(workspace_root)
+        .map_err(|_| "worker project root is unavailable".to_string())?;
     let mut total_bytes_read = 0_u64;
     for input in &mut resolved.inputs {
         let candidate = workspace_root.join(&input.path);
@@ -607,24 +621,25 @@ pub(super) fn resolve_project_environment_input_attestations(
                 input.path
             ));
         }
-        let canonical = candidate.canonicalize().map_err(|error| {
+        before_open(&candidate);
+        let mut file = crate::managed_context::development::directory::open_relative(
+            &root,
+            Path::new(&input.path),
+        )
+        .map_err(|_| {
             format!(
-                "worker project input could not be canonicalized: {} ({error})",
+                "worker project input could not be opened safely: {}",
                 input.path
             )
         })?;
-        if !canonical.starts_with(workspace_root) {
+        if !file.metadata().is_ok_and(|metadata| {
+            metadata.is_file() && metadata.len() <= MAX_PROJECT_ENVIRONMENT_INPUT_BYTES
+        }) {
             return Err(format!(
-                "worker project input escapes the materialized worktree: {}",
+                "worker project input is not a bounded regular file: {}",
                 input.path
             ));
         }
-        let mut file = std::fs::File::open(&canonical).map_err(|error| {
-            format!(
-                "worker project input could not be read: {} ({error})",
-                input.path
-            )
-        })?;
         let mut digest = Sha256::new();
         let mut buffer = [0_u8; 8192];
         let mut bytes_read = 0_u64;
@@ -1508,7 +1523,7 @@ fn run_worker_setup_steps_until(
     overall_deadline: Instant,
     should_cancel: impl Fn() -> bool,
 ) -> Result<bool, String> {
-    for command in commands {
+    for (command_index, command) in commands.iter().enumerate() {
         if should_cancel() {
             return Err("worker setup command cancelled".to_string());
         }
@@ -1522,10 +1537,27 @@ fn run_worker_setup_steps_until(
             command,
             workspace_root,
             environment,
-            || should_cancel(),
+            &should_cancel,
             Some(overall_deadline),
-        )?;
+        )
+        .inspect_err(|error| {
+            crate::logging::warn_with_fields(
+                "project.environment_setup.command",
+                "project environment setup command could not complete",
+                serde_json::json!({
+                    "command_index": command_index,
+                    "timed_out": error.contains("timed out"),
+                    "cancelled": error.contains("cancelled"),
+                    "cleanup_incomplete": error.contains("cleanup"),
+                }),
+            );
+        })?;
         if exit_code != 0 {
+            crate::logging::warn_with_fields(
+                "project.environment_setup.command",
+                "project environment setup command failed",
+                serde_json::json!({"command_index": command_index, "exit_code": exit_code}),
+            );
             return Ok(false);
         }
     }
@@ -1547,6 +1579,174 @@ pub(super) fn run_worker_setup_steps_with_total_timeout(
         Instant::now() + total_timeout,
         should_cancel,
     )
+}
+
+#[cfg(all(test, not(target_os = "linux"), unix))]
+mod non_linux_recovery_fallback_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Fixture {
+        root: PathBuf,
+        workspace: PathBuf,
+        operation_id: String,
+        scratch: WorkerValidationScratch,
+    }
+
+    impl Fixture {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-validation-nonlinux-{}-{label}-{suffix}",
+                std::process::id(),
+            ));
+            let workspace = root.join("workspace");
+            let durable_home = root.join("home");
+            std::fs::create_dir_all(&workspace).expect("fixture workspace should be created");
+            std::fs::create_dir_all(&durable_home).expect("fixture HOME should be created");
+            let operation_id = format!("nonlinux-{label}-{suffix}");
+            let scratch = WorkerValidationScratch::create_for_worker(
+                &workspace,
+                &durable_home,
+                &operation_id,
+                1,
+                0,
+            )
+            .expect("the ordinary validation scratch should be created");
+            Self {
+                root,
+                workspace,
+                operation_id,
+                scratch,
+            }
+        }
+
+        fn run(
+            &self,
+            command: &str,
+            environment: &BTreeMap<String, String>,
+            should_cancel: impl Fn() -> bool,
+        ) -> Result<(i32, usize, usize), String> {
+            let store = super::super::ProjectEnvironmentSetupStore::default();
+            run_worker_validation_command_with_recovery(
+                command,
+                &self.workspace,
+                environment,
+                &self.scratch,
+                &store,
+                &self.operation_id,
+                1,
+                0,
+                should_cancel,
+                None,
+            )
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.scratch.cleanup();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_runs_success_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("success");
+        let result = fixture
+            .run("printf ready", &BTreeMap::new(), || false)
+            .expect("ordinary validation should use the shared runner");
+        assert_eq!(result, (0, 5, 0));
+        assert!(!fixture.scratch.path().exists());
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_records_failure_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("failure");
+        let result = fixture
+            .run("printf nope >&2; exit 9", &BTreeMap::new(), || false)
+            .expect("a nonzero command exit should remain an ordinary validation result");
+        assert_eq!(result, (9, 0, 4));
+        assert!(!fixture.scratch.path().exists());
+    }
+
+    #[test]
+    fn ordinary_non_linux_recovery_fallback_cancels_and_cleans_owned_scratch() {
+        let fixture = Fixture::new("cancel");
+        let started = fixture.root.join("command-started");
+        let environment = BTreeMap::from([(
+            "NONLINUX_VALIDATION_STARTED".to_string(),
+            started.display().to_string(),
+        )]);
+        let result = fixture.run(
+            "printf started > \"$NONLINUX_VALIDATION_STARTED\"; sleep 2",
+            &environment,
+            || started.exists(),
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(
+            started.exists(),
+            "the real validation command must start before cancel"
+        );
+        assert!(!fixture.scratch.path().exists());
+    }
+}
+
+#[cfg(unix)]
+fn terminate_validation_process_group(child: &mut std::process::Child) {
+    let process_group = child.id() as libc::pid_t;
+    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+}
+
+#[cfg(not(unix))]
+fn terminate_validation_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+#[cfg(unix)]
+fn count_validation_output_nonblocking<R>(
+    mut output: R,
+    stop: Arc<AtomicBool>,
+) -> Result<usize, String>
+where
+    R: Read + std::os::fd::AsRawFd,
+{
+    let mut buffer = [0_u8; 8192];
+    let mut bytes = 0_usize;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(bytes);
+        }
+        let mut descriptor = libc::pollfd {
+            fd: output.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 20) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.to_string());
+        }
+        if ready == 0 {
+            continue;
+        }
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Ok(bytes);
+            }
+            match output.read(&mut buffer) {
+                Ok(0) => return Ok(bytes),
+                Ok(read) => bytes = bytes.saturating_add(read),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2463,6 +2663,55 @@ done
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn mp11_attestation_ancestor_and_fifo_swaps_fail_at_the_actual_open_seam() {
+        use std::os::unix::fs::symlink;
+        crate::test_support::assert_fifo_rejected(|fifo| {
+            let root = fifo.parent().unwrap().join("workspace");
+            let outside = fifo.parent().unwrap().join("outside");
+            std::fs::create_dir_all(root.join("nested")).unwrap();
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(root.join("nested/package.json"), b"synthetic inside").unwrap();
+            std::fs::write(outside.join("package.json"), b"synthetic outside").unwrap();
+            let definition = ProjectEnvironmentDefinition {
+                schema_version: 1,
+                origin: ProjectEnvironmentDefinitionOrigin::UserAuthored,
+                source: ProjectEnvironmentDefinitionSource::Devcontainer,
+                target_platform: "linux-x86_64".into(),
+                source_path: Some("nested/package.json".into()),
+                inputs: vec![ProjectEnvironmentInput {
+                    kind: ProjectEnvironmentInputKind::Recipe,
+                    path: "nested/package.json".into(),
+                    sha256: crate::session::KERNEL_COMPUTED_INPUT_ATTESTATION.into(),
+                }],
+                path_entries: Vec::new(),
+                setup_steps: Vec::new(),
+                validation_commands: vec!["true".into()],
+            };
+            let ancestor = resolve_project_environment_input_attestations_before_open(
+                &root,
+                &definition,
+                |_| {
+                    std::fs::rename(root.join("nested"), root.join("original")).unwrap();
+                    symlink(&outside, root.join("nested")).unwrap();
+                },
+            )
+            .is_err();
+            std::fs::remove_file(root.join("nested")).unwrap();
+            std::fs::rename(root.join("original"), root.join("nested")).unwrap();
+            let leaf = resolve_project_environment_input_attestations_before_open(
+                &root,
+                &definition,
+                |candidate| {
+                    std::fs::remove_file(candidate).unwrap();
+                    symlink(&fifo, candidate).unwrap();
+                },
+            )
+            .is_err();
+            ancestor && leaf
+        });
+    }
     #[test]
     fn worker_input_attestation_is_content_bound_and_fails_closed() {
         let root = std::env::temp_dir().join(format!(
@@ -2551,7 +2800,7 @@ done
 
         let error = verify_project_environment_inputs(&workspace, &definition)
             .expect_err("an input resolved outside the canonical worktree must be rejected");
-        assert!(error.contains("escapes the materialized worktree"));
+        assert!(error.contains("could not be opened safely"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2607,174 +2856,6 @@ done
             .unwrap_err()
             .contains("does not match"));
         let _ = std::fs::remove_dir_all(root);
-    }
-}
-
-#[cfg(all(test, not(target_os = "linux"), unix))]
-mod non_linux_recovery_fallback_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    struct Fixture {
-        root: PathBuf,
-        workspace: PathBuf,
-        operation_id: String,
-        scratch: WorkerValidationScratch,
-    }
-
-    impl Fixture {
-        fn new(label: &str) -> Self {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "chariox-validation-nonlinux-{}-{label}-{suffix}",
-                std::process::id(),
-            ));
-            let workspace = root.join("workspace");
-            let durable_home = root.join("home");
-            std::fs::create_dir_all(&workspace).expect("fixture workspace should be created");
-            std::fs::create_dir_all(&durable_home).expect("fixture HOME should be created");
-            let operation_id = format!("nonlinux-{label}-{suffix}");
-            let scratch = WorkerValidationScratch::create_for_worker(
-                &workspace,
-                &durable_home,
-                &operation_id,
-                1,
-                0,
-            )
-            .expect("the ordinary validation scratch should be created");
-            Self {
-                root,
-                workspace,
-                operation_id,
-                scratch,
-            }
-        }
-
-        fn run(
-            &self,
-            command: &str,
-            environment: &BTreeMap<String, String>,
-            should_cancel: impl Fn() -> bool,
-        ) -> Result<(i32, usize, usize), String> {
-            let store = super::super::ProjectEnvironmentSetupStore::default();
-            run_worker_validation_command_with_recovery(
-                command,
-                &self.workspace,
-                environment,
-                &self.scratch,
-                &store,
-                &self.operation_id,
-                1,
-                0,
-                should_cancel,
-                None,
-            )
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = self.scratch.cleanup();
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    #[test]
-    fn ordinary_non_linux_recovery_fallback_runs_success_and_cleans_owned_scratch() {
-        let fixture = Fixture::new("success");
-        let result = fixture
-            .run("printf ready", &BTreeMap::new(), || false)
-            .expect("ordinary validation should use the shared runner");
-        assert_eq!(result, (0, 5, 0));
-        assert!(!fixture.scratch.path().exists());
-    }
-
-    #[test]
-    fn ordinary_non_linux_recovery_fallback_records_failure_and_cleans_owned_scratch() {
-        let fixture = Fixture::new("failure");
-        let result = fixture
-            .run("printf nope >&2; exit 9", &BTreeMap::new(), || false)
-            .expect("a nonzero command exit should remain an ordinary validation result");
-        assert_eq!(result, (9, 0, 4));
-        assert!(!fixture.scratch.path().exists());
-    }
-
-    #[test]
-    fn ordinary_non_linux_recovery_fallback_cancels_and_cleans_owned_scratch() {
-        let fixture = Fixture::new("cancel");
-        let started = fixture.root.join("command-started");
-        let environment = BTreeMap::from([(
-            "NONLINUX_VALIDATION_STARTED".to_string(),
-            started.display().to_string(),
-        )]);
-        let result = fixture.run(
-            "printf started > \"$NONLINUX_VALIDATION_STARTED\"; sleep 2",
-            &environment,
-            || started.exists(),
-        );
-        assert!(result.unwrap_err().contains("cancelled"));
-        assert!(
-            started.exists(),
-            "the real validation command must start before cancel"
-        );
-        assert!(!fixture.scratch.path().exists());
-    }
-}
-
-#[cfg(unix)]
-fn terminate_validation_process_group(child: &mut std::process::Child) {
-    let process_group = child.id() as libc::pid_t;
-    let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn terminate_validation_process_group(child: &mut std::process::Child) {
-    let _ = child.kill();
-}
-
-#[cfg(unix)]
-fn count_validation_output_nonblocking<R>(
-    mut output: R,
-    stop: Arc<AtomicBool>,
-) -> Result<usize, String>
-where
-    R: Read + std::os::fd::AsRawFd,
-{
-    let mut buffer = [0_u8; 8192];
-    let mut bytes = 0_usize;
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return Ok(bytes);
-        }
-        let mut descriptor = libc::pollfd {
-            fd: output.as_raw_fd(),
-            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
-            revents: 0,
-        };
-        let ready = unsafe { libc::poll(&mut descriptor, 1, 20) };
-        if ready < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error.to_string());
-        }
-        if ready == 0 {
-            continue;
-        }
-        loop {
-            if stop.load(Ordering::Acquire) {
-                return Ok(bytes);
-            }
-            match output.read(&mut buffer) {
-                Ok(0) => return Ok(bytes),
-                Ok(read) => bytes = bytes.saturating_add(read),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.to_string()),
-            }
-        }
     }
 }
 

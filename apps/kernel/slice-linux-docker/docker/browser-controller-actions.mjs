@@ -49,7 +49,7 @@ export async function performBrowserAction({
     attempts += 1;
     await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
-    const objectId = await resolveBackendNode(connection, sessionId, backendNodeId);
+    const objectId = await resolveBackendNode(connection, sessionId, backendNodeId, normalizedAction.expectedDocumentUrl != null);
     try {
       const actionability = await inspectActionability(connection, sessionId, objectId);
       if (actionability.state === "detached") {
@@ -100,7 +100,7 @@ export function assertNotCancelled(signal) {
 
 function normalizeAction(action) {
   if (action?.kind === "click") {
-    return { kind: "click" };
+    return { kind: "click", expectedDocumentUrl: normalizeExpectedDocumentUrl(action.expected_document_url) };
   }
   if (action?.kind === "fill") {
     if (typeof action.text !== "string") {
@@ -109,12 +109,17 @@ function normalizeAction(action) {
     if (utf8ByteLength(action.text) > MAX_FILL_TEXT_BYTES) {
       throw invalidAction(`fill text exceeds ${MAX_FILL_TEXT_BYTES} UTF-8 bytes`);
     }
+    const expectedDocumentUrl = normalizeExpectedDocumentUrl(action.expected_document_url);
+    if (action.mask_code_input === true && expectedDocumentUrl === null) {
+      throw invalidAction("protected owner code requires a bound document URL");
+    }
     return {
       kind: "fill",
       text: action.text,
       append: action.append === true,
       submit: action.submit === true,
-      expectedDocumentUrl: normalizeExpectedDocumentUrl(action.expected_document_url),
+      expectedDocumentUrl,
+      maskCodeInput: action.mask_code_input === true,
     };
   }
   if (action?.kind === "submit") {
@@ -160,7 +165,7 @@ function invalidAction(message) {
   return new BrowserActionError("browser_action_invalid", message);
 }
 
-async function assertCurrentDocument(connection, sessionId, targetId, documentId) {
+export async function assertCurrentDocument(connection, sessionId, targetId, documentId) {
   const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
   const currentDocumentId = frameTree?.frameTree?.frame?.loaderId;
   if (currentDocumentId !== documentId) {
@@ -169,14 +174,33 @@ async function assertCurrentDocument(connection, sessionId, targetId, documentId
       `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
     );
   }
+  return frameTree;
 }
 
-async function resolveBackendNode(connection, sessionId, backendNodeId) {
+async function resolveBackendNode(connection, sessionId, backendNodeId, isolated = false) {
   let resolved;
   try {
+    let executionContextId;
+    if (isolated) {
+      // CDP owns frame/node identities. Do not ask page JavaScript (including
+      // overridden ownerDocument/defaultView getters) which realm owns a node.
+      const snapshot = await connection.send("DOMSnapshot.captureSnapshot", { computedStyles: [] }, sessionId);
+      const document = snapshot.documents?.find(document => document.nodes?.backendNodeId?.includes(backendNodeId));
+      const frameId = snapshot.strings?.[document?.frameId];
+      if (typeof frameId !== "string" || !frameId) {
+        throw new BrowserActionError("stale_element_reference", "browser secret target frame is unavailable");
+      }
+      const world = await connection.send("Page.createIsolatedWorld", {
+        frameId, worldName: "chariox-secret-fill", grantUniveralAccess: false,
+      }, sessionId);
+      executionContextId = world?.executionContextId;
+      if (!Number.isSafeInteger(executionContextId) || executionContextId <= 0) {
+        throw new BrowserActionError("browser_action_failed", "browser secret target isolated world is unavailable");
+      }
+    }
     resolved = await connection.send(
       "DOM.resolveNode",
-      { backendNodeId },
+      { backendNodeId, ...(isolated ? { executionContextId } : {}) },
       sessionId,
     );
   } catch (error) {
@@ -357,8 +381,18 @@ async function executeAction(
 ) {
   assertNotCancelled(signal);
   if (action.kind === "click") {
+    const assertTarget = action.expectedDocumentUrl === null ? async () => {} : async () => {
+      const response = await connection.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration: "function() { return this.ownerDocument.defaultView.location.href; }",
+        returnByValue: true,
+      }, sessionId);
+      if (response.exceptionDetails || response.result?.value !== action.expectedDocumentUrl) {
+        throw new BrowserActionError("stale_document_reference", "owner click target URL changed before input");
+      }
+    };
     return {
-      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal),
+      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal, assertTarget),
     };
   }
   if (action.kind === "submit") {
@@ -388,51 +422,56 @@ async function secureFillElement(connection, sessionId, objectId, action) {
     "Runtime.callFunctionOn",
     {
       objectId,
-      functionDeclaration: `function(text, append, expectedDocumentUrl, submit) {
+      functionDeclaration: `function(text, append, expectedDocumentUrl, submit, maskCodeInput) {
         const ownerDocument = this.ownerDocument;
         const ownerWindow = ownerDocument?.defaultView;
         if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
+        // MP-08 / MP-10 / MP-11: owner codes may use ordinary editable
+        // fields. Mask before focus/value handlers; Vault fills remain password-only.
+        const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
+        const textareaPrototype = ownerWindow.HTMLTextAreaElement?.prototype;
+        const elementPrototype = ownerWindow.Element?.prototype;
+        const getAttribute = elementPrototype?.getAttribute;
+        const hasAttribute = elementPrototype?.hasAttribute;
+        const isInput = !!inputPrototype && Object.prototype.isPrototypeOf.call(inputPrototype, this);
+        const isTextarea = !!textareaPrototype && Object.prototype.isPrototypeOf.call(textareaPrototype, this);
+        const editable = () => typeof getAttribute === "function" && typeof hasAttribute === "function" &&
+          !hasAttribute.call(this, "disabled") && !hasAttribute.call(this, "readonly") &&
+          String(getAttribute.call(this, "aria-disabled") || "false").toLowerCase() !== "true" &&
+          String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
         const isMaskedEditableInput = () => {
-          const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
-          const elementPrototype = ownerWindow.Element?.prototype;
-          const getAttribute = elementPrototype?.getAttribute;
-          const hasAttribute = elementPrototype?.hasAttribute;
-          if (
-            !inputPrototype ||
-            !Object.prototype.isPrototypeOf.call(inputPrototype, this) ||
-            typeof getAttribute !== "function" ||
-            typeof hasAttribute !== "function"
-          ) {
-            return false;
-          }
-          return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password" &&
-            !hasAttribute.call(this, "disabled") &&
-            !hasAttribute.call(this, "readonly") &&
-            String(getAttribute.call(this, "aria-disabled") || "false").toLowerCase() !== "true" &&
-            String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
+          if (!editable()) return false;
+          if (isInput) return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password";
+          if (!maskCodeInput || !isTextarea || typeof ownerWindow.getComputedStyle !== "function") return false;
+          return ownerWindow.getComputedStyle(this).getPropertyValue("-webkit-text-security") === "disc";
         };
+        const maskCodeTarget = () => {
+          if (isInput) {
+            const setter = Object.getOwnPropertyDescriptor(inputPrototype, "type")?.set;
+            if (typeof setter !== "function") return false;
+            setter.call(this, "password");
+          } else if (isTextarea && maskCodeInput) {
+            const setter = ownerWindow.CSSStyleDeclaration?.prototype?.setProperty;
+            if (typeof setter !== "function") return false;
+            setter.call(this.style, "-webkit-text-security", "disc", "important");
+          } else return false;
+          return isMaskedEditableInput();
+        };
+        if (maskCodeInput) {
+          const codeType = editable() ? String(getAttribute.call(this, "type") || "text").toLowerCase() : "";
+          if (!editable() || !(isTextarea || (isInput && ["text", "tel", "number", "password", "search"].includes(codeType)))) {
+            return { ok: false, reason: "target_not_masked" };
+          }
+          if (!isMaskedEditableInput() && !maskCodeTarget()) return { ok: false, reason: "target_not_masked" };
+        }
         const restoreMaskAfterHandler = () => {
           if (isMaskedEditableInput()) return true;
-          const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
-          const elementPrototype = ownerWindow.Element?.prototype;
-          const getAttribute = elementPrototype?.getAttribute;
-          const typeSetter = inputPrototype && Object.getOwnPropertyDescriptor(inputPrototype, "type")?.set;
-          if (
-            inputPrototype &&
-            Object.prototype.isPrototypeOf.call(inputPrototype, this) &&
-            typeof getAttribute === "function" &&
-            typeof typeSetter === "function" &&
-            String(getAttribute.call(this, "type") || "text").toLowerCase() !== "password"
-          ) {
-            typeSetter.call(this, "password");
-          }
+          maskCodeTarget();
           return false;
         };
-        if (!isMaskedEditableInput()) {
-          return { ok: false, reason: "target_not_masked" };
-        }
+        if (!isMaskedEditableInput()) return { ok: false, reason: "target_not_masked" };
         // MP-08/MP-10: submission eligibility is checked before secret mutation.
         // Some sign-in steps use a separate JavaScript button and no native form.
         const form = submit ? this.form || this.closest?.("form") : null;
@@ -485,6 +524,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         { value: action.append },
         { value: action.expectedDocumentUrl },
         { value: action.submit },
+        { value: action.maskCodeInput },
       ],
       returnByValue: true,
       awaitPromise: false,
@@ -508,7 +548,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
     if (outcome?.reason === "target_not_masked") {
       throw new BrowserActionError(
         "browser_secret_target_not_masked",
-        "browser secret target must remain an editable password field during insertion",
+        "browser protected target must remain masked and editable during insertion",
       );
     }
     if (outcome?.reason === "form_not_found") {
@@ -570,10 +610,15 @@ async function submitNearestForm(connection, sessionId, objectId) {
   }
 }
 
-async function dispatchClick(connection, sessionId, x, y, signal) {
+async function dispatchClick(connection, sessionId, x, y, signal, assertTarget = async () => {}) {
+  await assertTarget();
   if (await dispatchMouseEvent(connection, sessionId, { type: "mouseMoved", x, y })) {
     return true;
   }
+  assertNotCancelled(signal);
+  // Hover handlers can change a SPA URL without replacing the loader/node.
+  // Revalidate after mouse movement, immediately before the button press.
+  await assertTarget();
   assertNotCancelled(signal);
   if (await dispatchMouseEvent(connection, sessionId, {
     type: "mousePressed",

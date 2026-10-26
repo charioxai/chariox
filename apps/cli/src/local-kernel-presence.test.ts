@@ -47,3 +47,23 @@ test("local kernel presence formats IPv6 endpoints", () => {
     heartbeatAtMs: 1,
   }), "ws://[::1]:43121/kernel")
 })
+
+test("MP-08/MP-10 VERSION(P01) finds the protocol lease under explicit CHARIOX_HOME", context => {
+  const root = mkdtempSync(join(tmpdir(), "envp01-protocol-home-"))
+  const keys = ["CHARIOX_HOME", "CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR", "XDG_CONFIG_HOME"] as const
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]))
+  context.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+    rmSync(root, { recursive: true, force: true })
+  })
+  process.env.CHARIOX_HOME = root
+  process.env.XDG_CONFIG_HOME = join(root, "other-config")
+  delete process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR
+  const directory = join(root, "kernels", "active")
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "old-kernel", machine_id: "machine", host: "127.0.0.1", port: 43121, heartbeat_at_ms: 100000, local_daemon_protocol_version: 435 }))
+  assert.equal(loadLocalKernelPresences(undefined, 100001)[0]?.protocolVersion, 435)
+})

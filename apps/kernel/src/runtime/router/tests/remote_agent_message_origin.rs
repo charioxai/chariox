@@ -83,7 +83,10 @@ async fn forwarded_agent_message_requires_current_home_sender_prompt() {
         worker_workspace_identity: crate::io::WorkspaceIdentity::local(workspace_path),
     };
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let tool = crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL.to_string();
     let args = serde_json::json!({
         "agent": target.id(),

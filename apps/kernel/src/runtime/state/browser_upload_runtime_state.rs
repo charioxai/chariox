@@ -10,7 +10,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         element_ref: &str,
-        paths: Vec<std::path::PathBuf>,
+        files: crate::runtime::browser_controller_file_transfer::BrowserUploadFiles,
     ) -> Result<BrowserControllerActionExecution<RoomBrowserUploadResult>, DaemonError> {
         let element = self
             .resolve_room_environment_element_reference(session_id, element_ref)
@@ -23,7 +23,7 @@ impl KernelRuntimeState {
             element.document_revision,
             "upload",
             Some(&execution_id),
-            self.upload_browser_environment_files(session_id, &execution_id, element_ref, paths),
+            self.upload_browser_environment_files(session_id, &execution_id, element_ref, files),
         )
         .await
     }

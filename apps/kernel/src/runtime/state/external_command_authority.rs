@@ -5,6 +5,9 @@ use super::*;
 pub(super) struct ExternalCommandAuthority {
     pub(super) grant_id: String,
     request: LocalDaemonRequest,
+    /// MP-08/MP-10/MP-11: an asynchronous privileged command cannot acquire
+    /// a later continuation's running-turn authority.
+    sudo_binding: Option<(String, String)>,
 }
 
 impl std::fmt::Debug for ExternalCommandAuthority {
@@ -58,15 +61,122 @@ impl KernelRuntimeState {
             authority.map(|(grant_id, request)| ExternalCommandAuthority {
                 grant_id: grant_id.to_owned(),
                 request: request.clone(),
+                // Re-scoping the same command for a follow-up operation must
+                // retain its original turn, including a missing binding.
+                sudo_binding: match self
+                    .external_command_authority
+                    .as_ref()
+                    .filter(|authority| authority.grant_id == grant_id)
+                {
+                    Some(authority) => authority.sudo_binding.clone(),
+                    None => grant_id
+                        .starts_with("sudo:")
+                        .then(|| {
+                            let turn = self.owned.sudo_turns.lock().ok()?.get(grant_id)?.clone();
+                            let run = self
+                                .owned
+                                .provider_store
+                                .get_run_for_agent(&turn.session_id, &turn.agent_id)?;
+                            let bound = self.sudo_for_provider_run(run.id()).ok()?;
+                            bound.prompt_id.zip(bound.provider_run_id)
+                        })
+                        .flatten(),
+                },
             });
         state
     }
 
-    pub(crate) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
-        self.authorize_prompt_command(
-            self.external_command_authority
-                .as_ref()
-                .map(ExternalCommandAuthority::as_request),
+    /// Scope a command's external grant. A sudo MCP call is pinned to the
+    /// turn that submitted it rather than whichever continuation happens to be
+    /// current when asynchronous scope approval or a queued lane runs it.
+    pub(crate) fn with_kernel_command_authority(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Self {
+        let mut state = self.with_external_command_authority(
+            command
+                .external_grant_id()
+                .as_deref()
+                .map(|id| (id, request)),
+        );
+        state.terminal_caller = command.is_terminal_caller();
+        if !command.is_sudo_command() {
+            return state;
+        }
+        state.with_sudo_binding(
+            command
+                .provider_run_id
+                .clone()
+                .map(|run| (command.correlation_id.clone(), run)),
         )
+    }
+
+    /// MP-08 / MP-11: the caller's user id when the transport admitted a
+    /// terminal caller; only that caller may claim the owner-only stop of
+    /// pre-proof history (the live owner is rechecked at commit).
+    pub(crate) fn terminal_stop_user<'a>(&self, caller_user_id: &'a str) -> Option<&'a str> {
+        self.terminal_caller.then_some(caller_user_id)
+    }
+
+    /// The submitting turn a sudo command is bound to, carried across lanes.
+    pub(crate) fn sudo_binding(&self) -> Option<(String, String)> {
+        self.external_command_authority
+            .as_ref()?
+            .sudo_binding
+            .clone()
+    }
+
+    pub(crate) fn with_sudo_binding(&self, binding: Option<(String, String)>) -> Self {
+        let mut state = self.clone();
+        if let Some(authority) = state
+            .external_command_authority
+            .as_mut()
+            .filter(|a| a.grant_id.starts_with("sudo:"))
+        {
+            authority.sudo_binding = binding;
+        }
+        state
+    }
+
+    pub(crate) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
+        self.authorize_current_external_response()?;
+        if let Some(authority) = self
+            .external_command_authority
+            .as_ref()
+            .filter(|a| a.grant_id.starts_with("sudo:"))
+        {
+            let (prompt, run) = authority.sudo_binding.as_ref().ok_or_else(|| {
+                crate::runtime::kernel_access::error("sudo command has no running-turn binding")
+            })?;
+            let current = self.sudo_for_provider_run(run)?;
+            if current.entry_id != authority.grant_id || current.prompt_id.as_ref() != Some(prompt)
+            {
+                return Err(crate::runtime::kernel_access::error(
+                    "sudo command's original provider turn ended",
+                ));
+            }
+        }
+        if let Some((actor, request)) = self.room_request_origin.as_ref() {
+            self.authorize_room_agent_request(actor, request)?;
+            self.owned
+                .ensure_workflow_request_controlled_by_metaagent(request, actor)?;
+        }
+        Ok(())
+    }
+
+    /// MP-11 F5: retain epoch, peer and grant checks on delivery. A successful
+    /// mutation may have renamed or deleted its original object reference.
+    pub(crate) fn authorize_current_external_response(&self) -> Result<(), DaemonError> {
+        self.authorize_current_forwarded_binding()?;
+        if let Some((actor, run)) = self.room_provider_origin.as_ref() {
+            self.authorize_room_provider_epoch(Some(actor), Some(run))?;
+        }
+        match self.external_command_authority.as_ref() {
+            Some(authority) => self
+                .authorize_external_request(&authority.grant_id, &authority.request)
+                .map(|_| ()),
+            None => Ok(()),
+        }
     }
 }

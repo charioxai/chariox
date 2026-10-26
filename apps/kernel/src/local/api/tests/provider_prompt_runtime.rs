@@ -14,7 +14,7 @@ fn assert_native_tui_config_error(error: DaemonError, operation: &'static str) {
 }
 
 fn temp_git_repo(label: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_support::test_workspace_root().join(format!(
         "chariox-{label}-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
@@ -71,3 +71,5 @@ fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
 mod prompt_routing;
 mod queue_and_notices;
 mod turn_actions;
+
+mod account_read;

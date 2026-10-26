@@ -208,11 +208,12 @@ async fn due_recovery_scan_retains_a_slot_ahead_of_busy_foreground_entries() {
             .notify(("alice".into(), format!("missing-{i}")), false);
     }
     f.control().pump(&f.state).await;
-    let state = f.control().0.state.lock().unwrap();
-    assert!(state.scanning);
-    assert_eq!(state.jobs.len(), JOBS);
-    assert_eq!(state.entries.values().filter(|e| e.busy).count(), JOBS - 1);
-    drop(state);
+    {
+        let state = f.control().0.state.lock().unwrap();
+        assert!(state.scanning);
+        assert_eq!(state.jobs.len(), JOBS);
+        assert_eq!(state.entries.values().filter(|e| e.busy).count(), JOBS - 1);
+    }
     f.shutdown().await;
 }
 

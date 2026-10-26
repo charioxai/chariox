@@ -1,5 +1,6 @@
 import type { TerminalOutputRecord } from "./cli-types.js"
 import { terminalRecordPromptHistoryText } from "@chariox/kernel-client/terminal-record-transcript"
+import { splitTerminalOutputSequences } from "@chariox/kernel-client/terminal-output-sequences"
 
 export type TerminalOutputRecordProcessorDeps = {
   appendPromptEchoToSharedHistory: (text: string) => void
@@ -15,7 +16,9 @@ export function createTerminalOutputRecordProcessor(
     if (promptHistoryText !== null) {
       deps.appendPromptEchoToSharedHistory(promptHistoryText)
     }
-    deps.processKernelTerminalOutputRecord(record)
+    for (const fragment of splitTerminalOutputSequences(record)) {
+      deps.processKernelTerminalOutputRecord(fragment)
+    }
   }
 
   return {

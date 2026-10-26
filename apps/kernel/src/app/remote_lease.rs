@@ -9,9 +9,12 @@ use crate::execution_lease::{ExecutionLease, LeasedAgent};
 use crate::provider::ProviderRunState;
 use crate::session::CreateSessionRequest;
 
+mod caller_binding;
 mod git_observation;
+mod leased_process;
 mod mcp_availability;
 mod native_provider;
+mod profile_update;
 mod project_environment;
 mod projection;
 mod prompt_attachments;
@@ -26,7 +29,8 @@ pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;
 
 // Keep only small worker-generated IDs, not completed agents or prompt history.
-// Expiry or a worker restart must fail closed rather than infer successful cleanup.
+// Unknown IDs still return not-found; the home may reconcile only an authenticated
+// absence reply from the worker bound to its own retained execution lease.
 const COMPLETED_WORKER_CLEANUP_LIMIT: usize = 256;
 // Worker heartbeats intentionally do not renew this absolute safety ceiling.
 pub(crate) const REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS: u64 = 60 * 60 * 1_000;
@@ -108,6 +112,7 @@ impl LeasedAgentCleanupPhase {
         }
     }
 
+    #[cfg(test)]
     fn operation(self) -> &'static str {
         match self {
             Self::Provider => "leased_agent.cleanup.provider",
@@ -124,6 +129,55 @@ pub(crate) struct RemoteLeaseRuntime<'a> {
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    /// MP-08/MP-11: the transport has already checked the exact home lease caller.
+    pub(crate) fn leased_computer_agent(
+        &self,
+        leased_agent_id: &str,
+        grant: Option<&crate::transport::relay_peer::LeasedComputerGrant>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let leased = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        let lease = self
+            .app
+            .execution_leases
+            .get(&leased.lease_id)
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased.lease_id.clone(),
+            })?;
+        if let Some(grant) = grant {
+            if grant.leased_agent_id != leased_agent_id
+                || grant.home_kernel_id != lease.home_kernel_id
+                || grant.home_session_id != lease.home_session_id
+                || grant.home_agent_id != lease.home_agent_id
+                || grant.home_agent_id != leased.home_agent_id
+                || grant.desktop_kernel_id != lease.worker_kernel_id
+                || grant.desktop_kernel_id != self.app.config.daemon_id
+                || lease.machine_id != self.app.config.host_machine_id
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "leased Computer grant",
+                    message: "MP-11: grant does not match the owned lease".into(),
+                });
+            }
+        }
+        let agent = self.app.agents.get_agent(&leased.backing_agent_id)?;
+        let session = self.app.sessions.get_session(&leased.backing_session_id)?;
+        if agent.session_id() != session.id()
+            || agent.owner_user_id() != lease.owner_user_id
+            || session.owner_user_id() != lease.owner_user_id
+            || !session.has_member(agent.owner_user_id())
+            || session.status() == crate::session::SessionStatus::Ended
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "leased Computer grant",
+                message: "MP-11: lease agent authority ended".into(),
+            });
+        }
+        Ok(agent)
+    }
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
     }
@@ -221,6 +275,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .or_else(|| self.app.completed_execution_lease_callers.get(lease_id));
         if owner == Some(caller) {
             Ok(())
+        } else if owner.is_none() && !self.app.execution_leases.contains_key(lease_id) {
+            Err(DaemonError::ExecutionLeaseNotFound {
+                lease_id: lease_id.to_string(),
+            })
         } else {
             Err(DaemonError::LeaseCallerUnauthorized {
                 resource_id: lease_id.to_string(),
@@ -238,7 +296,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .leased_agent_callers
             .get(leased_agent_id)
             .or_else(|| self.app.completed_leased_agent_callers.get(leased_agent_id))
-            .cloned()
+            .cloned();
+        // A newly created idle lease has no prompt receipt yet. After boot,
+        // its retained caller can prove absence, never execution authority.
+        // Current owners take precedence; malformed retained state fails closed.
+        let owner = if owner.is_none() && !self.app.leased_agents.contains_key(leased_agent_id) {
+            self.retained_leased_agent_caller(leased_agent_id)?
+        } else {
+            owner
+        };
+        let owner = owner
             .or_else(|| {
                 self.app
                     .worker_steer_receipts
@@ -251,6 +318,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         if owner.as_ref() == Some(caller) {
             Ok(())
+        } else if owner.is_none() && !self.app.leased_agents.contains_key(leased_agent_id) {
+            Err(DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })
         } else {
             Err(DaemonError::LeaseCallerUnauthorized {
                 resource_id: leased_agent_id.to_string(),
@@ -395,6 +466,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(expired_lease_ids)
     }
 
+    #[cfg(test)]
     pub(crate) fn destroy_execution_lease_for_caller(
         &mut self,
         lease_id: &str,
@@ -404,6 +476,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.destroy_execution_lease(lease_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent(
         &mut self,
         lease_id: &str,
@@ -438,6 +514,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn create_leased_agent_for_caller(
         &mut self,
         lease_id: &str,
@@ -467,6 +544,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing create_leased_agent_from_base_directory operation signature and explicit context arguments"
+    )]
     pub(crate) fn create_leased_agent_from_base_directory(
         &mut self,
         base_directory: &Path,
@@ -635,12 +716,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             backing_agent.id().to_string(),
             attachment.id().to_string(),
         );
-        if let Some(caller) = self.app.execution_lease_callers.get(lease_id).cloned() {
+        let caller = self.app.execution_lease_callers.get(lease_id).cloned();
+        if let Some(caller) = caller.as_ref() {
             self.app
                 .leased_agent_callers
-                .insert(agent.id.clone(), caller);
+                .insert(agent.id.clone(), caller.clone());
         }
         self.app.leased_agents.insert(agent_id, agent.clone());
+        if let Some(caller) = caller.as_ref() {
+            self.retain_leased_agent_caller(&agent.id, caller)?;
+        }
         Ok(agent)
     }
 
@@ -757,10 +842,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 LeasedAgentCleanupPhase::Agent => {
                     let session_store = self.app.session_state_store();
                     let mut sessions = session_store.write();
-                    self.app
+                    let result = self
+                        .app
                         .agents
-                        .destroy_agent(&agent.backing_agent_id, &mut sessions)
-                        .map(|_| ())
+                        .destroy_agent(&agent.backing_agent_id, &mut sessions);
+                    drop(sessions);
+                    if result.is_ok() {
+                        self.app
+                            .forget_room_computer_access(&agent.backing_agent_id);
+                    }
+                    result.map(|_| ())
                 }
                 LeasedAgentCleanupPhase::BackingSessionEnd => {
                     if backing_session_still_used {
@@ -839,6 +930,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .insert(leased_agent_id.to_string(), point);
     }
 
+    #[cfg(test)]
     pub(crate) fn destroy_leased_agent_for_caller(
         &mut self,
         leased_agent_id: &str,
@@ -1088,97 +1180,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(updated.clone())
     }
 
-    pub(crate) fn update_leased_agent_profile(
-        &mut self,
-        leased_agent_id: &str,
-        provider: String,
-        account_profile: String,
-        model: Option<String>,
-        effort: Option<String>,
-    ) -> Result<LeasedAgent, DaemonError> {
-        let leased_agent = self
-            .app
-            .leased_agents
-            .get(leased_agent_id)
-            .cloned()
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        let account_profile =
-            self.resolve_leased_profile_account(&leased_agent, &provider, &account_profile)?;
-        let profile_changed = leased_agent.provider != provider
-            || leased_agent.account_profile != account_profile
-            || leased_agent.model != model
-            || leased_agent.effort != effort;
-        // A delivery retry may confirm its profile after the original prompt started.
-        // Confirmation is read-only; an actual change still requires an idle agent.
-        if !profile_changed {
-            let backing = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
-            if backing.provider() != provider
-                || backing.provider_account_profile() != account_profile
-                || backing.model() != model.as_deref()
-                || backing.effort() != effort.as_deref()
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "confirm leased agent profile",
-                    message: "leased profile differs from the backing agent; rebind the remote agent before dispatch".to_string(),
-                });
-            }
-            return Ok(leased_agent);
-        }
-        if self
-            .app
-            .prompt_owner_active_prompt_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )?
-            .is_some()
-            || self
-                .app
-                .prompt_owner_peek_next_queued_prompt(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )?
-                .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "update leased agent profile",
-                message: format!(
-                    "leased agent `{leased_agent_id}` has an active turn or queued prompt; update the profile after pending work finishes"
-                ),
-            });
-        }
-
-        self.terminate_backing_provider_runtime(&leased_agent);
-        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
-        let resume_state = backing_agent
-            .provider_resume_state()
-            .without_provider_session_id(backing_agent.provider())
-            .without_provider_session_id(&provider);
-        self.app
-            .agents
-            .set_agent_runtime_profile_with_account_profile(
-                &leased_agent.backing_agent_id,
-                &provider,
-                model.clone(),
-                effort.clone(),
-                Some(account_profile.clone()),
-                resume_state,
-            )?;
-        let updated = self
-            .app
-            .leased_agents
-            .get_mut(leased_agent_id)
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
-        updated.provider = provider;
-        updated.account_profile = account_profile;
-        updated.model = model;
-        updated.effort = effort;
-        Ok(updated.clone())
-    }
-
     pub(crate) fn update_leased_agent_meta_mode(
         &mut self,
         leased_agent_id: &str,
@@ -1280,6 +1281,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 self.app.providers.clear_runtime(run.id());
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_live_leases_for_test(&mut self) {
+        // Simulate loss of volatile leases while durable caller receipts survive.
+        self.app.execution_leases.clear();
+        self.app.leased_agents.clear();
     }
 
     #[cfg(test)]
@@ -1688,6 +1696,52 @@ mod tests {
         )
     }
 
+    #[test]
+    fn mp11_leased_computer_grant_matches_every_lease_coordinate() {
+        let (mut app, leased) = leased_agent_fixture(false);
+        let grant = crate::transport::relay_peer::LeasedComputerGrant {
+            epoch: "epoch".into(),
+            home_kernel_id: "home-kernel".into(),
+            home_session_id: "home-session".into(),
+            home_agent_id: "home-agent".into(),
+            leased_agent_id: leased.id.clone(),
+            desktop_kernel_id: app.config.daemon_id.clone(),
+            target: crate::local::KernelDesktopTarget {
+                surface_id: "desktop".into(),
+                generation: "generation".into(),
+            },
+        };
+        assert_eq!(
+            RemoteLeaseRuntime::new(&mut app)
+                .leased_computer_agent(&leased.id, Some(&grant))
+                .unwrap()
+                .id(),
+            leased.backing_agent_id
+        );
+        for field in [
+            "home_kernel_id",
+            "home_session_id",
+            "home_agent_id",
+            "leased_agent_id",
+            "desktop_kernel_id",
+        ] {
+            let mut value = serde_json::to_value(&grant).unwrap();
+            value[field] = "foreign".into();
+            let forged = serde_json::from_value(value).unwrap();
+            assert!(
+                RemoteLeaseRuntime::new(&mut app)
+                    .leased_computer_agent(&leased.id, Some(&forged))
+                    .is_err(),
+                "MP-11: {field}"
+            );
+        }
+        app.sessions_mut()
+            .end_session(&leased.backing_session_id)
+            .unwrap();
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .leased_computer_agent(&leased.id, Some(&grant))
+            .is_err());
+    }
     fn leased_agent_fixture_with_config(
         home_agent_metaagent: bool,
         mut config: crate::config::DaemonConfig,

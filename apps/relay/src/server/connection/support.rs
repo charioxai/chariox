@@ -45,6 +45,41 @@ pub(super) async fn handle_client_packet_route_envelope(
     outgoing_tx: &RelaySender,
     relay_request_counter: &AtomicU64,
 ) -> Result<ConnectionAction, std::io::Error> {
+    handle_client_packet_route_envelope_with_target_pin(
+        envelope,
+        registry,
+        routes,
+        auth_verifier,
+        ClientPacketPeer {
+            peer_addr,
+            expected_daemon_public_key: None,
+        },
+        outgoing_tx,
+        relay_request_counter,
+    )
+    .await
+}
+
+pub(super) struct ClientPacketPeer<'a> {
+    pub peer_addr: SocketAddr,
+    pub expected_daemon_public_key: Option<&'a str>,
+}
+
+/// MP-11: initial535 may bind only the previously admitted home key. Keep
+/// that check in the same transaction that selects the subscription sender.
+pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
+    envelope: RelayEnvelope,
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<crate::registry::RelayRouteIndex>,
+    auth_verifier: &RelayAuthVerifier,
+    peer: ClientPacketPeer<'_>,
+    outgoing_tx: &RelaySender,
+    relay_request_counter: &AtomicU64,
+) -> Result<ConnectionAction, std::io::Error> {
+    let ClientPacketPeer {
+        peer_addr,
+        expected_daemon_public_key,
+    } = peer;
     match envelope {
         RelayEnvelope::ClientRequest {
             request_id,
@@ -346,7 +381,19 @@ pub(super) async fn handle_client_packet_route_envelope(
                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
             );
             let (subscription_conflict, daemon_sender) = {
-                let guard = registry.read().await;
+                let guard = registry.write().await;
+                if expected_daemon_public_key.is_some_and(|expected| {
+                    guard
+                        .daemons
+                        .get(&daemon_key)
+                        .is_none_or(|registration| registration.public_key != expected)
+                }) {
+                    send_close(
+                        outgoing_tx,
+                        "initial display resume target key changed".into(),
+                    );
+                    return Ok(ConnectionAction::Break);
+                }
                 if subscription_owned_by_other_client(&guard, routes, &subscription_id, peer_addr) {
                     (true, None)
                 } else if !daemon_route_is_admitted(&guard, auth_verifier, &daemon_key) {
@@ -359,6 +406,9 @@ pub(super) async fn handle_client_packet_route_envelope(
                             client_request_id: request_id.clone(),
                             daemon_key: daemon_key.clone(),
                             kind: PendingRequestKind::Subscribe {
+                                display: crate::frame_transport::is_display_scope(
+                                    subscription_scope.as_deref(),
+                                ),
                                 subscription_id: subscription_id.clone(),
                                 client_public_key: client_public_key.clone(),
                             },
@@ -597,6 +647,8 @@ pub(super) async fn handle_client_packet_route_envelope(
     Ok(ConnectionAction::Continue)
 }
 
+// MP-11: retain the typed peer admission/routing boundary without regrouping authority.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn route_daemon_peer_request(
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<RelayRouteIndex>,
@@ -693,6 +745,41 @@ pub(super) async fn route_daemon_peer_event(
     }
     log_daemon_sender_backpressure("daemon_peer_event", peer_addr, target_daemon_key);
     false
+}
+
+// MP-11: use exactly the existing caller-bound route and slow-viewer cleanup.
+// Decode only the bounded transport header; never inspect encrypted content.
+pub(super) async fn route_daemon_binary_event(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
+    daemon: &DaemonKey,
+    counter: &AtomicU64,
+    bytes: &[u8],
+) -> Result<bool, std::io::Error> {
+    let (mut header, ciphertext) = crate::binary_event::decode(bytes)?;
+    if header.kind != "daemon_event" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid binary event direction",
+        ));
+    }
+    let Some(route) = routes
+        .subscription(&header.subscription_id)
+        .filter(|route| &route.daemon_key == daemon)
+    else {
+        return Ok(false);
+    };
+    header.kind = "client_event".into();
+    let frame = crate::binary_event::encode(&header, ciphertext)?;
+    if route
+        .client_sender
+        .try_send(Message::Binary(frame.into()))
+        .is_ok()
+    {
+        return Ok(true);
+    }
+    close_slow_subscription(registry, routes, &header.subscription_id, daemon, counter).await;
+    Ok(false)
 }
 
 pub(super) async fn route_daemon_event(

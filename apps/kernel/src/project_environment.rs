@@ -1,6 +1,9 @@
 //! MP-08: Project environment policy shared by every kernel placement.
 //! Discovery contains names and locators only. Values belong to the Vault.
 
+mod aggregate;
+mod aggregate_projection;
+mod aggregate_store;
 mod discovery;
 mod import;
 mod index;
@@ -15,6 +18,8 @@ mod review;
 mod store;
 mod transfer;
 
+pub use aggregate::*;
+pub use aggregate_projection::*;
 pub use discovery::*;
 pub(crate) use import::*;
 pub use index::*;
@@ -31,3 +36,6 @@ pub use transfer::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod aggregate_tests;

@@ -56,6 +56,34 @@ impl CanonicalViewport {
         })
     }
 
+    /// Desktop sizes the native Room desktop worker admits.
+    pub const NATIVE_DESKTOP_SIZES: [(u32, u32); 3] = [(1280, 800), (1920, 1080), (2560, 1600)];
+
+    /// A viewport a viewer asks for, snapped to the nearest size the native desktop worker
+    /// admits (the CSS size follows at the same scale factor) instead of refusing the Room.
+    pub fn snapped_to_native_desktop(self) -> Self {
+        let size = (self.desktop_pixel_width, self.desktop_pixel_height);
+        if Self::NATIVE_DESKTOP_SIZES.contains(&size) {
+            return self;
+        }
+        let (width, height) = Self::NATIVE_DESKTOP_SIZES
+            .into_iter()
+            .min_by_key(|(w, h)| w.abs_diff(size.0) + h.abs_diff(size.1))
+            .expect("sizes are not empty");
+        tracing::info!(
+            requested = %format!("{}x{}", size.0, size.1),
+            snapped = %format!("{width}x{height}"),
+            "Room viewport is not a supported desktop size; using the nearest one"
+        );
+        Self {
+            css_width: (width / self.device_scale_factor).max(1),
+            css_height: (height / self.device_scale_factor).max(1),
+            desktop_pixel_width: width,
+            desktop_pixel_height: height,
+            ..self
+        }
+    }
+
     /// CSS width of the default panel at the right of an App view: at most a
     /// third of the page. App pages lay out in the rest.
     pub fn app_panel_css_width(&self) -> u32 {
@@ -431,6 +459,11 @@ pub enum EnvironmentError {
         max_utf8_bytes: usize,
     },
     InvalidKeyboardKey,
+    InvalidTargetAction,
+    InvalidHoldDuration {
+        duration_ms: u32,
+        max_duration_ms: u32,
+    },
     InvalidKeyboardRepeat {
         repeat: u16,
         max_repeat: u16,
@@ -493,7 +526,9 @@ impl EnvironmentError {
             Self::InvalidClickCount { .. } => "environment_invalid_click_count",
             Self::InvalidScrollSteps { .. } => "environment_invalid_scroll_steps",
             Self::InvalidKeyboardText { .. } => "environment_invalid_keyboard_text",
+            Self::InvalidHoldDuration { .. } => "environment_invalid_hold_duration",
             Self::InvalidKeyboardKey => "environment_invalid_keyboard_key",
+            Self::InvalidTargetAction => "environment_invalid_target_action",
             Self::InvalidKeyboardRepeat { .. } => "environment_invalid_keyboard_repeat",
             Self::InvalidClipboardText { .. } => "environment_invalid_clipboard_text",
             Self::InvalidIdempotencyKey => "environment_invalid_idempotency_key",
@@ -504,5 +539,41 @@ impl EnvironmentError {
             Self::ActionCancellationForbidden { .. } => "environment_action_cancellation_forbidden",
             Self::ActorKindConflict { .. } => "environment_actor_kind_conflict",
         }
+    }
+}
+
+#[cfg(test)]
+mod viewport_snap_tests {
+    use super::CanonicalViewport;
+
+    #[test]
+    fn unsupported_viewers_snap_to_the_nearest_native_desktop_size() {
+        let snap = |css: (u32, u32), scale, desktop: (u32, u32)| {
+            let v = CanonicalViewport::new(css.0, css.1, scale, desktop.0, desktop.1)
+                .unwrap()
+                .snapped_to_native_desktop();
+            (
+                (v.desktop_pixel_width, v.desktop_pixel_height),
+                (v.css_width, v.css_height),
+            )
+        };
+        assert_eq!(
+            snap((1440, 900), 1, (1440, 900)),
+            ((1280, 800), (1280, 800))
+        );
+        assert_eq!(
+            snap((1440, 900), 2, (2880, 1800)),
+            ((2560, 1600), (1280, 800))
+        );
+        assert_eq!(
+            snap((1920, 1200), 1, (1920, 1200)),
+            ((1920, 1080), (1920, 1080))
+        );
+        assert_eq!(snap((390, 844), 1, (390, 844)), ((1280, 800), (1280, 800)));
+        // Supported sizes are untouched.
+        assert_eq!(
+            snap((1280, 800), 2, (2560, 1600)),
+            ((2560, 1600), (1280, 800))
+        );
     }
 }

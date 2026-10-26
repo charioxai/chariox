@@ -10,8 +10,8 @@ use crate::error::DaemonError;
 use super::{
     ArmManagedContextTransfer, ManagedContextTransferCaller, ManagedContextTransferPhase,
     ManagedContextTransferStatus, PersistedTransfer, PersistedTransferState,
-    COMPLETED_TRANSFER_RETENTION_MS, MAX_ARCHIVE_BYTES, MAX_DESTINATION_BYTES,
-    MAX_IDENTIFIER_BYTES, MAX_IMPORT_RECEIPT_BYTES, MAX_TRANSFER_RECORDS, MAX_TRANSFER_TTL_MS,
+    COMPLETED_TRANSFER_RETENTION_MS, MAX_DESTINATION_BYTES, MAX_IDENTIFIER_BYTES,
+    MAX_IMPORT_RECEIPT_BYTES, MAX_TRANSFER_RECORDS, MAX_TRANSFER_TTL_MS,
 };
 
 pub(super) fn authorize_entry<'a>(
@@ -46,6 +46,7 @@ pub(super) fn authorize_entry<'a>(
             .is_some_and(|target_environment_id| {
                 entry.target_environment_id != target_environment_id
             })
+        || entry.plan.destination != caller.target_destination
         || entry.target_kernel_id != caller.target_kernel_id
         || entry.target_key_thumbprint != caller.target_key_thumbprint
     {
@@ -74,7 +75,6 @@ pub(super) fn validate_arm_request(
     now_ms: u64,
 ) -> Result<(), DaemonError> {
     for (label, value) in [
-        ("target environment", request.target_environment_id.as_str()),
         ("target kernel", request.target_kernel_id.as_str()),
         ("target key", request.target_key_thumbprint.as_str()),
         ("source kernel", request.source_kernel_id.as_str()),
@@ -85,6 +85,11 @@ pub(super) fn validate_arm_request(
         validate_identifier(value, label)?;
     }
     crate::managed_context::package::validate_plan_binding(&request.plan)?;
+    crate::managed_context::owner_managed::validate_destination_binding(
+        &request.target_environment_id,
+        request.plan.destination.as_ref(),
+        &request.target_kernel_id,
+    )?;
     if request.capability.len() < 40
         || request.capability.len() > 256
         || request.capability.chars().any(char::is_control)
@@ -96,7 +101,7 @@ pub(super) fn validate_arm_request(
     validate_sha256(&request.target_key_thumbprint, "target key thumbprint")?;
     validate_sha256(&request.source_key_thumbprint, "source key thumbprint")?;
     validate_sha256(&request.archive_sha256, "archive")?;
-    if request.archive_size_bytes == 0 || request.archive_size_bytes > MAX_ARCHIVE_BYTES {
+    if request.archive_size_bytes == 0 {
         return Err(transfer_error("managed context archive size is invalid"));
     }
     if request.expires_at_ms <= now_ms
@@ -110,24 +115,63 @@ pub(super) fn validate_arm_request(
     Ok(())
 }
 
+/// The received archive is written under the transfer store, so a new transfer is admitted against
+/// its full size there; the destination volume is admitted separately when the archive is extracted.
+/// A replayed arm is not admitted again: the bytes already accepted occupy the volume.
+pub(super) fn admit_archive(
+    request: &ArmManagedContextTransfer,
+    store_root: &Path,
+) -> Result<(), DaemonError> {
+    let room = crate::managed_context::limits::disk_budget(store_root);
+    if request.archive_size_bytes > room {
+        return Err(transfer_error(
+            crate::managed_context::limits::disk_shortage(
+                "managed context archive",
+                store_root,
+                request.archive_size_bytes,
+                room,
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result<(), DaemonError> {
     if state.entries.len() > MAX_TRANSFER_RECORDS {
         return Err(transfer_error(
             "managed context transfer state exceeds its record limit",
         ));
     }
-    if state.consumed_context_ids.len() > MAX_TRANSFER_RECORDS {
+    if disposable_consumed_contexts(state) > MAX_TRANSFER_RECORDS {
         return Err(transfer_error(
             "managed context consumed authorization state exceeds its record limit",
         ));
     }
-    if state.applied_contexts.len() > MAX_TRANSFER_RECORDS {
+    if state
+        .applied_contexts
+        .values()
+        .filter(|target| target.destination.is_none())
+        .count()
+        > MAX_TRANSFER_RECORDS
+    {
         return Err(transfer_error(
             "managed context launch target state exceeds its record limit",
         ));
     }
     for context_id in &state.consumed_context_ids {
         validate_identifier(context_id, "consumed context")?;
+    }
+    for (context_id, authority) in &state.owner_context_authorities {
+        if state
+            .applied_contexts
+            .get(context_id)
+            .is_none_or(|target| target.destination.is_none())
+        {
+            return Err(transfer_error("orphaned owner context authority"));
+        }
+        validate_identifier(&authority.owner_user_id, "owner context user")?;
+        validate_identifier(&authority.realm_id, "owner context realm")?;
+        validate_sha256(&authority.target_key_thumbprint, "owner context target key")?;
     }
     for (context_id, target) in &state.applied_contexts {
         if context_id != &target.context_id || !state.consumed_context_ids.contains(context_id) {
@@ -136,7 +180,6 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             ));
         }
         for (label, value) in [
-            ("launch target environment", target.environment_id.as_str()),
             ("launch target kernel", target.kernel_id.as_str()),
             ("launch target context", target.context_id.as_str()),
         ] {
@@ -146,6 +189,15 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             transfer_error("managed context launch target plan digest is invalid")
         })?;
         validate_sha256(digest, "launch target plan")?;
+        if target.destination.is_some() && !state.owner_context_authorities.contains_key(context_id)
+        {
+            return Err(transfer_error("owner context authority is missing"));
+        }
+        crate::managed_context::owner_managed::validate_destination_binding(
+            &target.environment_id,
+            target.destination.as_ref(),
+            &target.kernel_id,
+        )?;
         validate_launch_target_development(&target.development)?;
     }
     for (transfer_id, entry) in &state.entries {
@@ -155,7 +207,6 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             ));
         }
         for (label, value) in [
-            ("target environment", entry.target_environment_id.as_str()),
             ("target kernel", entry.target_kernel_id.as_str()),
             ("source kernel", entry.source_kernel_id.as_str()),
             ("owner", entry.owner_user_id.as_str()),
@@ -164,6 +215,11 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             validate_identifier(value, label)?;
         }
         crate::managed_context::package::validate_plan_binding(&entry.plan)?;
+        crate::managed_context::owner_managed::validate_destination_binding(
+            &entry.target_environment_id,
+            entry.plan.destination.as_ref(),
+            &entry.target_kernel_id,
+        )?;
         validate_sha256(&entry.capability_sha256, "capability")?;
         validate_sha256(&entry.target_key_thumbprint, "target key thumbprint")?;
         validate_sha256(&entry.source_key_thumbprint, "source key thumbprint")?;
@@ -185,7 +241,6 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
         }
         validate_destination(&entry.destination_root)?;
         if entry.archive_size_bytes == 0
-            || entry.archive_size_bytes > MAX_ARCHIVE_BYTES
             || entry.accepted_bytes > entry.archive_size_bytes
             || entry.expires_at_ms == 0
         {
@@ -270,7 +325,7 @@ fn validate_launch_target_development(
             validate_identifier(project_id, "launch target project")?;
             validate_identifier(primary_repository_id, "launch target primary repository")?;
             validate_destination(Path::new(destination_root))?;
-            if repositories.is_empty() || repositories.len() > 32 {
+            if repositories.is_empty() {
                 return Err(transfer_error(
                     "managed context launch target repositories are invalid",
                 ));
@@ -348,7 +403,7 @@ fn validate_destination(destination_root: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn valid_transfer_id(transfer_id: &str) -> bool {
+pub(super) fn valid_transfer_id(transfer_id: &str) -> bool {
     transfer_id.len() == 47
         && transfer_id.starts_with("ctx_")
         && transfer_id[4..]
@@ -385,6 +440,31 @@ pub(super) fn prune_expired(state: &mut PersistedTransferState, now_ms: u64) -> 
         state.entries.remove(transfer_id);
     }
     expired
+}
+
+// MP-08 / MP-11: legacy owner bindings are migrated to per-context history;
+// only disposable-target tombstones remain in the bounded live state.
+pub(super) fn disposable_consumed_contexts(state: &PersistedTransferState) -> usize {
+    state
+        .consumed_context_ids
+        .iter()
+        .filter(|id| !state.owner_context_authorities.contains_key(*id))
+        .count()
+}
+
+pub(super) fn reserved_disposable_contexts(state: &PersistedTransferState) -> usize {
+    disposable_consumed_contexts(state)
+        + state
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.plan.destination.is_none()
+                    && !matches!(
+                        entry.phase,
+                        ManagedContextTransferPhase::Consumed | ManagedContextTransferPhase::Failed
+                    )
+            })
+            .count()
 }
 
 pub(super) fn random_identifier(prefix: &str) -> String {

@@ -1,10 +1,3 @@
-export function nativeToolDisplayTitle(tool: string) {
-  const canonical = canonicalToolName(tool)
-  if (canonical === "chariox.read_artifact") return "read"
-  if (isWorkspaceLiveSyncTool(tool)) return "patch"
-  return tool
-}
-
 export function isNativeReadTool(tool: unknown) {
   const canonical = canonicalToolName(tool)
   return canonical === "read" || canonical === "chariox.read_artifact"

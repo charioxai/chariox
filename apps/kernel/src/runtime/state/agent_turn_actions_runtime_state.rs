@@ -278,9 +278,13 @@ impl KernelRuntimeState {
             .await?
         {
             return match response {
-                crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run } => {
-                    Ok(provider_run)
-                }
+                crate::local::LocalDaemonResponse::ProviderRunLaunched { provider_run } => self
+                    .owned
+                    .provider_run_projection
+                    .get(provider_run.id())
+                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                        provider_run_id: provider_run.id().to_owned(),
+                    }),
                 other => Err(DaemonError::LocalTransport {
                     operation: "agent fork",
                     message: format!("unexpected remote provider launch response: {other:?}"),
@@ -301,8 +305,12 @@ impl KernelRuntimeState {
                 tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
             }
             let run = started.run.clone();
+            let provider_credential_env = started.provider_credential_env.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
+                    &run,
+                    &provider_credential_env,
+                )
             })
             .await
             .map_err(|error| DaemonError::LocalTransport {

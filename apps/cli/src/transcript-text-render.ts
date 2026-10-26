@@ -5,6 +5,8 @@ import {
   type TextRenderable,
 } from "@opentui/core"
 
+import { linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
+
 import type { TranscriptEntry } from "./cli-types.js"
 import { theme } from "./theme.js"
 import { splitInlineCodeSpans } from "./transcript.js"
@@ -149,17 +151,10 @@ function tokenMime(kind: string) {
 
 function appendTranscriptSpans(text: TextRenderable, entry: TranscriptEntry, value: string) {
   for (const span of splitInlineCodeSpans(value)) {
-    text.add(
-      TextNodeRenderable.fromString(
-        span.text,
-        span.code
-          ? {
-              fg: transcriptInlineCodeColor(entry),
-              attributes: TextAttributes.BOLD,
-            }
-          : undefined,
-      ),
-    )
+    const style = span.code ? { fg: transcriptInlineCodeColor(entry), attributes: TextAttributes.BOLD } : undefined
+    for (const chunk of linkifyTranscriptChunks([{ __isChunk: true, text: span.text, ...style }])) {
+      text.add(TextNodeRenderable.fromString(chunk.text, chunk))
+    }
   }
 }
 

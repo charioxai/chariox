@@ -14,8 +14,9 @@ import {
 } from "./cli-runtime-tuning.js"
 import { clampScrollTop } from "./history-viewport.js"
 import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
-import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
+import { buildEmptyTranscriptRenderable, buildLoadingTranscriptRenderable } from "./workspace-renderables.js"
 import {
+  getSessionHistoryBlobContents,
   getSessionHistoryBlobContent,
   getSessionHistoryOutline,
 } from "./session-history-api.js"
@@ -32,6 +33,7 @@ export type CliAgentPaneCompositionDeps = {
   client: any
   renderer: any
   isAttached: AnyFn
+  sessionHydrating: AnyFn
   visibleTranscriptAgentId: AnyFn
   visibleTranscriptEntries: AnyFn
   agentPaneEntries: AnyFn
@@ -130,6 +132,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
       reconcileMountedAuxiliaryTranscript(agentId, currentEntries, nextEntries)
     },
     retainPromptFocus: deps.retainPromptFocus,
+    loadHistoryBlobContents: (agentId, ids) => getSessionHistoryBlobContents(deps.client, deps.sessionState().id, agentId, ids, true),
     loadHistoryBlobContent: (agentId, blobId) => getSessionHistoryBlobContent(
       deps.client,
       deps.sessionState().id,
@@ -147,7 +150,9 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     emptyRenderables: deps.agentPaneRuntimeStore.emptyRenderables,
     toolStates: deps.agentPaneRuntimeStore.toolStates,
     paneEntries: (agentId) => deps.agentPaneEntries()[agentId] ?? [],
-    buildEmptyRenderable: () => buildEmptyTranscriptRenderable(deps.renderer),
+    buildEmptyRenderable: () => deps.sessionHydrating()
+      ? buildLoadingTranscriptRenderable(deps.renderer)
+      : buildEmptyTranscriptRenderable(deps.renderer),
     buildEntryRenderable: (agentId, entry) => buildTranscriptEntryRenderable(
       deps.renderer,
       entry,
@@ -263,6 +268,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     clearAllAuxiliaryAgentPanes: agentPaneTranscriptRenderController.clearAll,
     clearAuxiliaryAgentPane,
     rebuildAuxiliaryAgentPane,
+    rebuildEmptyAuxiliaryAgentPanes: agentPaneTranscriptRenderController.rebuildEmptyPanes,
     updateAuxiliaryTranscriptEntry,
     reconcileMountedAuxiliaryTranscript,
     pruneAuxiliaryAgentPanes,
@@ -276,6 +282,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     hasTrailingUserPrompt,
     toggleAuxiliaryPaneTurn,
     toggleAuxiliaryPaneBlob,
+    toggleAuxiliaryPaneDetails: agentPaneTranscriptInteractionController.toggleAllBlobs,
     syncVisibleTranscriptPreview,
     appendAgentPanePreview,
     appendTranscriptEntryToAgentPane,

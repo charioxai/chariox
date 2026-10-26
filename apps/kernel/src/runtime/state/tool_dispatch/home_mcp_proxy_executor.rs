@@ -146,7 +146,11 @@ impl KernelRuntimeState {
             &context.worker_provider_run_id,
         );
         let session_id = context.home_session_id.clone();
+        let state = self.clone();
+        let context = context.clone();
         tokio::task::spawn_blocking(move || {
+            super::home_extension_authorizer::HomeExtensionAuthorizationService::new(&state)
+                .authorize_invocation_context(&context)?;
             crate::provider::dispatch_provider_mcp_proxy_request(
                 &provider_run_id,
                 &session_id,
@@ -161,6 +165,10 @@ impl KernelRuntimeState {
         })?
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_home_mcp_proxy_result_audit_event operation signature and explicit context arguments"
+    )]
     async fn append_home_mcp_proxy_result_audit_event(
         &self,
         kind: &'static str,

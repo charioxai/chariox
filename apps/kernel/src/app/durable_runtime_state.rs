@@ -836,6 +836,14 @@ impl DaemonApp {
             self.mark_agent_external_provider_sessions_attached(&agent);
             self.agents.restore_agent(agent);
         }
+        *self
+            .room_computer_revoked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = snapshot
+            .room_computer_revoked
+            .into_iter()
+            .filter(|id| restored_agent_ids.contains(id))
+            .collect();
         self.metaagent_events
             .restore_snapshot(MetaagentEventSnapshot {
                 records: snapshot
@@ -1067,6 +1075,7 @@ impl DaemonApp {
                     "session_id": session.id(),
                     "cleared_active_provider_run": reconciliation.cleared_active_provider_run,
                     "cleared_attachment_count": reconciliation.cleared_attachment_count,
+                    "cleared_agent_interaction_count": reconciliation.cleared_agent_interaction_count,
                     "recoverable_prompt_count": reconciliation.recoverable_prompt_count,
                     "recoverable_workflow_run_count": reconciliation.recoverable_workflow_run_count,
                     "repaired_workflow_prompt_count": reconciliation.repaired_workflow_prompt_count,
@@ -1175,6 +1184,7 @@ impl DaemonApp {
                     &self.agents,
                     &self.slices,
                     &self.metaagent_events,
+                    &self.room_computer_revoked,
                 );
                 self.durable_state.save_snapshot(
                     sequence,
@@ -1394,6 +1404,40 @@ impl DaemonApp {
                     self.update_session_projection(session);
                 }
             }
+            "agent.room_computer_access_updated" => {
+                let owner: String = decode_durable_payload_field(
+                    &event,
+                    "owner_id",
+                    "durable_state.restore_computer_access",
+                )?;
+                if owner != self.config.daemon_id {
+                    return Ok(());
+                }
+                let ids: Vec<String> = decode_durable_payload_field(
+                    &event,
+                    "agent_ids",
+                    "durable_state.restore_computer_access",
+                )?;
+                let allowed: bool = decode_durable_payload_field(
+                    &event,
+                    "allowed",
+                    "durable_state.restore_computer_access",
+                )?;
+                let mut revoked = self
+                    .room_computer_revoked
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                for id in ids {
+                    if self.agents.get_agent(&id).is_err() {
+                        continue;
+                    }
+                    if allowed {
+                        revoked.remove(&id);
+                    } else {
+                        revoked.insert(id);
+                    }
+                }
+            }
             "agent.created" => {
                 let agent: AgentInstance =
                     decode_durable_payload_field(&event, "agent", "durable_state.restore_agent")?;
@@ -1467,6 +1511,7 @@ impl DaemonApp {
                 self.attached_provider_transcript_cursors
                     .detach_session(session.id());
                 self.prompt_state_owner.remove_session(session.id());
+                self.forget_room_computer_session_access(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 let session = self.restore_session_with_project_migration(session);
@@ -1493,6 +1538,7 @@ impl DaemonApp {
                 self.attached_provider_transcript_cursors
                     .detach_session(session.id());
                 self.prompt_state_owner.remove_session(session.id());
+                self.forget_room_computer_session_access(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
                 self.sessions.remove_restored_session(session.id());
@@ -1506,6 +1552,7 @@ impl DaemonApp {
                     "durable_state.restore_deleted_agent",
                 )?;
                 let session_id = agent.session_id().to_string();
+                self.forget_room_computer_access(agent.id());
                 self.external_provider_sessions
                     .detach_agent(&session_id, agent.id());
                 self.attached_provider_transcript_cursors
@@ -1865,6 +1912,44 @@ mod tests {
                 .map(|prompt| prompt.id()),
             Some("prompt-newer-than-snapshot")
         );
+    }
+
+    // MP-08/MP-10: a completed Copy creates its Named Project before the first
+    // target session. Restart must not turn that successful copy into an orphan.
+    #[test]
+    fn durable_restore_preserves_copied_project_before_first_session() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut project = crate::session::RuntimeProject::new(
+            "copy-owner-context-before-first-session",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "/owned-target/chariox-contexts/copy/primary",
+            "Managed Project",
+            crate::session::RuntimeProjectKind::Named,
+        );
+        project.replace_workspace_ids(vec![
+            "/owned-target/chariox-contexts/copy/primary".to_string(),
+            "/owned-target/chariox-contexts/copy/supporting".to_string(),
+        ]);
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("target should boot");
+            app.durable_state_store()
+                .append_event(
+                    "project.created",
+                    Some(project.id().to_string()),
+                    serde_json::json!({ "project": &project }),
+                )
+                .expect("completed Copy Project should persist");
+        }
+        for _ in 0..2 {
+            let app = DaemonApp::bootstrap(config.clone()).expect("target should restore");
+            assert_eq!(
+                app.sessions()
+                    .get_project(project.id())
+                    .expect("copied Project must survive before its first session"),
+                project
+            );
+            assert!(app.sessions().list_all_sessions().is_empty());
+        }
     }
 
     #[test]

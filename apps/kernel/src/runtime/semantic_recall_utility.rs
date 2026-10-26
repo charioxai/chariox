@@ -80,6 +80,7 @@ pub(crate) fn parse_semantic_recall_search_utility_output(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn semantic_recall_search_utility_prompt(
     input: &SemanticRecallSearchUtilityInput,
     candidates: &[SemanticRecallMatch],
@@ -253,6 +254,7 @@ mod tests {
     fn candidate(event_id: &str, chunk_text: &str) -> SemanticRecallMatch {
         SemanticRecallMatch {
             event: HistoryEvent {
+                public_history_owner_user_id: None,
                 event_id: event_id.to_string(),
                 sequence: 1,
                 timestamp_ms: 100,

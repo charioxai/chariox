@@ -2,6 +2,26 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn get_project_environment(
+        &self,
+        request: crate::local::GetProjectEnvironmentRequest,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let project = self.owned.session_store.get_project(&request.project_id)?;
+        if project.owner_user_id() != caller_user_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "get Project environment",
+                message: "caller does not own the selected Project".into(),
+            });
+        }
+        let config = self.owned.config_projection.snapshot();
+        let environment = crate::project_environment::ProjectEnvironmentStore::new(
+            &config.private_runtime_state_root(),
+        )
+        .snapshot(&project)?;
+        Ok(LocalDaemonResponse::ProjectEnvironment { environment })
+    }
+
     // MP-08 / MP-10 / MP-11: Idle prompt admission refreshes through normal activation.
     pub(super) async fn refresh_project_prompt_provider(
         &self,
@@ -16,6 +36,10 @@ impl KernelRuntimeState {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, agent_id)
                 .is_some()
+            // An existing backlog is prepared by detached queue promotion,
+            // including retries. Never await its Project/Vault inputs here.
+            || self.owned.prompt_state_owner
+                .peek_next_queued_prompt(&session, agent_id).is_some()
         {
             return Ok(());
         }
@@ -66,7 +90,7 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        self.with_app_side_effect(operation).await
+        self.with_authorized_app_side_effect(operation).await
     }
 
     pub(crate) fn project_environment_for_shell(
@@ -251,6 +275,8 @@ impl KernelRuntimeState {
                         "this machine",
                         "Saved Project setup".into(),
                         vault.as_ref(),
+                        None,
+                        false,
                     )
                     .await?;
                 {
@@ -313,6 +339,14 @@ mod tests {
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(workspace.join("app.ts"), "process.env.OPTIONAL_INPUT\n").unwrap();
+        // MP-08 / MP-11: an uncommitted repository cannot pass Copy history admission;
+        // ordinary adjustment never copies history, so it must not run that scan.
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap()
+            .success());
         let mut config =
             crate::DaemonConfig::for_tests().with_session_history_root(root.join("history"));
         config.user_config_path = root.join("runtime/config.toml");
@@ -548,10 +582,12 @@ mod tests {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert!(serde_json::to_value(&interaction)
+        let review = serde_json::to_value(&interaction)
             .unwrap()
             .get("project_environment_review")
-            .is_some());
+            .cloned()
+            .expect("adjustment review, not a stopped notice");
+        assert!(!review.to_string().contains("\"Vault\""));
         assert!(store.try_lock(session.project_id()).is_err());
         runtime
             .resolve_runtime_interaction(session.id(), interaction.id(), "skip", None)

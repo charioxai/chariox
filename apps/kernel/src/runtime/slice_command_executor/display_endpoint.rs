@@ -26,6 +26,13 @@ pub(super) async fn execute_get_slice_display_endpoint_request(
     caller: &KernelCaller,
     request: GetSliceDisplayEndpointRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.shared_display.is_some() {
+        return Ok(LocalDaemonResponse::SliceDisplayEndpoint {
+            endpoint: runtime_state
+                .open_room_shared_display(caller, request)
+                .await?,
+        });
+    }
     let endpoint = runtime_state.slice_display_endpoint(&request.slice_ref)?;
     if endpoint.kind == SliceDisplayEndpointKind::Selkies {
         let _relay_state = relay_state.ok_or_else(|| {
@@ -184,6 +191,7 @@ fn relay_tunneled_endpoint(
         stream_protocol: None,
         stream_id: None,
         peer_public_key: None,
+        shared_display: None,
     })
 }
 
@@ -310,6 +318,7 @@ pub(crate) async fn register_room_selkies_display_endpoint(
         stream_protocol: Some("chariox-display-v1".to_string()),
         stream_id: Some(tunnel_id),
         peer_public_key: Some(worker_public_key),
+        shared_display: None,
     })
 }
 
@@ -608,7 +617,7 @@ mod tests {
             .starts_with("https://relay.example.test/display/display-"));
         assert!(endpoint.url.contains("/vnc.html?"));
         assert!(endpoint.url.contains("path=display%2Fdisplay-"));
-        assert_eq!(endpoint.expires_at_ms.is_some(), true);
+        assert!(endpoint.expires_at_ms.is_some());
     }
 
     #[tokio::test]
@@ -827,6 +836,7 @@ mod tests {
             stream_protocol: None,
             stream_id: None,
             peer_public_key: None,
+            shared_display: None,
         }
     }
 

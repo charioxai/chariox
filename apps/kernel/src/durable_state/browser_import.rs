@@ -95,11 +95,13 @@ impl DurableKernelStateStore {
     }
 
     /// A recovered row still blocks admission until journal cleanup is complete.
+    #[cfg(test)]
     pub(crate) fn browser_import_pending(&self, environment_id: &str) -> Result<bool, DaemonError> {
         self.pending_browser_import(environment_id)
             .map(|row| row.is_some())
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_browser_import(
         &self,
         environment_id: &str,

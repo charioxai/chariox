@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::RemoteAgentBinding;
 use crate::agent::{AgentInstance, GridPosition};
+use crate::provider::RuntimeProviderRun;
 use crate::runtime::projection::ProjectionMetadata;
 use crate::session::{
     PromptQueueItem, PromptStatus, RuntimeInteraction, RuntimeInteractionChoice,
@@ -51,10 +52,25 @@ fn relay_transport_errors_keep_the_stable_local_transport_projection() {
 }
 
 #[test]
+fn verified_cleanup_absence_keeps_existing_wire_error_codes() {
+    let error = DaemonError::RelayPeerCleanupAbsent {
+        worker_kernel_id: "worker".into(),
+        resource_id: "agent".into(),
+        code: "leased_agent_not_found",
+    };
+    let local = map_kernel_error(&error);
+    assert_eq!(local.code, "local_transport_error");
+    assert!(!local.retryable);
+}
+
+#[test]
 fn terminal_output_event_batches_stay_under_json_byte_cap() {
     let records = (0..20)
         .map(|index| TerminalOutputRecord {
             record_id: Some(index as u64),
+            sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 1_000 + index as u64,
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
@@ -99,6 +115,7 @@ fn session_snapshot_frame_redacts_remote_relay_credentials() {
     let frame = KernelOutgoingFrame::Event {
         event_id: 1,
         event: Box::new(KernelEvent::SessionSnapshot {
+            room_workflows: projection.room_workflows,
             session: Box::new(projection.session),
             provider_run: Box::new(None),
             agent_activity: Box::new(projection.agent_activity),
@@ -124,6 +141,9 @@ fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
     let records = (0..5)
         .map(|index| TerminalOutputRecord {
             record_id: Some(index as u64),
+            sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 2_000 + index as u64,
             session_id: format!("session-{index}"),
             provider_run_id: format!("provider-run-{index}"),
@@ -523,6 +543,69 @@ fn session_metadata_only_changes_can_skip_session_snapshot() {
 }
 
 #[test]
+fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
+    let mut previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
+    let window = crate::local::KernelSudoTurn {
+        entry_id: "sudo:window-a".into(),
+        session_id: "session-a".into(),
+        agent_id: "agent-a".into(),
+        owner_user_id: "local".into(),
+        terminal_id: "owner-a".into(),
+        requester: None,
+        prompt_id: Some("work-a".into()),
+        provider_run_id: Some("run-a".into()),
+        task_id: Some("work-a".into()),
+        duration_minutes: 60,
+        expires_at_ms: Some(3_600_000),
+        revision: 1,
+        warning_sent: false,
+        deadline: None,
+        placement: None,
+    };
+    previous.session.set_sudo_windows(vec![window.clone()]);
+    assert!(can_skip_session_snapshot(&previous, Some(&previous), true));
+    for change in ["warning", "extension", "expiry"] {
+        let mut current = previous.clone();
+        let mut changed = window.clone();
+        match change {
+            "warning" => changed.warning_sent = true,
+            "extension" => {
+                changed.revision = 2;
+                changed.expires_at_ms = Some(7_200_000);
+            }
+            "expiry" => {}
+            _ => unreachable!(),
+        }
+        current.session.set_sudo_windows(if change == "expiry" {
+            vec![]
+        } else {
+            vec![changed]
+        });
+        current
+            .session
+            .add_active_interaction(RuntimeInteraction::new(
+                "owner-decision",
+                "agent-a",
+                RuntimeInteractionKind::Permission,
+                RuntimeInteractionLevel::Warning,
+                None,
+                "Owner decision",
+                vec![RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+        assert!(runtime_interactions_changed_event(&current, Some(&previous)).is_some());
+        assert!(
+            !can_skip_session_snapshot(&current, Some(&previous), true),
+            "{change}: an interaction delta cannot replace the changed sudo window"
+        );
+    }
+}
+
+#[test]
 fn runtime_interactions_only_changes_can_skip_session_snapshot() {
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
     let mut current = previous.clone();
@@ -610,6 +693,10 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
         },
     );
     SessionSnapshotProjection {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+            &session,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
         metadata: ProjectionMetadata::new(2, 0),
         session,
         provider_run: None,
@@ -639,6 +726,10 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     workflow_run.set_status(status);
     session.create_workflow_run(workflow_run);
     SessionSnapshotProjection {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+            &session,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
         metadata: ProjectionMetadata::new(2, 0),
         session,
         provider_run: None,
@@ -710,6 +801,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
 
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
+        repository_state: None,
         id: id.to_string(),
         project_id: "project-a".to_string(),
         alias: None,
@@ -734,6 +826,7 @@ fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSu
 
 fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProjectSummary {
     crate::local::WaitingRoomPublicProjectSummary {
+        pinned: false,
         id: id.to_string(),
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         workspace_id: "workspace-1".to_string(),
@@ -753,7 +846,8 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
 
 #[test]
 fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    // MP-08 / MP-10 / MP-11: the behavior landed in 435 and remains required
+    // by later protocols; exact shape/version pins live in snapshot tests.
     let previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Running);
     for status in [
         WorkflowRunStatus::Completed,
@@ -769,4 +863,275 @@ fn mp08_mp10_terminal_workflow_updates_have_one_authoritative_stream() {
         assert!(workflow_run_updated_events(&current, Some(&previous)).is_empty());
         assert!(workflow_run_updated_events(&current, None).is_empty());
     }
+}
+
+#[test]
+fn user_domain_refusals_protocol_493_snapshot() {
+    use crate::error::UserDomainRefusalReason as Reason;
+    assert_eq!(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let values = [
+        Reason::NotRequested,
+        Reason::NotFocusedAgent,
+        Reason::ForeignOwner,
+        Reason::StaleEpoch,
+        Reason::StaleReference,
+        Reason::NotGranted,
+        Reason::SensitiveRequiresFocus,
+    ];
+    let actual: Vec<_> = values.into_iter().map(|reason|serde_json::json!({"reason":reason,"error":map_kernel_error(&DaemonError::UserDomainRefused {reason})})).collect();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("user-domain-refusals-443.json"))
+        ),
+        "a97facd41c511caaf1fbbecfc7f33eacb76dd49800b09187968e88ee28a7eb52"
+    );
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("user-domain-refusals-443.json")).unwrap();
+    assert_eq!(serde_json::json!(actual), expected);
+    // Neither unknown controller text nor a generic local error can acquire authority.
+    let generic = map_kernel_error(&DaemonError::LocalTransport {
+        operation: "kernel_browser",
+        message: "user_domain_not_granted".into(),
+    });
+    assert_eq!(generic.code, "local_transport_error");
+    assert!(generic.retryable);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: compact task state must reach every terminal.
+#[test]
+fn a12_task_change_is_a_compact_projection_event() {
+    let previous = session_snapshot_with_agent();
+    let mut current = previous.clone();
+    let task = serde_json::from_value(serde_json::json!({
+        "task_id":"task", "room_id":current.session.id(), "owner_user_id":"local",
+        "agent_id":"agent-a", "prompt_id":"prompt", "provider_run_id":null,
+        "revision":2, "blocked_revision":0, "state":"working", "reason":"work",
+        "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
+        "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+    }))
+    .unwrap();
+    current.session.set_agent_tasks(vec![task]);
+    let events = session_projection_changed_events(&current, Some(&previous));
+    let payloads: Vec<_> = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    assert!(
+        payloads.iter().any(|e| e["event"] == "agent_task_updated"),
+        "a changed task cannot depend on a full room snapshot"
+    );
+    assert!(payloads.iter().all(|e| e.get("session").is_none()));
+    assert!(can_skip_session_snapshot(&current, Some(&previous), true));
+    assert!(session_projection_changed_events(&current, Some(&current)).is_empty());
+    assert!(session_projection_changed_events(&current, None).is_empty());
+}
+
+// MP-08 / MP-10 A12-S02: both subscription writers use this shared selection.
+fn review971c_task_snapshot() -> SessionSnapshotProjection {
+    let mut snapshot = session_snapshot_with_agent();
+    let task = serde_json::from_value(serde_json::json!({
+        "task_id":"task-a", "room_id":"session-a", "owner_user_id":"local",
+        "agent_id":"agent-a", "prompt_id":"prompt-a", "provider_run_id":null,
+        "revision":1, "blocked_revision":0, "state":"working", "reason":"work",
+        "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
+        "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+    }))
+    .unwrap();
+    snapshot.session.set_agent_tasks(vec![task]);
+    snapshot
+}
+
+fn review971c_assert_full_snapshot(change: impl FnOnce(&mut SessionSnapshotProjection)) {
+    let previous = review971c_task_snapshot();
+    let mut current = previous.clone();
+    let mut tasks = current.session.agent_tasks().to_vec();
+    tasks[0].revision += 1;
+    current.session.set_agent_tasks(tasks);
+    change(&mut current);
+    let events = session_projection_changed_events(&current, Some(&previous));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, KernelEvent::AgentTaskUpdated { .. })));
+    assert!(
+        !can_skip_session_snapshot(&current, Some(&previous), !events.is_empty()),
+        "a task event must not hide other session changes before advancing the subscription baseline"
+    );
+}
+
+#[test]
+fn review971c_task_and_prompt_queue_keep_session_snapshot() {
+    review971c_assert_full_snapshot(|current| {
+        current.session.mirror_agent_prompt_state(
+            "agent-a",
+            None,
+            std::collections::VecDeque::from([PromptQueueItem::new(
+                "queued",
+                "attachment-a",
+                "agent-a",
+                "next",
+                PromptStatus::Queued,
+            )]),
+        );
+        assert_eq!(
+            current
+                .session
+                .queued_prompts_for_agent("agent-a")
+                .unwrap()
+                .len(),
+            1
+        );
+    });
+}
+
+#[test]
+fn review971c_task_and_activity_keep_session_snapshot() {
+    review971c_assert_full_snapshot(|current| {
+        current.agent_activity.get_mut("agent-a").unwrap().busy = true;
+    });
+}
+
+#[test]
+fn review971c_task_and_provider_run_keep_session_snapshot() {
+    review971c_assert_full_snapshot(|current| {
+        current.provider_run = Some(RuntimeProviderRun::from_control_capability_inference(
+            "run-a",
+            "session-a".into(),
+            Some("agent-a".into()),
+            "codex".into(),
+        ));
+    });
+}
+
+#[test]
+fn review971c_task_and_metadata_keep_session_snapshot() {
+    review971c_assert_full_snapshot(|current| current.session.set_alias(Some("renamed".into())));
+}
+
+#[test]
+fn review971c_task_and_new_agent_keep_session_snapshot() {
+    review971c_assert_full_snapshot(|current| {
+        let mut agents = current.session.agents().to_vec();
+        agents.push(AgentInstance::new(
+            "agent-b",
+            "second",
+            "session-a",
+            None,
+            "codex",
+            None,
+            None,
+            Some("worktree-a".into()),
+            GridPosition::new(0, 1, 1, 1),
+        ));
+        current.session.set_agents(agents);
+        let mut tasks = current.session.agent_tasks().to_vec();
+        let mut task = tasks[0].clone();
+        task.task_id = "task-b".into();
+        task.agent_id = "agent-b".into();
+        tasks.push(task);
+        current.session.set_agent_tasks(tasks);
+    });
+}
+
+#[test]
+fn review971c_task_and_interaction_keep_session_snapshot() {
+    review971c_assert_full_snapshot(|current| {
+        current
+            .session
+            .add_active_interaction(RuntimeInteraction::new(
+                "decision",
+                "agent-a",
+                RuntimeInteractionKind::Permission,
+                RuntimeInteractionLevel::Warning,
+                None,
+                "Allow?",
+                vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
+                None,
+                None,
+                None,
+            ));
+    });
+}
+
+#[test]
+fn review971c_removed_task_requires_session_snapshot() {
+    let previous = review971c_task_snapshot();
+    let mut current = previous.clone();
+    let mut task = current.session.agent_tasks()[0].clone();
+    task.task_id = "replacement".into();
+    current.session.set_agent_tasks(vec![task]);
+    let events = session_projection_changed_events(&current, Some(&previous));
+    assert_eq!(events.len(), 1);
+    assert!(!can_skip_session_snapshot(&current, Some(&previous), true));
+}
+
+#[test]
+fn room_workflow_inventory_delta_uses_semantic_revision_and_explicit_empty() {
+    let mut previous = session_snapshot_with_agent();
+    previous
+        .session
+        .create_workflow(crate::session::WorkflowDefinition::new("blank", None));
+    previous.room_workflows =
+        crate::runtime::projection::RoomWorkflowInventory::project(&previous.session, "local");
+    assert!(super::room_workflows_changed_event(&previous, None).is_none());
+    assert!(super::room_workflows_changed_event(&previous, Some(&previous)).is_none());
+    let mut current = previous.clone();
+    current.session.remove_workflow("blank");
+    current.room_workflows =
+        crate::runtime::projection::RoomWorkflowInventory::project(&current.session, "local");
+    let event = super::room_workflows_changed_event(&current, Some(&previous)).unwrap();
+    assert_eq!(super::event_session_id(&event), Some("session-a"));
+    assert_eq!(super::kernel_event_name(&event), "room_workflows_changed");
+    match event {
+        KernelEvent::RoomWorkflowsChanged { inventory } => assert_eq!(inventory.workflow_count, 0),
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+// MP-08 / MP-10 / MP-11: do not turn a missing account into a retry loop.
+#[test]
+fn missing_account_resolution_is_definitive_on_kernel_transport() {
+    let error = DaemonError::LocalTransport {
+        operation: "resolve account profile",
+        message: "account is absent on this kernel; copy login or sign in".into(),
+    };
+    let mapped = map_kernel_error(&error);
+    assert_eq!(mapped.code, "local_transport_error");
+    assert!(!mapped.retryable);
+    assert_eq!(mapped.message, error.to_string());
+    let transient = DaemonError::LocalTransport {
+        operation: "read account profile registry",
+        message: "temporary read failure".into(),
+    };
+    assert!(map_kernel_error(&transient).retryable);
+}
+
+// MP-08 / MP-10 / MP-11: a missing Project is a permanent lookup miss.
+#[test]
+fn env_ux01_project_lookup_absence_is_not_retryable() {
+    let error = crate::error::DaemonError::LocalTransport {
+        operation: "project.get",
+        message: "project was not found".into(),
+    };
+    let mapped = super::map_kernel_error(&error);
+    assert_eq!(mapped.code, "local_transport_error");
+    assert!(!mapped.retryable);
+}
+
+// MP-08 / MP-10 / MP-11: only definitive Project misses lose retryability.
+#[test]
+fn env_ux01_unrelated_transport_failures_remain_retryable() {
+    let error = crate::error::DaemonError::LocalTransport {
+        operation: "project.environment.get",
+        message: "connection interrupted".into(),
+    };
+    assert!(super::map_kernel_error(&error).retryable);
 }

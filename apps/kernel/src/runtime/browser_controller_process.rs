@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
@@ -34,17 +34,32 @@ use crate::session::CanonicalViewport;
 
 mod app_view_bridge;
 mod cancellation;
+mod retire_lane;
+pub(crate) use retire_lane::RetireLane;
+mod room_computer;
+pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
+mod display_frames;
+mod display_packets;
+pub(crate) use display_frames::{DirectFrames, Next as DirectFrame};
+/// MP-08/MP-10/MP-11: native capture slot files (`<pool>/<index>`). Defined
+/// here, outside the optional native worker, because crash cleanup runs in
+/// every Unix build; the worker allocates exactly these.
+pub(crate) const RASTER_SLOT_NAMES: [&str; 6] = ["0", "1", "2", "3", "4", "5"];
 mod lifecycle_cancellation;
+mod owned_process_group;
 mod pending_action;
 mod pending_mutation;
 mod pending_responses;
 mod reconciliation;
+mod request_wire;
 mod unlocked_request;
 use self::pending_mutation::BrowserTabMutationLanes;
 pub(crate) use configuration_cancellation::BrowserConfiguration;
 #[cfg(test)]
 mod action_concurrency_tests;
+#[cfg(test)]
+mod host_cancellation_tests;
 #[cfg(test)]
 mod import_cancellation_tests;
 #[cfg(test)]
@@ -186,6 +201,12 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
     }
+    fn browser_artifact(
+        &mut self,
+        _request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        Err("browser controller backend does not support Browser artifacts".into())
+    }
     fn app_view(
         &mut self,
         _request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
@@ -200,6 +221,10 @@ pub(crate) trait BrowserControllerProcessBackend {
     ) -> Result<BrowserControllerEventBatch, String> {
         Err("browser controller backend does not support event polling".to_string())
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     fn import_browser_cookies(
         &mut self,
         _binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
@@ -229,7 +254,9 @@ pub(crate) struct BrowserControllerProcessStdioBackend {
     timeout: Duration,
     process: Option<BrowserControllerChild>,
     next_request_id: u64,
+    host: bool,
     action_cancellation: Option<Arc<cancellation::CancellationSignal>>,
+    retire_lane: RetireLane,
     protected_values: BTreeMap<String, Vec<zeroize::Zeroizing<String>>>,
 }
 
@@ -241,9 +268,20 @@ impl BrowserControllerProcessStdioBackend {
             timeout,
             process: None,
             next_request_id: 1,
+            host: false,
             action_cancellation: None,
+            retire_lane: RetireLane::default(),
             protected_values: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn retire_lane(&self) -> RetireLane {
+        self.retire_lane.clone()
+    }
+
+    pub(crate) fn for_host(mut self) -> Self {
+        self.host = true;
+        self
     }
 
     fn from_script(script_path: impl Into<PathBuf>, timeout: Duration) -> Self {
@@ -272,34 +310,119 @@ impl BrowserControllerProcessStdioBackend {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
+        if self.host {
+            // MD-2: browser descendants receive OS display settings, never provider/control secrets.
+            command.env_clear();
+            for key in [
+                "PATH",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "LANG",
+                "LC_ALL",
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+                "XAUTHORITY",
+                "XDG_RUNTIME_DIR",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "TMPDIR",
+                "CHARIOX_KERNEL_BROWSER_EXECUTABLE",
+                "CHARIOX_KERNEL_BROWSER_HEADLESS",
+                "CHARIOX_KERNEL_BROWSER_DISPLAY",
+                "CHARIOX_KERNEL_BROWSER_MIRROR",
+                "CHARIOX_KERNEL_BROWSER_HOME_URL",
+                "CHARIOX_BROWSER_DISPLAY_PYTHON",
+                "CHARIOX_BROWSER_DISPLAY_TIMING",
+                "CHARIOX_BROWSER_DISPLAY_GEOMETRY",
+                "CHARIOX_BROWSER_DISPLAY_SOFTWARE",
+                "LIBVA_DRIVER_NAME",
+                "CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER",
+                "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
+                "CHARIOX_BROWSER_DISPLAY_OPENH264",
+                "CHARIOX_BROWSER_DISPLAY_LIBYUV",
+                "CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS",
+            ] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+        }
+        #[cfg(all(feature = "native-display", target_os = "linux"))]
+        {
+            // Production uses this exact kernel ELF. Test harnesses provide the
+            // separately built production ELF because libtest owns their entry.
+            let executable = if cfg!(test) {
+                std::env::var_os("CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER").map(PathBuf::from)
+            } else {
+                std::env::current_exe().ok()
+            };
+            if let Some(executable) = executable {
+                command.env("CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER", executable);
+            }
+        }
+        // MP-08/MP-10/MP-11: a kernel-created descriptor root, never an ambient path.
+        let display_packets = if cfg!(unix) {
+            Some(Arc::new(display_packets::DisplayPackets::create()?))
+        } else {
+            None
+        };
+        if let Some(packets) = &display_packets {
+            command.env("CHARIOX_BROWSER_DISPLAY_PACKET_ROOT", packets.root());
+        }
+        // L3: native workers this controller spawns hand whole frames straight to the pump.
+        let direct_frames = match &display_packets {
+            // Optional: without a channel (e.g. a socket path too long), Node publishes every frame.
+            Some(packets) => display_frames::DirectFrames::listen(packets.clone()).ok(),
+            None => None,
+        };
+        if let Some(frames) = &direct_frames {
+            command.env("CHARIOX_BROWSER_DISPLAY_FRAMES", frames.path());
+        }
         let mut child = command.spawn().map_err(|error| {
             format!(
                 "failed to spawn browser controller `{}`: {error}",
                 self.command.display()
             )
         })?;
+        if let Some(frames) = &direct_frames {
+            frames.bind_controller(child.id());
+        }
+        let mut owned_group = owned_process_group::OwnedProcessGroup::new(child.id());
+        if self.host {
+            if let Err(error) = owned_group.start_tracking() {
+                kill_owned_child(&mut child, &mut owned_group);
+                return Err(format!("failed to track browser descendants: {error}"));
+            }
+        }
         let stdin = child.stdin.take().ok_or_else(|| {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             "browser controller did not expose stdin".to_string()
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             "browser controller did not expose stdout".to_string()
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             "browser controller did not expose stderr".to_string()
         })?;
         let (responses_tx, responses) = mpsc::channel();
         let pending_responses = pending_responses::PendingResponses::default();
         let reader_pending_responses = pending_responses.clone();
+        let reader_ownership = self.host.then(|| owned_group.witness());
         if let Err(error) = std::thread::Builder::new()
             .name("chariox-browser-controller-reader".to_string())
             .spawn(move || {
-                read_controller_responses(stdout, responses_tx, reader_pending_responses)
+                read_controller_responses(
+                    stdout,
+                    responses_tx,
+                    reader_pending_responses,
+                    reader_ownership,
+                    display_packets,
+                )
             })
         {
-            kill_child(&mut child);
+            kill_owned_child(&mut child, &mut owned_group);
             return Err(format!(
                 "failed to start browser controller response reader: {error}"
             ));
@@ -313,11 +436,16 @@ impl BrowserControllerProcessStdioBackend {
                     }
                 }
             });
+        let stdin = Arc::new(Mutex::new(stdin));
+        self.retire_lane.attach(&stdin);
         self.process = Some(BrowserControllerChild {
+            owned_group,
             child: Arc::new(Mutex::new(child)),
-            stdin: Arc::new(Mutex::new(stdin)),
+            stdin,
             responses,
             pending_responses,
+            host_policy: None,
+            direct_frames,
         });
         Ok(())
     }
@@ -348,6 +476,110 @@ impl BrowserControllerProcessStdioBackend {
         self.request_serializable(method, &params, timeout)
     }
 
+    // MD-2: bounded host adapter RPC; public callers never choose the method.
+    pub(crate) fn host_request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let lifecycle = self.host
+            && method == "host.browser"
+            && matches!(
+                params.get("op").and_then(serde_json::Value::as_str),
+                Some("start" | "open" | "state" | "display_subscribe")
+            );
+        let result = self.request(method, params)?.into_result(method);
+        if lifecycle {
+            if let Some(process) = self.process.as_mut() {
+                process.owned_group.refresh();
+            }
+        }
+        result
+    }
+
+    pub(crate) fn host_request_classified(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::error::HostFailure> {
+        let response = self
+            .request(method, params)
+            .map_err(crate::error::HostFailure::Other)?;
+        if self.host && !response.ok {
+            if let Some(reason) = response
+                .error
+                .as_ref()
+                .and_then(|error| crate::error::UserDomainRefusalReason::from_code(&error.code))
+            {
+                return Err(crate::error::HostFailure::Refused(reason));
+            }
+        }
+        response
+            .into_result(method)
+            .map_err(crate::error::HostFailure::Other)
+    }
+
+    // MP-08/MP-10/MP-11: per-credit liveness never joins the controller's
+    // barrier lane. Startup still validates health; requests validate replies.
+    /// L3: the running controller's direct frame channel (native display leases).
+    pub(crate) fn direct_frames(&self) -> Option<Arc<DirectFrames>> {
+        self.process.as_ref()?.direct_frames.clone()
+    }
+
+    pub(crate) fn host_is_live(&mut self) -> Result<bool, String> {
+        self.take_exited_process()?;
+        Ok(self.process.is_some())
+    }
+
+    // Cache only successfully applied policy on this exact supervised child.
+    // A changed policy remains an RPC barrier; respawn cannot inherit the cache.
+    pub(crate) fn protect_host(
+        &mut self,
+        policy: serde_json::Value,
+    ) -> Result<(), crate::error::HostFailure> {
+        self.take_exited_process()
+            .map_err(crate::error::HostFailure::Other)?;
+        if self
+            .process
+            .as_ref()
+            .is_some_and(|p| p.host_policy.as_ref() == Some(&policy))
+        {
+            return Ok(());
+        }
+        self.host_request_classified("host.protect", policy.clone())?;
+        if let Some(process) = self.process.as_mut() {
+            process.host_policy = Some(policy);
+        }
+        Ok(())
+    }
+
+    // MD-DISPLAY-04: host RPCs validate their own outcome. The host health RPC
+    // reports only this same supervisor PID, so don't repeat it per frame.
+    // Keep exact owned-child exit detection and cold/recovery health admission.
+    #[cfg(test)]
+    pub(crate) fn ensure_host_started(&mut self) -> Result<bool, String> {
+        if !self.host {
+            return Err("host controller required".into());
+        }
+        self.take_exited_process()?;
+        if self.process.is_none() {
+            self.start()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    pub(crate) fn host_request_cancellable(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        signal: Option<Arc<BrowserCancellation>>,
+    ) -> Result<serde_json::Value, crate::error::HostFailure> {
+        let previous = std::mem::replace(&mut self.action_cancellation, signal);
+        let result = self.host_request_classified(method, params);
+        self.action_cancellation = previous;
+        result
+    }
+
     fn request_serializable<P: Serialize>(
         &mut self,
         method: &str,
@@ -356,7 +588,11 @@ impl BrowserControllerProcessStdioBackend {
     ) -> Result<BrowserControllerRpcResponse, String> {
         let cancellation = matches!(
             method,
-            "browser.action"
+            "host.computer"
+                | "host.computer.reset"
+                | "host.browser"
+                | "host.secret"
+                | "browser.action"
                 | "browser.upload"
                 | "browser.downloads.configure"
                 | "browser.permission"
@@ -381,11 +617,16 @@ impl BrowserControllerProcessStdioBackend {
             .process
             .as_mut()
             .ok_or_else(|| "browser controller is not running".to_string())?;
+        let ownership_at = Instant::now();
+        if !self.host {
+            process.owned_group.refresh();
+        }
+        crate::transport::kernel_browser_display::timing("process_identity_refresh", ownership_at);
         let mut stdin = process
             .stdin
             .lock()
             .map_err(|_| "controller stdin lock poisoned")?;
-        serde_json::to_writer(
+        request_wire::write_line(
             &mut *stdin,
             &BrowserControllerRpcRequest {
                 id: request_id,
@@ -400,10 +641,6 @@ impl BrowserControllerProcessStdioBackend {
             },
         )
         .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
         drop(stdin);
         let started = Instant::now();
         let mut cancellation_sent = false;
@@ -422,17 +659,13 @@ impl BrowserControllerProcessStdioBackend {
                     .stdin
                     .lock()
                     .map_err(|_| "controller stdin lock poisoned")?;
-                serde_json::to_writer(
+                request_wire::write_line(
                     &mut *stdin,
                     &serde_json::json!({
                         "id":cancel_id,"method":"browser.cancel","params":{"request_id":request_id}
                     }),
                 )
                 .map_err(|error| error.to_string())?;
-                stdin
-                    .write_all(b"\n")
-                    .and_then(|()| stdin.flush())
-                    .map_err(|error| error.to_string())?;
                 cancellation_sent = true;
                 cancellation_request_id = Some(cancel_id);
             }
@@ -442,11 +675,12 @@ impl BrowserControllerProcessStdioBackend {
                     // A timeout is not proof that physical input stopped. Kill
                     // and reap the only process capable of sending more input
                     // before confirming cancellation to the home kernel.
-                    kill_child(
+                    kill_owned_child(
                         &mut process
                             .child
                             .lock()
                             .unwrap_or_else(|error| error.into_inner()),
+                        &mut process.owned_group,
                     );
                     signal.confirm_fence();
                     return Ok(BrowserControllerRpcResponse {
@@ -477,6 +711,14 @@ impl BrowserControllerProcessStdioBackend {
                     return Err(format!("browser controller exited during `{method}`"))
                 }
             };
+            let ownership_at = Instant::now();
+            if !self.host {
+                process.owned_group.refresh();
+            }
+            crate::transport::kernel_browser_display::timing(
+                "process_identity_refresh",
+                ownership_at,
+            );
             if response.id == cancellation_request_id {
                 cancellation_acknowledged = true;
                 let accepted = response.ok
@@ -572,6 +814,10 @@ impl BrowserControllerProcessStdioBackend {
             .map_err(|error| format!("failed to inspect browser controller: {error}"))?;
         drop(child);
         if status.is_some() {
+            // MD-2: reparented descendants must match identities recorded while owned.
+            if self.host {
+                process.owned_group.signal();
+            }
             self.process.take();
             return Ok(Some(process_id));
         }
@@ -595,7 +841,23 @@ pub(crate) fn controller_error_marker(code: &str) -> String {
 }
 
 impl BrowserControllerRpcResponse {
-    fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
+    pub(crate) fn into_host_result(
+        self,
+        method: &str,
+    ) -> Result<serde_json::Value, crate::error::HostFailure> {
+        if !self.ok {
+            if let Some(reason) = self
+                .error
+                .as_ref()
+                .and_then(|error| crate::error::UserDomainRefusalReason::from_code(&error.code))
+            {
+                return Err(crate::error::HostFailure::Refused(reason));
+            }
+        }
+        self.into_result(method)
+            .map_err(crate::error::HostFailure::Other)
+    }
+    pub(crate) fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
         if !self.ok {
             let error = self.error.unwrap_or(BrowserControllerRpcError {
                 code: "controller_error".to_string(),
@@ -665,12 +927,13 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         match self.health_request() {
             Ok(health) => Ok(health),
             Err(error) => {
-                if let Some(process) = self.process.take() {
-                    kill_child(
+                if let Some(mut process) = self.process.take() {
+                    kill_owned_child(
                         &mut process
                             .child
                             .lock()
                             .unwrap_or_else(|error| error.into_inner()),
+                        &mut process.owned_group,
                     );
                 }
                 Err(error)
@@ -683,21 +946,23 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             return Ok(());
         }
         let shutdown_requested = self.request("shutdown", serde_json::json!({})).is_ok();
-        if let Some(process) = self.process.take() {
+        if let Some(mut process) = self.process.take() {
             if shutdown_requested {
                 terminate_child(
                     &mut process
                         .child
                         .lock()
                         .unwrap_or_else(|error| error.into_inner()),
+                    &mut process.owned_group,
                     self.timeout,
                 );
             } else {
-                kill_child(
+                kill_owned_child(
                     &mut process
                         .child
                         .lock()
                         .unwrap_or_else(|error| error.into_inner()),
+                    &mut process.owned_group,
                 );
             }
         }
@@ -822,6 +1087,16 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    fn browser_artifact(
+        &mut self,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        let result = self
+            .request_serializable("browser.artifact", request, self.timeout)?
+            .into_result::<super::browser_artifact::BrowserArtifactCapture>("browser.artifact")?;
+        result.validate(request)?;
+        Ok(result)
+    }
     fn app_view(
         &mut self,
         request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
@@ -859,6 +1134,10 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     fn import_browser_cookies(
         &mut self,
         binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
@@ -971,10 +1250,13 @@ impl Drop for BrowserControllerProcessStdioBackend {
 }
 
 struct BrowserControllerChild {
+    owned_group: owned_process_group::OwnedProcessGroup,
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<ChildStdin>>,
     responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
     pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
+    host_policy: Option<serde_json::Value>,
+    direct_frames: Option<Arc<display_frames::DirectFrames>>,
 }
 
 #[derive(Deserialize)]
@@ -985,7 +1267,7 @@ struct BrowserControllerCommandHealth {
 }
 
 #[derive(Deserialize)]
-struct BrowserControllerRpcResponse {
+pub(crate) struct BrowserControllerRpcResponse {
     id: Option<u64>,
     ok: bool,
     result: Option<serde_json::Value>,
@@ -1072,6 +1354,8 @@ fn read_controller_responses(
     stdout: ChildStdout,
     responses: mpsc::Sender<Result<BrowserControllerRpcResponse, String>>,
     pending_responses: pending_responses::PendingResponses<BrowserControllerRpcResponse>,
+    mut ownership: Option<owned_process_group::OwnedProcessGroup>,
+    display_packets: Option<Arc<display_packets::DisplayPackets>>,
 ) {
     for line in BufReader::new(stdout).lines() {
         let response = line
@@ -1079,9 +1363,34 @@ fn read_controller_responses(
             .and_then(|line| {
                 serde_json::from_str::<BrowserControllerRpcResponse>(&line)
                     .map_err(|error| format!("browser controller returned invalid JSON: {error}"))
+                    .and_then(|mut response| {
+                        if let Some(result) = &mut response.result {
+                            if let Some(packets) = &display_packets {
+                                packets.hydrate(result)?;
+                            } else if result.pointer("/display_frame/native_packet").is_some() {
+                                return Err("MP-11: native packet without kernel ownership".into());
+                            }
+                        }
+                        Ok(response)
+                    })
             });
         let response = match response {
             Ok(response) => {
+                // Cold capture/encoder replacement returns an independent frame.
+                // Record lifecycle identities before publishing it; deltas never
+                // scan here. The observer covers launches during idle/failed RPCs.
+                if response.result.as_ref().is_some_and(|v| {
+                    v.pointer("/display_frame/key")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                        || v.pointer("/display_frame/sequence")
+                            .and_then(serde_json::Value::as_u64)
+                            == Some(1)
+                }) {
+                    if let Some(group) = ownership.as_mut() {
+                        group.refresh();
+                    }
+                }
                 if let Some(id) = response.id {
                     match pending_responses.route(id, response) {
                         Some(response) => Ok(response),
@@ -1103,20 +1412,27 @@ fn read_controller_responses(
     pending_responses.fail_all_on_exit();
 }
 
-fn terminate_child(child: &mut Child, timeout: Duration) {
-    if child.wait_timeout(timeout).ok().flatten().is_some() {
-        return;
-    }
-    kill_child(child);
+fn terminate_child(
+    child: &mut Child,
+    group: &mut owned_process_group::OwnedProcessGroup,
+    timeout: Duration,
+) {
+    let _ = child.wait_timeout(timeout);
+    // MD-4: even a successful shutdown can leave recorded browser descendants.
+    kill_owned_child(child, group);
 }
 
 fn kill_child(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(child.id()) {
-            let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
+    let mut group = owned_process_group::OwnedProcessGroup::new(child.id());
+    kill_owned_child(child, &mut group);
+}
+
+fn kill_owned_child(child: &mut Child, group: &mut owned_process_group::OwnedProcessGroup) {
+    if child.id() <= 1 || child.id() > i32::MAX as u32 {
+        return;
     }
+    // MD-4: preserve start identities recorded before the controller exited.
+    group.signal();
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -1284,6 +1600,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         })
     }
 
+    pub(crate) fn browser_artifact(
+        &mut self,
+        session_id: &str,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        self.require_lease(session_id)?;
+        self.supervisor.browser_artifact(request)
+    }
     pub(crate) fn app_view(
         &mut self,
         session_id: &str,
@@ -1305,6 +1629,10 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .poll_browser_events(browser_generation, cursor, limit)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     pub(crate) fn import_browser_cookies(
         &mut self,
         session_id: &str,
@@ -1643,6 +1971,19 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn browser_artifact(
+        &self,
+        session_id: &str,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<Option<super::browser_artifact::BrowserArtifactCapture>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.browser_artifact(session_id, request).map(Some)
+    }
     pub(crate) fn app_view(
         &self,
         session_id: &str,
@@ -1884,6 +2225,13 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
+    fn browser_artifact(
+        &mut self,
+        request: &super::browser_artifact::BrowserArtifactRequest,
+    ) -> Result<super::browser_artifact::BrowserArtifactCapture, String> {
+        self.ensure_started_without_transparent_restart()?;
+        self.backend.browser_artifact(request)
+    }
     fn app_view(
         &mut self,
         request: &crate::runtime::browser_controller_app_view::BrowserAppViewRequest,
@@ -1903,6 +2251,10 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .poll_browser_events(browser_generation, cursor, limit)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing import_browser_cookies operation signature and explicit context arguments"
+    )]
     fn import_browser_cookies(
         &mut self,
         binding: &crate::transport::room_browser_controller::RoomBrowserImportBinding,
@@ -1999,6 +2351,24 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
 
 #[cfg(test)]
 mod tests {
+    // MP-08/MP-10/MP-11: safe host causes must survive the Rust RPC boundary.
+    #[test]
+    fn browser_host_specific_reason_survives_rpc_reply() {
+        for reason in [
+            "browser_cdp_timeout Page.captureScreenshot",
+            "mirror_subscription_retired",
+        ] {
+            let message = format!("MD-2: browser operation failed: Error {reason}");
+            let response: super::BrowserControllerRpcResponse = serde_json::from_value(serde_json::json!({
+                "id": 1, "ok": false, "error": {"code": "kernel_browser_failed", "message": message}
+            })).unwrap();
+            let error = response
+                .into_result::<serde_json::Value>("host.browser")
+                .unwrap_err();
+            assert!(error.contains(&message));
+            assert!(error.contains("failed with kernel_browser_failed:"));
+        }
+    }
     // MP-08/MP-10/MP-11: controller seeds live only as long as their Room lease.
     #[test]
     fn releasing_room_drops_its_scrub_values_without_dropping_other_rooms() {
@@ -2714,6 +3084,7 @@ done
             .clone();
         let first_process_id = first.process_id.expect("first process id");
 
+        assert!(first_process_id > 1 && first_process_id <= i32::MAX as u32);
         let kill_result = unsafe { libc::kill(first_process_id as i32, libc::SIGKILL) };
         assert_eq!(kill_result, 0, "test controller should be killable");
         let restarted = supervisor
@@ -2793,6 +3164,68 @@ done
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn md4_stop_retains_descendant_ownership_after_controller_exit() {
+        fn alive(pid: u32) -> bool {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .is_some_and(|s| {
+                    s.rsplit_once(')')
+                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with('Z'))
+                })
+        }
+        for crash in [true, false] {
+            let tool = TestTool::new(
+                r#"#!/bin/sh
+set -eu
+sleep 30 &
+printf '%s' "$!" > "$0.survivor"
+while IFS= read -r request; do
+id=${request#*:}; id=${id%%,*}
+case "$request" in
+*'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+*'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+esac
+done
+"#,
+            );
+            let mut backend = BrowserControllerProcessStdioBackend::new(
+                tool.path(),
+                Vec::new(),
+                Duration::from_millis(250),
+            );
+            backend.start().unwrap();
+            let survivor: u32 = fs::read_to_string(tool.path().with_extension("sh.survivor"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(survivor > 1 && alive(survivor));
+            // Retain an independent ownership witness only to clean up a RED run.
+            let process = backend.process.as_mut().unwrap();
+            process.owned_group.refresh();
+            let mut cleanup = super::owned_process_group::OwnedProcessGroup::new(
+                process.child.lock().unwrap().id(),
+            );
+            if crash {
+                let mut child = process.child.lock().unwrap();
+                assert!(child.id() > 1);
+                child.kill().unwrap();
+                child.wait().unwrap();
+            }
+            backend.stop().unwrap(); // No health()/take_exited_process() before Stop.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while alive(survivor) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let leaked = alive(survivor);
+            cleanup.signal();
+            assert!(!leaked, "MD-4: Stop/shutdown must reap the recorded Chrome survivor (controller crash={crash})");
+            backend.start().unwrap();
+            backend.stop().unwrap();
+        }
+    }
+
     #[test]
     fn stdio_backend_bounds_shutdown_and_kills_the_process_group() {
         let tool = TestTool::new(
@@ -2812,6 +3245,68 @@ done
         assert_eq!(
             backend.health().expect("forced process was reaped").state,
             BrowserControllerProcessState::Stopped
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mp10_host_encoder_environment_crosses_the_real_spawn_boundary() {
+        // MP-08/MP-10/MP-11: isolate environment changes in a test subprocess.
+        if std::env::var("CHARIOX_TEST_DISPLAY_ENV_CHILD").as_deref() != Ok("1") {
+            let name = format!(
+                "{}::mp10_host_encoder_environment_crosses_the_real_spawn_boundary",
+                module_path!().split_once("::").unwrap().1
+            );
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env("CHARIOX_TEST_DISPLAY_ENV_CHILD", "1")
+                .env("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER", "libopenh264")
+                .env(
+                    "CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER",
+                    "/fixture/openh264.so",
+                )
+                .env(
+                    "CHARIOX_BROWSER_DISPLAY_OPENH264",
+                    "/fixture/libopenh264.so.8",
+                )
+                .env("CHARIOX_BROWSER_DISPLAY_LIBYUV", "/fixture/libyuv.so")
+                .env("CHARIOX_TEST_CONTROL_SECRET", "synthetic")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "MP-10: host discarded explicit encoder/converter configuration"
+            );
+            return;
+        }
+        let tool = TestTool::new(
+            r#"#!/bin/sh
+set -eu
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"encoder":"%s","adapter":"%s","converter":"%s","native_encoder":"%s","control_secret_present":%s}}\n' "$id" "${CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER-}" "${CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER-}" "${CHARIOX_BROWSER_DISPLAY_LIBYUV-}" "${CHARIOX_BROWSER_DISPLAY_OPENH264-}" "${CHARIOX_TEST_CONTROL_SECRET+true}" | sed 's/:}/:false}/' ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#,
+        );
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            Duration::from_secs(2),
+        )
+        .for_host();
+        backend.start().unwrap();
+        let result = backend.host_request("host.browser", serde_json::json!({"op":"probe"}));
+        backend.stop().unwrap();
+        assert_eq!(
+            result.unwrap(),
+            serde_json::json!({
+                "encoder":"libopenh264", "adapter":"/fixture/openh264.so",
+                "converter":"/fixture/libyuv.so", "native_encoder":"/fixture/libopenh264.so.8", "control_secret_present":false
+            })
         );
     }
 }

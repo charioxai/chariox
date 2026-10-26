@@ -19,9 +19,10 @@ mod remote_machines;
 use blocking::block_on_relay_query;
 pub(crate) use catalog::{
     load_provider_catalog, logout_provider_response, observe_provider_auth_status,
-    provider_auth_status_response, provider_command_catalogs_response,
-    refresh_provider_account_profile_response, start_provider_login_response,
-    PROVIDER_CATALOG_CACHE_TTL,
+    prepare_opencode_model_cache, provider_auth_status_response,
+    provider_command_catalogs_response, refresh_provider_account_auth_with_config,
+    refresh_provider_account_profile_explicitly, refresh_provider_account_profile_with_config,
+    start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
 };
 pub(crate) use remote_machines::{
     forgotten_machine_record, record_for_machine_id, remote_machine_records,
@@ -55,7 +56,9 @@ impl DaemonApp {
             }),
         );
         self.update_provider_run_projection(provider_run.clone());
-        Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run })
+        Ok(LocalDaemonResponse::ProviderRunLaunched {
+            provider_run: provider_run.into(),
+        })
     }
 
     pub(crate) fn provider_catalog_response(&mut self) -> Result<LocalDaemonResponse, DaemonError> {
@@ -234,9 +237,7 @@ fn remote_native_provider_run_response(
     };
     let required_mcps = app.required_remote_mcps_for_native_provider_launch(&agent)?;
     let required_skills = app.required_remote_skills_for_native_provider_launch(&agent)?;
-    let remote_extension_manifest = app
-        .remote_extension_manifest_for_agent(&agent)?
-        .without_mcp_tools();
+    let remote_extension_manifest = app.remote_extension_manifest_for_agent(&agent)?;
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
         &relay_config,
@@ -302,7 +303,7 @@ fn remote_native_provider_run_response(
                 Some(provider_run.id().to_string()),
             )?;
             Ok(Some(LocalDaemonResponse::ProviderRunLaunched {
-                provider_run,
+                provider_run: provider_run.into(),
             }))
         }
         other => Err(DaemonError::LocalTransport {
@@ -362,13 +363,11 @@ pub(crate) fn launch_provider_request_from_local(
         } else {
             launch_request.with_agent_id(agent_id)
         };
-    } else {
-        if let Some(session) = session.as_ref() {
-            let effective_config = crate::session::effective_agent_execution_config(session, None);
-            launch_request = launch_request
-                .with_execution_mode(effective_config.mode)
-                .with_permission_level(effective_config.permission_level);
-        }
+    } else if let Some(session) = session.as_ref() {
+        let effective_config = crate::session::effective_agent_execution_config(session, None);
+        launch_request = launch_request
+            .with_execution_mode(effective_config.mode)
+            .with_permission_level(effective_config.permission_level);
     }
     launch_request
 }

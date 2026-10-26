@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+mod agent_deletion_provenance;
+pub(crate) mod agent_lifecycle;
 pub(crate) mod app_activation;
 pub(crate) mod app_active_release;
 pub(crate) mod app_automations;
@@ -55,9 +57,14 @@ pub(crate) mod room_environment;
 pub(crate) mod storage_full;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
+pub(crate) mod workflow_invocation_provenance;
 mod writer_fence;
+#[cfg(test)]
+mod writer_latency_tests;
 use writer_fence::fenced_writer_error;
+pub(crate) mod notification_target;
 pub(crate) mod workflow_dispatch_intents;
+pub(crate) mod workflow_notifications;
 pub(crate) mod workflow_queue_start;
 pub(crate) mod workflow_runtime;
 
@@ -72,11 +79,11 @@ pub struct DurableKernelStateStore {
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
     app_wake_changed: Arc<tokio::sync::Notify>,
     _owner: Option<Arc<owner::OwnerLease>>,
+    workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
 const DURABLE_WRITE_BATCH_LIMIT: usize = 256;
-const DURABLE_WRITE_BATCH_WINDOW: Duration = Duration::from_millis(5);
 const DURABLE_SETTLEMENT_RETRY_BASE_MS: u64 = 100;
 const DURABLE_SETTLEMENT_RETRY_MAX_MS: u64 = 5_000;
 
@@ -171,11 +178,23 @@ struct DurableWriteRequest {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing DurableWriterRequest typed actor payload layout"
+)]
 enum DurableWriterRequest {
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     AppPublisher(Box<app_publishers::AppPublisherRequest>),
     AppPublisherOperation(Box<app_publisher_operations::PublisherOperationRequest>),
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     VerifiedApp(Box<app_installation_staging::AppVerifiedInstallationRequest>),
     AppState(Box<app_state::AppStateRequest>),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -190,6 +209,8 @@ enum DurableWriterRequest {
     AppConnectionGrant(Box<app_connections::ConnectionGrantRequest>),
     AppBinding(Box<app_bindings::AppBindingRequest>),
     AppAutomation(Box<app_automations::AppAutomationRequest>),
+    AgentLifecycle(Box<agent_lifecycle::Request>),
+    WorkflowNotification(Box<workflow_notifications::NotificationRequest>),
     AppActivation(Box<app_activation::AppActivationRequest>),
     AppWorkerLifecycle(Box<app_worker_lifecycle::AppWorkerLifecycleRequest>),
     AppEventMaintenance(Box<app_event_maintenance::AppEventMaintenanceRequest>),
@@ -239,11 +260,13 @@ enum DurableWriteOperation {
         timestamp_ms: u64,
         payload_json: String,
         owner_id: String,
+        source_owner_id: String,
         session_id: String,
         hot_entities: Vec<DurableWorkflowHotEntityWrite>,
         workflow_runs: Vec<DurableWorkflowRunWrite>,
         delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
         prompt_state_jsons: Vec<String>,
+        invocation_creator: Option<workflow_invocation_provenance::WorkflowUserInvocation>,
     },
     WorkflowRuntimeMigration {
         owner_id: String,
@@ -381,6 +404,8 @@ impl DurableKernelStateStore {
         app_publisher_operations::initialize(&connection)?;
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
+        workflow_notifications::initialize(&mut connection)?;
+        agent_lifecycle::initialize(&mut connection)?;
         app_inbox::initialize(&connection)?;
         app_worker_lifecycle::initialize(&connection)?;
         app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
@@ -421,6 +446,7 @@ impl DurableKernelStateStore {
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
             app_wake_changed: Arc::new(tokio::sync::Notify::new()),
             _owner: None,
+            workflow_history_authority: Default::default(),
         })
     }
 
@@ -1362,14 +1388,7 @@ impl DurableStateWriter {
         let worker = std::thread::Builder::new()
             .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
-            .spawn(move || {
-                run_durable_writer(
-                    connection,
-                    receiver,
-                    worker_health,
-                    DURABLE_WRITE_BATCH_WINDOW,
-                )
-            })
+            .spawn(move || run_durable_writer(connection, receiver, worker_health))
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.spawn_writer",
                 message: error.to_string(),
@@ -1387,8 +1406,17 @@ impl DurableStateWriter {
             operation,
             response: response_tx,
         }))?;
-        response_rx
-            .recv()
+        // The commit includes an fsync. Hand this Tokio worker's queue to another
+        // thread while waiting so a slow disk cannot stall unrelated tasks.
+        let await_commit = || response_rx.recv();
+        let reply = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(await_commit)
+        } else {
+            await_commit()
+        };
+        reply
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.await_write",
                 message: error.to_string(),
@@ -1463,7 +1491,6 @@ fn run_durable_writer(
     mut connection: Connection,
     receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
-    batch_window: Duration,
 ) {
     struct MarkStopped(Arc<DurableWriterHealth>);
     impl Drop for MarkStopped {
@@ -1557,6 +1584,22 @@ fn run_durable_writer(
                 app_bindings::execute(&mut connection, *request);
                 continue;
             }
+            DurableWriterRequest::AgentLifecycle(request) => {
+                if agent_lifecycle::execute(&mut connection, *request) {
+                    health.fatal.store(true, Ordering::Release);
+                    health.stopped_uncertain.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
+            DurableWriterRequest::WorkflowNotification(request) => {
+                if workflow_notifications::execute(&mut connection, *request) {
+                    health.fatal.store(true, Ordering::Release);
+                    health.stopped_uncertain.store(true, Ordering::Release);
+                    break;
+                }
+                continue;
+            }
             DurableWriterRequest::AppAutomation(request) => {
                 app_automations::execute(&mut connection, *request);
                 continue;
@@ -1623,59 +1666,45 @@ fn run_durable_writer(
                 continue;
             }
         };
-        let mut batch = vec![first];
-        let deadline = Instant::now() + batch_window;
-        while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
+        // Commit at once; only writes already queued behind this one (for
+        // example while the previous commit synced) share its transaction.
+        let received_at = Instant::now();
+        let batch = collect_ready_durable_batch(first, || {
             if health.fatal.load(Ordering::Acquire) {
-                break;
+                return None;
             }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
-            match receiver.recv_timeout(remaining) {
-                Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
-                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                Ok(
-                    request @ (DurableWriterRequest::AppTools(_)
-                    | DurableWriterRequest::AppFile(_)
-                    | DurableWriterRequest::AppHttp(_)
-                    | DurableWriterRequest::AppInstallationOperation(_)
-                    | DurableWriterRequest::AppRestore(_)),
-                ) => {
+            match receiver.try_recv() {
+                Ok(DurableWriterRequest::Ordinary(request)) => Some(request),
+                Ok(request) => {
                     pending = Some(request);
-                    break;
+                    None
                 }
-                Ok(
-                    request @ (DurableWriterRequest::App(_)
-                    | DurableWriterRequest::AppPublisher(_)
-                    | DurableWriterRequest::AppPublisherOperation(_)
-                    | DurableWriterRequest::VerifiedApp(_)
-                    | DurableWriterRequest::AppState(_)
-                    | DurableWriterRequest::AppWake(_)
-                    | DurableWriterRequest::AppInbox(_)
-                    | DurableWriterRequest::AppLog(_)
-                    | DurableWriterRequest::AppValidation(_)
-                    | DurableWriterRequest::AppFileGrant(_)
-                    | DurableWriterRequest::AppFileExport(_)
-                    | DurableWriterRequest::AppHostAction(_)
-                    | DurableWriterRequest::AppConnectionGrant(_)
-                    | DurableWriterRequest::AppBinding(_)
-                    | DurableWriterRequest::AppAutomation(_)
-                    | DurableWriterRequest::AppActivation(_)
-                    | DurableWriterRequest::AppWorkerLifecycle(_)
-                    | DurableWriterRequest::AppEventMaintenance(_)
-                    | DurableWriterRequest::WorkflowQueueStart(_)
-                    | DurableWriterRequest::AppEventQueue(_)),
-                ) => {
-                    pending = Some(request);
-                    break;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
             }
-        }
+        });
+        let records = batch.len();
+        let commit_started_at = Instant::now();
         commit_durable_write_batch(&mut connection, batch, &health);
+        crate::runtime::perf_timing::record_durable_commit(
+            records,
+            commit_started_at.duration_since(received_at).as_micros(),
+            commit_started_at.elapsed().as_micros(),
+        );
     }
+}
+
+/// Batch only the writes ready now. The queue seam is nonblocking and an
+/// empty read ends collection; no timer or commit/disk timing enters this policy.
+fn collect_ready_durable_batch(
+    first: DurableWriteRequest,
+    mut try_next: impl FnMut() -> Option<DurableWriteRequest>,
+) -> Vec<DurableWriteRequest> {
+    let mut batch = vec![first];
+    while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
+        let Some(next) = try_next() else { break };
+        batch.push(next);
+    }
+    batch
 }
 
 fn commit_durable_write_batch(
@@ -1791,11 +1820,13 @@ fn commit_durable_write_batch(
                 timestamp_ms,
                 payload_json,
                 owner_id,
+                source_owner_id,
                 session_id,
                 hot_entities,
                 workflow_runs,
                 delivery_receipts,
                 prompt_state_jsons,
+                invocation_creator,
             } => workflow_runtime::write_workflow_runtime_transition(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
@@ -1804,11 +1835,13 @@ fn commit_durable_write_batch(
                     timestamp_ms: *timestamp_ms,
                     payload_json,
                     owner_id,
+                    source_owner_id,
                     session_id,
                     hot_entities,
                     workflow_runs,
                     delivery_receipts,
                     prompt_state_jsons,
+                    invocation_creator: invocation_creator.as_ref(),
                 },
             ),
             DurableWriteOperation::WorkflowRuntimeMigration {

@@ -305,3 +305,55 @@ fn unchanged_reconciliation_and_acquire_do_not_drain_independent_mutation() {
         "MP-08/MP-10 unchanged read preflight drained unrelated input"
     );
 }
+
+// MP-11: authorization must be checked after a queued mutation acquires ownership.
+#[test]
+fn queued_mutations_recheck_revoked_authorization_before_stdio() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    for action in [false, true] {
+        let fixture = Fixture::new();
+        let allowed = Arc::new(AtomicBool::new(true));
+        let authorization = Arc::clone(&allowed);
+        let store = fixture.store.with_authorizer(Arc::new(move || {
+            if authorization.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err("MP-11 browser authorization revoked".into())
+            }
+        }));
+        let barrier = fixture.store.lock_global_tab_mutation_barrier().unwrap();
+        let executions = store.executions.clone();
+        let worker = std::thread::spawn(move || {
+            if action {
+                store.perform_cancellable_browser_action(
+                    "room",
+                    SAME_TAB,
+                    "tab-a",
+                    "doc-tab-a",
+                    "backend:1",
+                    &BrowserLocatorAction::Click,
+                    100,
+                )
+            } else {
+                navigate(store, SAME_TAB, "tab-a", "second")
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !executions.test_is_active("room", SAME_TAB) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let queued = executions.test_is_active("room", SAME_TAB);
+        allowed.store(false, Ordering::Release);
+        drop(barrier);
+        let result = worker.join().unwrap();
+        let requests = fs::read_to_string(fixture.root.join("requests")).unwrap();
+        assert!(
+            queued,
+            "mutation must be registered while the barrier is held"
+        );
+        assert_eq!(result.unwrap_err(), "MP-11 browser authorization revoked");
+        assert!(!requests.contains("browser.action"));
+        assert!(!requests.contains("browser.navigate"));
+    }
+}

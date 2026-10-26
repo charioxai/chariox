@@ -8,6 +8,8 @@ pub struct GetWaitingRoomPublicSnapshotRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomLaunchTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_state: Option<String>,
     pub workspace_id: String,
     pub worktree_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,6 +92,8 @@ pub struct WaitingRoomPublicSessionSummary {
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_state: Option<String>,
     pub workspace_id: String,
     pub worktree_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,6 +131,8 @@ pub struct WaitingRoomPublicProjectSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_ids: Vec<String>,
     pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     pub kind: crate::session::RuntimeProjectKind,
     pub status: crate::session::RuntimeProjectStatus,
     pub created_at_ms: u64,

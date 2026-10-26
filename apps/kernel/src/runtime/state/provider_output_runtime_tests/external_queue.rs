@@ -222,15 +222,27 @@ async fn paused_workflow_prompt_cannot_be_promoted_after_provider_launch() {
             Some("entry".to_string()),
         )
         .expect("workflow endpoint should be created");
-    let workflow_run = app
+    let queued = app
         .sessions_mut()
-        .invoke_workflow_endpoint(
+        .enqueue_workflow_prompt_by_agent(
             session.id(),
             workflow.id(),
             endpoint.id(),
-            Some("run once".to_string()),
+            Some("run once".into()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+            None,
+            Some(agent.id()),
         )
-        .expect("workflow run should be created");
+        .unwrap();
+    app.sessions_mut()
+        .remove_queued_workflow_prompt(session.id(), queued.id())
+        .unwrap();
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_queued_workflow_endpoint(session.id(), &queued)
+        .expect("proven workflow run should be created");
     let node_run_id = workflow_run.node_runs()[0].id().to_string();
     app.sessions_mut()
         .prepare_workflow_turn(
@@ -804,11 +816,10 @@ async fn losing_queue_claim_does_not_release_the_winning_workflow_workspace_clai
     let loser = runtime
         .owned
         .prompt_state_owner
-        .try_activate_next_queued_prompt_with_prompt_id(
+        .try_activate_next_queued_prompt_for_dispatch(
             &session,
             agent.id(),
             observed.id(),
-            "losing-dispatch".to_string(),
             |prompt| {
                 loser_prepared = true;
                 runtime
@@ -842,4 +853,74 @@ async fn losing_queue_claim_does_not_release_the_winning_workflow_workspace_clai
     );
     assert!(loser.is_none());
     assert_eq!(active.unwrap().id(), winner.prompt_id);
+}
+
+// MP-08/MP-10/MP-11: a provider-only edit must not carry another harness's profile.
+#[tokio::test]
+async fn provider_only_switch_selects_compatible_defaults_atomically() {
+    let worktree = crate::test_support::TestWorktree::new("provider-only-switch");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (room, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let registry = app.provider_account_profile_registry();
+    let old = registry
+        .create_managed(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "opencode",
+            "Old account",
+        )
+        .unwrap();
+    let expected = registry
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
+        .unwrap();
+    app.agents()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "opencode",
+            Some("opencode/gpt-6-luna".into()),
+            Some("high".into()),
+            Some(old.profile_id.clone()),
+            agent.provider_resume_state().clone(),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let changed = runtime
+        .update_agent_profile(
+            room.id(),
+            agent.id(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("codex".into()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.provider(), "codex");
+    assert_eq!(changed.provider_account_profile(), expected.profile_id);
+    assert_eq!(changed.model(), None);
+    assert_eq!(changed.effort(), None);
+    let before = changed.clone();
+    let rejected = runtime
+        .update_agent_profile(
+            room.id(),
+            agent.id(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("opencode".into()),
+            Some("missing-account".into()),
+            None,
+            None,
+        )
+        .await;
+    assert!(rejected.is_err());
+    let retained = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+    assert_eq!(retained.provider(), before.provider());
+    assert_eq!(
+        retained.provider_account_profile(),
+        before.provider_account_profile()
+    );
 }

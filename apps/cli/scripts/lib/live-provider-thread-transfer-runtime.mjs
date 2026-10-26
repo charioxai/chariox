@@ -1,3 +1,5 @@
+import {createPrivateDrillRuntime,copyPrivateCredential,requireScopedProviderPath} from "./private-drill-runtime.mjs"
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { spawn } from "node:child_process"
 import { createHmac } from "node:crypto"
 import { createWriteStream, existsSync } from "node:fs"
@@ -205,7 +207,7 @@ export function providerThreadSliceConfigLines({
 
 export function variant(response, name) {
   if (!response || !(name in response)) {
-    throw new Error(`expected ${name}, got ${JSON.stringify(response)}`)
+    throw new Error(`expected ${name}, got ${publicRuntimeDiagnostic(response)}`)
   }
   return response[name]
 }
@@ -214,7 +216,7 @@ export function variantAny(response, ...names) {
   for (const name of names) {
     if (response && name in response) return response[name]
   }
-  throw new Error(`expected one of ${names.join(", ")}, got ${JSON.stringify(response)}`)
+  throw new Error(`expected one of ${names.join(", ")}, got ${publicRuntimeDiagnostic(response)}`)
 }
 
 export function providerModel(provider, options) {
@@ -290,11 +292,7 @@ export async function makeWorkerResumePorts() {
 }
 
 export function providerThreadId(run) {
-  return run?.provider_session_id
-    ?? run?.resume_state?.opencode_session_id
-    ?? run?.resume_state?.codex_thread_id
-    ?? run?.resume_state?.claude_session_id
-    ?? null
+  return run?.provider_session_id ?? null
 }
 
 export function providerRunSnapshot(run) {
@@ -305,8 +303,6 @@ export function providerRunSnapshot(run) {
     account_profile: run?.account_profile ?? null,
     state: run?.state ?? null,
     provider_session_id: run?.provider_session_id ?? null,
-    resume_state: run?.resume_state ?? null,
-    mcp_servers: (run?.mcp_servers ?? []).map((server) => server.name ?? server),
     execution_mode: run?.execution_mode ?? null,
     permission_level: run?.permission_level ?? null,
     write_access_mode: run?.write_access_mode ?? null,
@@ -528,31 +524,19 @@ export async function waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias
   throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError?.message ?? lastError ?? "unknown error"}`)
 }
 
-export function realProviderEnv() {
-  const home = process.env.HOME ?? os.homedir()
-  const xdgDataHome = process.env.XDG_DATA_HOME ?? path.join(home, ".local", "share")
-  return {
-    HOME: home,
-    CODEX_HOME: process.env.CODEX_HOME ?? path.join(home, ".codex"),
-    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(home, ".config", "opencode"),
-    OPENCODE_DATA_HOME: process.env.OPENCODE_DATA_HOME ?? path.join(xdgDataHome, "opencode"),
-    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? path.join(home, ".config"),
-    XDG_DATA_HOME: xdgDataHome,
-    XDG_STATE_HOME: process.env.XDG_STATE_HOME ?? path.join(home, ".local", "state"),
-    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(home, ".cache"),
-  }
+export function realProviderEnv(providers = [], environment = process.env) {
+  const selected=new Set(providers)
+  const result={...Object.fromEntries(["HOME","CODEX_HOME","CLAUDE_CONFIG_DIR","OPENCODE_CONFIG_DIR","OPENCODE_DATA_HOME","XDG_CONFIG_HOME","XDG_DATA_HOME","XDG_STATE_HOME","XDG_CACHE_HOME"].filter(name=>environment[name]).map(name=>[name,environment[name]]))}
+  if(selected.has("codex"))result.CODEX_HOME=requireScopedProviderPath(environment,"CODEX_HOME")
+  if(selected.has("opencode"))result.OPENCODE_DATA_HOME=environment.OPENCODE_DATA_HOME
+    ?requireScopedProviderPath(environment,"OPENCODE_DATA_HOME")
+    :path.join(requireScopedProviderPath(environment,"XDG_DATA_HOME"),"opencode")
+  if([...selected].some(provider=>provider.startsWith("claude")))result.CLAUDE_CONFIG_DIR=requireScopedProviderPath(environment,"CLAUDE_CONFIG_DIR")
+  return result
 }
 
-export async function copySecretIfPresent(source, destination) {
-  try {
-    await mkdir(path.dirname(destination), { recursive: true })
-    await copyFile(source, destination)
-    await chmod(destination, 0o600).catch(() => {})
-    return true
-  } catch (error) {
-    if (error?.code === "ENOENT") return false
-    throw error
-  }
+export async function copySecretIfPresent(source,destination) {
+  return copyPrivateCredential(source,destination)
 }
 
 export function providersNeedClaudeCredentials(providers) {
@@ -575,11 +559,16 @@ export async function writeClaudeCredentialsPayload(destination, payload) {
 export const CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE =
   "Claude credential materialization for this legacy direct-worker drill is unavailable until it uses the managed Chariox-vault setup-token path. Chariox will not read macOS Keychain or copy refreshable credentials into worker profiles."
 
+const privateProviderRuntimes = new Map()
+
 export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROVIDERS) {
   if (providersNeedClaudeCredentials(providers)) {
     throw new Error(CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE)
   }
-  const real = realProviderEnv()
+  const runtime=await createPrivateDrillRuntime("provider-slice")
+  try {
+  root=runtime.root
+  const real = realProviderEnv(providers)
   const codexHome = path.join(root, "codex-home")
   const xdgConfigHome = path.join(root, "xdg-config")
   const xdgDataHome = path.join(root, "xdg-data")
@@ -605,8 +594,10 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
       )
     : false
 
+  privateProviderRuntimes.set(runtime.root, runtime)
   return {
-    HOME: real.HOME,
+    HOME: path.join(root,"home"),
+    CHARIOX_PROVIDER_THREAD_SECRET_ROOT: runtime.root,
     CODEX_HOME: codexHome,
     OPENCODE_CONFIG_DIR: real.OPENCODE_CONFIG_DIR,
     OPENCODE_DATA_HOME: opencodeDataHome,
@@ -618,10 +609,19 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
     CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED: codexAuthCopied ? "1" : "0",
     CHARIOX_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: opencodeAuthCopied ? "1" : "0",
   }
+  } catch(error) {await runtime.cleanup();throw error}
+
 }
 
 export async function cleanupSliceModeProviderCredentials(providerEnv) {
   if (!providerEnv) return
+  if (providerEnv.CHARIOX_PROVIDER_THREAD_SECRET_ROOT) {
+    const runtime = privateProviderRuntimes.get(providerEnv.CHARIOX_PROVIDER_THREAD_SECRET_ROOT)
+    if (!runtime) throw new Error("private provider runtime is not owned by this run")
+    await runtime.cleanup()
+    privateProviderRuntimes.delete(runtime.root)
+    return
+  }
   const removals = []
   if (
     providerEnv.CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED === "1"
@@ -650,11 +650,10 @@ export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVI
   if (providersNeedClaudeCredentials(providers)) {
     throw new Error(CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE)
   }
-  const real = realProviderEnv()
-  const secretRoot = path.join(
-    os.tmpdir(),
-    `chariox-provider-transfer-secrets-${role}-${process.pid}-${Date.now()}`,
-  )
+  const runtime=await createPrivateDrillRuntime("provider-worker")
+  try {
+  const real = realProviderEnv(providers)
+  const secretRoot = runtime.root
   const isolatedHome = path.join(secretRoot, "home")
   const codexHome = path.join(secretRoot, "codex")
   const xdgDataHome = path.join(secretRoot, "xdg-data")
@@ -675,8 +674,7 @@ export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVI
         path.join(codexHome, "auth.json"),
       )
     : false
-  const opencodeSourceDataHome = process.env.OPENCODE_DATA_HOME
-    ?? path.join(real.XDG_DATA_HOME, "opencode")
+  const opencodeSourceDataHome = real.OPENCODE_DATA_HOME ?? path.join(secretRoot,"unselected-opencode")
   const opencodeAuthSource = path.join(opencodeSourceDataHome, "auth.json")
   const opencodeDataAuthCopied = providers.includes("opencode")
     ? await copySecretIfPresent(
@@ -692,6 +690,7 @@ export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVI
     : false
 
   return {
+    cleanup: () => runtime.cleanup(),
     secretRoot,
     providerEnv: {
       HOME: isolatedHome,
@@ -717,6 +716,8 @@ export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVI
       provider_home_shared: false,
     },
   }
+  } catch(error) {await runtime.cleanup();throw error}
+
 }
 
 export function workerResumeDaemonEnv({

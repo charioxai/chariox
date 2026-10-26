@@ -1,0 +1,219 @@
+{
+  "local_protocol": 525,
+  "peer_protocol": 133,
+  "request": {
+    "GetSliceDisplayEndpoint": {
+      "slice_ref": "slice-1",
+      "session_id": "room-1",
+      "attachment_id": "attachment-1",
+      "viewer_public_key": "viewer-key",
+      "shared_display": {
+        "codecs": [
+          "avc1.420033",
+          "png",
+          "chariox-video-dependencies-v1",
+          "chariox-relay-binary-v96"
+        ],
+        "bitrate": 8000000,
+        "device_scale_factor": 2
+      }
+    }
+  },
+  "endpoint": {
+    "SliceDisplayEndpoint": {
+      "endpoint": {
+        "slice_id": "slice-1",
+        "kind": "shared",
+        "url": "wss://relay.example.test/",
+        "access": "tunnel",
+        "expires_at_ms": 60000,
+        "capabilities": [
+          "view",
+          "encrypted",
+          "CXD1"
+        ],
+        "stream_protocol": "CXD1",
+        "stream_id": "room-display-one",
+        "peer_public_key": "worker-key",
+        "shared_display": {
+          "generation": 1,
+          "subscription_id": "room-display-one",
+          "codec": "avc1.420033",
+          "bitrate": 8000000,
+          "device_scale_factor": 2,
+          "source": {
+            "kind": "desktop",
+            "surface_id": "slice:slice-1",
+            "generation": "native-one",
+            "width": 1280,
+            "height": 800
+          },
+          "resumed": false
+        }
+      }
+    }
+  },
+  "peer_requests": [
+    {
+      "kind": "open_room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "lease_id": "room-display-one",
+      "viewer_public_key": "viewer-key",
+      "offer": {
+        "codecs": [
+          "avc1.420033",
+          "png",
+          "chariox-video-dependencies-v1",
+          "chariox-relay-binary-v96"
+        ],
+        "bitrate": 8000000,
+        "device_scale_factor": 2
+      },
+      "viewport": {
+        "css_width": 1280,
+        "css_height": 800,
+        "device_scale_factor": 1,
+        "desktop_pixel_width": 1280,
+        "desktop_pixel_height": 800,
+        "revision": 1,
+        "last_actor_id": null
+      },
+      "target": {
+        "kind": "desktop",
+        "surface_id": "slice:slice-1",
+        "generation": "native-one"
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "lease_id": "room-display-one",
+      "command": {
+        "op": "attach"
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "lease_id": "room-display-one",
+      "command": {
+        "op": "capture",
+        "after_sequence": 1,
+        "reset": true,
+        "congested": false
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "lease_id": "room-display-one",
+      "command": {
+        "op": "suspend"
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "lease_id": "room-display-one",
+      "command": {
+        "op": "resume"
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "lease_id": "room-display-one",
+      "command": {
+        "op": "close"
+      }
+    }
+  ],
+  "peer_responses": [
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "result": {
+        "kind": "opened",
+        "binding": {
+          "generation": 1,
+          "subscription_id": "room-display-one",
+          "codec": "avc1.420033",
+          "bitrate": 8000000,
+          "device_scale_factor": 2,
+          "source": {
+            "kind": "desktop",
+            "surface_id": "slice:slice-1",
+            "generation": "native-one",
+            "width": 1280,
+            "height": 800
+          },
+          "resumed": false
+        },
+        "peer_public_key": "worker-key"
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "result": {
+        "kind": "frame",
+        "frame": {
+          "sequence": 1,
+          "encrypted_event": {
+            "sender_public_key": "worker-key",
+            "nonce": "nonce",
+            "ciphertext": "ciphertext"
+          }
+        }
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "result": {
+        "kind": "frame",
+        "frame": null
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "result": {
+        "kind": "updated",
+        "binding": {
+          "generation": 1,
+          "subscription_id": "room-display-one",
+          "codec": "avc1.420033",
+          "bitrate": 8000000,
+          "device_scale_factor": 2,
+          "source": {
+            "kind": "desktop",
+            "surface_id": "slice:slice-1",
+            "generation": "native-one",
+            "width": 1280,
+            "height": 800
+          },
+          "resumed": false
+        }
+      }
+    },
+    {
+      "kind": "room_shared_display",
+      "session_id": "room-1",
+      "slice_id": "slice-1",
+      "result": {
+        "kind": "settled"
+      }
+    }
+  ]
+}

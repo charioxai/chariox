@@ -321,11 +321,15 @@ impl SessionService {
             .filter(|session| !session.is_hidden())
             .map(|session| session.project_id().to_string())
             .collect::<BTreeSet<_>>();
+        // MP-08/MP-10: Named Projects are explicit durable resources. Copy
+        // publishes one before the target's first session; keep it across restart.
+        // Empty Default Projects are session-derived and still need legacy cleanup.
         let empty_project_ids = self
             .projects
-            .keys()
-            .filter(|project_id| !visible_project_ids.contains(project_id.as_str()))
-            .cloned()
+            .values()
+            .filter(|project| project.kind() == RuntimeProjectKind::Default)
+            .filter(|project| !visible_project_ids.contains(project.id()))
+            .map(|project| project.id().to_string())
             .collect::<Vec<_>>();
         empty_project_ids
             .into_iter()
@@ -496,6 +500,17 @@ impl SessionService {
             .collect()
     }
 
+    pub fn set_project_pinned(
+        &mut self,
+        project_id: &str,
+        pinned: bool,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        let project = self.project_mut_for_owner(project_id, caller_user_id, "project.pin")?;
+        project.set_pinned(pinned);
+        Ok(project.clone())
+    }
+
     pub fn rename_project(
         &mut self,
         project_id: &str,
@@ -647,15 +662,6 @@ impl SessionService {
                     &request.owner_user_id,
                     "session.create",
                 )?;
-                if !project.contains_workspace(&request.workspace_id) {
-                    return Err(project_error(
-                        "session.create",
-                        format!(
-                            "project `{project_id}` does not include Workspace `{}`",
-                            request.workspace_id,
-                        ),
-                    ));
-                }
                 if project.status() != RuntimeProjectStatus::Active {
                     return Err(project_error(
                         "session.create",
@@ -664,20 +670,42 @@ impl SessionService {
                         ),
                     ));
                 }
+                if !project.contains_workspace(&request.workspace_id) {
+                    let mut workspaces = project.workspace_ids().to_vec();
+                    workspaces.push(request.workspace_id.clone());
+                    let workspaces = normalize_project_workspace_ids(workspaces)?;
+                    self.projects
+                        .get_mut(project_id)
+                        .expect("owned project checked")
+                        .replace_workspace_ids(workspaces);
+                }
                 Ok(project_id.clone())
             }
-            SessionProjectSelection::New => {
+            SessionProjectSelection::New { name } => {
                 let number = self.next_named_project_number(&request.owner_user_id);
                 let id = self.next_named_project_id(
                     &request.owner_user_id,
                     &request.workspace_id,
                     number,
                 );
+                let name = match name {
+                    Some(name) => {
+                        let name = normalize_project_name(name)?;
+                        self.ensure_project_name_available(
+                            &request.owner_user_id,
+                            &name,
+                            None,
+                            "session.create",
+                        )?;
+                        name
+                    }
+                    None => format!("Project-{number}"),
+                };
                 let project = RuntimeProject::new(
                     id.clone(),
                     request.owner_user_id.clone(),
                     request.workspace_id.clone(),
-                    format!("Project-{number}"),
+                    name,
                     RuntimeProjectKind::Named,
                 );
                 self.projects.insert(id.clone(), project);
@@ -955,6 +983,10 @@ impl SessionService {
         resolve_workspace_link_ref_in_session(&session, link_ref).cloned()
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing attach_workspace_link operation signature and explicit context arguments"
+    )]
     pub fn attach_workspace_link(
         &mut self,
         session_id: &str,

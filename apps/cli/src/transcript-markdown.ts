@@ -1,3 +1,5 @@
+import { Lexer, type Token } from "marked"
+
 const FENCE_LANGUAGE_ALIASES: Record<string, string> = {
   adb: "ada",
   asy: "assembly",
@@ -192,5 +194,17 @@ export function shouldRenderTranscriptAsMarkdown(role: string, text: string) {
   if (role !== "assistant" && role !== "reasoning" && role !== "tool" && role !== "error") {
     return false
   }
-  return text.trim().length > 0
+  // MP-08 / MP-10: plain paragraphs paint without a syntax-worker round trip.
+  // Use the renderer's lexer so identifiers with underscores remain literal
+  // while actual Markdown still receives its normal formatting.
+  return hasMarkdownMarkup(Lexer.lex(text))
+}
+
+function hasMarkdownMarkup(tokens: Token[]): boolean {
+  return tokens.some((token) => {
+    if (token.type !== "paragraph" && token.type !== "text" && token.type !== "space") {
+      return true
+    }
+    return "tokens" in token && Array.isArray(token.tokens) && hasMarkdownMarkup(token.tokens)
+  })
 }

@@ -15,7 +15,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && useradd --uid 1001 --gid 1001 -m -s /bin/bash slice \
   && mkdir -p /opt/chariox-slice/logs /opt/chariox-drill \
   && chown -R slice:slice /opt/chariox-slice
-COPY slice-screen.sh browser-app-restore.mjs browser-cdp.mjs browser-lifecycle.py browser-upload-store.py browser-controller-actions.mjs browser-controller-bar.mjs browser-controller-cdp.mjs browser-controller-compatibility.mjs browser-controller-cookie-fence.mjs browser-controller-dialogs.mjs browser-controller-events.mjs browser-controller-files.mjs browser-controller-frames.mjs browser-controller-history.mjs browser-controller-input.mjs browser-controller-permissions.mjs browser-controller-snapshot.mjs browser-controller-upload-staging.mjs tint2rc /opt/chariox-slice/
+COPY slice-screen.sh browser-app-restore.mjs browser-cdp.mjs browser-lifecycle.py browser-upload-store.py browser-controller-actions.mjs browser-controller-artifacts.mjs browser-controller-bar.mjs browser-controller-cdp.mjs browser-controller-compatibility.mjs browser-controller-cookie-fence.mjs browser-controller-dialogs.mjs browser-controller-events.mjs browser-controller-files.mjs browser-controller-frames.mjs browser-controller-history.mjs browser-controller-image.mjs browser-controller-input.mjs browser-controller-permissions.mjs browser-controller-snapshot.mjs browser-controller-upload-staging.mjs tint2rc /opt/chariox-slice/
 # Test-only diagnostic, deliberately absent from the production image.
 COPY chromium-sandbox-probe.mjs /opt/chariox-drill/
 COPY fixture-server.mjs cdp.mjs profile.mjs /opt/chariox-drill/

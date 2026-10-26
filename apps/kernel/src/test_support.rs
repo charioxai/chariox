@@ -6,14 +6,22 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(unix)]
+mod claude_executable;
 mod environment;
 #[cfg(unix)]
+pub(crate) use claude_executable::TestClaudeExecutable;
+#[cfg(unix)]
 mod pre_exec_child;
+mod room_turn;
 mod runtime_mcp;
+mod task_subscription;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;
+pub(crate) use room_turn::admit_room_test_turn;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
+pub(crate) use task_subscription::mixed_task_subscription_updates;
 
 /// Run ambient-environment fixtures outside the parallel test process. A mutex
 /// around writers cannot protect unlocked readers or children inheriting env.
@@ -59,15 +67,30 @@ pub(crate) struct TestWorktree {
     path: PathBuf,
 }
 
+pub(crate) fn test_workspace_root() -> PathBuf {
+    let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    assert!(root.is_absolute(), "test workspace parent must be absolute");
+    root
+}
+
 impl TestWorktree {
     pub(crate) fn new(label: &str) -> Self {
         let nonce = crate::session::unix_epoch_ms();
         let sequence = TEST_WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        // MP-08 / MP-11: scratch can live in protected service state, while
+        // real session workspaces must stay outside that state. Builder lanes
+        // provide their own disposable workspace parent without moving TMPDIR.
+        let root = test_workspace_root();
+        let path = root.join(format!(
             "chariox-test-worktree-{label}-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("test worktree should exist");
+        // Disk-backed test TMPDIRs may use an alias outside protected service
+        // state. Provider discovery binds to its canonical working directory.
+        let path = path.canonicalize().expect("test worktree should resolve");
         Self { path }
     }
 
@@ -191,4 +214,63 @@ fn authenticated_fixture_keeps_new_unavailable_accounts_blocked() {
             "test"
         )
         .is_err());
+}
+
+/// MP-11: exercise FIFO rejection without leaving a blocked test thread behind.
+#[cfg(unix)]
+pub(crate) fn assert_fifo_rejected(reader: impl FnOnce(PathBuf) -> bool + Send + 'static) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let root = std::env::temp_dir().join(format!("mp11-fifo-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    let fifo = root.join("input");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let input = fifo.clone();
+    let thread = std::thread::spawn(move || {
+        send.send(reader(input)).unwrap();
+    });
+    let outcome = receive.recv_timeout(std::time::Duration::from_secs(1));
+    let timely = outcome.is_ok();
+    let settled = if outcome.is_ok() {
+        outcome
+    } else {
+        // Release an old blocking open/read without leaving a reader behind.
+        use std::io::Write;
+        let mut unblock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(&fifo)
+            .unwrap();
+        unblock.write_all(b"synthetic-fifo-fixture").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(unblock);
+        receive.recv_timeout(std::time::Duration::from_secs(2))
+    };
+    let joined = thread.join();
+    std::fs::remove_dir_all(root).unwrap();
+    joined.unwrap();
+    let refused = settled.expect("released FIFO reader should finish");
+    assert!(timely, "FIFO open blocked before regular-file validation");
+    assert!(refused, "FIFO was admitted as regular input");
+}
+
+// MP-08 / MP-10 / MP-11: one generated snapshot version pin for every shape test.
+pub(crate) fn expected_local_protocol_version() -> u32 {
+    serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../../fixtures/protocol-versions.json"
+    ))
+    .unwrap()["local"]
+        .as_u64()
+        .unwrap() as u32
+}
+pub(crate) fn expected_relay_peer_protocol_version() -> u32 {
+    serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../../fixtures/protocol-versions.json"
+    ))
+    .unwrap()["relayPeer"]
+        .as_u64()
+        .unwrap() as u32
 }

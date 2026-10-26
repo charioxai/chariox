@@ -3211,3 +3211,23 @@ fn crashed_app_target_returns_on_the_same_logical_tab_with_a_new_document_fence(
     environment.restore_app_tab(&saved, "new");
     assert_eq!(environment.snapshot().tabs[0].document_revision, revision);
 }
+
+#[test]
+fn kernel_restart_releases_invisible_human_input_ownership() {
+    let mut environment = ready_environment();
+    environment
+        .request_takeover_as_actor(
+            EnvironmentActor::new("human-view", EnvironmentActorKind::Human, "Human"),
+            InputTarget::Desktop,
+        )
+        .unwrap();
+    assert!(!environment.snapshot().input_ownership.is_empty());
+    // Exercise the durable round trip used by the service restoration path.
+    let bytes = serde_json::to_vec(&environment).unwrap();
+    let mut restored: RoomEnvironment = serde_json::from_slice(&bytes).unwrap();
+    restored.reconcile_after_kernel_restart();
+    assert!(
+        restored.snapshot().input_ownership.is_empty(),
+        "MP-08/MP-10/MP-11: a restarted kernel must release the old viewer lease"
+    );
+}

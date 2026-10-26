@@ -409,6 +409,7 @@ fn remote_cancel_reconciles_a_prompt_the_worker_never_started() {
                     session_id: fixture.session_id.clone(),
                     attachment_id: fixture.attachment_id.clone(),
                     target_agent_id: Some(fixture.agent_id.clone()),
+                    expected_prompt_id: None,
                 }),
             )
             .await

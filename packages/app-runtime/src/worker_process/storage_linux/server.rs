@@ -195,10 +195,12 @@ struct Client {
 }
 impl Client {
     fn step(&mut self, store: &mut Store) -> Result<()> {
-        if self.lease.is_none() && Instant::now() >= self.deadline {
-            return Err(Error::Busy);
-        }
+        // Read before judging the deadline: a request that arrived while this
+        // loop was busy in a slow teardown is not an idle connection.
         let Some(bytes) = self.reader.next(&self.stream)? else {
+            if self.lease.is_none() && Instant::now() >= self.deadline {
+                return Err(Error::Busy);
+            }
             return Ok(());
         };
         self.reader = Reader::default();

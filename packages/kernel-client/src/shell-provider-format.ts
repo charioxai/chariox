@@ -15,7 +15,7 @@ export function formatProviderAuthStatus(status: ProviderAuthStatus): string {
 export function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "logout" | "reauth" | "setup-token"): string {
   return [
     `${login.provider} ${verb} started`,
-    verb === "setup-token" && login.login_id ? `run provider login-status ${login.login_id}; use provider login-input ${login.login_id} for a hidden response` : null,
+    login.login_kind === "terminal_setup_token" || verb === "setup-token" && login.login_id ? "Open the authorization link when it appears" : null,
     login.user_code ? `code ${login.user_code}` : null,
     login.verification_url ?? login.auth_url ?? null,
   ].filter(Boolean).join(" • ")

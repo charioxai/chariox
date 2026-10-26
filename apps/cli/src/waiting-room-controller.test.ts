@@ -19,11 +19,77 @@ import {
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
-import { NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
+import { NEW_MANAGED_MACHINE_REF, managedEnvironmentMachineRef } from "./waiting-room-managed-environments.js"
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
   __setWaitingRoomWorktreeInventoryForTest,
   resolvePendingWaitingRoomWorktreePath,
 } from "./waiting-room-worktrees.js"
+
+test("MP-08/MP-11 TUI blocks unsigned default while offering the signed-in account", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace", currentWorktreePath: "/workspace",
+    options: [{ id: "existing:/workspace", kind: "existing", label: "main", path: "/workspace", branch: "main", isCurrent: true }],
+  })
+  try {
+  const catalog = fallbackProviderCatalog()
+  const state = {
+    ...createWaitingRoomState([], catalog, "codex", "gpt-5.4", "low"),
+    worktreeSelectionId: "existing:/workspace",
+    accountProfileId: "codex-1",
+  }
+  const providerAccounts = [
+    { provider: "codex", profile_id: "codex-1", label: "codex-1", is_default: true, auth_state: "not_configured" },
+    { provider: "codex", profile_id: "chariox", label: "chariox", is_default: false, auth_state: "authenticated" },
+  ] as ProviderAccountProfile[]
+  const options = { state, catalog, currentProvider: "codex" as const, currentModel: "gpt-5.4", remote: { providerAccounts } }
+  for (const decision of [deriveWaitingRoomCreateSessionDecision(options), deriveWaitingRoomActivationDecision({ ...options, sessions: [] })]) {
+    assert.equal(decision.action, "error")
+    if (decision.action === "error") {
+      assert.match(decision.message, /codex-1.*Sign in/)
+      assert.match(decision.message, /chariox/)
+    }
+  }
+  assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, accountProfileId: "chariox" } }).action, "create")
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
+test("MP-08 / MP-11 existing slice launch defers authentication to its worker", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace", currentWorktreePath: "/workspace",
+    options: [{ id: "existing:/workspace", kind: "existing", label: "main", path: "/workspace", branch: "main", isCurrent: true }],
+  })
+  try {
+    const catalog = fallbackProviderCatalog()
+    const state = { ...waitingRoomState(), providerId: "codex" as const, accountProfileId: "home-default", sliceSelectionId: "slice-existing" }
+    const remote = {
+      providerAccounts: [{ provider: "codex", profile_id: "home-default", label: "Home", is_default: true, auth_state: "not_configured" }] as ProviderAccountProfile[],
+      slices: [slice("slice-existing", "Existing")],
+    }
+    const options = { state, catalog, remote, currentProvider: "codex" as const, currentModel: "gpt-5.4" }
+    for (const decision of [deriveWaitingRoomCreateSessionDecision(options), deriveWaitingRoomActivationDecision({ ...options, sessions: [] })]) {
+      assert.equal(decision.action, "create")
+      if (decision.action === "create") assert.equal(decision.launch.sliceRef, "slice-existing")
+    }
+    assert.deepEqual(deriveWaitingRoomControlActivationDecision({ state, remote, workspacePath: "/workspace", worktreePath: "/workspace" }), { action: "none" })
+    // A new slice still needs the source credentials that will be materialized.
+    assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "new" } }).action, "error")
+    assert.equal(deriveWaitingRoomCreateSessionDecision({ ...options, state: { ...state, sliceSelectionId: "none" } }).action, "error")
+  } finally { __setWaitingRoomWorktreeInventoryForTest(null) }
+})
+
+test("MP-08 / MP-11 Start prepares an existing managed machine before sign-in interception", () => {
+  const remote = {
+    providerAccounts: [{ provider: "codex", profile_id: "home-default", label: "Home", is_default: true, auth_state: "not_configured" }] as ProviderAccountProfile[],
+  }
+  const state = { ...waitingRoomState(), providerId: "codex" as const, accountProfileId: "home-default", selectedMachineRef: managedEnvironmentMachineRef("environment-1") }
+  const options = { state, remote, workspacePath: "/workspace", worktreePath: "/workspace" }
+  assert.deepEqual(deriveWaitingRoomControlActivationDecision(options), { action: "none" })
+  // The same unauthenticated account on an ordinary local launch offers login.
+  assert.equal(deriveWaitingRoomControlActivationDecision({ ...options, state: { ...state, selectedMachineRef: "local" } }).action, "stage-command")
+})
 
 test("waiting room activation stages existing worktree selections for session creation", async () => {
   __setWaitingRoomWorktreeInventoryForTest({

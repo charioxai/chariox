@@ -95,10 +95,7 @@ fn decode(state: &Value) -> Result<State> {
                 && state
                     .values
                     .iter()
-                    .all(|entry| entry.version <= head.revision) =>
-        {
-            ()
-        }
+                    .all(|entry| entry.version <= head.revision) => {}
         None if state.values.is_empty() => (),
         _ => return Err(Error::Conflict),
     }

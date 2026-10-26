@@ -7,6 +7,126 @@ use super::*;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalOutputKind;
 
+// MP-08 / MP-10 / MP-11: local and relay subscriptions drain this same boundary.
+#[tokio::test]
+async fn terminal_workflow_updates_obey_current_attachment_trace_visibility() {
+    use crate::session::{
+        CollaborationLevel, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+    };
+    for status in [
+        WorkflowRunStatus::Completed,
+        WorkflowRunStatus::Failed,
+        WorkflowRunStatus::Stopped,
+    ] {
+        for level in [
+            CollaborationLevel::Private,
+            CollaborationLevel::Transparent,
+            CollaborationLevel::Full,
+        ] {
+            let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+            let (session, owner) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    "workspace",
+                    "worktree",
+                ))
+                .unwrap();
+            let foreign = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_owner_user_id("foreign-owner"),
+                )
+                .unwrap();
+            let retired_owned = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_owner_user_id(owner.owner_user_id()),
+                )
+                .unwrap();
+            let attachment = crate::app::KernelSessionService::new(&mut app)
+                .attach(crate::attachment::AttachRequest::for_user(
+                    session.id(),
+                    "workflow-subscriber",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    owner.owner_user_id(),
+                ))
+                .unwrap();
+            let run = |id: &str, creator: &str, worker: &str| {
+                let mut run = WorkflowRun::new(
+                    id,
+                    "workflow",
+                    "endpoint",
+                    "node",
+                    Some(format!("{id}-private-input")),
+                    None,
+                    vec![WorkflowNodeRun::new(
+                        format!("{id}-node-run"),
+                        "node",
+                        worker,
+                        0,
+                        WorkflowNodeRunStatus::Completed,
+                    )],
+                    vec![],
+                )
+                .with_creator(Some(creator.into()));
+                run.set_status(status);
+                run
+            };
+            let foreign_run = run("foreign-run", foreign.id(), foreign.id());
+            let own_run = run("owned-run", owner.id(), retired_owned.id());
+            let mixed_run = run("mixed-run", owner.id(), foreign.id());
+            // Queue before the collaboration change: delivery must use current policy.
+            for run in [foreign_run, own_run, mixed_run] {
+                app.terminal().record_workflow_run_update(
+                    session.id(),
+                    vec![attachment.id().into()],
+                    run,
+                );
+            }
+            for id in [foreign.id(), retired_owned.id()] {
+                crate::app::KernelSessionService::new(&mut app)
+                    .destroy_agent(id)
+                    .unwrap();
+            }
+            let mut wire =
+                serde_json::to_value(app.sessions().get_session(session.id()).unwrap()).unwrap();
+            wire["members"][0]["collaboration_level"] = serde_json::to_value(level).unwrap();
+            app.sessions_mut()
+                .restore_session(serde_json::from_value(wire).unwrap());
+            let WatchResult::Ok {
+                workflow_run_updates,
+                ..
+            } = watch_subscription_state(&mut app, session.id(), attachment.id(), false, None, 0)
+            else {
+                panic!("subscription must remain available");
+            };
+            let ids = workflow_run_updates
+                .iter()
+                .map(|run| run.id())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                if level.can_view_agent_trace() {
+                    vec!["foreign-run", "owned-run", "mixed-run"]
+                } else {
+                    vec!["owned-run"]
+                },
+                "MP-11: terminal {status:?} updates must use {level:?} trace visibility",
+            );
+            let WatchResult::Ok {
+                workflow_run_updates,
+                ..
+            } = watch_subscription_state(&mut app, session.id(), attachment.id(), false, None, 0)
+            else {
+                panic!("subscription must remain available");
+            };
+            assert!(
+                workflow_run_updates.is_empty(),
+                "updates drain exactly once"
+            );
+        }
+    }
+}
+
 // MP-08 / MP-10: exercise the actual subscription loop, without another producer wakeup.
 #[tokio::test]
 async fn subscription_delivers_three_mib_burst_in_order_without_another_append() {
@@ -63,14 +183,17 @@ async fn subscription_delivers_three_mib_burst_in_order_without_another_append()
     let receipt = tokio::time::timeout(Duration::from_secs(3), async {
         let mut delivered = Vec::new();
         let mut heartbeats = 0;
+        let mut snapshot_seen = false;
         while delivered.len() < expected.len() {
             match event_rx.recv().await.expect("subscription remains open") {
                 KernelOutgoingFrame::Event { event, .. } => match *event {
                     KernelEvent::TerminalOutput { records } => {
+                        assert!(snapshot_seen, "initial session projection must precede bulk output from the same wake");
                         for record in records {
                             delivered.extend(record.bytes);
                         }
                     }
+                    KernelEvent::SessionSnapshot { .. } => snapshot_seen = true,
                     KernelEvent::Heartbeat { .. } => heartbeats += 1,
                     _ => {}
                 },
@@ -280,6 +403,17 @@ fn logged_event(event_id: u64, event: KernelEvent) -> LoggedEvent<KernelEvent> {
 
 fn session_snapshot_event(session_id: &str, alias: &str) -> KernelEvent {
     KernelEvent::SessionSnapshot {
+        room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+            &RuntimeSession::new(
+                session_id,
+                Some(alias.into()),
+                "workspace-a",
+                "worktree-a",
+                "machine-a",
+                "daemon-a",
+            ),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
         session: Box::new(RuntimeSession::new(
             session_id,
             Some(alias.to_string()),
@@ -298,6 +432,9 @@ fn terminal_output_event(session_id: &str, marker: &str) -> KernelEvent {
     KernelEvent::TerminalOutput {
         records: vec![TerminalOutputRecord {
             record_id: None,
+            sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 1_000,
             session_id: session_id.to_string(),
             provider_run_id: "provider-run-a".to_string(),
@@ -313,4 +450,86 @@ fn terminal_output_event(session_id: &str, marker: &str) -> KernelEvent {
             external_observation_metadata: None,
         }],
     }
+}
+
+#[tokio::test]
+async fn room_workflows_local_drill_initial_inventory_other_client_creation_and_last_deletion() {
+    let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree",
+        ))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "room-workflows",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        app.clone(),
+        1,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::default());
+    let (priority_tx, _priority_rx) = mpsc::channel(1);
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run_subscription_loop(
+        router,
+        runtime,
+        KernelOutgoingSender::new(priority_tx, event_tx),
+        close_tx,
+        Arc::new(AtomicBool::new(false)),
+        KernelSubscription {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            subscription_scope: KernelSubscriptionScope::Session,
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                if let KernelEvent::SessionSnapshot { room_workflows, .. } = *event {
+                    assert_eq!(room_workflows.workflow_count, 0);
+                    break;
+                }
+            }
+        }
+        let workflow_id = {
+            let app = app.lock().await;
+            let workflow = app
+                .sessions_mut()
+                .create_workflow(session.id(), Some("other-client".into()))
+                .unwrap();
+            let room = app.sessions().get_session(session.id()).unwrap();
+            app.session_state_projection_store().update(room);
+            workflow.id().to_string()
+        };
+        for count in [1, 0] {
+            loop {
+                if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                    if let KernelEvent::RoomWorkflowsChanged { inventory } = *event {
+                        assert_eq!(inventory.workflow_count, count);
+                        assert_eq!(inventory.session_id, session.id());
+                        break;
+                    }
+                }
+            }
+            if count == 1 {
+                let app = app.lock().await;
+                let mut room = app.sessions().get_session(session.id()).unwrap();
+                room.remove_workflow(&workflow_id);
+                app.sessions_mut().restore_session(room.clone());
+                app.session_state_projection_store().update(room);
+            }
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    result.expect("one subscription delivers authoritative inventory changes");
 }

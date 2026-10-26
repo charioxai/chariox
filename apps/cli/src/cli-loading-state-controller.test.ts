@@ -51,6 +51,7 @@ test("cli loading state controller rebuilds empty attached transcript outside wo
   assert.equal(harness.sessionHydrating, true)
   assert.deepEqual(harness.calls, [
     "setSessionHydrating:true",
+    "rebuildEmptyAuxiliaryPanes",
     "rebuildTranscript",
   ])
 })
@@ -63,6 +64,7 @@ test("cli loading state controller requests transcript render for normal hydrati
   assert.equal(attachedWithEntries.controller.setSessionHydratingState(true), true)
   assert.deepEqual(attachedWithEntries.calls, [
     "setSessionHydrating:true",
+    "rebuildEmptyAuxiliaryPanes",
     "requestTranscriptRender",
   ])
 
@@ -74,6 +76,7 @@ test("cli loading state controller requests transcript render for normal hydrati
   assert.equal(workflowScreen.controller.setSessionHydratingState(true), true)
   assert.deepEqual(workflowScreen.calls, [
     "setSessionHydrating:true",
+    "rebuildEmptyAuxiliaryPanes",
     "requestTranscriptRender",
   ])
 })
@@ -113,6 +116,9 @@ function createHarness(options: {
     },
     requestTranscriptRender: () => {
       calls.push("requestTranscriptRender")
+    },
+    rebuildEmptyAuxiliaryPanes: () => {
+      calls.push("rebuildEmptyAuxiliaryPanes")
     },
   })
   return harness as typeof harness & {

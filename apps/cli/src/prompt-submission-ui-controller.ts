@@ -7,6 +7,7 @@ export type SubmittedPromptUiSnapshot = {
 }
 
 type PromptSubmissionUiControllerOptions = {
+  getPromptText: () => string
   getSessionId: () => string | null
   getPendingAttachments: () => readonly PendingPromptAttachment[]
   resetPromptHistoryNavigation: () => void
@@ -58,7 +59,7 @@ export function createPromptSubmissionUiController(
       return snapshot
     },
     restore(snapshot) {
-      if (!snapshot) {
+      if (!snapshot || options.getPromptText() || options.getPendingAttachments().length > 0) {
         return false
       }
 

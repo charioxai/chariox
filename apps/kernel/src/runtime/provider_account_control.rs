@@ -10,13 +10,22 @@ pub(crate) async fn execute_provider_account_request(
     owner_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    let owner_user_id = match &request {
+        LocalDaemonRequest::GetProviderAccountProfile(request) => runtime_state
+            .provider_account_owner_for_profile_read(
+                owner_user_id,
+                &request.provider,
+                &request.account_profile,
+            )?,
+        _ => runtime_state.provider_account_authority_owner_user_id(owner_user_id),
+    };
     let invalidates_catalog = !matches!(
         request,
         LocalDaemonRequest::ListProviderAccountProfiles(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
     );
     let registry = runtime_state.provider_account_profile_registry().clone();
+    let config = runtime_state.config_snapshot().await;
     let runtime_for_checks = runtime_state.clone();
     let response = tokio::task::spawn_blocking(move || match request {
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
@@ -101,11 +110,12 @@ pub(crate) async fn execute_provider_account_request(
         LocalDaemonRequest::RefreshProviderAccountProfile(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfile {
                 profile:
-                    crate::local::provider_requests::refresh_provider_account_profile_response(
+                    crate::local::provider_requests::refresh_provider_account_profile_explicitly(
                         &registry,
                         &owner_user_id,
                         &request.provider,
                         &request.account_profile,
+                        &config,
                     )?,
             })
         }
@@ -161,14 +171,14 @@ pub(crate) async fn execute_provider_account_request(
     .map_err(|error| DaemonError::LocalTransport {
         operation: "provider account request",
         message: error.to_string(),
-    })??;
+    })?;
     if invalidates_catalog {
         runtime_state
             .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
         runtime_state.record_waiting_room_change();
     }
-    Ok(response)
+    response
 }
 
 fn invalidate_profile_endpoint(owner_user_id: &str, provider: &str, account_profile: &str) {

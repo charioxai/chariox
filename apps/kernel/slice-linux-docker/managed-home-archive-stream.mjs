@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawnOwned, signalOwnedProcessGroup } from "./owned-process-signals.mjs"
 import { createHash } from "node:crypto"
 import { closeSync, constants, fsyncSync, fstatSync, lstatSync, openSync, readFileSync, statfsSync, unlinkSync, writeSync } from "node:fs"
 import { dirname } from "node:path"
@@ -29,7 +29,7 @@ export function homeArchiveMetadataMatches(metadata, scope, id, sizeBytes) {
 // Never stage a full home (including provider accounts) in its writable layer.
 export async function capturePrivateHomeArchive({ command, args, env, destination,
   maxBytes = null, minimumFreeBytes = HOME_ARCHIVE_MINIMUM_FREE_BYTES, timeoutMs = null,
-  progressTimeoutMs = HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, availableBytes }) {
+  progressTimeoutMs = HOME_ARCHIVE_PROGRESS_TIMEOUT_MS, availableBytes, spawnProcess = spawnOwned }) {
   if (maxBytes !== null && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
       || !Number.isSafeInteger(minimumFreeBytes) || minimumFreeBytes < 0
       || timeoutMs !== null && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
@@ -54,15 +54,15 @@ export async function capturePrivateHomeArchive({ command, args, env, destinatio
   const stopProducer = () => {
     if (!child?.pid || producerClosed) return
     // Each Unix producer owns this group, including descendants retaining pipes.
-    try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL") }
-    catch (error) { if (error.code !== "ESRCH") child.kill("SIGKILL") }
+    try { signalOwnedProcessGroup(child, "SIGKILL") }
+    catch (error) { if (error.code !== "ESRCH") throw error }
   }
   const armProgress = () => {
     clearTimeout(progressTimer)
     progressTimer = setTimeout(() => { stalled = true; stopProducer() }, progressTimeoutMs)
   }
   try {
-    child = spawn(command, args, { env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"] })
+    child = spawnProcess(command, args, { env, detached: process.platform !== "win32", retainLeader: true, stdio: ["ignore", "pipe", "ignore"] })
     settled = new Promise(resolve => {
       child.once("error", () => resolve({ failed: true }))
       child.once("close", (code, signal) => { producerClosed = true; resolve({ code, signal }) })

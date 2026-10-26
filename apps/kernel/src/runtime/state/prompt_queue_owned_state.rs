@@ -102,11 +102,7 @@ impl KernelRuntimeOwnedState {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> bool {
-        let error = self.provider_account_profiles.require_agent_authenticated(
-            &self.config_projection.snapshot(),
-            agent,
-            operation,
-        );
+        let error = self.require_agent_account_authenticated(agent, None, operation);
         let Err(error) = error else {
             return true;
         };
@@ -630,12 +626,7 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let prompt = self
             .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                agent_id,
-                expected_prompt_id,
-                self.session_store.reserve_prompt_id(),
-            )?;
+            .activate_next_queued_prompt_for_dispatch(&session, agent_id, expected_prompt_id)?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(
@@ -654,6 +645,16 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        self.advance_queued_prompt_dispatch_for_head(session_id, agent_id, provider_run_id, None)
+    }
+
+    pub(super) fn advance_queued_prompt_dispatch_for_head(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        expected_queue_id: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
         let idle_check_session = self.session_store.get_session(session_id)?;
         if self
             .prompt_state_owner
@@ -670,7 +671,9 @@ impl KernelRuntimeOwnedState {
             else {
                 return Ok(None);
             };
-            if next_prompt.remote_steer_reserved() {
+            if next_prompt.remote_steer_reserved()
+                || expected_queue_id.is_some_and(|id| id != next_prompt.id())
+            {
                 return Ok(None);
             }
             let workflow_is_runnable =
@@ -732,11 +735,10 @@ impl KernelRuntimeOwnedState {
         let mut acquired_workflow_claim = None;
         let started_next = self
             .prompt_state_owner
-            .try_activate_next_queued_prompt_with_prompt_id(
+            .try_activate_next_queued_prompt_for_dispatch(
                 &session,
                 agent_id,
                 next_prompt.id(),
-                self.session_store.reserve_prompt_id(),
                 |prompt| {
                     acquired_workflow_claim =
                         self.ensure_workflow_prompt_workspace_claim(session_id, prompt)?;
@@ -1158,7 +1160,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             context.queued_prompt.source_attachment_id(),
         )?;
-        self.append_steering_prompt_history(
+        let sequence = self.append_steering_prompt_history(
             session_id,
             &context.provider_run_id,
             &target_active_prompt_id,
@@ -1191,6 +1193,7 @@ impl KernelRuntimeOwnedState {
             prompt.prompt(),
             prompt.attachments(),
             prompt.prompt_origin(),
+            Some(sequence),
         );
         self.record_notice(
             session_id,
@@ -1264,6 +1267,13 @@ impl KernelRuntimeOwnedState {
         reservation: u64,
         provider_run_id: &str,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
+        if provider_run_id != prepared.provider_run_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer remote queued prompt",
+                message: "steer receipt selected another provider run".into(),
+            });
+        }
+
         if !prepared
             .prompt
             .remote_steer_reservation_matches(reservation)
@@ -1310,7 +1320,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             prepared.prompt.source_attachment_id(),
         )?;
-        self.append_steering_prompt_history(
+        let sequence = self.append_steering_prompt_history(
             session_id,
             provider_run_id,
             &prepared.target_active_prompt_id,
@@ -1348,6 +1358,7 @@ impl KernelRuntimeOwnedState {
             prompt.prompt(),
             prompt.attachments(),
             prompt.prompt_origin(),
+            Some(sequence),
         );
         self.record_notice(
             session_id,
@@ -1602,7 +1613,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         prompt_text: &str,
     ) -> Result<crate::app::KernelQueuedPromptUpdate, DaemonError> {
-        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let attachment = self.ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.agent_store.get_agent(agent_id)?;
         if target_agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -1620,7 +1631,7 @@ impl KernelRuntimeOwnedState {
         )?;
         let prompt = self
             .prompt_state_owner
-            .update_queued_prompt(&session, agent_id, prompt_id, prompt_text)
+            .update_queued_prompt(&session, agent_id, prompt_id, prompt_text, &attachment)
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "update queued prompt",
                 message: format!(

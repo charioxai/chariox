@@ -34,7 +34,7 @@ pub(super) fn runtime_mcp_config(
             0..0,
             [
                 "-c".to_string(),
-                format!("model_catalog_json={:?}", model_catalog_path),
+                format!("model_catalog_json={model_catalog_path:?}"),
                 "-c".to_string(),
                 "features.apply_patch_freeform=false".to_string(),
                 "-c".to_string(),
@@ -67,10 +67,7 @@ pub(super) fn runtime_mcp_config(
             "-c".to_string(),
             format!("mcp_servers.chariox.url={:?}", binding.server_url),
             "-c".to_string(),
-            format!(
-                "mcp_servers.chariox.bearer_token_env_var={:?}",
-                CODEX_MCP_TOKEN_ENV
-            ),
+            format!("mcp_servers.chariox.bearer_token_env_var={CODEX_MCP_TOKEN_ENV:?}"),
             "-c".to_string(),
             "mcp_servers.chariox.required=true".to_string(),
             "-c".to_string(),

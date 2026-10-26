@@ -114,7 +114,36 @@ fn user_config_defaults_to_versioned_slice_image() {
 }
 
 #[test]
-fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
+fn mp01_mp08_local_slice_security_relaxation_requires_opt_in() {
+    assert_eq!(
+        CharioxUserConfig::default()
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        Some(false)
+    );
+    let mut config = DaemonConfig::for_tests();
+    for selected in [None, Some(false), Some(true)] {
+        config
+            .user_config
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility = selected;
+        assert_eq!(
+            crate::slice::LocalDockerSliceOptions::from_config(&config)
+                .allow_provider_sandbox_compatibility,
+            selected == Some(true)
+        );
+    }
+    let entry = DaemonConfig::user_config_schema()
+        .into_iter()
+        .find(|entry| entry.path == "slices.linux.allow_provider_sandbox_compatibility")
+        .unwrap();
+    assert!(entry.description.contains("Explicit opt-in"));
+}
+
+#[test]
+fn provider_sandbox_compatibility_preserves_the_explicit_opt_out() {
     // Persistence must not use another fixture's ambient CHARIOX_HOME.
     let mut config = DaemonConfig::for_tests();
 
@@ -145,6 +174,17 @@ fn provider_sandbox_compatibility_is_an_explicit_settable_security_grant() {
     assert!(entry.unsettable);
     assert!(entry.description.contains("seccomp, AppArmor"));
     assert!(entry.description.contains("masked system paths"));
+
+    config
+        .set_user_config_value("slices.linux.allow_provider_sandbox_compatibility", "false")
+        .expect("provider sandbox compatibility should allow an explicit opt-out");
+    assert_eq!(
+        load_user_config_from_path(&config.user_config_path)
+            .slices
+            .linux
+            .allow_provider_sandbox_compatibility,
+        Some(false)
+    );
 
     config
         .unset_user_config_value("slices.linux.allow_provider_sandbox_compatibility")
@@ -461,4 +501,27 @@ fn workspace_live_sync_policy_rejects_per_provider_setter_keys() {
         }
     ));
     assert!(!config.provider_requires_workspace_live_sync("codex"));
+}
+
+#[test]
+fn handoff_brief_models_set_unset_persist_and_are_discoverable() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-brief-config-{:016x}.toml",
+        rand::random::<u64>()
+    ));
+    let mut config = DaemonConfig::new("daemon", "machine", "tester");
+    config.user_config_path = path.clone();
+    let schema = DaemonConfig::user_config_schema();
+    for (family, model) in [("codex", "gpt-6-luna"), ("claude", "haiku")] {
+        let key = format!("history.handoff.{family}_brief_model");
+        let entry = schema.iter().find(|entry| entry.path == key).unwrap();
+        assert!(entry.settable && entry.unsettable);
+        config.set_user_config_value(&key, model).unwrap();
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(loaded.history.handoff.brief_model(family), Some(model));
+        config.unset_user_config_value(&key).unwrap();
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(loaded.history.handoff.brief_model(family), None);
+    }
+    std::fs::remove_file(path).unwrap();
 }

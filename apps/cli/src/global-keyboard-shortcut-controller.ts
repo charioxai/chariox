@@ -7,6 +7,7 @@ export type GlobalKeyboardShortcutEvent = {
 
 export type GlobalKeyboardShortcutControllerDeps = {
   handleKernelApprovalKey?: (event: GlobalKeyboardShortcutEvent) => boolean
+  handleProviderAccountRecoveryKey?: (event: GlobalKeyboardShortcutEvent) => boolean
   handleHotkeysToggleShortcut: (source: "keyboard", event: GlobalKeyboardShortcutEvent) => boolean
   dialogOverlayOpen: () => boolean
   requestExit: () => void
@@ -35,6 +36,11 @@ export function createGlobalKeyboardShortcutController(
     },
     handleKey(event) {
       if (deps.handleKernelApprovalKey?.(event)) return true
+      if (deps.handleProviderAccountRecoveryKey?.(event)) {
+        event.preventDefault()
+        event.stopPropagation()
+        return true
+      }
       if (deps.handleHotkeysToggleShortcut("keyboard", event)) {
         return true
       }

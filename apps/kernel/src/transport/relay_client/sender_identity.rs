@@ -36,14 +36,28 @@ pub(super) fn require_browser_import_sender<'a>(
     caller_identity: Option<&'a RelayCallerIdentity>,
     encrypted_request: &EncryptedRelayPayload,
 ) -> Result<&'a RelayCallerIdentity, RelayError> {
+    require_bound_client_sender(caller_identity, encrypted_request, "browser import")
+}
+
+/// Requires a live client identity whose encrypted sender key is its paired key.
+pub(super) fn require_bound_client_sender<'a>(
+    caller_identity: Option<&'a RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+    purpose: &str,
+) -> Result<&'a RelayCallerIdentity, RelayError> {
     let identity = caller_identity
         .filter(|identity| identity.subject_kind == RelaySubjectKind::Client)
-        .ok_or_else(|| unauthorized("browser import requires an authenticated client identity"))?;
+        .ok_or_else(|| {
+            unauthorized(&format!(
+                "{purpose} requires an authenticated client identity"
+            ))
+        })?;
     validate_identity_expiry(identity, "client")?;
-    let thumbprint = identity
-        .public_key_thumbprint
-        .as_deref()
-        .ok_or_else(|| unauthorized("browser import requires a sender-bound client identity"))?;
+    let thumbprint = identity.public_key_thumbprint.as_deref().ok_or_else(|| {
+        unauthorized(&format!(
+            "{purpose} requires a sender-bound client identity"
+        ))
+    })?;
     validate_sender_key(thumbprint, encrypted_request, "client")?;
     Ok(identity)
 }

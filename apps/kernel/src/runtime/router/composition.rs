@@ -355,7 +355,6 @@ pub(super) fn compose_command_router(
         workflow_runtime,
         aegs_management_http_client: Default::default(),
         event_connection_lanes: Default::default(),
-        event_interest_lock: Default::default(),
         provider_runtime_lanes,
         focus_projection,
         session_projection,

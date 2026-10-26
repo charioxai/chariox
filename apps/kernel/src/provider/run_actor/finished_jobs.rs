@@ -21,6 +21,7 @@ pub(crate) struct FinishedProviderPromptSubmitJob {
 pub(crate) struct FinishedProviderPromptAbortJob {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
+    pub(crate) prompt_id: String,
     pub(crate) result: Result<(), DaemonError>,
 }
 
@@ -174,4 +175,24 @@ fn drain_finished_jobs<T>(jobs: &Arc<Mutex<Vec<T>>>, poison_message: &'static st
             Vec::new()
         }
     }
+}
+
+// MP-08 / MP-10: a run's output lane cannot consume another run's batch.
+pub(super) fn drain_finished_output_polls_for_run(
+    jobs: &Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
+    run_id: &str,
+) -> Vec<FinishedProviderOutputPollJob> {
+    let Ok(mut jobs) = jobs.lock() else {
+        crate::logging::error_with_fields(
+            "daemon.provider_run_actor",
+            "provider run output poll completion queue poisoned",
+            serde_json::json!({}),
+        );
+        return Vec::new();
+    };
+    let (selected, retained) = std::mem::take(&mut *jobs)
+        .into_iter()
+        .partition(|job| job.provider_run_id == run_id);
+    *jobs = retained;
+    selected
 }

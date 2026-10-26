@@ -36,6 +36,25 @@ impl KernelRuntimeOwnedState {
                 "Only kernel decisions can require the Chariox passkey",
             ));
         }
+        if session_id.is_empty() {
+            if forwarding.is_some() || terminal_credential_owner.is_some() {
+                return Err(interaction_error("Invalid unattached decision authority"));
+            }
+            return self.register_user_domain_interaction(
+                interaction,
+                responder,
+                kernel_operation_owner,
+            );
+        }
+        if session_id == crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE {
+            return self.register_kernel_wide_access_interaction(
+                interaction,
+                responder,
+                kernel_operation_owner,
+                forwarding,
+                terminal_credential_owner,
+            );
+        }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
@@ -86,6 +105,54 @@ impl KernelRuntimeOwnedState {
                 ))
             }
         }
+        // MP-11: bind both review forms to the enrolled human, while leaving
+        // every other credential/operation owner and session membership intact.
+        let review_owner =
+            if super::super::owner_context_review::is_owner_context_review(&interaction) {
+                if kernel_operation_owner.or(terminal_credential_owner)
+                    != Some(session.owner_user_id())
+                {
+                    return Err(interaction_error("Copy review requires the session owner"));
+                }
+                Some(self.owner_context_review_owner(session.owner_user_id()))
+            } else {
+                None
+            };
+        let kernel_operation_owner =
+            kernel_operation_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
+        let terminal_credential_owner =
+            terminal_credential_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
+        // MP-08 / MP-10 / MP-11: a restart or cancelled launch can leave a
+        // projected Vault card without a responder. Retire only an abandoned
+        // Vault card for this subject; never replace a live decision.
+        if let Some(owner) =
+            terminal_credential_owner.filter(|_| interaction.id().starts_with("vault-unlock-"))
+        {
+            let mut pending = self.pending_interactions.write();
+            let abandoned = session
+                .active_interactions()
+                .iter()
+                .filter(|existing| {
+                    existing.subject() == interaction.subject()
+                        && existing.id().starts_with("vault-unlock-")
+                        && pending.get(existing.id()).is_none_or(|entry| {
+                            !entry.belongs_to(&self.session_store)
+                                || (entry.terminal_credential_owner.as_deref() == Some(owner)
+                                    && entry.nobody_waits())
+                        })
+                })
+                .map(|existing| existing.id().to_owned())
+                .collect::<Vec<_>>();
+            for id in abandoned {
+                session.remove_active_interaction(&id);
+                if pending
+                    .get(&id)
+                    .is_some_and(|entry| entry.belongs_to(&self.session_store))
+                {
+                    pending.remove(&id);
+                }
+            }
+        }
         // A kernel decision nobody waits for any more does not block its
         // subject: the new request supersedes it. The pump's sweep times such
         // decisions out too, but a registration must not depend on it having
@@ -111,21 +178,8 @@ impl KernelRuntimeOwnedState {
                 session.remove_active_interaction(&id);
                 pending.remove(&id);
             }
-            if pending
-                .values()
-                .filter(|p| p.belongs_to(&self.session_store))
-                .filter(|p| p.kernel_operation_owner.is_some())
-                .count()
-                >= 32
-                || pending
-                    .values()
-                    .filter(|p| p.belongs_to(&self.session_store))
-                    .filter(|p| p.kernel_operation_owner.as_deref() == Some(owner))
-                    .count()
-                    >= 8
-            {
-                return Err(interaction_error("Kernel decision limit reached"));
-            }
+            drop(pending);
+            self.ensure_kernel_decision_capacity(owner)?;
         }
         if session
             .active_interactions()
@@ -158,8 +212,24 @@ impl KernelRuntimeOwnedState {
                             .map(|remote| remote.execution_lease_id.clone())
                             .unwrap_or_default(),
                         provider_run_id: context.worker_provider_run_id.clone(),
+                        startup_permission: interaction.kind()
+                            == crate::session::RuntimeInteractionKind::Permission
+                            && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. }),
                         binding_observed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                            false,
+                            // MP-08 / MP-10 / MP-11: Kernel choices raised by
+                            // an idle worker need an already live run. Active
+                            // dispatches and native startup permissions retain
+                            // the pre-ACK allowance.
+                            interaction.kind()
+                                != crate::session::RuntimeInteractionKind::Permission
+                                && matches!(
+                                    origin,
+                                    NativeInteractionOrigin::ProviderStartup { .. }
+                                )
+                                && self
+                                    .prompt_state_owner
+                                    .active_prompt_for_agent(&session, agent_id)
+                                    .is_none(),
                         )),
                     }
                 });
@@ -218,9 +288,11 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let pending = super::super::PendingInteraction {
+            kernel_wide_interaction: None,
             agent_lifetime,
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
+            user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             kernel_operation_deadline: kernel_operation_owner.map(|_| {

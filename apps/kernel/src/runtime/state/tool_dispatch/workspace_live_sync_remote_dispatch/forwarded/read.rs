@@ -18,12 +18,11 @@ pub(super) fn dispatch_forwarded_read(
     })?;
     let domain =
         KernelRuntimeOwnedState::workspace_live_sync_domain_from_arg(args.domain.as_deref())?;
-    let state =
-        remote_workspace_live_sync_state_for_path(artifact_states, &PathBuf::from(&args.path))
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "forwarded_workspace_live_sync_read_artifact",
-                message: "missing forwarded artifact state".to_string(),
-            })?;
+    let state = remote_workspace_live_sync_state_for_path(artifact_states, Path::new(&args.path))
+        .ok_or_else(|| DaemonError::LocalTransport {
+        operation: "forwarded_workspace_live_sync_read_artifact",
+        message: "missing forwarded artifact state".to_string(),
+    })?;
     let content = remote_workspace_live_sync_content_from_state(state, domain)?;
     let read = coordinator.read_artifact(crate::io::ArtifactReadRequest {
         workspace_identity: workspace_context.identity.clone(),

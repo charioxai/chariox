@@ -96,6 +96,7 @@ fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
             "type": "request",
             "request_id": "slow-history",
             "request": LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
+                include_prefetched_content: false,
                 session_id: session_id.clone(),
                 agent_ids: Some(vec![agent_id.clone()]),
                 latest_prompt_count: Some(1),
@@ -610,12 +611,13 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
         config.kernel_websocket_port = kernel_websocket_port;
         config.runtime_mcp_port = unused_tcp_port();
         let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+        // MP-11: production startup materializes the terminal credential.
+        drop(kernel_websocket_listener);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
-            run_kernel_websocket_server_on_listener(
+            chariox_kernel::runtime_transport::run_kernel_websocket_server(
                 std::sync::Arc::new(tokio::sync::Mutex::new(app)),
-                kernel_websocket_listener,
                 async {
                     let _ = shutdown_rx.await;
                 },
@@ -623,7 +625,7 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
             .await
         });
 
-        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let mut socket = connect_terminal_with_retry(&config.kernel_websocket_url()).await;
 
         let create_response = send_request(
             &mut socket,

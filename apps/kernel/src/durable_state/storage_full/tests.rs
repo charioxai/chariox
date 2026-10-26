@@ -43,7 +43,7 @@ pub(crate) fn limit_writer_pages(store: &mut DurableKernelStateStore) {
         .pragma_update(None, "max_page_count", pages + 64)
         .unwrap();
     let worker = std::thread::spawn(move || {
-        run_durable_writer(connection, receiver, observed, Duration::ZERO);
+        run_durable_writer(connection, receiver, observed);
     });
     store.writer = Arc::new(DurableStateWriter {
         sender: Mutex::new(Some(sender)),

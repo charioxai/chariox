@@ -61,6 +61,27 @@ impl AppHostBroker {
     }
 
     pub(crate) async fn request(&self, method: &str, params: Value) -> Result<Value, RemoteError> {
+        self.request_admitted(method, params, None).await
+    }
+    pub(crate) async fn request_view(
+        &self,
+        method: &str,
+        params: Value,
+        authority: super::app_view_authority::AppViewAuthority,
+        budget: super::app_operation_budget::AppOperationBudget,
+    ) -> Result<Value, RemoteError> {
+        self.request_admitted(method, params, Some((authority, budget)))
+            .await
+    }
+    async fn request_admitted(
+        &self,
+        method: &str,
+        params: Value,
+        authority: Option<(
+            super::app_view_authority::AppViewAuthority,
+            super::app_operation_budget::AppOperationBudget,
+        )>,
+    ) -> Result<Value, RemoteError> {
         if method == "host.clipboard_write" && !self.clipboard_write {
             return Err(error("CAPABILITY_REQUIRED"));
         }
@@ -81,12 +102,30 @@ impl AppHostBroker {
         };
         let result = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            store.app_host_action(HostActionCommand::Create(offer))
+            if let Some((authority, budget)) = authority {
+                authority
+                    .enqueue(|| {
+                        budget
+                            .check()
+                            .map_err(|_| super::app_view_authority::not_granted())?;
+                        store.offer_app_host_action(offer, budget).map_err(|code| {
+                            crate::runtime::browser_controller_app_view::BrowserAppViewError {
+                                code: code.into(),
+                                message: code.into(),
+                            }
+                        })
+                    })
+                    .map_err(|error| error.code)
+            } else {
+                store
+                    .app_host_action(HostActionCommand::Create(offer))
+                    .map_err(str::to_owned)
+            }
         })
         .await
         .map_err(|_| error("STORAGE_UNAVAILABLE"))?;
         let offer = result
-            .map_err(error)?
+            .map_err(|code| error(&code))?
             .ok_or_else(|| error("STORAGE_UNAVAILABLE"))?;
         Ok(
             json!({"operationId": offer.operation_id, "state": "pending", "expiresAtMs": offer.expires_ms}),

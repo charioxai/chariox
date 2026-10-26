@@ -36,10 +36,13 @@ import { executePromptSettingsCommand } from "./shell-prompt-settings-command.js
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+  ensureAuthenticated?: (() => Promise<boolean>) | undefined
 }
 
 export type ShellExecutorDeps = ShellPlacementDeps & {
   client: ShellKernelClient
+  /** Human Cloud authority is supplied by the embedding client, never the kernel. */
+  cloudAccountClient?: ShellKernelClient | undefined
   clientId?: string | undefined
   readSecret?: ((prompt: string) => Promise<string>) | undefined
 } & Pick<ShellSliceCommandDeps, "openRoomViewer">

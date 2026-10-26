@@ -138,9 +138,14 @@ fn user_prompt_event_counts_as_prompt_input_history(event: &HistoryEvent) -> boo
     let Some(entry) = event.to_session_history_entry() else {
         return true;
     };
+    if crate::session::is_internal_prompt_turn(entry.prompt_origin, event.prompt_id.as_deref()) {
+        return false;
+    }
     match entry.prompt_origin {
         Some(crate::session::PromptOrigin::Chariox) => true,
-        Some(crate::session::PromptOrigin::External) => false,
+        Some(
+            crate::session::PromptOrigin::External | crate::session::PromptOrigin::CompletionCheck,
+        ) => false,
         None => !entry.is_external_provider_observed(),
     }
 }

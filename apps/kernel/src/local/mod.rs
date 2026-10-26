@@ -1,4 +1,15 @@
+pub use api::{
+    AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
+    ListWorkflowNotificationsRequest, NotificationDeliveryMode,
+    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
+    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationEvents,
+    WorkflowNotificationSource, WorkflowNotificationSourceSummary, WorkflowNotificationStatus,
+    WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
+};
 mod api;
+pub use api::{
+    CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
+};
 mod client;
 mod harness;
 pub(crate) mod ipc;
@@ -7,6 +18,7 @@ pub(crate) mod provider_requests;
 pub(crate) mod test_support;
 
 pub(crate) use api::redact_client_response_value;
+pub use api::PreflightProviderAccountPortabilityRequest;
 pub use api::{
     deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject, AppPackageUploadPhase,
@@ -24,18 +36,20 @@ pub use api::{
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
     ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveProjectRequest,
-    ArmDeploymentCredentialEnrollmentRequest, AttachToSessionRequest, AttachWorkspaceLinkRequest,
-    BatchOperationFailure, BindWorkflowCodeSourceRequest, BindWorkflowEndpointRequest,
-    BindWorkflowPublicationDeploymentRequest, BrowseEventGeneratorCategoryRequest,
-    BrowseEventGeneratorEventsRequest, CancelActivePromptRequest, CancelAgentPromptScheduleRequest,
+    ArmDeploymentCredentialEnrollmentRequest, AttachSessionViewRequest, AttachToSessionRequest,
+    AttachWorkspaceLinkRequest, BatchOperationFailure, BindWorkflowCodeSourceRequest,
+    BindWorkflowEndpointRequest, BindWorkflowPublicationDeploymentRequest,
+    BrowseEventGeneratorCategoryRequest, BrowseEventGeneratorEventsRequest,
+    CancelActivePromptRequest, CancelAgentPromptScheduleRequest,
     CancelProjectEnvironmentSetupRequest, CancelProviderLoginRequest, CancelQueuedPromptRequest,
     CancelRoomEnvironmentActionRequest, CancelWorkflowRunRequest,
-    CaptureScreenshotCapabilityRequest, ClearWorkflowPromptQueueRequest, CloudCollaborator,
-    CloudRelayLoginPoll, CloudRelayLoginPollStatus, CloudRelayLoginStart, CloudRelayProfile,
-    CloudRelayRuntimeToken, CloudRelayStatusRequest, CloudSessionInvite,
-    CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
-    CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest, CompletePromptRequest,
-    ConfigureRelayRequest, ConnectCloudRelayRequest, ControlWorkflowPublicationRuntimeRequest,
+    CaptureScreenshotCapabilityRequest, ClearWorkflowPromptQueueRequest, ClientCatalogRevisions,
+    ClientCatalogSnapshot, CloudCollaborator, CloudRelayLoginPoll, CloudRelayLoginPollStatus,
+    CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken, CloudRelayStatusRequest,
+    CloudSessionInvite, CloudSessionInviteAcceptance, CloudSessionInviteDetails,
+    CloudSessionMember, CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest,
+    CompletePromptRequest, ConfigureRelayRequest, ConnectCloudRelayRequest,
+    ControlRoomWorkflowRunsRequest, ControlWorkflowPublicationRuntimeRequest,
     CreateAgentPromptScheduleRequest, CreateAgentWorkflowRequest, CreateCloudSessionInviteRequest,
     CreateDisposableWorkerRequest, CreateManagedEnvironmentRequest, CreatePairingInviteRequest,
     CreateSessionInviteRequest, CreateSliceBackupRequest, CreateSliceRequest,
@@ -61,25 +75,25 @@ pub use api::{
     ExportWorkflowPublicationPackageRequest, ExtensionKind, ExternalProviderSessionCapabilities,
     ExternalProviderSessionPage, ExternalProviderSessionRecord, FocusAgentRequest,
     ForgetRemoteMachineRequest, ForkAgentRequest, GenerateWorkspaceCommitMessageRequest,
-    GetConnectorAdapterRequest, GetConnectorRequest, GetCredentialRequest,
-    GetCredentialVaultStatusRequest, GetDaemonHealthRequest, GetEnvironmentRequest,
-    GetEventConnectionRequest, GetEventDeliveryStatusRequest,
+    GetClientCatalogSnapshotRequest, GetConnectorAdapterRequest, GetConnectorRequest,
+    GetCredentialRequest, GetCredentialVaultStatusRequest, GetDaemonHealthRequest,
+    GetEnvironmentRequest, GetEventConnectionRequest, GetEventDeliveryStatusRequest,
     GetEventGeneratorCatalogLandingRequest, GetEventGeneratorDetailRequest,
     GetManagedContextLaunchTargetRequest, GetManagedContextTransferStatusRequest,
     GetManagedEnvironmentReimagePreflightRequest, GetManagedEnvironmentRequest,
     GetMcpServerRequest, GetMetaagentTurnBlobRequest, GetMetaagentTurnOverviewRequest,
-    GetProjectEnvironmentManifestRequest, GetProjectEnvironmentSetupStatusRequest,
-    GetPromptInputHistoryRequest, GetPromptSettingRequest, GetProviderAuthStatusRequest,
-    GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderLoginStatusRequest,
-    GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
+    GetProjectEnvironmentManifestRequest, GetProjectEnvironmentRequest,
+    GetProjectEnvironmentSetupStatusRequest, GetPromptInputHistoryRequest, GetPromptSettingRequest,
+    GetProviderAuthStatusRequest, GetProviderCatalogRequest, GetProviderCommandCatalogsRequest,
+    GetProviderLoginStatusRequest, GetProviderRunRequest, GetRoomEnvironmentEventsRequest,
     GetRoomEnvironmentResourceInventoryRequest, GetRoomEnvironmentStateRequest,
     GetRoomEnvironmentTabAccessibilityRequest, GetScriptRequest,
-    GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, GetSessionStateRequest,
-    GetSkillRequest, GetSliceDisplayEndpointRequest, GetSliceLogsRequest,
-    GetTerminalCommandCatalogRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    GetWaitingRoomPublicSnapshotRequest, GetWorkflowCodeArtifactRequest,
-    GetWorkflowPublicationRequest, GetWorkflowRegistryEntryRequest, GetWorkflowRunRequest,
-    GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest,
+    GetSessionHistoryBlobContentRequest, GetSessionHistoryBlobContentsRequest,
+    GetSessionHistoryOutlineRequest, GetSessionStateRequest, GetSkillRequest,
+    GetSliceDisplayEndpointRequest, GetSliceLogsRequest, GetTerminalCommandCatalogRequest,
+    GetUserConfigRequest, GetUserConfigSchemaRequest, GetWaitingRoomPublicSnapshotRequest,
+    GetWorkflowCodeArtifactRequest, GetWorkflowPublicationRequest, GetWorkflowRegistryEntryRequest,
+    GetWorkflowRunRequest, GetWorkspaceFileContentRequest, GetWorkspaceGitOverviewRequest,
     GetWorkspaceLiveSyncStatusRequest, GrantAgentExtensionRequest,
     ImportExternalProviderAgentRequest, ImportExternalProviderSessionRequest,
     ImportMcpServersRequest, ImportProviderCapabilitiesRequest, ImportSkillsRequest,
@@ -161,26 +175,28 @@ pub use api::{
     RequestManagedEnvironmentReleaseUpdateRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResetAllPromptSettingsRequest,
     ResetPromptSettingRequest, ResizeTerminalRequest, ResolveKernelClientConnectionRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, RespondToInteractionRequest,
-    RestoreProjectRequest, RestoreSliceBackupRequest, ResumeMetaagentTaskRequest,
-    ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest, RetryRoomEnvironmentRequest,
-    RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest, RevokePairedClientRequest,
-    RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
+    ResolveSessionRequest, ResolveWorkflowRequest, RespondToHandoffRequest,
+    RespondToInteractionRequest, RestoreProjectRequest, RestoreSliceBackupRequest,
+    ResumeMetaagentTaskRequest, ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest,
+    RetryRoomEnvironmentRequest, RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest,
+    RevokePairedClientRequest, RevokeSessionInviteRequest, RoomEnvironmentAccessibilityNode,
     RoomEnvironmentBrowserHistoryAction, RoomEnvironmentBrowserTabAction,
     RoomEnvironmentClipboardText, RoomEnvironmentHumanAction, RoomEnvironmentHumanBrowserAction,
     RoomEnvironmentKeyboardInput, RoomEnvironmentPointerButton,
     RoomEnvironmentPointerPositionRequest, RoomEnvironmentResourceInventory,
-    RoomEnvironmentTabAccessibility, RoomEnvironmentViewportRequest, RunAgentUtilityRequest,
+    RoomEnvironmentTabAccessibility, RoomEnvironmentViewportRequest, RoomWorkflowRunAction,
+    RoomWorkflowRunControlOutcome, RoomWorkflowRunControlResult, RunAgentUtilityRequest,
     RunShellCapabilityRequest, RunWorkflowCodeArtifactRequest, RunWorkflowCodeRequest,
     RunWorkflowRegistryEntryRequest, SearchEventGeneratorCatalogRequest,
     SearchMetaagentCommandsRequest, SearchRecallRequest, SearchWorkspaceDirectoriesRequest,
     SemanticRecallMatch, SemanticRecallSearchUtilityInput, SemanticSearchRecallMode,
     SemanticSearchRecallRequest, SendProviderLoginInputRequest, SendTerminalInputRequest,
-    SessionHistoryOutlineAgent, SessionHistoryOutlineBlob, SessionHistoryOutlineCursor,
-    SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle, SessionInviteRecord,
-    SetCredentialSecretRequest, SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest,
-    SetUserConfigValueRequest, SetWorkflowFlushContextRequest,
-    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    SessionHistoryBlobContentPage, SessionHistoryOutlineAgent, SessionHistoryOutlineBlob,
+    SessionHistoryOutlineCursor, SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle,
+    SessionInviteRecord, SetCredentialSecretRequest, SetProjectPinnedRequest,
+    SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest, SetUserConfigValueRequest,
+    SetWorkflowFlushContextRequest, SetWorkflowNodeCanCompleteRunRequest,
+    SetWorkflowNodeCanEmitIntermediateOutputRequest,
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
     SetWorkflowNodeWaitForAllInputsRequest, SetWorkflowRunOutputSchemaRequest,
     SetWorkflowScheduleEnabledRequest, SetWorkflowWatchdogEnabledRequest,
@@ -190,9 +206,9 @@ pub use api::{
     SpawnAgentRequest, SpawnAgentsRequest, SpawnAgentsRequestItem, StartCloudRelayLoginRequest,
     StartEventGeneratorAuthorizationRequest, StartManagedContextTransferRequest,
     StartProjectEnvironmentSetupRequest, StartProviderLoginRequest, StartRoomEnvironmentRequest,
-    StartSliceProviderLoginRequest, SteerQueuedPromptRequest, StopRoomEnvironmentRequest,
-    StoreTransferredFileCapabilityRequest, SubmitPromptRequest, SubmitPromptsRequest,
-    SubmitPromptsRequestItem, SubmitRoomEnvironmentActionRequest,
+    StartSliceProviderLoginRequest, SteerActivePromptRequest, SteerQueuedPromptRequest,
+    StopRoomEnvironmentRequest, StoreTransferredFileCapabilityRequest, SubmitPromptRequest,
+    SubmitPromptsRequest, SubmitPromptsRequestItem, SubmitRoomEnvironmentActionRequest,
     SubmitRoomEnvironmentBrowserActionRequest, SyncRemoteExtensionManifestRequest,
     TeardownProviderProcessesRequest, TerminalCommandCatalog,
     TerminalCommandCatalogExecutionTarget, TerminalCommandCatalogNode,
@@ -222,29 +238,32 @@ pub use api::{
     WorkflowDesignSchemaPatch, WorkflowDesignWorkflow, WorkflowDesignWorkflowPatch,
     WorkflowPublicationPackageFile, WorkflowPublicationRuntimeAction, WorkflowPublicationSnapshot,
     WorkflowPublicationSourceSessionSnapshot, WorkflowSchedulePreview,
-    WorkspaceCommitMessageUtilityInput, WorkspaceFileContent, WorkspaceGitActionResult,
-    WorkspaceGitChangeTotals, WorkspaceGitCompareRef, WorkspaceGitFileChange, WorkspaceGitOverview,
-    WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncGroupStatus,
-    WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState,
-    WorkspaceLiveSyncTargetStatus, WorkspacePullRequestRecord, WorkspaceRepoFileEntry,
-    WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
-    DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX, LOCAL_DAEMON_PROTOCOL_VERSION,
-    PASSKEY_REMEMBER_MAX_MINUTES, PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
-    RUNTIME_CONTROL_CAPABILITIES,
+    WorkspaceCommitMessageUtilityInput, WorkspaceDirectoryGitSummary, WorkspaceFileContent,
+    WorkspaceGitActionResult, WorkspaceGitChangeTotals, WorkspaceGitCompareRef,
+    WorkspaceGitFileChange, WorkspaceGitOverview, WorkspaceLiveSyncConflictSummary,
+    WorkspaceLiveSyncFooterState, WorkspaceLiveSyncGroupStatus, WorkspaceLiveSyncIgnoreStatus,
+    WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState, WorkspaceLiveSyncTargetStatus,
+    WorkspacePullRequestRecord, WorkspaceRepoFileEntry, WorkspaceRepoFileListing,
+    WorkspaceWorktreeRecord, DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX,
+    LOCAL_DAEMON_PROTOCOL_VERSION, PASSKEY_REMEMBER_MAX_MINUTES,
+    PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION, RUNTIME_CONTROL_CAPABILITIES,
 };
 pub use api::{
-    AcceptAppHostActionRequest, AppAutomationStatus, AppAutomationSummary,
-    AppCapabilityDecisionStatus, AppConnectionSummary, AppFileContents, AppHostAction,
-    AppInboxConnection, AppInboxRouteRequest, AppInboxRouteSummary, AppInstallationRequest,
-    AppInstallationSummary, AppLogEntrySummary, AppReleaseSummary, AppRequestErrorCode,
-    AppSetInstallation, AppUpdatePhase, AppUpdateSummary, AppWorkerAction, AppWorkerPhase,
-    AppWorkerRequest, AppWorkerSummary, ConfigureAppAutomationRequest, ControlAppWorkerRequest,
+    AcceptAppHostActionRequest, AnswerUserDomainInteractionRequest, AppAutomationStatus,
+    AppAutomationSummary, AppCapabilityDecisionStatus, AppConnectionSummary, AppFileContents,
+    AppFrontendAsset, AppFrontendBundle, AppHostAction, AppInboxConnection, AppInboxRouteRequest,
+    AppInboxRouteSummary, AppInstallationRequest, AppInstallationSummary, AppLogEntrySummary,
+    AppReleaseSummary, AppRequestErrorCode, AppSetInstallation, AppUpdatePhase, AppUpdateSummary,
+    AppViewChannelError, AppWorkerAction, AppWorkerPhase, AppWorkerRequest, AppWorkerSummary,
+    CallUserAppViewRequest, ConfigureAppAutomationRequest, ControlAppWorkerRequest,
     CreateAppInboxRouteRequest, DeploymentAppsConsent, DeploymentAppsConsentStatus,
     DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest, GrantAppConnectionRequest,
-    GrantAppFileRequest, ListAppInstallationsRequest, OpenAppViewRequest,
-    PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest,
-    RevokeAppConnectionRequest, RevokeAppFileGrantsRequest, SaveAppFileExportRequest,
-    SetAppViewPanelRequest, TestAppInboxRouteRequest, UninstallAppRequest, APP_SET_SCHEMA,
+    GrantAppFileRequest, ListAppInstallationsRequest, ListUserAppViewsRequest, OpenAppViewRequest,
+    OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
+    RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
+    SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
+    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser,
+    UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
     AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
@@ -257,8 +276,12 @@ pub use api::{
 };
 pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
-    ReadRoomEnvironmentScreenshotChunkRequest, RoomEnvironmentScreenshotArtifact,
-    RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
+    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
+    RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
+};
+pub use api::{
+    ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,
+    RequestKernelAccessRequest, RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,
@@ -267,17 +290,35 @@ pub use api::{
     KERNEL_RESOURCE_TELEMETRY_SCHEMA,
 };
 pub use api::{
-    KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
-    RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
+    HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
+    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
+    PasskeyPromptClosure, PasskeyPromptClosureReason, PasskeyPromptKind, SudoRequestPresentation,
 };
-pub use api::{KernelConnectionClass, PasskeyPrompt, PasskeyPromptKind};
+pub use api::{
+    KernelBrowserCommand, KernelBrowserDisplayTarget, KernelBrowserInput,
+    KernelBrowserMirrorAction, KernelBrowserRequest, KernelComputerCommand, KernelComputerInput,
+    KernelComputerKeyState, KernelDesktopTarget,
+};
+pub use api::{
+    NoteAnchor, NoteBox, NoteCommand, NoteResult, NoteSelection, NoteTextQuote, NoteWindow,
+    NotesRequest,
+};
+pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 
-/// Grandparent of the CLI launcher, verified from the OS process tree.
+/// MP-08 / MP-10 / MP-11: native provider ancestor, or the unknown-program fallback.
 #[cfg(unix)]
 pub fn default_access_holder_pid() -> std::io::Result<u32> {
-    let (_, parent) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
-    let (_, grandparent) = crate::runtime::kernel_access::process::inspect(parent)?;
-    Ok(grandparent)
+    let (peer, _) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
+    crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
 }
+
+pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};
+pub use api::{
+    ApplyProjectEnvironmentRequest, CheckProjectEnvironmentRequest, CommitEnvironmentImportRequest,
+    DetectProjectEnvironmentRequest, EnvironmentExportDestination, EnvironmentOperationRequest,
+    ExportProjectEnvironmentRequest, PlanProjectEnvironmentRequest, PreviewEnvironmentDiffRequest,
+    PreviewEnvironmentImportRequest, RetryEnvironmentOperationRequest,
+    SaveProjectEnvironmentRevisionRequest,
+};

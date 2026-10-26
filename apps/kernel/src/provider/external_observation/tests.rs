@@ -401,3 +401,76 @@ fn text_from_content_extracts_provider_content_shapes() {
         Some("object content".to_string())
     );
 }
+
+#[test]
+fn native_claude_auto_compaction_is_internal_control() {
+    let continuation = "This session is being continued from a previous conversation that ran out of context.\n\nThe summary below covers the earlier portion of the conversation.\n\nSummary:\nContinue the accepted audit without another user submission.";
+    let policy = ExternalProviderObservationPolicy::for_provider("claude");
+    assert!(policy.user_prompt_is_internal_control(continuation));
+    assert!(policy.user_prompt_is_internal_control(&compact_whitespace(continuation)));
+    assert!(!ExternalProviderObservationPolicy::for_provider("codex")
+        .user_prompt_is_internal_control(continuation));
+    assert!(!ExternalProviderObservationPolicy::for_provider("opencode")
+        .user_prompt_is_internal_control(continuation));
+}
+
+#[test]
+fn native_claude_auto_compaction_requires_the_generated_envelope() {
+    let policy = ExternalProviderObservationPolicy::for_provider("claude");
+    assert!(!policy.user_prompt_is_internal_control(
+        "Explain this sentence: This session is being continued from a previous conversation that ran out of context."
+    ));
+    assert!(!policy.user_prompt_is_internal_control(
+        "This session is being continued from a previous conversation that ran out of context. Please audit the queue."
+    ));
+    assert!(!policy.user_prompt_is_internal_control(
+        "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Please audit the queue."
+    ));
+}
+
+#[test]
+fn claude_compact_control_requires_complete_provider_envelopes() {
+    let policy = ExternalProviderObservationPolicy::for_provider("claude");
+    for prompt in [
+        "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>",
+        "<local-command-stdout>Compacted </local-command-stdout>",
+    ] {
+        assert!(policy.user_prompt_is_internal_control(prompt));
+        assert!(!ExternalProviderObservationPolicy::for_provider("codex").user_prompt_is_internal_control(prompt));
+    }
+    for prompt in [
+        "/compact", "Explain <local-command-stdout>Compacted </local-command-stdout>",
+        "<local-command-stdout>Compacted </local-command-stdout> then audit the queue",
+        "<command-name>/compact</command-name> please explain this command",
+        "<command-name>/compact</command-name><command-message>compact</command-message><command-args>unfinished",
+        "<command-name>/model</command-name><command-message>model</command-message><command-args>haiku</command-args>",
+    ] {
+        assert!(!policy.user_prompt_is_internal_control(prompt), "genuine user prompt filtered: {prompt}");
+    }
+}
+
+#[test]
+fn normalized_observed_prompt_text_matches_complete_native_paste_only() {
+    let prompt = "Audit the native prompt path.";
+    for wrapped in [
+        format!("<pasted_content id=\"71b3\"> {prompt} </pasted_content id=\"71b3\">"),
+        format!("<pasted_content id=\"71b3\">\r\n{prompt}\r\n</pasted_content id=\"71b3\">"),
+    ] {
+        assert_eq!(
+            normalized_observed_prompt_text(&wrapped),
+            normalized_observed_prompt_text(prompt)
+        );
+    }
+    for invalid in [
+        format!("<pasted_content id=\"71b3\">{prompt}</pasted_content id=\"other\">"),
+        format!("prefix <pasted_content id=\"71b3\">{prompt}</pasted_content id=\"71b3\">"),
+        format!("<pasted_content id=\"71b3\">{prompt}</pasted_content id=\"71b3\"> suffix"),
+        format!("<pasted_content id=\"\">{prompt}</pasted_content id=\"\">"),
+        format!("<pasted_content id=\"bad/id\">{prompt}</pasted_content id=\"bad/id\">"),
+    ] {
+        assert_ne!(
+            normalized_observed_prompt_text(&invalid),
+            normalized_observed_prompt_text(prompt)
+        );
+    }
+}

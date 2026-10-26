@@ -1,4 +1,9 @@
+import { createCliCachedStartup, CliCachedStartup } from "./cli-cached-startup.js"
+import { parseArgs } from "./cli-options.js"
 import process from "node:process"
+import { runContextCommand } from "./context-command.js"
+import { runCloudClientCommand } from "./cloud-client-command.js"
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 import { runSudoCommand } from "./sudo-command.js"
 import { runAccessCommand } from "./access-command.js"
 
@@ -26,6 +31,8 @@ import { assertSolidClientBuild } from "./solid-client-build.js"
 async function main() {
   assertSolidClientBuild()
   const argv = process.argv.slice(2)
+  if (await runContextCommand(argv)) return
+  if (await runCloudClientCommand(argv)) return
   if (await runSudoCommand(argv)) return
   if (await runAccessCommand(argv)) return
   if (await runAppCommand(argv)) return
@@ -55,22 +62,29 @@ async function main() {
   transcriptParserRegistration.ensureRegistered()
   processLoggers.initialize("cli")
   getLogger("cli.main")?.info("starting cli process", { argv: redactCliStartupArgs(argv) })
-  const runtimeBootstrap = await bootstrapCliRuntime({
+  const cachedStartup = createCliCachedStartup()
+  const pendingBootstrap = bootstrapCliRuntime({
     argv,
     cwd: process.cwd(),
     logger: getLogger("cli.main"),
+    onClientReady: cachedStartup.onClientReady,
   })
-  if (runtimeBootstrap.kind === "deleted_session") {
-    return
-  }
+  const requested = parseArgs(argv)
+  const early = Boolean(requested.sessionId && !requested.createSession && !requested.deleteSessionRef && !requested.detached)
+  const runtimeBootstrap = early ? null : await pendingBootstrap
+  if (!early) cachedStartup.finish()
+  if (runtimeBootstrap?.kind === "deleted_session") return
   await render(
-    () => <CharioxCliApp bootstrap={runtimeBootstrap.bootstrap} />,
+    () => early ? <CliCachedStartup pending={pendingBootstrap} view={cachedStartup} />
+      : <CharioxCliApp bootstrap={runtimeBootstrap!.bootstrap} />,
     {
       targetFps: 60,
       gatherStats: false,
       exitOnCtrlC: false,
       useKittyKeyboard: {},
-      useMouse: true,
+      ...(!TUI_MOUSE_ENABLED ? { useThread: false } : {}),
+      // MP-08/MP-10: the terminal owns plain drag-selection and Cmd-C.
+      useMouse: TUI_MOUSE_ENABLED,
       enableMouseMovement: false,
       useAlternateScreen: true,
       autoFocus: true,

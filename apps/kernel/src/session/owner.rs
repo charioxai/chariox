@@ -129,6 +129,16 @@ impl SessionStateStore {
         )
     }
 
+    pub(crate) fn set_project_pinned(
+        &self,
+        project_id: &str,
+        pinned: bool,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .set_project_pinned(project_id, pinned, caller_user_id)
+    }
+
     pub(crate) fn rename_project(
         &self,
         project_id: &str,
@@ -236,6 +246,7 @@ impl SessionStateStore {
         self.write().remove_restored_session(session_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn create_room_environment(
         &self,
         session_id: &str,

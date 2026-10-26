@@ -73,6 +73,57 @@ async fn provider_output_pump_ignores_projected_remote_active_run() {
 }
 
 #[tokio::test]
+async fn mp08_mp10_mp11_focus_home_preserves_worker_owned_run() {
+    let worktree = crate::test_support::TestWorktree::new("focus-home-worker-projection");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, home_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let worker_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .unwrap();
+    let mut worker_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "worker-run-1",
+        "worker-session-1".into(),
+        Some("leased-agent-1".into()),
+        "dev-stub".into(),
+    );
+    worker_run.mark_running();
+    let projected = worker_run.projected_for_home_agent_with_id(
+        "leased:leased-agent-1:worker-run-1",
+        session.id(),
+        worker_agent.id(),
+    );
+    app.update_provider_run_projection(projected.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(projected.id().into()))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .sync_active_provider_run_for_agent(session.id(), home_agent.id())
+        .expect("home focus must not park a run owned by the worker");
+    assert_eq!(
+        runtime.owned.provider_run_projection.get(projected.id()),
+        Some(projected)
+    );
+    assert!(runtime.owned.provider_store.list_runs().is_empty());
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_provider_run_id(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn provider_output_pump_treats_unregistered_starting_pty_as_launch_in_progress() {
     let worktree = crate::test_support::TestWorktree::new("pump-selection-starting-pty");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -627,5 +678,52 @@ async fn provider_output_pump_includes_runs_with_pending_git_snapshots() {
     assert!(
         provider_run_ids.contains(provider_run.id()),
         "output pump must drain runs that still have pending git/WLS snapshots"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: the removed app reader also owned idle headless mailboxes.
+#[tokio::test]
+async fn idle_headless_mailbox_remains_selected_by_the_runtime_owner() {
+    let worktree = crate::test_support::TestWorktree::new("pump-idle-headless");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "haiku",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "idle-headless",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "idle-headless".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let stored = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    assert!(
+        provider_run_ids_for_owned_output_pump(&runtime.owned, &stored).contains(run.id()),
+        "idle headless hooks lost their sole mailbox reader"
     );
 }

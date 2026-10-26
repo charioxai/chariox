@@ -639,11 +639,11 @@ async function main() {
     assertRetainedClipboardEvidenceIsRedacted(serializedReport, clipboardValue)
   }
   await writeFile(reportPath, serializedReport, "utf8")
-  if (failure) throw failure
+  if (failure) throw new Error("computer-clipboard drill failed; see the redacted evidence report")
   console.log(`[computer-clipboard-x11-drill] PASS evidence=${evidenceRoot}`)
 }
 
 main().catch((error) => {
-  console.error(`[computer-clipboard-x11-drill] ${error.stack ?? error}`)
+  console.error("[computer-clipboard-x11-drill] failed; see the redacted evidence report")
   process.exitCode ??= interruptedSignal === "SIGINT" ? 130 : interruptedSignal === "SIGTERM" ? 143 : 1
 })

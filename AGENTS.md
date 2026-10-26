@@ -1,108 +1,78 @@
 # AGENTS.md
 
-## Project Map
+Chariox's open-source runtime: kernel (`apps/kernel`, Rust), relay (`apps/relay`), terminal client (`apps/cli`), iOS client (`apps/ios`) and shared packages (`packages/`). Cloud is the separate `chariox-cloud` repo.
 
-Chariox spans two main repositories:
+## Commands
 
-- `chariox`: open-source runtime. It owns the kernel, relay, local/remote TUI CLIs, provider adapters, iOS work, and planned Android client foundations.
-- `chariox-cloud`: hosted control plane and web app. It owns browser auth, Cloud waiting room, hosted relay token issuance, staging deployment, and the web CLI UI.
+```sh
+pnpm install --frozen-lockfile
+pnpm build:kernel-client          # once per fresh worktree
+pnpm lint && pnpm build && pnpm test
+cargo fmt --all --check
+node scripts/clippy-changed-lines-gate.mjs origin/main
+RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --workspace
+pnpm protocol:conformance
+pnpm lint:process-signals         # when spawning or signalling processes
+```
 
-## Runtime Architecture
+One kernel test: `RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p chariox-kernel --lib <filter>`. Run locally: `pnpm start:kernel`, then `pnpm start:cli`. A kernel build needs 8–12 GB of RAM; never run two at once on one machine.
 
-The kernel is the runtime authority. It owns sessions, agents, provider runs, workspaces, worktrees, prompt history, terminal events, and state transitions.
+## Protocol changes
 
-Agents run through provider CLIs or adapters launched by the kernel. Chariox orchestrates them but must not become the provider credential store or provider-internal state owner.
+When a serialized shape a client depends on changes:
 
-Chariox supports Codex, OpenCode, and Claude through their official provider harnesses only: provider CLIs, provider-local servers, and documented provider-native hooks/protocols. Do not use provider SDKs, third-party agent services, or alternate hosted agent runtimes for Chariox provider execution.
+1. Increase `LOCAL_DAEMON_PROTOCOL_VERSION` (`apps/kernel/src/local/api/types.rs`), and `RELAY_PEER_PROTOCOL_VERSION` (`apps/kernel/src/transport/relay_peer.rs`) if peers are affected.
+2. Update the protocol snapshot and hash tests.
+3. Raise a client's minimum version only if it needs the new behaviour.
+4. Add or update a focused drill for the change.
 
-The relay is transport only. It admits scoped connections and routes encrypted packets. It must not become a session authority and must not inspect prompts, outputs, workspace data, provider payloads, or session history.
+## Runtime rules
 
-Primary connectivity:
+1. The kernel is the authority for sessions, agents, provider runs, workspaces, history and state. Put behaviour in the kernel and the shared protocol, not in one client.
+2. Providers run only through their official tools: their CLIs, local servers and documented hooks. No provider SDKs or third-party agent services. Provider tools own credential formats and refresh; Chariox keeps credentials only in the kernel Vault or the provider profile and moves them only through account transfer (chariox `docs/PROVIDER_ACCOUNTS.md`).
+3. The relay only carries encrypted traffic. It never reads prompts, outputs or data, and never decides session state.
+4. Cloud signs users in, issues relay tokens and picks relay targets with fresh heartbeats. It never carries runtime traffic and never changes kernel behaviour.
+5. Provider permission prompts resolve through one kernel-owned interaction shown to every client in the session.
+6. Hosted connections use `wss://` behind Caddy. Hosted settings that break these rules must fail loudly.
 
-- Local TUI CLI: `local TUI <-> kernel <-> agent`
-- Remote/orphaned TUI CLI: `remote TUI <-> relay <-> kernel <-> agent`
-- Web CLI: `browser <-> hosted relay <-> kernel <-> agent`; Cloud is bootstrap/control plane only and must not proxy runtime terminal traffic.
-- iOS client: native client planned to use the same kernel/relay protocol surfaces.
-- Android client: planned, same architecture as iOS.
+## Writing clean code
 
-Cloud may authenticate users, issue relay tokens, select relay targets, and display waiting-room/control-plane state. Cloud must not fork kernel runtime behavior.
+- Solve the actual problem with the simplest design. No options, layers or abstractions nobody asked for.
+- Delete dead code, old paths and temporary scaffolding in the same change.
+- One job per module, function and type. Coordinating files only wire parts together; split a file before it mixes responsibilities.
+- Model what can happen with types so wrong states are impossible. Check input once at the boundary, then trust it.
+- Fail clearly, never silently: no hidden fallbacks, no half-finished states. Every operation ends with a result and a reason, and errors say what to do next.
+- Name things for what they are, in the project's own words.
+- Comments explain why, not what. No commented-out code.
+- Match the style and structure of the code around you.
+- Prove each change with a test that fails before it and passes after it, through real entry points.
 
-## Native Provider TUI Contract
+## Done means tested for real
 
-Native provider TUI mode (`chariox codex`, `chariox opencode`, `chariox claude`) must reuse the normal Chariox runtime paths. For local native TUI, provider prompts enter the kernel through the same prompt path as Chariox clients, and Chariox-origin prompts go through the kernel-managed provider run so the provider TUI observes the same turns. For remote native TUI, provider TUIs and Chariox TUIs attach to the home kernel session; the home kernel dispatches to the worker through the existing leased-agent relay protocol; the worker kernel uses the existing provider adapter/server path. For slice-backed native TUI, provider TUIs still attach to the home kernel session; the slice is only the home-managed worker execution environment selected by `slice_ref`. Do not add a parallel prompt, permission, attachment, history, or relay authority path for native TUIs. See `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents` and `docs/ARCHITECTURE.md` section `5.3.2 Native TUI Client Interface`.
+A change is done when it works on the real path a user takes: real kernel, relay, client and provider. Keep screenshots, recordings and logs outside the repository.
 
-For native TUI MCP/skills, keep standard home-worker and slice behavior distinct. Standard home-worker does not install or copy MCPs/skills across machines; the user/operator must make matching capabilities available on the worker. Slice-backed native TUI may transfer home skill packages to the child worker because the home kernel manages that execution environment. See `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents` and `docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md` for the current validation matrix.
+## State, secrets and safety
 
-Claude native TUI hidden prompt context must use the `UserPromptSubmit` hook `additionalContext` bridge, not visible PTY prompt injection; see `docs/PROTOCOL.md` section `3.3.2 Native TUI Agents`.
+- Keep local state in `~/.chariox/dev/<task>/` with `CHARIOX_HOME` set to it, and checkouts outside `~/.chariox`. Never put state, logs or test data in a repository.
+- Never print, log or commit credentials, tokens or keys, and move them only through the product's account transfer.
+- Stop processes by exact PID, never by name.
+- Don't touch the reviewer's services and state (`~/.chariox-reviewer`).
+- Clean up what you started.
 
-Native TUI permission prompts must resolve through one kernel-owned `RuntimeInteraction` projected to every Chariox TUI in the session; provider-native approval replies should route back to that interaction when the provider seam allows it.
+## Secrets and agents
 
-## Protocol Change Rule
+UX comes first. Agents are benign and act for the user. Chariox gives them tools to finish secret workflows, such as Vault fill by handle and the secret-capture helper, and does not gatekeep them.
 
-When changing `LocalDaemonRequest`, `LocalDaemonResponse`, relay terminal events, browser/kernel terminal transport semantics, or any serialized protocol shape that a CLI or app depends on:
+- Guard one thing: the product must not hand a Vault value to the model on its own. Keep the Vault-filled field masked in what the model sees (frames, accessibility and DOM text), and never echo Vault values in tool results, history, logs or traces.
+- Don't guard secrets that are visible on screens, terminals or pages, anything an agent does with a value itself (copy, paste, move, re-display), or what a person types.
+- A guard that blocks or slows an agent or the user's view without protecting what the model sees is a bug.
 
-1. Increment the shared local daemon protocol version in OSS.
-2. Update protocol snapshot/hash tests so CI fails if the protocol shape changes without a version bump.
-3. Update the web/native minimum supported protocol version only when that client depends on the new behavior.
-4. Add or update a focused drill that exercises the changed protocol behavior.
+## Commits and pull requests
 
-Do not merge protocol shape changes without the version bump and test update.
+- A commit message is a short summary of the change: one subject line, and a few short lines only if needed. No Co-Authored-By lines, no agent or model names, no logs.
+- Work on a branch. Changes reach `main` through a squash merge with a short summary.
+- Run CI only when the work is ready to merge; until then use focused checks and `[skip ci]`.
 
-## Implementation Rules
+## Read more
 
-- Work on the `main` branch unless the user explicitly states otherwise.
-- Run GitHub CI only when the feature, plan, or goal is fully implemented and ready to merge into `main`; use focused local or remote checks and `[skip ci]` commits until then.
-- Keep core behavior below clients, in kernel services and shared protocol contracts.
-- Do not implement behavior only in the web app or only in the TUI unless explicitly marked temporary.
-- Prefer one shared protocol path across local TUI, remote TUI, web, and native clients.
-- Hosted Cloud relay runtime should use the Caddy-fronted `wss://` relay URL for browser, kernel, remote TUI, and kernel-to-kernel remote-agent connections. Local and self-hosted relay setups may keep using `ws://`.
-- Use heartbeat freshness for relay target selection; stale targets must not be treated as online.
-- Preserve local/dev/self-host compatibility where practical, but fail loudly when hosted Cloud configuration violates the runtime architecture.
-- The independent reviewer services and state under `~/.chariox-reviewer` are shared infrastructure, not an unrelated-worktree cleanup target: do not kill, disable, restart, or prune them unless the reviewer itself is being repaired or the user explicitly asks to stop it.
-- Be lean, don't over engineer and delete all old/unnecessary code along the way.
-- Keep coordinators as wiring only; move policy, state mutation, rendering, transport I/O, and protocol adapters into named responsibility modules before a file becomes a mega-file.
-- Always clean up temporary drill artifacts, orphaned provider processes, and large build outputs you no longer need before handing work back.
-- Store screenshots and other validation evidence under `/Users/miguel/.codex/evidence/<task>/`, never inside a repository or in Git.
-- Keep source checkouts and worktrees outside `~/.chariox` (for example under `~/chariox-worktrees/<task>/`). A kernel without an explicit `CHARIOX_HOME` protects all of `~/.chariox` and rejects provider working directories inside it.
-- Store persistent local development and drill state under `~/.chariox/dev/<task-or-kernel>/`. Set `CHARIOX_HOME` to an explicit absolute subdirectory there; use `mktemp -d` for disposable state. Never point `CHARIOX_HOME`, `CHARIOX_LOG_DIR`, kernel state, or drill scratch roots inside a repository.
-- Never create `.arroba` directories or other paths using the retired product name. A workspace `.chariox/` directory is allowed only for explicit user-authored workspace-scoped capabilities or source; automatic logs, runtime mailboxes, generated workflow code, test state, and drill artifacts must remain outside repositories.
-
-## Provider-Native Permission Visibility
-
-Native provider permission prompts are surfaced to the user out-of-band through Chariox runtime interactions. Do not infer that no approval prompt appeared just because a shell/tool result lacks `approval requested` or `approved` metadata. The result visible to the agent normally contains only the provider tool execution outcome, such as stdout/stderr, exit code, and status after the user has already answered the prompt.
-
-## Claude credential transfer for Linux runners
-
-Claude Code on macOS stores a live login in a profile-scoped Keychain service named `Claude Code-credentials-<hash>`, where `<hash>` is the first eight hexadecimal characters of SHA-256 over `CLAUDE_CONFIG_DIR`. Older default profiles may use `Claude Code-credentials`. Linux runners and containers expect the credential at `~/.claude/.credentials.json`.
-
-Chariox must export the exact profile-scoped Keychain item automatically when materializing a linked or managed Claude account. It may use the legacy unscoped item only for the default profile. Reject empty or non-refreshable credentials before provisioning instead of copying them. For a manual runner drill outside the managed-context path, export the matching scoped item to a temporary local file, copy it into the runner credential profile home as `.claude/.credentials.json`, set mode `600`, verify with `HOME=<profile-home> claude auth status`, and delete the temporary local file. Never print the credential payload or commit it.
-
-## Key retention and rotation
-
-- Private signing keys and provider credentials are durable assets, never build
-  artifacts. Keep them outside repositories, worktrees, task scratch, evidence,
-  container layers, and compiler output. Use a dedicated `~/.chariox/keys/`
-  directory with mode 0700 and private files with mode 0600.
-- Before using a key, verify its public fingerprint against the approved public
-  inventory. Never print private material, put it in prompts/logs, or transfer it
-  to a builder or deployment target. Targets receive public verification pins only.
-- Before first use, create a separately protected backup and prove restoration
-  by deriving its public key and signing/verifying a synthetic challenge. Record
-  only public fingerprints, locations, owner, purpose, date, and backup scope.
-  A same-machine backup does not protect against disk or machine loss.
-- Before cleanup, inventory credentials and protected paths; exclude key stores,
-  backups, credential profiles, and shared reviewer state. Never recursively
-  delete a parent containing them. Stop if ownership or contents are unclear.
-- Key loss is not permission to substitute another key. Obtain explicit rotation
-  authorization, generate a new epoch, update reviewed public trust pins and
-  signing inputs, and test acceptance of the new key plus rejection of the old
-  key. Never edit an already signed artifact or claim rotation is deployed before
-  the consuming systems have been verified. Preserve public rotation history.
-- Keep host-specific key inventories, backup locations, and recovery gaps in
-  protected operator-local notes, not public repositories. Exclude all recorded
-  key and backup locations from artifact/worktree cleanup. Machine-loss recovery
-  remains unproven until an approved off-device backup has passed a restore test.
-
-## Coding style
-
-Simple: be clean and minimalistic. Strive for simplest solution always.
+Architecture: `docs/ARCHITECTURE.md`. Protocol, including native provider terminals (section 3.3.2): `docs/PROTOCOL.md`. Provider accounts: `docs/PROVIDER_ACCOUNTS.md`.

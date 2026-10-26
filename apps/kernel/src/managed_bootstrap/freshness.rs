@@ -183,6 +183,10 @@ pub(super) fn capture_old_generation_runtime_identity_report(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing capture_old_generation_runtime_identity_report_with_paths operation signature and explicit context arguments"
+)]
 pub(super) fn capture_old_generation_runtime_identity_report_with_paths(
     environment_id: &str,
     machine_id: &str,

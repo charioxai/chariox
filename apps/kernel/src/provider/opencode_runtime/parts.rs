@@ -9,6 +9,10 @@ use super::snapshot::refresh_opencode_message_metadata;
 use super::transcript::render_tool_transcript_update;
 use super::{OpenCodeOutputChunk, OpenCodeRuntimeState};
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing handle_message_part_delta operation signature and explicit context arguments"
+)]
 pub(super) fn handle_message_part_delta(
     state: &mut OpenCodeRuntimeState,
     provider_run_id: &str,
@@ -19,7 +23,14 @@ pub(super) fn handle_message_part_delta(
     delta: String,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) -> Result<(), DaemonError> {
-    if session_id != state.session_id || field != "text" || delta.is_empty() {
+    // A completed HTTP snapshot already includes every byte of this part.
+    // SSE delivery may lag behind that snapshot; appending those deltas replays
+    // the answer. Unfinished parts still accept identical, legitimate deltas.
+    if session_id != state.session_id
+        || field != "text"
+        || delta.is_empty()
+        || state.finalized_text_part_ids.contains(&part_id)
+    {
         return Ok(());
     }
     state
@@ -32,11 +43,6 @@ pub(super) fn handle_message_part_delta(
         return Ok(());
     }
     let Some(role) = state.message_roles.get(&message_id).map(String::as_str) else {
-        state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
         return Ok(());
     };
     if role != "assistant" {
@@ -62,13 +68,7 @@ pub(super) fn handle_message_part_delta(
             );
         }
         Some(_) => {}
-        None => {
-            state
-                .buffered_text_deltas
-                .entry(part_id)
-                .or_default()
-                .push(delta);
-        }
+        None => {}
     }
     Ok(())
 }
@@ -136,6 +136,15 @@ fn emit_part_text(
     if !is_assistant {
         return;
     }
+    // Only the SSE cumulative update establishes the event stream's position.
+    // A snapshot may already have published a later prefix of this same block.
+    let streamed = state
+        .streamed_text_by_part
+        .entry(part.id.clone())
+        .or_default();
+    if !streamed.starts_with(&part.text) {
+        *streamed = part.text.clone();
+    }
     emit_authoritative_part_text(state, &part.id, &part.text, kind, chunks);
 }
 
@@ -146,31 +155,25 @@ pub(super) fn emit_authoritative_part_text(
     kind: TerminalOutputKind,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
-    // A subscriber can join after a part already has text and receive only the
-    // next delta. Until a full part update or snapshot establishes the prefix,
-    // those deltas must stay buffered; treating their byte count as an offset
-    // skips the real prefix and duplicates the final suffix on reconciliation.
+    // MP-08 / MP-10: a live subscription established before a new prompt
+    // sees its empty part announcement from offset zero. Reconnected/late
+    // subscriptions still need a non-empty authoritative prefix.
     let Some(emitted) = state.emitted_text_by_part.get_mut(part_id) else {
-        // `message.part.updated` first announces a newly-created empty text
-        // part. That is metadata, not proof that streaming began at offset
-        // zero for this subscriber. Keep subsequent deltas buffered until a
-        // non-empty cumulative part or snapshot supplies the real prefix.
-        if text.is_empty() {
+        if text.is_empty() && !state.live_text_from_start {
             return;
         }
-        state.buffered_text_deltas.remove(part_id);
         state
             .emitted_text_by_part
             .insert(part_id.to_string(), text.to_string());
-        chunks.push(OpenCodeOutputChunk {
-            kind,
-            merge_key: Some(part_id.to_string()),
-            bytes: text.as_bytes().to_vec(),
-        });
+        if !text.is_empty() {
+            chunks.push(OpenCodeOutputChunk {
+                kind,
+                merge_key: Some(part_id.to_string()),
+                bytes: text.as_bytes().to_vec(),
+            });
+        }
         return;
     };
-
-    state.buffered_text_deltas.remove(part_id);
 
     if text == emitted || emitted.starts_with(text) {
         return;
@@ -198,20 +201,46 @@ fn emit_part_delta(
     kind: TerminalOutputKind,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
-    let Some(emitted) = state.emitted_text_by_part.get_mut(&part_id) else {
+    if state.live_text_from_start
+        && state
+            .emitted_text_by_part
+            .get(&part_id)
+            .is_some_and(String::is_empty)
+    {
         state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
+            .streamed_text_by_part
+            .entry(part_id.clone())
+            .or_default();
+    }
+    let Some(streamed) = state.streamed_text_by_part.get_mut(&part_id) else {
         return;
     };
-    emitted.push_str(&delta);
-    chunks.push(OpenCodeOutputChunk {
-        kind,
-        merge_key: Some(part_id),
-        bytes: delta.into_bytes(),
-    });
+    if !state.live_text_from_start && streamed.is_empty() {
+        return;
+    }
+    let caught_up = state
+        .emitted_text_by_part
+        .get(&part_id)
+        .is_some_and(|emitted| emitted.as_str() == streamed.as_str());
+    streamed.push_str(&delta);
+    if caught_up {
+        state
+            .emitted_text_by_part
+            .get_mut(&part_id)
+            .unwrap()
+            .push_str(&delta);
+        chunks.push(OpenCodeOutputChunk {
+            kind,
+            merge_key: Some(part_id),
+            bytes: delta.into_bytes(),
+        });
+        return;
+    }
+    if !state.emitted_text_by_part.contains_key(&part_id) {
+        return;
+    }
+    let cumulative = streamed.clone();
+    emit_authoritative_part_text(state, &part_id, &cumulative, kind, chunks);
 }
 
 fn emit_tool_summary(

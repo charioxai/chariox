@@ -16,7 +16,15 @@ impl Fixture {
         Self::with_session_id(format!("decision-cleanup-{:016x}", rand::random::<u64>()))
     }
     fn with_session_id(session_id: String) -> Self {
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        Self::with_session_config(session_id, false)
+    }
+    fn with_room_tools() -> Self {
+        Self::with_session_config(format!("am2-sweep-{:016x}", rand::random::<u64>()), true)
+    }
+    fn with_session_config(session_id: String, room_tools: bool) -> Self {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = room_tools;
+        let app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             session_id,
             None,
@@ -233,9 +241,11 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
         pending.write().insert(
             id.into(),
             super::super::PendingInteraction {
+                kernel_wide_interaction: None,
                 agent_lifetime: None,
                 session_id: "same-session".into(),
                 session_store_identity: sessions.weak_identity(),
+                user_domain_interaction: None,
                 kernel_operation_owner: owner,
                 terminal_credential_owner: None,
                 kernel_operation_deadline: None,
@@ -268,6 +278,163 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.state.owned.sweep_kernel_operation_interactions(true);
+    }
+}
+
+#[tokio::test]
+async fn a02_unloaded_room_cannot_abort_live_room_supervision() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let f = Fixture::with_room_tools();
+    let store = &f.state.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: "unloaded-room".into(),
+            agent: "old-agent".into(),
+            prompt: "a-old-blocked".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Block {
+            task: "a-old-blocked".into(),
+            prompt: "a-old-blocked".into(),
+            reason: "Original receipt requires owner reconciliation".into(),
+        })
+        .unwrap();
+    let before = store.agent_tasks(Some("unloaded-room"), None).unwrap();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "idle-agent".into(),
+            prompt: "z-current-idle".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    // A plain turn with no live executor is cancelled; ledger work (an obligation)
+    // is what makes the sweep block it for the owner.
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "idle-agent".into(),
+            prompt: "z-current-idle".into(),
+            run: None,
+            id: "z-current-obligation".into(),
+            kind: "delegate".into(),
+            resource: Some("child".into()),
+            now: 1,
+        })
+        .unwrap();
+    f.state
+        .sweep_agent_lifecycle()
+        .await
+        .expect("old unloaded Room must not stop current Room sweep and owner visibility");
+    assert_eq!(
+        store.agent_tasks(Some("unloaded-room"), None).unwrap(),
+        before,
+        "unavailable Room obligations remain durable without guessed completion or replay"
+    );
+    let current = store.agent_tasks(Some(&f.session), None).unwrap().remove(0);
+    assert_eq!(current.state, ExecutionState::Blocked);
+    assert!(f.active_ids().contains(&format!(
+        "task-blocked-{}-{}",
+        current.task_id, current.blocked_revision
+    )));
+}
+
+#[tokio::test]
+async fn a02_owner_resume_failure_is_visible_and_cannot_leave_idle_working() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    for stale in [false, true] {
+        let f = Fixture::new();
+        let store = &f.state.owned.durable_state_store;
+        let task_id = f.id("task");
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                room: f.session.clone(),
+                agent: "deleted-agent".into(),
+                prompt: task_id.clone(),
+                run: None,
+                now: 1,
+            })
+            .unwrap();
+        let Outcome::Task(blocked) = store
+            .agent_lifecycle(Operation::Block {
+                task: task_id.clone(),
+                prompt: task_id.clone(),
+                reason: "Owner clarification required".into(),
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let interaction = format!("task-blocked-{}-{}", task_id, blocked.blocked_revision);
+        f.state
+            .ensure_task_owner_interaction(blocked.clone())
+            .await
+            .unwrap();
+        if stale {
+            store
+                .agent_lifecycle(Operation::OwnerResponse {
+                    task: task_id.clone(),
+                    revision: blocked.blocked_revision,
+                    resume: true,
+                    now: 2,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::Block {
+                    task: task_id.clone(),
+                    prompt: task_id.clone(),
+                    reason: "Newer owner decision required".into(),
+                })
+                .unwrap();
+        }
+        f.state
+            .owned
+            .resolve_runtime_interaction(
+                &f.session,
+                &interaction,
+                "resume",
+                None,
+                Some(DEFAULT_LOCAL_USER_ID),
+                false,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let history = f
+                    .state
+                    .owned
+                    .operational_history_store
+                    .load_session_history_entries(&f.session, Some("deleted-agent"))
+                    .unwrap();
+                if history
+                    .iter()
+                    .any(|entry| entry.text.contains("Owner action failed"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("rejected owner disposition must be visible to every client");
+        let task = store
+            .agent_tasks(Some(&f.session), Some("deleted-agent"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(task.state, ExecutionState::Blocked);
+        if stale {
+            assert_eq!(task.reason, "Newer owner decision required");
+        } else {
+            assert!(task.reason.contains("Owner action failed"));
+        }
     }
 }
 
@@ -396,12 +563,23 @@ async fn a_persisted_decision_without_a_responder_is_dropped_after_restart() {
                 "allow", "Install", "allow", None,
             )],
         ));
-        // A vault prompt's responder also lives only in the kernel process;
-        // other interactions are left alone.
-        for id in ["vault-unlock-agent-1-1", "provider-notice-1"] {
+        // Every vault prompt's responder also lives only in the kernel
+        // process (unlock, duration, management menu, passphrase change);
+        // other interactions are left alone. One agent each: a session holds
+        // a single interaction per subject.
+        for (agent, id) in [
+            "vault-unlock-agent-1-1",
+            "vault-unlock-lease-agent-2-1",
+            "vault-manage-agent-3-1",
+            "vault-passphrase-current-agent-4-1",
+            "provider-notice-1",
+        ]
+        .into_iter()
+        .enumerate()
+        {
             session.add_active_interaction(RuntimeInteraction::new(
                 id,
-                "agent-1",
+                format!("agent-{}", agent + 1),
                 crate::session::RuntimeInteractionKind::Choice,
                 crate::session::RuntimeInteractionLevel::Critical,
                 None,
@@ -502,4 +680,348 @@ async fn app_file_export_saved_from_another_session_closes_only_its_presented_pr
         unrelated.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
     ));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: owner pause keeps controls usable.
+#[tokio::test]
+async fn a12_owner_paused_goal_withdraws_decision_without_reopening_on_interval() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = Fixture::with_room_tools();
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("goal");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::StartGoal {
+            task: id.clone(),
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            objective: "Implement and verify the owner request".into(),
+            minutes: 1,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: id.clone(),
+            prompt: id.clone(),
+            reason: "Owner decision required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.active_ids().len(),
+        1,
+        "a real decision must request owner action"
+    );
+    let mut approval = f.register("unrelated-approval").unwrap();
+    let attachment = f
+        .state
+        .owned
+        .attachment_store
+        .attach(
+            &mut f.state.owned.session_store.write(),
+            crate::attachment::AttachRequest::new(
+                &f.session,
+                "owner-terminal",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ),
+        )
+        .unwrap();
+    let response = f
+        .state
+        .control_goal_prompt(
+            &crate::local::SubmitPromptRequest {
+                session_id: f.session.clone(),
+                attachment_id: attachment.id().into(),
+                target_agent_id: Some("root".into()),
+                prompt: format!(
+                    "/goal pause {} {}",
+                    blocked.goal.as_ref().unwrap().id,
+                    blocked.revision
+                ),
+                attachments: vec![],
+            },
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .await
+        .unwrap();
+    let Some(LocalDaemonResponse::AgentTaskUpdated { task: paused, .. }) = response else {
+        panic!()
+    };
+    let paused = *paused;
+    assert_eq!(f.active_ids(), vec![f.id("unrelated-approval")], "normal owner Pause must withdraw the Goal decision immediately, preserving unrelated approval");
+    f.state
+        .ensure_task_owner_interaction(paused.clone())
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids() == vec![f.id("unrelated-approval")],
+        "explicit owner pause must withdraw its old decision and not open another modal"
+    );
+    let mut current = paused;
+    for minutes in ["2", "1", "60"] {
+        let Outcome::Task(updated) = store
+            .agent_lifecycle(Operation::ControlGoal {
+                task: id.clone(),
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                revision: current.revision,
+                action: "interval".into(),
+                value: Some(minutes.into()),
+                now: 3,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        f.state
+            .ensure_task_owner_interaction(updated.clone())
+            .await
+            .unwrap();
+        f.state.sweep_agent_lifecycle().await.unwrap();
+        assert!(
+            f.active_ids() == vec![f.id("unrelated-approval")],
+            "interval edits and sweeps must not reopen an owner-paused Goal modal"
+        );
+        assert!(updated.goal.as_ref().unwrap().paused);
+        current = updated;
+    }
+    let Outcome::Task(resumed) = store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: id.clone(),
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            revision: current.revision,
+            action: "resume".into(),
+            value: None,
+            now: 4,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let next_prompt = resumed.pending_prompt_id.unwrap();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: next_prompt.clone(),
+            run: None,
+            now: 4,
+        })
+        .unwrap();
+    let Outcome::Task(decision) = store
+        .agent_lifecycle(Operation::Block {
+            task: id.clone(),
+            prompt: next_prompt,
+            reason: "New owner decision required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(decision)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.active_ids().len(),
+        2,
+        "a new genuine decision after Resume must remain visible"
+    );
+    assert!(matches!(
+        approval.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+}
+
+// MP-08/MP-10/MP-11: takeover is a wait, never a modal over Release.
+#[tokio::test]
+async fn computer_human_control_wait_does_not_open_an_owner_modal() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::session::{CanonicalViewport, EnvironmentActor, EnvironmentActorKind, InputTarget};
+    let f = Fixture::with_room_tools();
+    f.state
+        .start_room_environment(
+            &f.session,
+            CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+        )
+        .unwrap();
+    f.state
+        .owned
+        .session_store
+        .write()
+        .transition_room_environment(&f.session, crate::session::EnvironmentLifecycle::Ready)
+        .unwrap();
+    f.state
+        .request_room_environment_takeover_as_actor(
+            &f.session,
+            EnvironmentActor::new("human-view", EnvironmentActorKind::Human, "Human"),
+            InputTarget::Desktop,
+        )
+        .unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("computer-wait");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store.agent_lifecycle(Operation::Block {task:id.clone(),prompt:id,reason:"Computer input stopped because a human has control of the desktop; waiting for Release".into()}).unwrap() else {panic!()};
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids().is_empty(),
+        "a human-control wait must keep Release clickable"
+    );
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids().is_empty(),
+        "the periodic sweep must not reopen a modal"
+    );
+}
+
+// MP-08/MP-10/MP-11: takeover is a wait, never a modal over Release.
+#[tokio::test]
+async fn computer_release_before_blocked_event_does_not_open_an_owner_modal() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::session::{CanonicalViewport, EnvironmentActor, EnvironmentActorKind, InputTarget};
+    let f = Fixture::with_room_tools();
+    f.state
+        .start_room_environment(
+            &f.session,
+            CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+        )
+        .unwrap();
+    f.state
+        .owned
+        .session_store
+        .write()
+        .transition_room_environment(&f.session, crate::session::EnvironmentLifecycle::Ready)
+        .unwrap();
+    f.state
+        .request_room_environment_takeover_as_actor(
+            &f.session,
+            EnvironmentActor::new("human-view", EnvironmentActorKind::Human, "Human"),
+            InputTarget::Desktop,
+        )
+        .unwrap();
+    // The human released after the tool refusal, before the provider's Blocked event.
+    f.state
+        .release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop)
+        .unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("computer-wait");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store.agent_lifecycle(Operation::Block {task:id.clone(),prompt:id,reason:"Computer input stopped because a human has control of the desktop; waiting for Release".into()}).unwrap() else {panic!()};
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids().is_empty(),
+        "a human-control wait must keep Release clickable"
+    );
+}
+
+// MP-08/MP-10/MP-11: takeover is a wait, never a modal over Release.
+#[tokio::test]
+async fn computer_task_decision_leaves_release_accessible_until_human_releases() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::session::{CanonicalViewport, EnvironmentActor, EnvironmentActorKind, InputTarget};
+    let f = Fixture::with_room_tools();
+    f.state
+        .start_room_environment(
+            &f.session,
+            CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+        )
+        .unwrap();
+    f.state
+        .owned
+        .session_store
+        .write()
+        .transition_room_environment(&f.session, crate::session::EnvironmentLifecycle::Ready)
+        .unwrap();
+    f.state
+        .request_room_environment_takeover_as_actor(
+            &f.session,
+            EnvironmentActor::new("human-view", EnvironmentActorKind::Human, "Human"),
+            InputTarget::Desktop,
+        )
+        .unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("computer-wait");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: id.clone(),
+            prompt: id,
+            reason: "Goal evaluation timed out; inspect the receipt and choose whether to resume"
+                .into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert!(
+        f.active_ids().is_empty(),
+        "a human-control wait must keep Release clickable"
+    );
+    f.state
+        .release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop)
+        .unwrap();
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.active_ids().len(),
+        1,
+        "genuine decisions remain available after Release"
+    );
 }

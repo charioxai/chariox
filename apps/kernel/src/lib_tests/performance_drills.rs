@@ -37,6 +37,7 @@ async fn performance_drill_session_history_outline() {
         operational_history.clone(),
         crate::local::GetSessionHistoryOutlineRequest {
             session_id: session.id().to_string(),
+            include_prefetched_content: false,
             agent_ids: Some(agent_ids.clone()),
             latest_prompt_count: Some(4),
             cursor: None,

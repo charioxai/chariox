@@ -93,6 +93,9 @@ fn config(server: &Fixture) -> DaemonConfig {
     let mut config = DaemonConfig::for_tests();
     config.daemon_id = "home-1".into();
     config.cloud_relay = Some(PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         account_id: "account-1".into(),
         user_id: "owner-1".into(),
         realm_id: "realm-1".into(),

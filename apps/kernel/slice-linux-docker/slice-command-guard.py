@@ -9,7 +9,13 @@ import signal
 import stat
 import subprocess
 import sys
+sys.dont_write_bytecode = True
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from owned_process_signals import OwnedProcesses
+
+owned_signals = OwnedProcesses()
 
 
 def progress_timeout_seconds():
@@ -32,10 +38,12 @@ def reset_child_signals():
 def stop_orphaned_anchor(parent_pid):
     if os.getppid() == parent_pid:
         return
+    # The anchor records itself before launching any children.
+    owned_signals.refresh()
     # An abruptly lost supervisor cannot release this still-occupied group.
-    os.killpg(os.getpgrp(), signal.SIGTERM)
+    owned_signals.group(anchor_signal_handle, signal.SIGTERM)
     time.sleep(0.1)
-    os.killpg(os.getpgrp(), signal.SIGKILL)
+    owned_signals.group(anchor_signal_handle, signal.SIGKILL)
 
 
 def finish_worker(status, progress_fd, parent_pid):
@@ -52,6 +60,8 @@ def command_worker(command, progress_fd, parent_pid):
     # command exits while one of its descendants retains an output pipe.
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    global anchor_signal_handle
+    anchor_signal_handle = owned_signals.record(os.getpid())
     stop_orphaned_anchor(parent_pid)
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              preexec_fn=reset_child_signals)
@@ -88,6 +98,8 @@ def command_worker(command, progress_fd, parent_pid):
 
 
 def digest_worker(path, progress_fd, parent_pid):
+    global anchor_signal_handle
+    anchor_signal_handle = owned_signals.record(os.getpid())
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     digest = hashlib.sha256()
@@ -113,6 +125,8 @@ def digest_worker(path, progress_fd, parent_pid):
 
 
 def source_digest_worker(repository, progress_fd, parent_pid):
+    global anchor_signal_handle
+    anchor_signal_handle = owned_signals.record(os.getpid())
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     stop_orphaned_anchor(parent_pid)
@@ -153,6 +167,7 @@ def run_owned(worker_args, timeout_seconds=None, progress=False):
     try:
         child = subprocess.Popen([sys.executable, __file__, *worker_args, str(progress_write), str(os.getpid())],
                                  start_new_session=True, pass_fds=(progress_write,))
+        child.owned_signal_handle = owned_signals.record(child.pid, watch=True, fresh_launch=True)
         os.close(progress_write)
         progress_write = None
         last_progress = started = time.monotonic()
@@ -201,20 +216,20 @@ def run_owned(worker_args, timeout_seconds=None, progress=False):
                 # The foreground command has settled; remaining group members
                 # cannot be allowed to survive a successful control operation.
                 try:
-                    os.killpg(child.pid, signal.SIGKILL)
+                    owned_signals.group(child.owned_signal_handle, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 child.wait()
             else:
                 try:
-                    os.killpg(child.pid, signal.SIGTERM)
+                    owned_signals.group(child.owned_signal_handle, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
                 try:
                     child.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     try:
-                        os.killpg(child.pid, signal.SIGKILL)
+                        owned_signals.group(child.owned_signal_handle, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
                     child.wait()

@@ -289,7 +289,7 @@ pub(crate) fn external_provider_session_discovery_signature_for_candidates(
     let mut files = paths
         .iter()
         .filter_map(|(provider, path)| {
-            let metadata = fs::metadata(&path).ok()?;
+            let metadata = fs::metadata(path).ok()?;
             Some(ExternalProviderSessionFileSignature {
                 provider: provider.clone(),
                 path: path.clone(),
@@ -439,9 +439,7 @@ fn same_path(left: &str, right: &str) -> bool {
 }
 
 fn provider_matches(filter: Option<&str>, provider: &str) -> bool {
-    filter.map_or(true, |filter| {
-        normalized_external_provider_id(filter) == provider
-    })
+    filter.is_none_or(|filter| normalized_external_provider_id(filter) == provider)
 }
 
 fn normalized_external_provider_id(provider: &str) -> &'static str {

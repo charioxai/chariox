@@ -15,11 +15,19 @@ impl KernelRuntimeState {
             .processes
             .values()
             .filter(|process| process.endpoint_mode == crate::provider::AgentEndpointMode::Managed)
-            .filter_map(|process| {
-                process
-                    .identity
-                    .clone()
-                    .map(|identity| (identity, process.owner_provider_run_ids.clone()))
+            .flat_map(|process| {
+                // The endpoint root is fixed at runtime initialization, never
+                // inferred from a requesting descendant during an elevated turn.
+                [
+                    process.identity.clone(),
+                    process
+                        .endpoint_identity
+                        .clone()
+                        .filter(ProcessIdentity::alive),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|identity| (identity, process.owner_provider_run_ids.clone()))
             })
             .collect::<Vec<_>>();
         // Claude's stream-JSON child is owned by the provider actor, including
@@ -51,33 +59,24 @@ impl KernelRuntimeState {
         let [run_id] = owners.as_slice() else {
             return Err(error("sudo requires one dedicated provider process"));
         };
-        let turns = self
+        let turn = self.sudo_for_provider_run(run_id)?;
+        let session = self.owned.session_store.get_session(&turn.session_id)?;
+        let born_after_cutoff = self
             .owned
-            .sudo_turns
-            .lock()
-            .expect("access state poisoned")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        turns
-            .into_iter()
-            .find(|turn| {
-                turn.provider_run_id.as_deref() == Some(run_id.as_str())
-                    && self.sudo_live(turn)
-                    && self
-                        .owned
-                        .sudo_process_cutoffs
-                        .lock()
-                        .expect("sudo process cutoffs poisoned")
-                        .get(&turn.entry_id)
-                        .is_some_and(|cutoff| {
-                            chain[..root_index].iter().all(|identity| {
-                                crate::runtime::kernel_access::process::born_after(
-                                    identity, *cutoff,
-                                )
-                            })
-                        })
-            })
+            .prompt_state_owner
+            .sudo_bound_process_cutoff(
+                &session,
+                &turn.agent_id,
+                &turn.entry_id,
+                turn.prompt_id.as_deref().unwrap_or_default(),
+            )
+            .is_some_and(|cutoff| {
+                chain[..root_index].iter().all(|identity| {
+                    crate::runtime::kernel_access::process::born_after(identity, cutoff)
+                })
+            });
+        born_after_cutoff
+            .then_some(turn)
             .ok_or_else(|| error("this provider turn has no sudo authority"))
     }
 

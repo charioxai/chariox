@@ -199,10 +199,106 @@ test("focused interaction paste leaves other pastes to the prompt", () => {
   assert.equal(harness.customReplies.has("interaction-1"), false)
 })
 
+test("MP-08/MP-11 a provider login code reports progress, never only 'interaction answered'", async () => {
+  const actions: string[] = []
+  const login = loginInteractionFixture()
+  const harness = createHarness({ interaction: login, providerLogin: loginActions(actions) })
+  harness.selectedIndexes.set(login.id, 1)
+  harness.customEditing.add(login.id)
+  harness.customReplies.set(login.id, "code#state")
+
+  assert.equal(await harness.controller.submitChoice(), true)
+
+  assert.deepEqual(harness.responses(), [{ sessionId: "session-1", interactionId: login.id, choiceId: "provider-response", customReply: "code#state" }])
+  assert.deepEqual(actions, ["codeSent"])
+  assert.equal(harness.customReplies.has(login.id), false)
+  assert.ok(!harness.footerMessages().some((value) => value.message === "interaction answered"))
+})
+
+test("MP-08/MP-11 O and C act on the login link only while the focused code field is empty", async () => {
+  const actions: string[] = []
+  const login = loginInteractionFixture()
+  const harness = createHarness({ interaction: login, providerLogin: loginActions(actions) })
+  harness.selectedIndexes.set(login.id, 1)
+  harness.customEditing.add(login.id)
+
+  assert.equal(harness.controller.handleKey({ name: "o", sequence: "o" }), true)
+  assert.equal(harness.controller.handleKey({ name: "c", sequence: "c" }), true)
+  assert.deepEqual(actions, ["openLink", "copyLink"])
+  assert.equal(harness.customReplies.get(login.id) ?? "", "")
+
+  harness.customReplies.set(login.id, "x")
+  assert.equal(harness.controller.handleKey({ name: "o", sequence: "o" }), true)
+  assert.equal(harness.customReplies.get(login.id), "xo")
+  assert.deepEqual(actions, ["openLink", "copyLink"])
+
+  // Not editing: letters belong to the prompt.
+  harness.customEditing.delete(login.id)
+  harness.customReplies.delete(login.id)
+  assert.equal(harness.controller.handleKey({ name: "c", sequence: "c" }), false)
+  assert.deepEqual(actions, ["openLink", "copyLink"])
+})
+
+function loginActions(actions: string[]): NonNullable<FocusedInteractionChoiceControllerDeps["providerLogin"]> {
+  return {
+    stripState: () => ({ view: { url: "https://claude.ai/oauth/authorize" } }),
+    codeSent: () => { actions.push("codeSent"); return true },
+    openLink: async () => { actions.push("openLink") },
+    copyLink: async () => { actions.push("copyLink") },
+  }
+}
+
+test("MP-08/MP-11 kernel retry and Vault replies report continued sign-in, not an input acknowledgement or cancellation", async () => {
+  for (const vault of [false, true]) {
+    const login = loginInteractionFixture()
+    login.custom_choice = vault ? { id: "passphrase", label: "Vault passphrase", input_kind: "secret", min_length: 1 } : null
+    if (!vault) login.choices.push({ id: "retry", label: "Retry authorization", reply: "retry" })
+    const actions = { ...loginActions([]), stripState: () => null, codeSent: () => false }
+    const h = createHarness({ interaction: login, providerLogin: actions })
+    h.selectedIndexes.set(login.id, 1)
+    if (vault) h.customReplies.set(login.id, "synthetic-passphrase")
+    assert.equal(await h.controller.submitChoice(), true)
+    assert.equal(h.footerMessages().at(-1)?.message, "Sign-in continues; waiting for the kernel…")
+    await h.controller.submitChoice(0)
+    assert.equal(h.footerMessages().at(-1)?.message, "Cancelling the sign-in…")
+  }
+})
+
+function loginInteractionFixture(): RuntimeInteraction {
+  return {
+    id: "provider-auth-recovery:login-1", agent_id: "agent-1", kind: "choice", level: "warning", message: "Sign in",
+    choices: [{ id: "cancel", label: "Cancel", reply: "cancel" }],
+    custom_choice: { id: "provider-response", label: "Send response", input_kind: "secret", min_length: 1, max_length: 8192 },
+    requested_at_ms: 1,
+    provider_login: { kernel_id: "fleet", login: { provider: "claude", account_profile: "p", login_kind: "terminal_setup_token", login_id: "login-1", auth_url: "https://claude.ai/oauth/authorize" }, terminal_output_base64: "" },
+  }
+}
+
+test("MP-08 / MP-10 PANE-10: Enter and digits belong to a composer that already holds text", () => {
+  const typed = createHarness({ composerText: "Also print banana, twice." })
+  for (const name of ["return", "enter", "1", "2"]) {
+    assert.equal(typed.controller.handleKey({ name, sequence: name }), false, `${name} must reach the composer`)
+  }
+  assert.deepEqual(typed.responses(), [])
+
+  const empty = createHarness({ composerText: "  " })
+  assert.equal(empty.controller.handleKey({ name: "return", sequence: "\r" }), true)
+  assert.equal(empty.controller.handleKey({ name: "1", sequence: "1" }), true)
+  assert.equal(empty.controller.handleKey({ name: "down", sequence: "" }), true, "arrows still choose")
+
+  const customEditing = createHarness({ composerText: "ignored while typing a card reply" })
+  customEditing.customEditing.add("interaction-1")
+  customEditing.selectedIndexes.set("interaction-1", 2)
+  customEditing.customReplies.set("interaction-1", "yes")
+  assert.equal(customEditing.controller.handleKey({ name: "return", sequence: "\r" }), true)
+})
+
 function createHarness(options: {
   interaction?: RuntimeInteraction | null
   attached?: boolean
   respondToInteraction?: FocusedInteractionChoiceControllerDeps["respondToInteraction"]
+  providerLogin?: FocusedInteractionChoiceControllerDeps["providerLogin"]
+  composerText?: string
 } = {}) {
   const selectedIndexes = new Map<string, number>()
   const customReplies = new Map<string, string>()
@@ -223,6 +319,7 @@ function createHarness(options: {
   const controller = createFocusedInteractionChoiceController({
     getFocusedInteraction: () => options.interaction === undefined ? interactionFixture() : options.interaction,
     isAttached: () => options.attached ?? true,
+    getComposerText: () => options.composerText ?? "",
     getSessionId: () => "session-1",
     getSelectedIndex: (interactionId) => selectedIndexes.get(interactionId),
     setSelectedIndex: (interactionId, index) => {
@@ -264,6 +361,7 @@ function createHarness(options: {
       footerMessages.push({ message, tone })
     },
     formatError: (error) => error instanceof Error ? error.message : String(error),
+    ...(options.providerLogin ? { providerLogin: options.providerLogin } : {}),
   })
 
   return {
@@ -327,3 +425,28 @@ function runtimeSession(id: string): RuntimeSession {
     },
   }
 }
+
+test("MP-08/MP-11 a pending or acknowledged choice cannot be submitted twice", async () => {
+  let finish!: (session: RuntimeSession) => void
+  const h = createHarness({ respondToInteraction: () => new Promise(resolve => { finish = resolve }) })
+  const first = h.controller.submitChoice(0)
+  await h.controller.submitChoice(0)
+  assert.equal(h.responses().length, 1)
+  finish({ ...runtimeSession("session-1"), active_interactions: [interactionFixture()] })
+  await first
+  assert.deepEqual(h.appliedSessions().at(-1)?.active_interactions, [])
+  await h.controller.submitChoice(0)
+  assert.equal(h.responses().length, 1)
+})
+
+test("MP-08/MP-11 a failed choice re-enables retry with its error", async () => {
+  let attempts = 0
+  const h = createHarness({ respondToInteraction: async () => {
+    if (++attempts === 1) throw new Error("connection failed")
+    return runtimeSession("session-1")
+  } })
+  await h.controller.submitChoice(0)
+  assert.equal(h.footerMessages().at(-1)?.tone, "error")
+  await h.controller.submitChoice(0)
+  assert.equal(attempts, 2)
+})

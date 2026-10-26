@@ -15,7 +15,7 @@ import { join } from "node:path"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 
 const cacheSchemaVersion = 2
-const inventorySchemaVersion = 11
+const inventorySchemaVersion = 13
 const cacheRetentionMs = 30 * 24 * 60 * 60 * 1_000
 const maximumCachedKernels = 64
 const activityPersistDebounceMs = 5_000
@@ -263,6 +263,8 @@ function defaultWaitingRoomInventoryCacheDir(): string {
   if (explicit) {
     return explicit
   }
-  const xdgCacheHome = process.env.XDG_CACHE_HOME?.trim()
-  return join(xdgCacheHome || join(homedir(), ".cache"), "chariox", "waiting-room", "kernels")
+  const charioxHome = process.env.CHARIOX_HOME?.trim()
+  const stateDir = charioxHome ? join(charioxHome, "state")
+    : join(process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state"), "chariox")
+  return join(stateDir, "waiting-room", "kernels")
 }

@@ -20,14 +20,15 @@ pub(crate) fn provider_account_credential_id(
     provider: &str,
     profile_id: &str,
 ) -> String {
+    let provider = provider.trim().to_ascii_lowercase();
     let identity = format!(
         "{}\0{}\0{}",
         owner_user_id.trim(),
-        provider.trim().to_ascii_lowercase(),
+        crate::provider::canonical_provider_family(&provider).unwrap_or(provider.as_str()),
         profile_id.trim()
     );
     let digest = Sha256::digest(identity.as_bytes());
-    format!("provider-account-{}-{digest:x}", canonical_label(provider))[..64].to_string()
+    format!("provider-account-{}-{digest:x}", canonical_label(&provider))[..64].to_string()
 }
 
 pub(crate) fn resolve_provider_account_credentials(
@@ -63,10 +64,9 @@ pub(crate) fn resolve_provider_account_credentials(
     Ok(environment)
 }
 
-/// One sign-in per account: the account's own Claude login runs every agent of
-/// that account, interactive or not, on Linux (its credential file) and macOS
-/// (its login Keychain) alike. A Chariox-vault setup token is only the fallback
-/// for an account without a usable login, such as a headless server.
+/// MP-08 / MP-11: an explicitly enrolled token runs every mode. Only accounts
+/// without a registered token may use the provider's native login. In particular,
+/// Authenticated alone cannot distinguish a macOS Keychain login from a token.
 pub(crate) fn resolve_provider_account_credentials_for_launch(
     config: &DaemonConfig,
     profiles: &crate::account_profile::ProviderAccountProfileRegistry,
@@ -77,16 +77,12 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
     if crate::provider::canonical_provider_family(provider) != Some("claude")
         || client_interface == crate::provider::ProviderClientInterface::NativeTui
+        || provider_account_credential_registered(owner_user_id, provider, profile_id)?
     {
         return resolve_provider_account_credentials(config, owner_user_id, provider, profile_id);
     }
     if claude_login_runs_agents(profiles, owner_user_id, profile_id)? {
         return Ok(ProviderCredentialEnvironment::default());
-    }
-    let environment =
-        resolve_provider_account_credentials(config, owner_user_id, provider, profile_id)?;
-    if !environment.is_empty() {
-        return Ok(environment);
     }
     Err(DaemonError::InvalidConfig {
         field: "provider account credential",
@@ -113,21 +109,15 @@ fn claude_login_runs_agents(
 }
 
 /// Whether a launch reads the account's Chariox-vault credential, by the same
-/// rule as `resolve_provider_account_credentials_for_launch`: never when the
-/// account's own Claude login runs the agent, so it needs no vault unlock.
+/// rule as `resolve_provider_account_credentials_for_launch`: an enrolled
+/// credential is resolved first, including when a native login is available.
 pub(crate) fn launch_uses_vault_credential(
-    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    _profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
     profile_id: &str,
-    client_interface: crate::provider::ProviderClientInterface,
+    _client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<bool, DaemonError> {
-    if crate::provider::canonical_provider_family(provider) == Some("claude")
-        && client_interface != crate::provider::ProviderClientInterface::NativeTui
-        && claude_login_runs_agents(profiles, owner_user_id, profile_id)?
-    {
-        return Ok(false);
-    }
     provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
 }
 
@@ -244,6 +234,31 @@ fn canonical_label(provider: &str) -> &'static str {
 mod tests {
     use super::*;
 
+    // MP-08 / MP-09 / MP-10 / MP-11: adapter aliases must resolve the
+    // canonical profile's existing Vault handle, never a second credential.
+    #[test]
+    fn claude_execution_aliases_reuse_the_enrolled_credential_handle() {
+        let canonical = provider_account_credential_id("owner", "claude", "work");
+        assert_eq!(
+            canonical,
+            "provider-account-claude-7c5263ec8de6df8703dc016fe277740a618d6110"
+        );
+        for provider in ["claude-p", "claude-headless"] {
+            assert_eq!(
+                provider_account_credential_id("owner", provider, "work"),
+                canonical
+            );
+        }
+        assert_ne!(
+            provider_account_credential_id("other-owner", "claude-p", "work"),
+            canonical
+        );
+        assert_ne!(
+            provider_account_credential_id("owner", "claude-p", "other-profile"),
+            canonical
+        );
+    }
+
     #[test]
     fn credential_handle_is_stable_and_registry_safe() {
         let first = provider_account_credential_id("local", "Claude", "Work account");
@@ -255,6 +270,22 @@ mod tests {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')));
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn claude_setup_token_aliases_share_the_canonical_credential_handle() {
+        let canonical = provider_account_credential_id("local", "claude", "work");
+        for alias in ["claude", "claude-p", "claude-headless", " CLAUDE-P "] {
+            assert_eq!(
+                provider_account_credential_id("local", alias, "work"),
+                canonical,
+                "MP-08/MP-10/MP-11: launch and storage must share credential identity for {alias}"
+            );
+        }
+        assert_ne!(
+            canonical,
+            provider_account_credential_id("another-owner", "claude-p", "work")
+        );
     }
 
     #[test]
@@ -414,6 +445,70 @@ mod tests {
             resolved.iter().collect::<Vec<_>>(),
             vec![(CLAUDE_OAUTH_TOKEN_ENV, "setup-token-secret")]
         );
+        let profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(root.join("profiles"))
+                .unwrap();
+        let profile = profiles
+            .create_managed("local", "claude", "aliases")
+            .unwrap();
+        store_provider_account_credential(
+            &config,
+            "local",
+            "claude-p",
+            &profile.profile_id,
+            "setup-token-secret",
+            false,
+        )
+        .unwrap();
+        profiles
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        // MP-08/MP-11: an authenticated observation must not hide an explicitly
+        // enrolled token, even if a previous native login remains on disk.
+        let config_dir = profiles
+            .resolve_environment("local", "claude", &profile.profile_id)
+            .unwrap()["CLAUDE_CONFIG_DIR"]
+            .clone();
+        std::fs::write(
+            std::path::Path::new(&config_dir).join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"synthetic-native-login"}}"#,
+        )
+        .unwrap();
+        for alias in ["claude", "claude-p", "claude-headless"] {
+            assert!(
+                provider_account_credential_registered("local", alias, &profile.profile_id)
+                    .unwrap()
+            );
+            assert!(
+                provider_account_credential_uses_vault("local", alias, &profile.profile_id)
+                    .unwrap()
+            );
+            for interface in [
+                crate::provider::ProviderClientInterface::Chariox,
+                crate::provider::ProviderClientInterface::NativeTui,
+            ] {
+                let env = resolve_provider_account_credentials_for_launch(
+                    &config,
+                    &profiles,
+                    "local",
+                    alias,
+                    &profile.profile_id,
+                    interface,
+                )
+                .unwrap();
+                assert!(!env.is_empty(), "{alias} must resolve the stored token");
+                assert!(!format!("{env:?}").contains("setup-token-secret"));
+            }
+        }
         let duplicate = store_provider_account_credential(
             &config,
             "local",

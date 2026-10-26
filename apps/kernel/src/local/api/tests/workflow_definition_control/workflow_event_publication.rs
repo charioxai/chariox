@@ -121,6 +121,9 @@ fn dynamic_registry_config(server_url: String) -> crate::DaemonConfig {
     config.event_registry_url = Some(server_url.clone());
     config.event_generator_management_targets.clear();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: server_url,
         email: "external@example.test".to_string(),
         account_id: "account-external".to_string(),
@@ -803,8 +806,10 @@ fn app_inbox_routes_are_checked_with_the_generator_before_they_are_stored() {
     };
     let undeclared = message(route("dummy.unknown", "free"));
     assert!(undeclared.contains("is not declared"), "{undeclared}");
+    // App interests fan out: another App's matching route is not exclusive.
+    // Both filters pass generator admission and reach the missing installation.
     let taken = message(route("dummy.test", "taken"));
-    assert!(taken.contains("already receives these events"), "{taken}");
+    assert!(taken.contains("AppRequestFailed"), "{taken}");
     // Past every generator check, the App lane answers: nothing is installed.
     let free = message(route("dummy.test", "free"));
     assert!(free.contains("AppRequestFailed"), "{free}");

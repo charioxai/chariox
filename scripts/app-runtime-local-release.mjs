@@ -6,9 +6,9 @@
 // Production releases use the separate builder and Developer ID signing path.
 // With a codesign identity ("-" for ad hoc), the Mach-O files are codesigned
 // like a production release and the inventory is signed over the signed bytes.
-import { createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
+import { createPublicKey, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -16,26 +16,13 @@ import { sha256, stableJson } from './app-runtime-bundle-files.mjs';
 import { codesignCopy } from './app-runtime-macos-codesign.mjs';
 import { packageRuntime } from './package-app-runtime.mjs';
 import { executable, launcherInputs, macosCodePaths, nativeExecutables, platformFiles, releasePaths } from './app-runtime-release-contract.mjs';
+import { loadLocalSigners } from './app-runtime-local-signers.mjs';
 import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
 
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function dockerAdmissionSetupCommand(repository = REPOSITORY) {
   const script = join(repository, 'deploy/local-macos/install-docker-admission-locks.py');
   return `sudo /usr/bin/python3 '${script.replaceAll("'", "'\\''")}'`;
-}
-
-const KEYS = join(homedir(), '.chariox/dev/app-runtime-keys');
-
-async function localKey(name) {
-  await mkdir(KEYS, { recursive: true, mode: 0o700 });
-  const path = join(KEYS, `${name}.pem`);
-  const existing = await stat(path).catch(() => null);
-  if (!existing) {
-    const { privateKey } = generateKeyPairSync('ed25519');
-    await writeFile(path, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600, flag: 'wx' });
-  }
-  await chmod(path, 0o600);
-  return path;
 }
 
 function compileLauncher(output) {
@@ -46,8 +33,9 @@ function compileLauncher(output) {
   if (result.status !== 0) throw new Error(`launcher compile failed: ${result.stderr}`);
 }
 
-export async function localRelease({ nativeDirectory, output, target, codesignIdentity }) {
+export async function localRelease({ nativeDirectory, output, target, codesignIdentity, builderKey, signingKey, signerInventory }) {
   if (!target.startsWith('darwin-')) throw new Error('local releases are macOS developer runtimes');
+  const signers = await loadLocalSigners({ builderKey, signingKey, signerInventory });
   await mkdir(join(homedir(), '.chariox/dev'), { recursive: true, mode: 0o700 });
   const scratch = await mkdtemp(join(homedir(), '.chariox/dev/app-runtime-local-'));
   try {
@@ -67,11 +55,11 @@ export async function localRelease({ nativeDirectory, output, target, codesignId
     for (const path of launcherInputs(target)) inputs.push({ path, sha256: sha256(await readFile(join(REPOSITORY, path))) });
     const proof = Buffer.from(stableJson({ schema: 'chariox.app-runtime-release-build.v1', target,
       sourceCommit: bundle.sourceCommit, bundleDigest: bundle.bundleDigest, launcherBuildInputs: inputs, files }));
-    const builderKey = createPrivateKey(await readFile(await localKey('local-builder')));
+    const builderSigner = signers.builder;
     const builderPublic = join(scratch, 'builder.pub.pem');
-    await writeFile(builderPublic, createPublicKey(builderKey).export({ type: 'spki', format: 'pem' }));
+    await writeFile(builderPublic, createPublicKey(builderSigner).export({ type: 'spki', format: 'pem' }));
     await writeFile(join(scratch, 'builder.json'), proof);
-    await writeFile(join(scratch, 'builder.sig'), sign(null, proof, builderKey).toString('hex'));
+    await writeFile(join(scratch, 'builder.sig'), sign(null, proof, builderSigner).toString('hex'));
     let codesigned;
     if (codesignIdentity) {
       codesigned = join(scratch, 'codesigned');
@@ -81,7 +69,7 @@ export async function localRelease({ nativeDirectory, output, target, codesignId
     }
     const receipt = await signRuntimeRelease({ inputDirectory: input, builderAttestation: join(scratch, 'builder.json'),
       builderSignature: join(scratch, 'builder.sig'), trustedBuilderKey: builderPublic,
-      signingKey: await localKey('local-release'), output: resolve(output), developerRuntime: true, codesigned });
+      signingKey: signers.release, output: resolve(output), developerRuntime: true, codesigned });
     return { ...receipt, output: resolve(output),
       provisionDockerAdmissionLocks: dockerAdmissionSetupCommand(),
       enroll: `${dockerAdmissionSetupCommand()} && sudo <chariox-app-runtime-install> install --source ${resolve(output)} --trusted-public-key-hex ${receipt.publicKeyHex} --inventory-sha256 ${receipt.inventorySha256}` };
@@ -92,12 +80,16 @@ export async function localRelease({ nativeDirectory, output, target, codesignId
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const argv = process.argv.slice(2);
-  const flag = argv.indexOf('--codesign-identity');
-  const codesignIdentity = flag === -1 ? undefined : argv.splice(flag, 2)[1];
+  const options = {};
+  for (const [flag, key] of [['--codesign-identity', 'codesignIdentity'], ['--builder-key', 'builderKey'],
+    ['--signing-key', 'signingKey'], ['--signer-inventory', 'signerInventory']]) {
+    const index = argv.indexOf(flag);
+    if (index !== -1) options[key] = argv.splice(index, 2)[1];
+  }
   const [native, output, target = 'darwin-arm64'] = argv;
-  if (!native || !output || argv.length > 3 || flag !== -1 && !codesignIdentity) {
-    process.stderr.write('usage: app-runtime-local-release.mjs NATIVE_DIR OUTPUT_DIR [darwin-arm64] [--codesign-identity -|IDENTITY]\n');
+  if (!native || !output || argv.length > 3 || !options.builderKey || !options.signingKey || !options.signerInventory) {
+    process.stderr.write('usage: app-runtime-local-release.mjs NATIVE_DIR OUTPUT_DIR [darwin-arm64] --builder-key ABS_PATH --signing-key ABS_PATH --signer-inventory ABS_PATH [--codesign-identity -|IDENTITY]\n');
     process.exit(2);
   }
-  process.stdout.write(`${stableJson(await localRelease({ nativeDirectory: native, output, target, codesignIdentity }))}\n`);
+  process.stdout.write(`${stableJson(await localRelease({ nativeDirectory: native, output, target, ...options }))}\n`);
 }

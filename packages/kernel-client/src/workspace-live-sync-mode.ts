@@ -1,3 +1,9 @@
+// MP-08 OWNER-20: discontinued UI. Preserve runtime support for existing state.
+export const workspaceLiveSyncUiEnabled = false
+/** MP-08 OWNER-20: discontinued Live Sync does not appear in user-facing config key listings. */
+export function visibleUserConfigEntries<T extends { readonly path: string }>(entries: readonly T[]): T[] {
+  return entries.filter(entry => workspaceLiveSyncUiEnabled || entry.path !== "providers.workspace_live_sync")
+}
 export type WorkspaceLiveSyncModeCommandInput = "off" | "managed" | "tracked"
 export type WorkspaceLiveSyncModeInput = WorkspaceLiveSyncModeCommandInput | "unrestricted"
 export type WorkspaceLiveSyncModeProtocolValue = "managed" | "tracked" | "unrestricted"

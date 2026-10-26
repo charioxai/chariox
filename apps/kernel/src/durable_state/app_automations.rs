@@ -2,177 +2,17 @@
 //! remain existing SessionService/normalized-workflow entities, not App metadata.
 
 use super::{DurableKernelStateStore, DurableWriterRequest};
-use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
-use crate::{
-    error::DaemonError,
-    session::{SessionService, WORKFLOW_PUBLICATION_KIND_EVENT_BASED},
-};
+use crate::error::DaemonError;
+use crate::runtime::app_operation_budget::AppOperationBudget;
 use chariox_app_runtime::app_outbox::{
-    AppOutbox, AutomationConfiguration, AutomationStatus, AutomationTarget, EventCatalog,
-    OutboxError,
+    AppOutbox, AutomationConfiguration, AutomationStatus, EventCatalog, OutboxError,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, TransactionBehavior};
 use std::sync::{mpsc, Arc};
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum AppAutomationError {
-    #[error(transparent)]
-    Stopped(#[from] AppOperationStopped),
-    #[error(transparent)]
-    Outbox(#[from] OutboxError),
-    #[error(transparent)]
-    Storage(#[from] DaemonError),
-    #[error("app_automation_target_changed")]
-    TargetChanged,
-    #[error("app_automation_target_invalid")]
-    InvalidTarget,
-    #[error("app_automation_not_owner")]
-    NotOwner,
-}
-impl From<rusqlite::Error> for AppAutomationError {
-    fn from(error: rusqlite::Error) -> Self {
-        Self::Outbox(OutboxError::Database(error))
-    }
-}
+pub(crate) use super::notification_target::NotificationTargetError as AppAutomationError;
 
-/// Built only by resolving existing workflow assets for the authenticated owner.
-/// The runtime keeps its SessionService read guard and workflow transition mutex
-/// until the writer replies; the writer also checks the exact durable entities.
-#[derive(Debug)]
-pub(crate) struct WorkflowAutomationTarget {
-    owner: String,
-    durable_owner: String,
-    target: AutomationTarget,
-    entities: Vec<(&'static str, String, String)>,
-}
-impl WorkflowAutomationTarget {
-    pub(crate) fn resolve(
-        sessions: &SessionService,
-        trusted_owner: &str,
-        session_id: &str,
-        publication_ref: &str,
-        queue_ref: Option<&str>,
-    ) -> Result<Self, AppAutomationError> {
-        let session = sessions.get_session(session_id)?;
-        let publication = sessions.resolve_workflow_publication_ref(session_id, publication_ref)?;
-        if publication.created_by_user_id() != trusted_owner {
-            return Err(AppAutomationError::NotOwner);
-        }
-        if !publication.enabled() || publication.kind() != WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
-            return Err(AppAutomationError::InvalidTarget);
-        }
-        let workflow = sessions.resolve_workflow_ref(session_id, publication.workflow_id())?;
-        let endpoint = sessions.resolve_workflow_endpoint_ref(
-            session_id,
-            workflow.id(),
-            publication.endpoint_id(),
-        )?;
-        if endpoint.owner_user_id() != trusted_owner {
-            return Err(AppAutomationError::NotOwner);
-        }
-        sessions.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
-        let queue_id = sessions.resolve_workflow_prompt_queue_ref(
-            session_id,
-            workflow.id(),
-            queue_ref.or(publication.queue_ref()).unwrap_or("default"),
-        )?;
-        let queue = session
-            .workflow_prompt_queues()
-            .iter()
-            .find(|queue| queue.id() == queue_id)
-            .ok_or(AppAutomationError::InvalidTarget)?;
-        let entities = vec![
-            (
-                "publication",
-                publication.id().to_owned(),
-                encode(&publication.without_runtime_state())?,
-            ),
-            ("workflow", workflow.id().to_owned(), encode(&workflow)?),
-            ("queue", queue.id().to_owned(), encode(queue)?),
-        ];
-        Ok(Self {
-            owner: trusted_owner.into(),
-            durable_owner: session.host_daemon_id().into(),
-            target: AutomationTarget {
-                session_id: session.id().into(),
-                publication_id: publication.id().into(),
-                endpoint_id: endpoint.id().into(),
-                queue_id,
-            },
-            entities,
-        })
-    }
-    pub(crate) fn target(&self) -> &AutomationTarget {
-        &self.target
-    }
-    pub(crate) fn require_current(
-        &self,
-        tx: &Transaction<'_>,
-        owner: &str,
-    ) -> Result<(), AppAutomationError> {
-        if self.owner != owner {
-            return Err(AppAutomationError::NotOwner);
-        }
-        for (kind, id, payload) in &self.entities {
-            let current:Option<String>=tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind=?3 AND entity_id=?4",
-                rusqlite::params![self.durable_owner,self.target.session_id,kind,id],|row|row.get(0)).optional()?;
-            // A deployed publication's runtime state changes in memory without
-            // a durable write and is not part of what the automation targets.
-            let current = match (*kind, current) {
-                ("publication", Some(current)) => Some(encode(
-                    &serde_json::from_str::<crate::session::WorkflowPublicationDefinition>(
-                        &current,
-                    )
-                    .map_err(|_| AppAutomationError::TargetChanged)?
-                    .without_runtime_state(),
-                )?),
-                (_, current) => current,
-            };
-            if current.as_deref() != Some(payload) {
-                return Err(AppAutomationError::TargetChanged);
-            }
-        }
-        Ok(())
-    }
-}
-fn encode(value: &impl serde::Serialize) -> Result<String, AppAutomationError> {
-    let mut output = TargetEncoding {
-        bytes: Vec::new(),
-        limited: false,
-    };
-    if serde_json::to_writer(&mut output, value).is_err() {
-        return Err(if output.limited {
-            OutboxError::Limit.into()
-        } else {
-            AppAutomationError::InvalidTarget
-        });
-    }
-    String::from_utf8(output.bytes).map_err(|_| AppAutomationError::InvalidTarget)
-}
-struct TargetEncoding {
-    bytes: Vec<u8>,
-    limited: bool,
-}
-impl std::io::Write for TargetEncoding {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .is_none_or(|length| length > 1024 * 1024)
-        {
-            self.limited = true;
-            return Err(std::io::Error::other(
-                "App automation target exceeds encoded limit",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
+pub(crate) use super::notification_target::WorkflowNotificationTarget as WorkflowAutomationTarget;
 
 #[derive(Debug)]
 pub(crate) enum AppAutomationMutation {
@@ -182,6 +22,7 @@ pub(crate) enum AppAutomationMutation {
         event_name: String,
         target: WorkflowAutomationTarget,
         scheduled: bool,
+        delivery_mode: crate::local::NotificationDeliveryMode,
     },
     Deactivate {
         automation_id: String,
@@ -281,18 +122,26 @@ fn apply(
             event_name,
             target,
             scheduled,
+            delivery_mode,
         } => {
             target.require_current(&tx, owner)?;
             budget.check()?;
-            AppAutomationOutcome::Configured(AppOutbox::configure_in(
+            AppOutbox::configure_in(
                 &tx,
                 catalog,
                 owner,
                 &automation_id,
                 expected_revision,
                 &event_name,
-                &target.target,
+                target.target(),
                 scheduled,
+            )?;
+            tx.execute("UPDATE app_automations SET delivery_mode=?4 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",rusqlite::params![owner,catalog.installation_id(),automation_id,delivery_mode.name()])?;
+            AppAutomationOutcome::Configured(AppOutbox::configuration_in(
+                &tx,
+                catalog,
+                owner,
+                &automation_id,
             )?)
         }
         AppAutomationMutation::Deactivate {
@@ -351,3 +200,9 @@ fn storage(error: rusqlite::Error) -> DaemonError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+use super::notification_target::encode;
+
+#[cfg(test)]
+use crate::{runtime::app_operation_budget::AppOperationStopped, session::SessionService};

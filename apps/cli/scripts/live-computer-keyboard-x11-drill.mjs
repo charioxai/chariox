@@ -95,6 +95,7 @@ try {
   await resources("before")
   await docker(["run", "-d", "--rm", "--name", container, "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "256", "--network", "none", "--security-opt", `seccomp=${chromiumSeccomp}`, "--entrypoint", "/bin/sleep", image, "infinity"])
   await docker(["exec", "-u", "root", container, "mkdir", "-p", root])
+  await docker(["cp", path.join(repo, "apps/kernel/slice-linux-docker/owned_process_signals.py"), `${container}:${root}/owned_process_signals.py`])
   await docker(["cp", screen, `${container}:${root}/slice-screen.sh`])
   await docker(["cp", path.join(path.dirname(screen), "slice-keyboard.py"), `${container}:${root}/slice-keyboard.py`])
   await docker(["cp", chromiumPreflight, `${container}:${root}/chromium-sandbox-preflight.mjs`])
@@ -151,7 +152,18 @@ try {
   }
   await evaluate("window.busy=false;document.querySelector('#input').value='';document.querySelector('#input').focus();true")
   let typingSettlement = null
-  const typing = exec(["/opt/chariox-selkies/bin/python", "-c", "import os; os.getpgrp()==os.getpid() or os.setsid(); open('/tmp/chariox-keyboard-x11/input-pgid','w').write(str(os.getpid())); os.execv('/tmp/chariox-keyboard-x11/slice-screen.sh',['slice-screen.sh','computer-type-stdin'])"], "x".repeat(1_800)).then(
+  const typing = exec(["/opt/chariox-selkies/bin/python", "-c", `import os,sys,signal,subprocess,time
+sys.path.insert(0, '/tmp/chariox-keyboard-x11')
+from owned_process_signals import OwnedProcesses
+os.getpgrp()==os.getpid() or os.setsid()
+owned=OwnedProcesses()
+launch=owned.record(os.getpid(), watch=True)
+child=subprocess.Popen(['/tmp/chariox-keyboard-x11/slice-screen.sh','computer-type-stdin'], stdin=sys.stdin)
+while child.poll() is None:
+    if os.path.exists('/tmp/chariox-keyboard-x11/input-cancel'):
+        owned.group(launch, signal.SIGKILL)
+    time.sleep(0.025)
+sys.exit(child.returncode)`], "x".repeat(1_800)).then(
     () => (typingSettlement = { failed: false }),
     (error) => (typingSettlement = { failed: true, error: error.message }),
   )
@@ -163,7 +175,7 @@ try {
   }
   assert.ok(beforeCancel > 0 && beforeCancel < 1_800, `cancellation must interrupt active physical typing: ${typingSettlement?.error ?? beforeCancel}`)
   const cancelledAt = Date.now()
-  await exec(["/opt/chariox-selkies/bin/python", "-c", "import os,signal; pid=int(open('/tmp/chariox-keyboard-x11/input-pgid').read()); assert os.getpgid(pid)==pid; os.killpg(pid,signal.SIGKILL)"])
+  await exec(["/opt/chariox-selkies/bin/python", "-c", "open('/tmp/chariox-keyboard-x11/input-cancel','x').close()"])
   assert.equal((await typing).failed, true, "cancelled helper must not report success")
   await exec([`${root}/slice-screen.sh`, "computer-input-reset"])
   const afterCancel = await evaluate("document.querySelector('#input').value.length")

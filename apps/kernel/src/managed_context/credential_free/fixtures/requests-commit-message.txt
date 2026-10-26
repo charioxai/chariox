@@ -1,0 +1,8 @@
+Use TLS settings in selecting connection pool
+
+Previously, if someone made a request with `verify=False` then made a
+request where they expected verification to be enabled to the same host,
+they would potentially reuse a connection where TLS had not been
+verified.
+
+This fixes that issue.

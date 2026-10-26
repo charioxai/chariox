@@ -1,78 +1,4 @@
-use super::writer::{RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
 use super::*;
-use tokio::time::Instant as TokioInstant;
-
-#[test]
-fn relay_event_writer_coalesces_event_lane_with_stable_deadline() {
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
-
-    assert!(coalescer.push_event("event-1", now).is_none());
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-    assert!(coalescer
-        .push_event("event-2", now + Duration::from_millis(10))
-        .is_none());
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-
-    assert_eq!(
-        coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
-        Some("event-1")
-    );
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-    assert_eq!(
-        coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
-        Some("event-2")
-    );
-    assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.is_empty());
-}
-
-#[test]
-fn relay_event_writer_can_disable_event_coalescing_for_tests() {
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(0);
-
-    assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
-    assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.pop_ready(now).is_none());
-}
-
-#[test]
-fn relay_event_writer_bounds_a_continuously_ready_producer_without_reordering() {
-    // MP-08/MP-10: the writer's ready event receiver may win over its timer.
-    // Force that receive path repeatedly without draining the timer branch.
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
-    let mut sent = Vec::new();
-    for event in 0..10_000 {
-        if let Some(ready) = coalescer.push_event(event, now) {
-            sent.push(ready);
-        }
-        assert!(
-            event + 1 - sent.len() <= 32,
-            "event coalescer exceeded its 32-event bound"
-        );
-        assert_eq!(
-            coalescer.ready_at(),
-            Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-        );
-    }
-    while let Some(event) = coalescer.pop_ready(now) {
-        sent.push(event);
-    }
-    assert_eq!(sent, (0..10_000).collect::<Vec<_>>());
-    assert!(coalescer.is_empty());
-    assert_eq!(coalescer.ready_at(), None);
-}
 
 #[test]
 fn missing_relay_config_without_cloud_profile_is_local_idle() {
@@ -89,6 +15,9 @@ fn missing_relay_config_without_cloud_profile_is_local_idle() {
 fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: "https://cloud.example.test".to_string(),
         email: "user@example.test".to_string(),
         account_id: "account-1".to_string(),
@@ -151,6 +80,39 @@ async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
 
     assert!(steady_state.is_none());
     assert_eq!(active_token, "new-token");
+}
+
+#[tokio::test]
+async fn token_rollover_during_registration_authenticates_snapshot_without_disconnect() {
+    // MP-08/MP-10/MP-11: refreshing the config between the snapshot and
+    // registration must not turn a harmless renewal race into a reconnect.
+    let url = "wss://relay.example.test";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(url.into());
+    config.relay_token = Some("first-renewal".into());
+    let mut next_config = config.clone();
+    next_config.relay_token = Some("second-renewal".into());
+    let mut app = DaemonApp::bootstrap(next_config.clone()).unwrap();
+    let registration = app.relay_registration();
+    let mut active = "old".to_string();
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &config, || {
+        std::future::ready(registration.clone())
+    })
+    .await;
+    assert!(
+        matches!(result, Ok(Some(ref r)) if r.auth_token == "first-renewal"),
+        "renewal race must authenticate the snapshot on the same socket"
+    );
+    assert_eq!(
+        active, "first-renewal",
+        "track the registration actually queued"
+    );
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &next_config, || {
+        std::future::ready(registration)
+    })
+    .await;
+    assert!(matches!(result, Ok(Some(_))));
+    assert_eq!(active, "second-renewal");
 }
 
 #[tokio::test]
@@ -305,6 +267,16 @@ fn relay_reconnect_delay_is_stable_jittered_and_bounded() {
     );
 }
 
+#[test]
+fn relay_reconnect_after_a_long_outage_waits_at_most_two_seconds() {
+    // A person's link that comes back after seconds must not wait out a long backoff (V1-INT-15).
+    for daemon in ["daemon-a", "daemon-b", "0123456789abcdef"] {
+        for attempt in [4, 20, 99] {
+            assert!(relay_reconnect_delay(daemon, attempt) <= Duration::from_secs(2));
+        }
+    }
+}
+
 #[tokio::test]
 async fn reconnect_delay_returns_false_after_delay() {
     let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -369,7 +341,7 @@ async fn bounded_cloud_relay_refresh_times_out() {
 #[tokio::test]
 async fn post_connect_hook_confirms_through_owner_handler_and_clears_worker_pending() {
     let (owner_confirmed, worker_pending, attempts) =
-        exercise_post_connect_confirmation(true, false).await;
+        exercise_post_connect_confirmation(true, false, false).await;
     assert!(owner_confirmed);
     assert!(!worker_pending);
     assert_eq!(attempts, 1);
@@ -378,7 +350,7 @@ async fn post_connect_hook_confirms_through_owner_handler_and_clears_worker_pend
 #[tokio::test]
 async fn post_connect_hook_clears_worker_pending_after_terminal_owner_rejection() {
     let (owner_confirmed, worker_pending, attempts) =
-        exercise_post_connect_confirmation(false, false).await;
+        exercise_post_connect_confirmation(false, false, false).await;
     assert!(!owner_confirmed);
     assert!(!worker_pending);
     assert_eq!(attempts, 1);
@@ -387,15 +359,25 @@ async fn post_connect_hook_clears_worker_pending_after_terminal_owner_rejection(
 #[tokio::test]
 async fn post_connect_hook_retries_retryable_rejection_on_same_connection() {
     let (owner_confirmed, worker_pending, attempts) =
-        exercise_post_connect_confirmation(true, true).await;
+        exercise_post_connect_confirmation(true, true, false).await;
     assert!(owner_confirmed);
     assert!(!worker_pending);
     assert_eq!(attempts, 2);
 }
 
+#[tokio::test]
+async fn mp08_mp10_mp11_retained_socket_confirms_install_after_registration_heartbeat() {
+    let (owner_confirmed, worker_pending, attempts) =
+        exercise_post_connect_confirmation(true, false, true).await;
+    assert!(owner_confirmed);
+    assert!(!worker_pending);
+    assert_eq!(attempts, 1);
+}
+
 async fn exercise_post_connect_confirmation(
     owner_accepts_worker_key: bool,
     reject_first_attempt_as_retryable: bool,
+    retained_socket: bool,
 ) -> (bool, bool, usize) {
     let mut worker_config = crate::config::DaemonConfig::for_tests();
     worker_config.relay_url = Some("wss://relay.example.test".to_string());
@@ -435,6 +417,24 @@ async fn exercise_post_connect_confirmation(
         );
     let (owner_outgoing, _owner_priority_rx, _owner_event_rx) = RelayOutgoingSender::channel(1);
 
+    set_connected(
+        &worker_state,
+        worker_outgoing.clone(),
+        "wss://relay.example.test".to_string(),
+    )
+    .await
+    .expect("worker relay should become connected");
+    if retained_socket {
+        assert!(
+            spawn_pending_managed_slice_activation_confirmation_after_connect(
+                Arc::clone(&worker_router),
+                Arc::clone(&worker_state),
+            )
+            .await
+            .is_none(),
+            "the initial connection predates token installation"
+        );
+    }
     worker_state
         .write()
         .await
@@ -447,13 +447,23 @@ async fn exercise_post_connect_confirmation(
                 "activation-1".to_string(),
             ),
         );
-    set_connected(
-        &worker_state,
-        worker_outgoing,
-        "wss://relay.example.test".to_string(),
-    )
-    .await
-    .expect("worker relay should become connected");
+    if retained_socket {
+        send_outgoing_envelope(
+            &worker_outgoing,
+            RelayEnvelope::DaemonHeartbeat {
+                daemon_id: worker_kernel_id.clone(),
+                registration: Some(worker_router.relay_registration().await),
+            },
+        )
+        .expect("queue renewed registration before confirmation");
+        assert!(matches!(
+            worker_priority_rx.recv().await,
+            Some(RelayEnvelope::DaemonHeartbeat {
+                registration: Some(_),
+                ..
+            })
+        ));
+    }
     let task = spawn_pending_managed_slice_activation_confirmation_after_connect(
         Arc::clone(&worker_router),
         Arc::clone(&worker_state),
@@ -541,4 +551,280 @@ async fn exercise_post_connect_confirmation(
         .pending_managed_slice_activation_confirmation()
         .is_some();
     (owner_confirmed, worker_pending, expected_attempts)
+}
+
+#[test]
+fn mp08_mp10_mp11_browser_artifact_peer_current_hosted_confirmation_gate() {
+    let home = crate::config::DaemonConfig::for_tests();
+    let worker = crate::config::DaemonConfig::for_tests();
+    let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
+    for version in [
+        minimum - 1,
+        minimum,
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+    ] {
+        for (slice_id, nonce) in [
+            ("slice-1", "nonce-1"),
+            ("other", "nonce-1"),
+            ("slice-1", "other"),
+        ] {
+            let response =
+                crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenActivated {
+                    slice_id: slice_id.into(),
+                    activation_nonce: nonce.into(),
+                    relay_peer_protocol_version: version,
+                };
+            let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+                &home.relay_private_key,
+                &worker.relay_public_key,
+                &serde_json::to_vec(&response).unwrap(),
+            )
+            .unwrap();
+            let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+                &worker.relay_private_key,
+                &encrypted,
+            )
+            .unwrap();
+            assert_eq!(decrypted.sender_public_key, home.relay_public_key);
+            let crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenActivated {
+                slice_id,
+                activation_nonce,
+                relay_peer_protocol_version,
+            } = serde_json::from_slice(&decrypted.plaintext).unwrap()
+            else {
+                panic!("activation receipt");
+            };
+            assert_eq!(
+                managed_slice_token_confirmation_matches(
+                    &slice_id,
+                    &activation_nonce,
+                    relay_peer_protocol_version,
+                    "slice-1",
+                    "nonce-1",
+                ),
+                version >= minimum && slice_id == "slice-1" && activation_nonce == "nonce-1"
+            );
+        }
+    }
+}
+
+// MP-08 / MP-10 / MP-11: a burst of inbound transfer chunks may briefly outrun the
+// writer. The reader waits for it; it never drops a socket carrying a transfer.
+#[tokio::test]
+async fn transport_receipts_wait_for_a_busy_writer_instead_of_dropping_the_socket() {
+    let (tx, mut rx) = mpsc::channel::<String>(8);
+    for index in 0..8 {
+        assert!(queue_transport_receipt(&tx, index.to_string()).await);
+    }
+    let drain = tokio::spawn(async move {
+        sleep(Duration::from_millis(50)).await;
+        let mut received = Vec::new();
+        while received.len() < 9 {
+            received.push(rx.recv().await.unwrap());
+        }
+        received
+    });
+    assert!(queue_transport_receipt(&tx, "8".into()).await);
+    assert_eq!(
+        drain.await.unwrap(),
+        (0..9).map(|index| index.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn transport_receipts_give_up_only_when_the_writer_is_stuck() {
+    let (tx, _rx) = mpsc::channel::<String>(8);
+    for index in 0..8 {
+        assert!(queue_transport_receipt(&tx, index.to_string()).await);
+    }
+    assert!(!queue_transport_receipt(&tx, "stuck".into()).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mp08_mp10_mp11_in_place_activation_starts_confirmation_without_socket_reconnect() {
+    use chariox_relay::{RelayConfig, RelayServer};
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        shared_token: Some("activation-fixture".into()),
+    }));
+    let listener = server.bind_listener().await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (server_stop, server_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = server_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{addr}"));
+    config.relay_token = Some("activation-fixture".into());
+    config.relay_heartbeat_ms = 50;
+    let worker_id = config.daemon_id.clone();
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (stop, stop_rx) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector(app, Arc::clone(&state), stop_rx));
+    timeout(Duration::from_secs(2), async {
+        while !state.read().await.connected() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Installation occurs on the already connected socket. No reconnect hook
+    // follows same-identity token renewal. The absent owner makes the real
+    // relay return a bounded routing refusal; starting the confirmation is
+    // the seam under test, not successful activation or provider acceptance.
+    let owner = crate::config::DaemonConfig::for_tests();
+    state
+        .write()
+        .await
+        .stage_managed_slice_activation_confirmation(
+            super::super::connection_state::PendingManagedSliceActivationConfirmation::new(
+                "slice-in-place".into(),
+                owner.daemon_id,
+                owner.relay_public_key,
+                worker_id,
+                "nonce-in-place".into(),
+            ),
+        );
+    let attempted = timeout(Duration::from_secs(3), async {
+        loop {
+            // A claim consumes an attempt; after the bounded attempt cap the
+            // next claim returns None. Observe through the existing state API.
+            let pending = state
+                .read()
+                .await
+                .pending_managed_slice_activation_confirmation();
+            if pending.is_none() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let _ = stop.send(true);
+    connector.await.unwrap();
+    let _ = server_stop.send(());
+    server_task.await.unwrap();
+    assert!(
+        attempted.is_ok(),
+        "pending activation was stranded on the healthy socket"
+    );
+}
+
+#[test]
+fn mp08_mp10_mp11_activation_confirms_only_on_a_socket_with_the_current_token() {
+    use super::managed_slice_activation::socket_has_current_token;
+    assert!(socket_has_current_token(Some("renewed"), "renewed"));
+    assert!(!socket_has_current_token(Some("renewed"), "previous"));
+    assert!(!socket_has_current_token(None, "previous"));
+}
+
+// MP-08 / MP-10 / MP-11: one ready event must not wait for a render-frame timer.
+#[tokio::test]
+async fn relay_event_writer_delivers_ready_events_without_a_frame_wait() {
+    use std::task::Context;
+    let (priority_tx, priority_rx) = mpsc::channel(2);
+    let (event_tx, event_rx) = mpsc::channel(2);
+    let (pong_tx, pong_rx) = mpsc::channel(2);
+    let (receipt_tx, receipt_rx) = mpsc::channel(2);
+    let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
+    let sink = Box::pin(futures_util::sink::unfold(
+        sent_tx,
+        |tx, message| async move {
+            tx.send(message).unwrap();
+            Ok::<_, std::convert::Infallible>(tx)
+        },
+    ));
+    event_tx
+        .try_send(RelayEnvelope::Close {
+            reason: "accepted-turn-event".into(),
+        })
+        .unwrap();
+    let mut writing = Box::pin(super::writer::run_relay_writer(
+        sink,
+        priority_rx,
+        event_rx,
+        pong_rx,
+        receipt_rx,
+        false,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    ));
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(writing.as_mut().poll(&mut context).is_pending());
+    assert!(
+        sent_rx.try_recv().is_ok(),
+        "ready event is still held behind the frame coalescer"
+    );
+    drop((priority_tx, event_tx, pong_tx, receipt_tx));
+}
+
+// MP-08 / MP-10 / MP-11: bounded lanes, control priority, and subscription FIFO survive the timer removal.
+#[tokio::test]
+async fn relay_event_writer_preserves_controls_bounded_events_and_fifo() {
+    use std::task::Context;
+    let (priority_tx, priority_rx) = mpsc::channel(2);
+    let (event_tx, event_rx) = mpsc::channel(2);
+    let (pong_tx, pong_rx) = mpsc::channel(2);
+    let (receipt_tx, receipt_rx) = mpsc::channel(2);
+    let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
+    let sink = Box::pin(futures_util::sink::unfold(
+        sent_tx,
+        |tx, message| async move {
+            tx.send(message).unwrap();
+            Ok::<_, std::convert::Infallible>(tx)
+        },
+    ));
+    for reason in ["event-1", "event-2"] {
+        event_tx
+            .try_send(RelayEnvelope::Close {
+                reason: reason.into(),
+            })
+            .unwrap();
+    }
+    assert!(matches!(
+        event_tx.try_send(RelayEnvelope::Close {
+            reason: "over-capacity".into()
+        }),
+        Err(mpsc::error::TrySendError::Full(_))
+    ));
+    priority_tx
+        .try_send(RelayEnvelope::Close {
+            reason: "priority".into(),
+        })
+        .unwrap();
+    pong_tx.try_send(vec![1]).unwrap();
+    receipt_tx.try_send("public-receipt".into()).unwrap();
+    let mut writing = Box::pin(super::writer::run_relay_writer(
+        sink,
+        priority_rx,
+        event_rx,
+        pong_rx,
+        receipt_rx,
+        false,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    ));
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(writing.as_mut().poll(&mut context).is_pending());
+    let sent: Vec<_> = std::iter::from_fn(|| sent_rx.try_recv().ok()).collect();
+    assert_eq!(sent.len(), 5);
+    assert_eq!(sent[0].to_text().unwrap(), "public-receipt");
+    assert!(matches!(&sent[1], Message::Pong(bytes) if bytes.as_ref() == [1]));
+    let reasons: Vec<_> = sent[2..]
+        .iter()
+        .map(|message| {
+            serde_json::from_str::<serde_json::Value>(message.to_text().unwrap()).unwrap()["reason"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(reasons, ["priority", "event-1", "event-2"]);
 }

@@ -5,7 +5,6 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::development::MAX_PACKAGE_BYTES as MAX_DEVELOPMENT_BYTES;
 use super::development::{
     import_development_context_with_environment,
     recover_development_context_publication_with_environment, DevelopmentContextImportRequest,
@@ -35,17 +34,11 @@ const PACKAGE_MAGIC: &[u8; 16] = b"CHARIOXCTXPKG1\r\n";
 const PACKAGE_TRAILER: &[u8; 16] = b"CHARIOXCTXEND1\r\n";
 const MAX_PLAN_BINDING_BYTES: usize = 72 * 1024;
 const MAX_MANIFEST_BYTES: usize = MAX_PLAN_BINDING_BYTES + 24 * 1024;
-const KERNEL_CONTEXT_WRAPPER_BYTES: u64 = 64 * 1024;
-const MAX_KERNEL_CONTEXT_BYTES: u64 =
-    super::kernel::MAX_KERNEL_CONTEXT_SNAPSHOT_BYTES as u64 + KERNEL_CONTEXT_WRAPPER_BYTES;
 pub(crate) const MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES: u64 = 24 * 1024 * 1024;
 pub(crate) const MAX_GIT_CREDENTIAL_COMPONENT_BYTES: u64 = 1024 * 1024;
-const PACKAGE_OVERHEAD_BYTES: u64 = MAX_MANIFEST_BYTES as u64 + 64;
-pub(crate) const MAX_MANAGED_CONTEXT_PACKAGE_BYTES: u64 = MAX_DEVELOPMENT_BYTES
-    + MAX_KERNEL_CONTEXT_BYTES
-    + MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES
-    + MAX_GIT_CREDENTIAL_COMPONENT_BYTES
-    + PACKAGE_OVERHEAD_BYTES;
+/// Development and kernel components have no product size ceiling: the manifest declares each size
+/// and digest, the receiver verifies both, and the volume's free space admits the copy.
+const UNBOUNDED_COMPONENT_BYTES: u64 = u64::MAX;
 
 #[derive(Clone, PartialEq)]
 pub enum ManagedContextPackageKernel {
@@ -83,6 +76,8 @@ pub enum ManagedContextPackageGitCredentials {
 pub struct ManagedContextPlanBinding {
     pub context_id: String,
     pub plan_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<super::owner_managed::OwnerManagedDestination>,
     pub kernel_context: ManagedContextKernelSelection,
     pub development: ManagedContextDevelopmentSelection,
     #[serde(default)]
@@ -111,6 +106,7 @@ impl ManagedContextPlanBinding {
 pub enum ManagedContextKernelSelection {
     Empty,
     SourceKernel,
+    SourceKernelWithoutCredentials,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +256,8 @@ impl std::fmt::Debug for ManagedContextPackageApplicationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManagedContextPackageImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub schema_version: u32,
     pub transfer_id: String,
     pub package_sha256: String,
@@ -294,6 +292,7 @@ pub(crate) enum ManagedContextImportedGitCredentials {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::large_enum_variant)] // A short-lived serialized receipt, not a hot value.
 pub(crate) enum ManagedContextImportedKernelContext {
     Empty,
     FromKernel { receipt: KernelContextImportReceipt },
@@ -439,10 +438,10 @@ pub fn export_managed_context_package(
                 .metadata()
                 .map_err(|error| package_io_error("inspect development archive", error))?
                 .len();
-            if size == 0 || size > MAX_DEVELOPMENT_BYTES {
+            if size == 0 {
                 return Err(package_error("development archive size is invalid"));
             }
-            let actual_sha256 = hash_reader(&mut archive, MAX_DEVELOPMENT_BYTES)?;
+            let actual_sha256 = hash_reader(&mut archive, size)?;
             if actual_sha256 != archive_sha256.to_ascii_lowercase() {
                 return Err(package_error(
                     "development archive digest does not match the requested digest",
@@ -472,13 +471,20 @@ pub fn export_managed_context_package(
             (None, KernelContextComponentManifest::Empty, None)
         }
         ManagedContextPackageKernel::FromKernel(snapshot) => {
-            if binding.plan.kernel_context != ManagedContextKernelSelection::SourceKernel {
+            if !matches!(
+                binding.plan.kernel_context,
+                ManagedContextKernelSelection::SourceKernel
+                    | ManagedContextKernelSelection::SourceKernelWithoutCredentials
+            ) {
                 return Err(package_error(
                     "managed context package includes unselected kernel context",
                 ));
             }
             validate_snapshot_binding(&snapshot, &binding)?;
-            let bytes = serialize_bounded_json(&snapshot, MAX_KERNEL_CONTEXT_BYTES as usize)?;
+            let bytes = serialize_bounded_json(
+                &snapshot,
+                usize::try_from(super::limits::memory_budget()).unwrap_or(usize::MAX),
+            )?;
             let sha256 = sha256_bytes(&bytes);
             let snapshot_sha256 = snapshot.snapshot_sha256.clone();
             let manifest = KernelContextComponentManifest::FromKernel {
@@ -596,7 +602,7 @@ pub fn export_managed_context_package(
     ));
     let file = create_private_file(&temporary)?;
     let mut cleanup = PackageFileCleanup::new(temporary.clone());
-    let mut writer = HashingWriter::new(file, MAX_MANAGED_CONTEXT_PACKAGE_BYTES);
+    let mut writer = HashingWriter::new(file, super::limits::disk_budget(&canonical_parent));
     writer
         .write_all(PACKAGE_MAGIC)
         .map_err(package_write_error)?;
@@ -608,7 +614,7 @@ pub fn export_managed_context_package(
         .map_err(package_write_error)?;
     if let Some((archive, size)) = development.as_mut() {
         let copied_development =
-            copy_component(archive, &mut writer, *size, MAX_DEVELOPMENT_BYTES)?;
+            copy_component(archive, &mut writer, *size, UNBOUNDED_COMPONENT_BYTES)?;
         if Some(copied_development) != development_sha256 {
             return Err(package_error(
                 "development archive changed while composing the managed context package",
@@ -648,6 +654,38 @@ pub fn export_managed_context_package(
     })
 }
 
+// MP-08/MP-11: isolate owner imports, including preflight and recovery paths.
+fn context_import_paths(
+    plan: &ManagedContextPlanBinding,
+    development_root: &Path,
+) -> Result<(PathBuf, PathBuf), DaemonError> {
+    if plan.destination.is_some() {
+        let parent = development_root
+            .parent()
+            .ok_or_else(|| package_error("owner context root has no parent"))?;
+        Ok((
+            parent.join(format!("kernel-context-{}", plan.context_id)),
+            parent.join("unused-vault"),
+        ))
+    } else {
+        configured_managed_kernel_context_paths()
+    }
+}
+
+fn owner_publication_root(
+    plan: &ManagedContextPlanBinding,
+) -> Result<Option<PathBuf>, DaemonError> {
+    if plan.destination.is_some() {
+        Ok(Some(
+            crate::mcp::CharioxMcpRegistry::user_root()
+                .and_then(|root| root.parent().map(Path::to_path_buf))
+                .ok_or_else(|| package_error("target ordinary registry root is unavailable"))?,
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(crate) fn apply_managed_context_package(
     request: ManagedContextPackageApplicationRequest,
 ) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
@@ -656,6 +694,24 @@ pub(crate) fn apply_managed_context_package(
         expected_package_sha256: request.expected_package_sha256.clone(),
         expected_binding: request.expected_binding.clone(),
     })?;
+    if request.expected_binding.plan.destination.is_some() {
+        if let (
+            ExtractedManagedContextDevelopment::FromSource { archive_path, .. },
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            },
+        ) = (
+            &extracted.development,
+            &request.expected_binding.plan.development,
+        ) {
+            super::credential_free::validate_development_archive(
+                archive_path,
+                project_id,
+                Some(repositories),
+            )?;
+        }
+    }
     preflight_import_receipt_capacity(&request, &extracted)?;
     let provider_accounts = import_provider_accounts(&request, &extracted.provider_accounts)?;
     let git_credentials = match import_git_credentials(&request, &extracted.git_credentials) {
@@ -679,10 +735,14 @@ pub(crate) fn apply_managed_context_package(
         let kernel_context = match &extracted.kernel_context {
             ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
             ManagedContextPackageKernel::FromKernel(snapshot) => {
-                let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
+                let (capability_root, vault_path) = context_import_paths(
+                    &request.expected_binding.plan,
+                    &request.development_destination_root,
+                )?;
                 let context_existed = capability_root.exists();
                 let rollback_vault_path = vault_path.clone();
                 let receipt = import_kernel_context(KernelContextImportRequest {
+                    publication_root: owner_publication_root(&request.expected_binding.plan)?,
                     snapshot: snapshot.as_ref().clone(),
                     expected_source: TransferredVaultSourceBinding {
                         context_id: request.expected_binding.plan.context_id.clone(),
@@ -734,10 +794,12 @@ pub(crate) fn apply_managed_context_package(
                     .as_ref()
                     .map(|config| {
                         let mut config = config.clone();
-                        if matches!(
-                            &extracted.kernel_context,
-                            ManagedContextPackageKernel::FromKernel(_)
-                        ) {
+                        if request.expected_binding.plan.destination.is_none()
+                            && matches!(
+                                &extracted.kernel_context,
+                                ManagedContextPackageKernel::FromKernel(_)
+                            )
+                        {
                             let (_, vault_path) = configured_managed_kernel_context_paths()?;
                             config.user_config.credential_vault.backend =
                                 crate::config::CredentialVaultBackend::CharioxEncrypted;
@@ -786,26 +848,36 @@ pub(crate) fn apply_managed_context_package(
     let (development, kernel_context) = match imported_components {
         Ok(imported) => imported,
         Err(error) => {
-            if let Some((receipt, vault_path)) = kernel_context_rollback {
-                cleanup_kernel_context_import(&receipt, &vault_path, &request.target_private_key)?;
-            }
-            let git_rollback = rollback_imported_git_credentials(
-                request.git_credential_target.as_ref(),
-                &git_credentials,
+            let rollback = run_import_rollbacks(
+                || match kernel_context_rollback {
+                    Some((receipt, vault_path)) => cleanup_kernel_context_import(
+                        &receipt,
+                        &vault_path,
+                        &request.target_private_key,
+                    ),
+                    None => Ok(()),
+                },
+                || {
+                    rollback_imported_git_credentials(
+                        request.git_credential_target.as_ref(),
+                        &git_credentials,
+                    )
+                },
+                || {
+                    rollback_imported_provider_accounts(
+                        request.provider_account_target.as_ref(),
+                        &provider_accounts,
+                    )
+                },
             );
-            let provider_rollback = rollback_imported_provider_accounts(
-                request.provider_account_target.as_ref(),
-                &provider_accounts,
-            );
-            if let Err(rollback_error) = git_rollback.and(provider_rollback) {
-                return Err(package_unavailable(format!(
-                    "{error}; roll back imported credentials: {rollback_error}"
-                )));
+            if let Err(rollback_error) = rollback {
+                return Err(package_unavailable(format!("{error}; {rollback_error}")));
             }
             return Err(error);
         }
     };
     Ok(ManagedContextPackageImportReceipt {
+        destination: request.expected_binding.plan.destination.clone(),
         schema_version: PACKAGE_SCHEMA_VERSION,
         transfer_id: request.transfer_id,
         package_sha256: request.expected_package_sha256,
@@ -969,7 +1041,15 @@ pub(crate) fn rollback_managed_context_package_application(
         failures.push(error);
     }
     if let ManagedContextImportedKernelContext::FromKernel { receipt } = &receipt.kernel_context {
-        match configured_managed_kernel_context_paths() {
+        let paths = if receipt.without_credentials {
+            Ok((
+                receipt.capability_root.clone(),
+                receipt.capability_root.with_extension("unused-vault"),
+            ))
+        } else {
+            configured_managed_kernel_context_paths()
+        };
+        match paths {
             Ok((_, vault_path)) => {
                 if let Err(error) =
                     cleanup_kernel_context_import(receipt, &vault_path, target_private_key)
@@ -1005,11 +1085,13 @@ pub(crate) fn rollback_managed_context_package_application(
 
 pub(crate) fn rollback_persisted_managed_context_publication(
     request: ManagedContextPackageImportRequest,
+    development_destination_root: &Path,
     target_private_key: &str,
     provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
     git_credential_target: Option<&ManagedContextGitCredentialImportTarget>,
 ) -> Result<(), DaemonError> {
-    let context_id = request.expected_binding.plan.context_id.clone();
+    let plan = request.expected_binding.plan.clone();
+    let context_id = plan.context_id.clone();
     let package_sha256 = request.expected_package_sha256.clone();
     let extracted = extract_managed_context_package(request)?;
     let provider_accounts = match &extracted.provider_accounts {
@@ -1054,10 +1136,12 @@ pub(crate) fn rollback_persisted_managed_context_publication(
         failures.push(error);
     }
     if let ManagedContextPackageKernel::FromKernel(snapshot) = &extracted.kernel_context {
-        match configured_managed_kernel_context_paths() {
+        match context_import_paths(&plan, development_destination_root) {
             Ok((capability_root, vault_path)) => {
                 if let Err(error) = cleanup_kernel_context_import(
                     &KernelContextImportReceipt {
+                        publication_root: owner_publication_root(&plan)?,
+                        without_credentials: snapshot.payload.vault.is_none(),
                         schema_version: 1,
                         context_id: snapshot.payload.context_id.clone(),
                         source_kernel_id: snapshot.payload.source_kernel_id.clone(),
@@ -1132,9 +1216,14 @@ fn preflight_import_receipt_capacity(
     let kernel_context = match &extracted.kernel_context {
         ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
         ManagedContextPackageKernel::FromKernel(snapshot) => {
-            let (capability_root, _) = configured_managed_kernel_context_paths()?;
+            let (capability_root, _) = context_import_paths(
+                &request.expected_binding.plan,
+                &request.development_destination_root,
+            )?;
             ManagedContextImportedKernelContext::FromKernel {
                 receipt: KernelContextImportReceipt {
+                    publication_root: owner_publication_root(&request.expected_binding.plan)?,
+                    without_credentials: snapshot.payload.vault.is_none(),
                     schema_version: 1,
                     context_id: snapshot.payload.context_id.clone(),
                     source_kernel_id: snapshot.payload.source_kernel_id.clone(),
@@ -1188,6 +1277,7 @@ fn preflight_import_receipt_capacity(
         }
     };
     let receipt = ManagedContextPackageImportReceipt {
+        destination: request.expected_binding.plan.destination.clone(),
         schema_version: PACKAGE_SCHEMA_VERSION,
         transfer_id: request.transfer_id.clone(),
         package_sha256: request.expected_package_sha256.clone(),
@@ -1228,17 +1318,29 @@ pub(crate) fn extract_managed_context_package(
         .metadata()
         .map_err(|error| package_io_error("inspect managed context package", error))?
         .len();
-    if package_size == 0 || package_size > MAX_MANAGED_CONTEXT_PACKAGE_BYTES {
+    if package_size == 0 {
         return Err(package_error("managed context package size is invalid"));
     }
 
     let component_root = component_root_for_package(&request.package_path)?;
+    // An interrupted extraction's leftovers are reclaimed first so they never count against the
+    // room this retry needs.
     cleanup_component_root(&component_root)?;
+    let component_room =
+        super::limits::disk_budget(component_root.parent().unwrap_or(&component_root));
+    if package_size > component_room {
+        return Err(package_error(super::limits::disk_shortage(
+            "managed context package extraction",
+            &component_root,
+            package_size,
+            component_room,
+        )));
+    }
     create_private_directory(&component_root)?;
     let cleanup = PackageExtractionCleanup {
         root: component_root.clone(),
     };
-    let mut reader = HashingReader::new(&mut package, MAX_MANAGED_CONTEXT_PACKAGE_BYTES);
+    let mut reader = HashingReader::new(&mut package, package_size);
     let mut magic = [0_u8; 16];
     reader.read_exact(&mut magic).map_err(package_read_error)?;
     if &magic != PACKAGE_MAGIC {
@@ -1268,7 +1370,7 @@ pub(crate) fn extract_managed_context_package(
             let archive_path = component_root.join("development.tar.gz");
             let file = create_private_file(&archive_path)?;
             let actual_sha256 =
-                copy_component_to_file(&mut reader, file, *size_bytes, MAX_DEVELOPMENT_BYTES)?;
+                copy_component_to_file(&mut reader, file, *size_bytes, UNBOUNDED_COMPONENT_BYTES)?;
             if &actual_sha256 != sha256 {
                 return Err(package_error(
                     "managed context development component digest does not match",
@@ -1289,9 +1391,17 @@ pub(crate) fn extract_managed_context_package(
             snapshot_sha256,
         } => {
             let path = component_root.join("kernel-context.json");
+            let memory_room = super::limits::memory_budget();
+            if *size_bytes > memory_room {
+                return Err(package_error(super::limits::memory_shortage(
+                    "managed context kernel component",
+                    *size_bytes,
+                    memory_room,
+                )));
+            }
             let file = create_private_file(&path)?;
             let actual_sha256 =
-                copy_component_to_file(&mut reader, file, *size_bytes, MAX_KERNEL_CONTEXT_BYTES)?;
+                copy_component_to_file(&mut reader, file, *size_bytes, UNBOUNDED_COMPONENT_BYTES)?;
             if &actual_sha256 != sha256 {
                 return Err(package_error(
                     "managed context kernel component digest does not match",
@@ -1473,7 +1583,7 @@ fn validate_manifest(
             DevelopmentContextComponentManifest::FromSource { size_bytes, sha256 },
             ManagedContextDevelopmentSelection::SourceProject { .. },
         ) => {
-            if *size_bytes == 0 || *size_bytes > MAX_DEVELOPMENT_BYTES {
+            if *size_bytes == 0 {
                 return Err(package_error(
                     "managed context development component size is invalid",
                 ));
@@ -1494,9 +1604,10 @@ fn validate_manifest(
                 sha256,
                 snapshot_sha256,
             },
-            ManagedContextKernelSelection::SourceKernel,
+            ManagedContextKernelSelection::SourceKernel
+            | ManagedContextKernelSelection::SourceKernelWithoutCredentials,
         ) => {
-            if *size_bytes == 0 || *size_bytes > MAX_KERNEL_CONTEXT_BYTES {
+            if *size_bytes == 0 {
                 return Err(package_error(
                     "managed context kernel component size is invalid",
                 ));
@@ -1570,6 +1681,16 @@ fn validate_snapshot_binding(
     binding: &ManagedContextPackageBinding,
 ) -> Result<(), DaemonError> {
     let payload = &snapshot.payload;
+    if binding.plan.destination.is_some()
+        || binding.plan.kernel_context
+            == ManagedContextKernelSelection::SourceKernelWithoutCredentials
+    {
+        super::credential_free::validate_kernel_payload(payload)?;
+    } else if payload.vault.is_none() {
+        return Err(package_error(
+            "Path-1 kernel context requires the selected Vault binding",
+        ));
+    }
     if payload.context_id != binding.plan.context_id
         || payload.source_kernel_id != binding.source_kernel_id
         || payload.source_key_thumbprint != binding.source_key_thumbprint
@@ -1585,11 +1706,12 @@ fn validate_snapshot_binding(
 
 fn validate_binding(binding: &ManagedContextPackageBinding) -> Result<(), DaemonError> {
     validate_plan_binding(&binding.plan)?;
+    super::owner_managed::validate_destination_binding(
+        &binding.target_environment_id,
+        binding.plan.destination.as_ref(),
+        &binding.target_kernel_id,
+    )?;
     for (label, value) in [
-        (
-            "target environment id",
-            binding.target_environment_id.as_str(),
-        ),
         ("source kernel id", binding.source_kernel_id.as_str()),
         ("target kernel id", binding.target_kernel_id.as_str()),
     ] {
@@ -1608,6 +1730,9 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
         .ok_or_else(|| package_error("managed context plan digest is invalid"))?;
     validate_sha256(digest, "plan digest")?;
     validate_development_selection(&plan.development)?;
+    if plan.destination.is_some() {
+        super::owner_managed::validate_credential_free_plan(plan)?;
+    }
     match &plan.provider_accounts {
         ManagedContextProviderAccountSelection::None => {}
         ManagedContextProviderAccountSelection::Selected { accounts } => {
@@ -1663,7 +1788,7 @@ pub(crate) fn validate_development_selection(
             repositories,
         } => {
             validate_identifier(project_id, "project id")?;
-            if repositories.is_empty() || repositories.len() > 32 {
+            if repositories.is_empty() {
                 return Err(package_error(
                     "managed context repository selection is invalid",
                 ));
@@ -1872,7 +1997,7 @@ fn configure_no_follow(options: &mut OpenOptions) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -2129,7 +2254,9 @@ fn package_read_error(error: io::Error) -> DaemonError {
 
 fn package_write_error(error: io::Error) -> DaemonError {
     if matches!(error.kind(), io::ErrorKind::FileTooLarge) {
-        package_error("managed context package exceeds its size limit")
+        package_error(
+            "managed context package does not fit in the free space of its volume; free space there or choose a larger volume, then retry",
+        )
     } else {
         package_io_error("write managed context package", error)
     }
@@ -2164,3 +2291,56 @@ fn package_io_error(operation: &'static str, error: io::Error) -> DaemonError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| open_regular_file_no_follow(&path).is_err());
+}
+
+fn run_import_rollbacks(
+    kernel: impl FnOnce() -> Result<(), DaemonError>,
+    git: impl FnOnce() -> Result<(), DaemonError>,
+    provider: impl FnOnce() -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    let failures = [kernel(), git(), provider()]
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(package_unavailable(format!(
+            "import rollback failed: {}",
+            failures.join("; ")
+        )))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn mp11_import_rollback_attempts_every_credential_family_after_kernel_failure() {
+    let seen = std::cell::Cell::new(0_u8);
+    let result = run_import_rollbacks(
+        || {
+            seen.set(seen.get() | 1);
+            Err(package_error("synthetic kernel cleanup failure"))
+        },
+        || {
+            seen.set(seen.get() | 2);
+            Err(package_error("synthetic Git cleanup failure"))
+        },
+        || {
+            seen.set(seen.get() | 4);
+            Ok(())
+        },
+    );
+    assert_eq!(
+        seen.get(),
+        7,
+        "a failed cleanup suppressed later credential cleanup"
+    );
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("kernel cleanup failure") && error.contains("Git cleanup failure"));
+}

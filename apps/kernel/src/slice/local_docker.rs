@@ -37,11 +37,13 @@ mod local_authority;
 mod memory_admission;
 mod observation_environment;
 pub(crate) use observation_environment::fresh_local_docker_observation_environment;
+mod log_output;
 mod provider_inputs;
 mod snapshot_pause;
 mod state;
 #[cfg(test)]
 mod tests;
+use log_output::MAX_LOG_BYTES;
 mod tuning;
 
 use broker::docker_command;
@@ -233,13 +235,22 @@ pub fn run_local_docker_slice_action(
     } else {
         None
     };
+    // The image build runs before provisioning and needs a running engine too.
+    if matches!(
+        action,
+        LocalDockerSliceAction::BuildImage
+            | LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
+    ) {
+        ensure_host_docker_ready()?;
+    }
     let _memory_admission = if matches!(
         action,
         LocalDockerSliceAction::Provision
             | LocalDockerSliceAction::RestoreState
             | LocalDockerSliceAction::Recover
     ) {
-        ensure_host_docker_ready()?;
         snapshot_pause::recover(record, options)?;
         let memory_admission = memory_admission::admit_slice_start(record, action, options)?;
         if action == LocalDockerSliceAction::Provision {
@@ -251,15 +262,7 @@ pub fn run_local_docker_slice_action(
     };
     let script = linux_docker_slice_script()?;
     let mut command = Command::new(&script);
-    let action_name = match action {
-        LocalDockerSliceAction::Provision => "provision",
-        LocalDockerSliceAction::RestoreState => "restore-state",
-        LocalDockerSliceAction::Recover => "recover",
-        LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
-        LocalDockerSliceAction::RemoveProviderAuth => "remove-provider-auth",
-        LocalDockerSliceAction::Stop => "stop",
-        LocalDockerSliceAction::Destroy => "destroy",
-    };
+    let action_name = action.as_str();
     command.arg(action_name);
     configure_local_docker_slice_command(
         &mut command,
@@ -268,7 +271,8 @@ pub fn run_local_docker_slice_action(
         options,
         matches!(
             action,
-            LocalDockerSliceAction::Provision
+            LocalDockerSliceAction::BuildImage
+                | LocalDockerSliceAction::Provision
                 | LocalDockerSliceAction::RestoreState
                 | LocalDockerSliceAction::Recover
         ),
@@ -997,9 +1001,10 @@ fn relay_endpoint_from_persisted_daemon_relay_url(
 }
 
 fn read_slice_log_file_entry(source: &str, path: &Path, tail_lines: usize) -> SliceLogEntry {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let (text, truncated) = tail_text_lines(&text, tail_lines);
+    match log_output::tail_file(path, MAX_LOG_BYTES) {
+        Ok((text, byte_truncated)) => {
+            let (text, line_truncated) = tail_text_lines(&text, tail_lines);
+            let truncated = byte_truncated || line_truncated;
             SliceLogEntry {
                 source: source.to_string(),
                 path: Some(path.display().to_string()),
@@ -1021,12 +1026,10 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
     let tail_lines_arg = tail_lines.to_string();
     let output = docker_command()
         .args(["logs", "--tail", &tail_lines_arg, &container])
-        .output();
+        .bounded_log_output();
     match output {
         Ok(output) => {
-            let mut text = String::new();
-            text.push_str(&String::from_utf8_lossy(&output.stdout));
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let mut text = output.text();
             if !output.status.success() && text.trim().is_empty() {
                 text = format!("docker logs failed with status {}", output.status);
             }
@@ -1034,7 +1037,7 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
                 source: "container".to_string(),
                 path: None,
                 text: text.trim().to_string(),
-                truncated: false,
+                truncated: output.truncated,
             }
         }
         Err(error) => SliceLogEntry {
@@ -1092,12 +1095,10 @@ fi
             &tail_lines_arg,
             layout,
         ])
-        .output();
+        .bounded_log_output();
     match output {
         Ok(output) => {
-            let mut text = String::new();
-            text.push_str(&String::from_utf8_lossy(&output.stdout));
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let mut text = output.text();
             if !output.status.success() && text.trim().is_empty() {
                 text = format!("slice runtime logs failed with status {}", output.status);
             }
@@ -1105,7 +1106,7 @@ fi
                 source: "runtime".to_string(),
                 path: None,
                 text: text.trim().to_string(),
-                truncated: false,
+                truncated: output.truncated,
             }
         }
         Err(error) => SliceLogEntry {
@@ -1277,14 +1278,9 @@ fn configure_local_docker_slice_command(
             ..
         } = relay;
         if let Some(cloud_relay_config_json) = cloud_relay_config_json {
-            if !broker::configured() {
-                let host_config_path =
-                    write_cloud_relay_config_file(record, options, &cloud_relay_config_json)?;
-                command.env(
-                    "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH",
-                    host_config_path,
-                );
-            }
+            // Transfer through the existing stdin path in the provisioner.
+            // Keeping a second host copy exposes credentials under configured
+            // roots and is unnecessary for both broker and local provisioning.
             command.env(
                 "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON",
                 cloud_relay_config_json,
@@ -1345,30 +1341,6 @@ fn local_docker_error(message: impl Into<String>) -> DaemonError {
         operation: "slice.local_docker",
         message: message.into(),
     }
-}
-
-fn write_cloud_relay_config_file(
-    record: &SliceRecord,
-    options: &LocalDockerSliceOptions,
-    config_json: &str,
-) -> Result<PathBuf, DaemonError> {
-    let dir = options.root.join("runtime").join(&record.id);
-    std::fs::create_dir_all(&dir).map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.local_docker",
-        message: format!(
-            "failed to create slice runtime config dir {}: {error}",
-            dir.display()
-        ),
-    })?;
-    let path = dir.join("cloud-relay-config.json");
-    std::fs::write(&path, config_json).map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.local_docker",
-        message: format!(
-            "failed to write slice cloud relay config {}: {error}",
-            path.display()
-        ),
-    })?;
-    Ok(path)
 }
 
 fn compact_login_message(output: &str) -> String {
@@ -1464,6 +1436,7 @@ pub(super) fn relay_url_for_container(relay_url: &str) -> String {
 impl LocalDockerSliceAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::BuildImage => "build-image",
             Self::Provision => "provision",
             Self::RestoreState => "restore-state",
             Self::Recover => "recover",
@@ -1813,16 +1786,12 @@ fn command_exists(command: &str) -> bool {
 }
 
 fn command_log_preview(path: &Path) -> String {
-    let mut text = std::fs::read_to_string(path).unwrap_or_default();
-    if text.len() > 4_000 {
-        let start = text.len().saturating_sub(4_000);
-        text = text[start..].to_string();
-        text.push_str("...");
-    }
-    let text = text.trim();
-    if text.is_empty() {
+    let (text, truncated) = log_output::tail_file(path, 3997).unwrap_or_default();
+    if text.trim().is_empty() {
         "<no output>".to_string()
+    } else if truncated {
+        format!("...{}", text.trim())
     } else {
-        text.to_string()
+        text.trim().to_string()
     }
 }

@@ -1,6 +1,8 @@
-import type { TerminalOutputRecord } from "../cli-types.js"
+import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
+import type { AgentRuntimeActivity, RuntimeInteraction, TerminalOutputRecord } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
+  getSessionStateRequest,
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
 } from "../ipc-requests.js"
@@ -10,6 +12,8 @@ export function startNativeKernelPumpLoop(
   sessionId: string,
   attachmentId: string,
   options: {
+    onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void | Promise<void>) | undefined
+    onInteractions?: ((interactions: RuntimeInteraction[]) => void) | undefined
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
     formatError?: ((error: unknown) => string) | undefined
@@ -23,11 +27,28 @@ export function startNativeKernelPumpLoop(
     if (stopped || inFlight) return
     inFlight = true
     try {
-      if (options.onTerminalRecords) {
+      // Read settlement before draining output: all final records admitted by
+      // this snapshot must reach the TUI before its turn/completed notification.
+      const state = options.onAgentActivity || options.onInteractions
+        ? await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity>, session?: { active_interactions?: RuntimeInteraction[] } } }>(getSessionStateRequest(sessionId))
+        : undefined
+      if (stopped) return
+      let outputDrained = false
+      // TerminalOutput is size bounded. Keep each tick bounded too, and defer
+      // settlement to a later tick if the attachment still has output pages.
+      const maxPages = options.onAgentActivity ? 8 : 1
+      for (let page = 0; !stopped && page < maxPages; page++) {
         const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
+        traceCodexLifecycle("pump_reply", { responseKinds: Object.keys(response),
+          records: Array.isArray((response.TerminalOutput as { records?: unknown[] } | undefined)?.records)
+            ? (response.TerminalOutput as { records: unknown[] }).records.length : undefined })
         if ("TerminalOutput" in response) {
           const records = (response.TerminalOutput as { records?: unknown[] }).records
-          if (Array.isArray(records) && records.length > 0) {
+          if (Array.isArray(records) && records.length === 0) {
+            outputDrained = true
+            break
+          }
+          if (!stopped && Array.isArray(records) && records.length > 0) {
             const terminalRecords = records as TerminalOutputRecord[]
             options.debug?.("pump_terminal_records", {
               sessionId,
@@ -35,14 +56,20 @@ export function startNativeKernelPumpLoop(
               count: terminalRecords.length,
               records: terminalRecords.map(summarizeTerminalRecord),
             })
-            options.onTerminalRecords(terminalRecords)
+            options.onTerminalRecords?.(terminalRecords)
           }
         }
       }
-      if (options.pollRuntimeNotices !== false) {
+      traceCodexLifecycle("pump_tick", { outputDrained })
+      if (!stopped && outputDrained && state?.SessionState?.agent_activity) await options.onAgentActivity?.(state.SessionState.agent_activity)
+      // Permission projections establish their own prompt-scoped display
+      // barrier. Another agent's output must not hold their approval hostage.
+      if (!stopped && state?.SessionState?.session) options.onInteractions?.(state.SessionState.session.active_interactions ?? [])
+      if (!stopped && options.pollRuntimeNotices !== false) {
         await client.send<Record<string, unknown>>(pollRuntimeNoticesRequest(sessionId, attachmentId))
       }
     } catch (error) {
+      traceCodexLifecycle("pump_error", { errorClass: error instanceof Error ? error.name : typeof error })
       options.debug?.("pump_error", {
         error: options.formatError ? options.formatError(error) : error instanceof Error ? error.message : String(error),
       })
@@ -50,7 +77,7 @@ export function startNativeKernelPumpLoop(
       inFlight = false
     }
   }
-  const intervalMs = options.intervalMs ?? (options.onTerminalRecords ? 250 : 10_000)
+  const intervalMs = options.intervalMs ?? 250
   const interval = setInterval(() => {
     void tick()
   }, intervalMs)

@@ -445,6 +445,10 @@ impl SessionService {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing apply_workflow_code_definition_with_alias_base operation signature and explicit context arguments"
+    )]
     pub fn apply_workflow_code_definition_with_alias_base(
         &mut self,
         session_id: &str,

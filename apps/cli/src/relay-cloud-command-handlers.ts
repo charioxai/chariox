@@ -7,14 +7,10 @@ import {
   type CloudCommandLifecycleDeps,
 } from "./cloud-command-lifecycle.js"
 import type { RelayCloudProfile } from "./preferences.js"
+import { shellQuote } from "./native-tui/launch-environment.js"
 
 export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
   sessionState: () => RuntimeSession
-  bootstrapCloudRelay?: (
-    apiUrl: string,
-    email: string,
-    accountSlug?: string,
-  ) => Promise<RelayCloudProfile>
   pairCloudRelayClient?: (
     profile: RelayCloudProfile,
     clientId: string,
@@ -24,7 +20,7 @@ export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
     profile: RelayCloudProfile,
     targetDaemonAlias: string,
     options?: { sessionId?: string | null },
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; profile?: RelayCloudProfile }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; sessionId?: string; profile?: RelayCloudProfile; issuer?: { endpoint: string; daemonId: string } }>
   logoutCloudRelay?: (profile: RelayCloudProfile, options?: { revokeClient?: boolean; revokeMachine?: boolean }) => Promise<void>
 }
 
@@ -34,7 +30,7 @@ export async function handleRelayCloudCommand(
 ): Promise<void> {
   const [cloudCommand, ...cloudArgs] = args
   if (!cloudCommand || cloudCommand === "status") {
-    const profile = deps.getCloudRelayProfile?.() ?? null
+    const profile = await deps.getCloudRelayProfile?.() ?? null
     if (!profile) {
       deps.appendNotice("cloud is not linked. Run /cloud first.")
       return
@@ -58,11 +54,11 @@ export async function handleRelayCloudCommand(
     return
   }
   if (cloudCommand === "pair") {
-    await pairRelayCloudClient(deps, cloudArgs)
+    deps.flashFooter("/relay cloud pair is retired; use /client invite for key-bound terminal pairing", "error")
     return
   }
   if (cloudCommand === "pair-machine") {
-    await pairRelayCloudMachine(deps, cloudArgs)
+    deps.flashFooter("/relay cloud pair-machine is retired; run /cloud link on the receiving kernel", "error")
     return
   }
   if (cloudCommand === "connect" || cloudCommand === "refresh") {
@@ -78,7 +74,7 @@ export async function handleRelayCloudCommand(
     return
   }
   deps.flashFooter(
-    "usage: /relay cloud status | /relay cloud login <api-url> <email> [account-slug] | /relay cloud pair [alias] | /relay cloud pair-machine [machine-id] [alias] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> [session-id] | /relay cloud disable",
+    "usage: /relay cloud status | /relay cloud login [api-url] | /relay cloud connect | /relay cloud client-token <target-daemon-alias> [session-id] | /relay cloud disable",
     "error",
   )
 }
@@ -88,74 +84,27 @@ async function loginRelayCloud(
   cloudCommand: string,
   cloudArgs: string[],
 ): Promise<void> {
-  if (!deps.bootstrapCloudRelay || !deps.saveCloudRelayProfile) {
-    deps.flashFooter("cloud relay login is unavailable in this build", "error")
+  if (cloudCommand === "bootstrap" || cloudArgs.length > 1) {
+    deps.flashFooter("email bootstrap is retired; use /cloud link or /relay cloud login [api-url] to enroll this kernel", "error")
     return
   }
-  const apiUrl = cloudArgs[0]
-  const email = cloudArgs[1]
-  const accountSlug = cloudArgs[2]
-  if (!apiUrl && cloudCommand === "login") {
-    await startHostedCloudLink(deps)
-    return
-  }
-  if (!apiUrl || !email) {
-    deps.flashFooter("usage: /relay cloud login <api-url> <email> [account-slug]", "error")
-    return
-  }
-  const profile = await deps.bootstrapCloudRelay(apiUrl, email, accountSlug)
-  await deps.saveCloudRelayProfile(profile)
-  deps.appendNotice(`cloud profile saved: ${profile.accountSlug}`)
-}
-
-async function pairRelayCloudClient(deps: RelayCloudCommandHandlerDeps, cloudArgs: string[]): Promise<void> {
-  if (!deps.pairCloudRelayClient || !deps.saveCloudRelayProfile) {
-    deps.flashFooter("cloud relay client pairing is unavailable in this build", "error")
-    return
-  }
-  const profile = deps.getCloudRelayProfile?.() ?? null
-  if (!profile) {
-    deps.appendNotice("cloud is not linked. Run /cloud first.")
-    return
-  }
-  const alias = cloudArgs.join(" ").trim() || undefined
-  const paired = await deps.pairCloudRelayClient(
-    profile,
-    deps.clientId ?? "chariox-cli",
-    alias,
-  )
-  await deps.saveCloudRelayProfile(paired)
-  deps.appendNotice(`cloud client linked: ${paired.clientId ?? deps.clientId}`)
-}
-
-async function pairRelayCloudMachine(deps: RelayCloudCommandHandlerDeps, cloudArgs: string[]): Promise<void> {
-  if (!deps.pairCloudRelayMachine || !deps.saveCloudRelayProfile || !deps.getRelayStatus) {
-    deps.flashFooter("cloud relay machine pairing is unavailable in this build", "error")
-    return
-  }
-  const profile = deps.getCloudRelayProfile?.() ?? null
-  if (!profile) {
-    deps.appendNotice("cloud is not linked. Run /cloud first.")
-    return
-  }
-  const relayStatus = await deps.getRelayStatus()
-  const machineId = cloudArgs[0] || relayStatus.machine_id
-  if (!machineId) {
-    deps.flashFooter("usage: /relay cloud pair-machine [machine-id] [alias]", "error")
-    return
-  }
-  const alias = cloudArgs.slice(1).join(" ").trim() || relayStatus.machine_alias || undefined
-  const paired = await deps.pairCloudRelayMachine(profile, machineId, alias)
-  await deps.saveCloudRelayProfile(paired)
-  deps.appendNotice(`cloud machine linked: ${paired.machineId ?? machineId}`)
+  await startHostedCloudLink({...deps, ...(cloudArgs[0] ? {cloudRelayApiUrl: cloudArgs[0]} : {})})
 }
 
 async function connectRelayCloud(deps: RelayCloudCommandHandlerDeps): Promise<void> {
+  if (deps.connectCloudRelay) {
+    const connected = await deps.connectCloudRelay()
+    await deps.saveCloudRelayProfile?.(connected.profile)
+    const status = await waitForHostedCloudRelayConnection(deps, connected.status)
+    await deps.refreshWaitingRoomData?.()
+    deps.appendNotice(status?.connected ? `cloud kernel connected: ${connected.profile.relayUrl}` : formatCloudRelayPendingNotice(status, connected.profile.relayUrl))
+    return
+  }
   if (!deps.issueCloudKernelRelayToken || !deps.saveCloudRelayProfile || !deps.getRelayStatus || !deps.configureRelay) {
     deps.flashFooter("cloud relay connect is unavailable in this build", "error")
     return
   }
-  const profile = deps.getCloudRelayProfile?.() ?? null
+  const profile = await deps.getCloudRelayProfile?.() ?? null
   if (!profile) {
     deps.appendNotice("cloud is not linked. Run /cloud first.")
     return
@@ -199,7 +148,7 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
     deps.flashFooter("cloud relay client tokens are unavailable in this build", "error")
     return
   }
-  const profile = deps.getCloudRelayProfile?.() ?? null
+  const profile = await deps.getCloudRelayProfile?.() ?? null
   if (!profile) {
     deps.appendNotice("cloud is not linked. Run /cloud first.")
     return
@@ -214,16 +163,15 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
   if (issued.profile && deps.saveCloudRelayProfile) {
     await deps.saveCloudRelayProfile(issued.profile)
   }
-  const targetOption = issued.targetDaemonId
-    ? `--target-daemon-id ${issued.targetDaemonId}`
-    : `--target-daemon-alias ${targetDaemonAlias}`
   deps.appendNotice(
     [
       "cloud client token",
       `transport=${issued.relayUrl}`,
       `expires_at_ms=${issued.tokenExpiresAtMs}`,
+      ...(issued.targetDaemonId ? [`target_daemon_id=${issued.targetDaemonId}`] : []),
+      ...(issued.issuer ? [`issuer_endpoint=${issued.issuer.endpoint}`, `issuer_daemon_id=${issued.issuer.daemonId}`] : []),
       ...(sessionId ? [`session_id=${sessionId}`] : []),
-      `command=chariox --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} ${targetOption}`,
+      "next=select the target kernel in the waiting room to attach with this CLI key",
     ].join("\n"),
   )
   deps.appendNotice(`cloud client token minted for ${targetDaemonAlias}`)
@@ -234,13 +182,13 @@ async function logoutRelayCloud(deps: RelayCloudCommandHandlerDeps, cloudArgs: s
     revokeClient: cloudArgs.includes("--revoke-client"),
     revokeMachine: cloudArgs.includes("--revoke-machine"),
   }
-  const requiresAcknowledgement = options.revokeClient || options.revokeMachine
+  const profile = await deps.getCloudRelayProfile?.() ?? null
+  const requiresAcknowledgement = Boolean(profile?.kernelEnrolled) || options.revokeClient || options.revokeMachine
   if (!deps.saveCloudRelayProfile) {
     if (requiresAcknowledgement) throw new Error("cloud relay profile storage is unavailable in this build")
     deps.flashFooter("cloud relay profile storage is unavailable in this build", "error")
     return
   }
-  const profile = deps.getCloudRelayProfile?.() ?? null
   if (requiresAcknowledgement) {
     if (!profile || !deps.logoutCloudRelay) {
       throw new Error("cloud remote revocation requires a linked profile and logout support")

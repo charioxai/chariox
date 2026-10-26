@@ -156,6 +156,62 @@ impl OperationalHistoryStore {
         Ok(events)
     }
 
+    pub(crate) fn load_latest_provider_output_event(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.delay_read_if_configured();
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_json
+                 FROM history_events
+                 WHERE session_id = ?1 AND agent_id = ?2 AND kind = 'provider_output'
+                 ORDER BY sequence DESC
+                 LIMIT 1",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare latest provider output history load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![session_id, agent_id])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load latest provider output history event",
+                message: error.to_string(),
+            })?;
+        Ok(read_history_events_from_rows(session_id, &mut rows)?
+            .into_iter()
+            .next())
+    }
+
+    pub(crate) fn provider_session_answered_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_session_id: &str,
+    ) -> Result<bool, DaemonError> {
+        self.delay_read_if_configured();
+        let connection = self.lock_read_connection(Some(session_id))?;
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM history_answered_provider_sessions
+                    WHERE session_id = ?1 AND agent_id = ?2 AND provider_session_id = ?3
+                 )",
+                params![session_id, agent_id, provider_session_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "check provider session history",
+                message: error.to_string(),
+            })
+    }
+
     pub fn load_session_events_for_agent_sequence_range(
         &self,
         session_id: &str,
@@ -539,7 +595,7 @@ fn history_user_prompt_counts_as_chariox_owned(
     metadata_text: &str,
 ) -> bool {
     match entry.and_then(|entry| entry.prompt_origin) {
-        Some(PromptOrigin::Chariox) => true,
+        Some(PromptOrigin::Chariox | PromptOrigin::CompletionCheck) => true,
         Some(PromptOrigin::External) => false,
         None => !SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
             metadata_text,

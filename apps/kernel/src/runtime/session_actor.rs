@@ -21,6 +21,7 @@ impl SessionActor {
             request,
             LocalDaemonRequest::CreateSession(_)
                 | LocalDaemonRequest::ListProjects(_)
+                | LocalDaemonRequest::SetProjectPinned(_)
                 | LocalDaemonRequest::RenameProject(_)
                 | LocalDaemonRequest::UpdateProjectWorkspaces(_)
                 | LocalDaemonRequest::ArchiveProject(_)

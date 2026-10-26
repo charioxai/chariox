@@ -1,13 +1,17 @@
 #!/usr/bin/env node
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
+import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 
 import assert from "node:assert/strict"
+import { signalOwnedDrillChild } from "./lib/drill-owned-child-signal.mjs"
+import { createOwnedDrillProcessGroup } from "./lib/drill-owned-process-group.mjs"
 import { createRoomWebFaultControl } from "./lib/room-web-fault-control.mjs"
 import { roomWebFaultHandlers } from "./lib/room-web-fault-runtime.mjs"
 import { assertRoomDrillCompletedActionNotice } from "./lib/room-drill-action-notice.mjs"
 import { validatePrebuiltSliceImage } from "./lib/prebuilt-slice-image.mjs"
 import { roomTuiPtyInvocation } from "./lib/room-tui-pty.mjs"
 import { createRetainedRoomRuntime, stopOrDeleteRoomSlice, roomCleanupComplete, verifyRetainedRoomArchive, roomDrillLeakScanRoots } from "./lib/room-provider-retention.mjs"
-import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
@@ -24,7 +28,6 @@ import { captureRoomKernelDiagnostics } from "./lib/room-kernel-diagnostics.mjs"
 import { startRoomSliceWithForwarding } from "./lib/room-colima-forwarding.mjs"
 import {
   importRoomNativeProviderAccount,
-  roomProviderSandboxConfigLines,
   prepareRoomRealProviderAgent,
   roomProviderAgentReadyMetadata,
   roomRealProviderOptions,
@@ -134,7 +137,6 @@ const evidenceRoot = retainedProviderRoot ? path.join(retainedProviderRoot, "exe
 const containerName = `chariox-slice-${runId}`
 const homeVolume = `${containerName}-home`
 const userCredentialId = `${runId}-user-computer`
-const generatedCredentialId = `${runId}-generated-computer`
 const userSecret = `room-computer-secret-${process.pid}-${Date.now()}`
 const vaultPassphrase = `room-vault-passphrase-${process.pid}-${Date.now()}`
 const agentClipboardText = `agent-clipboard-${runId}-Grüße 世界\nsecond line\n`
@@ -189,7 +191,6 @@ const sensitiveValues = [
   ...clipboardValues,
 ]
 let webGestureOrigin = null
-const generatedSecretLength = 24
 const { kernelPort, relayPort } = await makeAvailablePorts({
   candidateFactory: () => {
     const kernelPort = 20000 + Math.floor(Math.random() * 4000)
@@ -317,7 +318,7 @@ async function run() {
   const startRelayGeneration = async () => {
     const logName = relayGeneration === 0 ? "relay.log" : `relay-reconnect-${relayGeneration}.log`
     const relayLog = createWriteStream(path.join(evidenceRoot, logName), { flags: "a" })
-    const child = spawn(relayBinary, [], {
+    const child = spawnOwned(relayBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -373,7 +374,7 @@ async function run() {
     XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
     XDG_CACHE_HOME: path.join(tempRoot, "xdg-cache"),
   }
-  let kernel = spawn(kernelBinary, [], {
+  let kernel = spawnOwned(kernelBinary, [], {
     cwd: repoRoot,
     env: kernelEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -403,7 +404,7 @@ async function run() {
         restartKernel: async () => {
           assert.ok(kernel.exitCode !== null || kernel.signalCode !== null, "fault kernel is already running")
           const nextLog = createWriteStream(path.join(evidenceRoot, "kernel-restarted.log"), { flags: "a" })
-          kernel = spawn(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
+          kernel = spawnOwned(kernelBinary, [], { cwd: repoRoot, env: kernelEnv, stdio: ["ignore", "pipe", "pipe"] })
           kernel.stdout.pipe(nextLog); kernel.stderr.pipe(nextLog); kernel.once("exit", () => nextLog.end()); children.push(kernel)
           await waitForTcpPort("127.0.0.1", kernelPort, 60_000, "restarted kernel unavailable")
           client.close(); observerClient.close()
@@ -838,9 +839,10 @@ async function run() {
       "relay-attached remote TUI projected the same Room lifecycle, takeover, Action, and release",
       "relay-attached remote TUI captured the real headed display and verified its PNG digest locally",
       "TUI projected input release and a second protocol client observed the same or newer authoritative state",
-      "slice-bound agent created user-entered and generated Computer credentials in the encrypted home vault",
-      "home-kernel approvals released each credential only after the password field had focus",
-      "worker typed both credentials through the Room Computer action path into the shared headed desktop",
+      "slice-bound agent created a user-entered Computer credential in the encrypted home vault",
+      "A06: /sudo and Vault generation were refused for the slice-bound agent",
+      "home-kernel approval released the credential only after the password field had focus",
+      "worker typed the credential through the Room Computer action path into the shared headed desktop",
       "Computer secret actions were attributed, argument-free, visible in both TUIs, and absent from clipboard, screenshots, logs, history, and relay output",
       "slice-bound agent moved, single-clicked, right-clicked, double-clicked, dragged, and scrolled the physical X11 desktop through Room authority",
       "pointer drag selected text without moving the Chromium window",
@@ -1898,7 +1900,7 @@ async function exerciseRoomClipboard(activityController, activityNotices) {
 }
 
 async function exerciseComputerSecretInput() {
-  const { agent, providerRun } = await launchComputerSecretAgent()
+  const { agent, providerRun, attachmentId: secretAttachmentId } = await launchComputerSecretAgent()
   secretAgent = agent
   secretProviderRun = providerRun
 
@@ -1958,25 +1960,25 @@ async function exerciseComputerSecretInput() {
   assert.equal(requested.content?.credential?.id ?? requested.content?.credential_id, userCredentialId)
   assertNoSecretProperties(requested.raw, "user credential creation")
 
-  const generated = await mcpToolCall(providerRun, "create_generated_credential", {
-    credential: {
-      id: generatedCredentialId,
-      description: "Room Computer generated credential drill",
-      allowed_hosts: [],
-      allowed_uses: ["computer"],
-      injection: { kind: "computer" },
-    },
-    generator: {
-      kind: "password",
-      length: generatedSecretLength,
-      symbols: false,
-      avoid_ambiguous: true,
-    },
-    overwrite: false,
-  })
-  assert.equal(generated.ok, true, JSON.stringify(generated))
-  assert.equal(generated.content?.credential?.id ?? generated.content?.credential_id, generatedCredentialId)
-  assertNoSecretProperties(generated.raw, "generated credential creation")
+  // MP-08/MP-10/MP-11 A06: only a local regular agent's sudo window may generate a
+  // Vault password, and it is browser-only; a slice-bound agent gets neither.
+  await assert.rejects(
+    client.send(requests.submitPromptRequest(
+      sessionId,
+      secretAttachmentId,
+      agent.id,
+      "/sudo Generate a Computer password in my Vault.",
+      [],
+    )),
+    /sudo requires a local regular agent/,
+  )
+  for (const [tool, args] of [
+    ["chariox.vault.generate", { request_id: `${runId}-slice`, origin: `http://host.docker.internal:${fixture.port}` }],
+    ["create_generated_credential", { credential: { id: `${runId}-generated-computer`, allowed_hosts: [], allowed_uses: ["computer"], injection: { kind: "computer" } } }],
+  ]) {
+    const refused = await mcpToolCall(providerRun, tool, args)
+    assert.equal(refused.ok, false, `${tool} must be refused: ${JSON.stringify(refused.raw)}`)
+  }
 
   await sliceScreen(["open-url", `http://host.docker.internal:${fixture.port}/secret`])
   await waitForBrowserText("ROOM_COMPUTER_SECRET_READY", 30_000, "secret fixture did not load")
@@ -1989,10 +1991,6 @@ async function exerciseComputerSecretInput() {
   const userPaste = await pasteComputerCredential(providerRun, userCredentialId)
   await waitForBrowserText("USER_SECRET_OK", 20_000, "user-entered Computer secret did not reach the field")
 
-  await sliceScreen(["browser-click", "#generated-secret"])
-  const generatedPaste = await pasteComputerCredential(providerRun, generatedCredentialId)
-  await waitForBrowserText("GENERATED_SECRET_OK", 20_000, "generated Computer secret did not reach the field")
-
   const browserText = await sliceScreen(["browser-text"])
   assert.equal(browserText.includes(userSecret), false, "browser projection leaked the user secret")
   assert.equal(browserText.includes(vaultPassphrase), false, "browser projection leaked the vault passphrase")
@@ -2004,10 +2002,10 @@ async function exerciseComputerSecretInput() {
     "RoomEnvironmentState",
   ).environment
   const secretActions = environment.actions.filter((action) => action.kind === "secret_input")
-  assert.equal(secretActions.length, 2)
+  assert.equal(secretActions.length, 1)
   assert.deepEqual(
     secretActions.map((action) => action.action_id),
-    [userPaste.content.action_id, generatedPaste.content.action_id],
+    [userPaste.content.action_id],
   )
   assert.ok(secretActions.every((action) => action.arguments == null))
   assert.ok(secretActions.every((action) => action.state === "completed"))
@@ -2026,14 +2024,13 @@ async function exerciseComputerSecretInput() {
   await assertNoPlaintextSecretInTree(evidenceRoot, [userSecret, vaultPassphrase])
 
   await client.send(requests.deleteCredentialSecretRequest(userCredentialId))
-  await client.send(requests.deleteCredentialSecretRequest(generatedCredentialId))
-
   return {
     agentId: agent.id,
     providerRunId: providerRun.id,
-    credentialKinds: ["user-entered", "generated"],
+    credentialKinds: ["user-entered"],
+    sliceSudoRefused: true,
+    sliceVaultGenerateRefused: true,
     userActionId: userPaste.content.action_id,
-    generatedActionId: generatedPaste.content.action_id,
     actorId: userPaste.content.actor_id,
     clipboardPreserved: true,
     browserProjectionRedacted: true,
@@ -2050,7 +2047,7 @@ async function launchComputerSecretAgent() {
       sessionId,
       "dev-stub",
       "computer-secret-agent",
-      "native-tui-idle",
+      PROVIDER_MCP_FIXTURE_MODEL,
       repoRoot,
       "low",
       "build",
@@ -2098,9 +2095,9 @@ async function launchComputerSecretAgent() {
         "ProviderRun",
       ).provider_run
       if (["ended", "failed", "error"].includes(String(current.state ?? "").toLowerCase())) {
-        throw new Error(`slice provider run ended before MCP became ready: ${JSON.stringify(current)}`)
+        throw new Error(`slice provider run ended before MCP became ready: ${publicRuntimeDiagnostic(current)}`)
       }
-      if (!current.runtime_mcp_server_url || !current.runtime_mcp_auth_token) {
+      if (current.state !== "Running") {
         await candidate.close().catch(() => undefined)
         return false
       }
@@ -2111,41 +2108,17 @@ async function launchComputerSecretAgent() {
     }
   }, 120_000, "slice provider runtime MCP did not become ready")
   workerClient = ready.client
-  return { agent: spawned, providerRun: ready.providerRun }
+  const state = unwrapOneOf(await client.send(requests.getSessionStateRequest(sessionId)), "SessionStateLoaded", "SessionState")
+  const remote = state.session.agents.find(candidate => candidate.id === spawned.id)?.remote_execution
+  assert.ok(remote?.leased_agent_id, "slice fixture run has no home lease")
+  const providerRun = bindProviderMcpFixture({ ...ready.providerRun, id: `leased:${remote.leased_agent_id}:${workerProviderRunId}` }, {
+    client, requests, sessionId, attachmentId: attachment.id,
+  })
+  return { agent: spawned, providerRun, attachmentId: attachment.id }
 }
 
 async function mcpToolCall(providerRun, name, argumentsValue) {
-  const payload = JSON.stringify({
-    url: providerRun.runtime_mcp_server_url,
-    token: providerRun.runtime_mcp_auth_token,
-    body: {
-      jsonrpc: "2.0",
-      id: `${name}-${Date.now()}`,
-      method: "tools/call",
-      params: { name, arguments: argumentsValue },
-    },
-  })
-  const helper = [
-    "let input='';",
-    "process.stdin.setEncoding('utf8');",
-    "process.stdin.on('data',chunk=>{input+=chunk});",
-    "process.stdin.on('end',async()=>{",
-    "const request=JSON.parse(input);",
-    "const response=await fetch(request.url,{method:'POST',headers:{authorization:'Bearer '+request.token,'content-type':'application/json'},body:JSON.stringify(request.body)});",
-    "const text=await response.text();",
-    "process.stdout.write(JSON.stringify({status:response.status,ok:response.ok,body:text}));",
-    "});",
-  ].join("")
-  const response = await runCommandWithStdin(
-    "docker",
-    ["exec", "-i", "-u", "slice", containerName, "node", "-e", helper],
-    payload,
-    90_000,
-  )
-  assert.equal(response.code, 0, `runtime MCP ${name} transport failed: ${response.stderr}`)
-  const envelope = JSON.parse(response.stdout)
-  assert.equal(envelope.ok, true, `runtime MCP ${name} returned HTTP ${envelope.status}`)
-  const result = JSON.parse(envelope.body)
+  const result = await providerRun.fixtureMcp.call("tools/call", { name, arguments: argumentsValue }, { rawEnvelope: true })
   if (result.error) return { ok: false, error: result.error, raw: result }
   return {
     ok: result.result?.isError !== true,
@@ -2381,7 +2354,6 @@ async function seedConfig(tempRoot) {
     "[slices.linux]",
     // A real provider requires the full nested Bubblewrap boundary, not just
     // an unconfined seccomp profile. The provisioner probes it before use.
-    ...roomProviderSandboxConfigLines(realProviderOptions),
     ...(prebuiltSliceImageId
       ? [`docker_image = ${JSON.stringify(prebuiltSliceImageId)}`, "build_image = \"never\""]
       : ["build_image = \"auto\""]),
@@ -2515,7 +2487,7 @@ async function startRemoteTui({ tempRoot }) {
     env,
     connectionArgs: [
       "--relay-url", `ws://127.0.0.1:${relayPort}`,
-      "--relay-token", remoteTuiRelayToken,
+      "--relay-token-env", "CHARIOX_DRILL_ROOM_RELAY_TOKEN",
       "--target-daemon-id", homeDaemonId,
     ],
   })
@@ -2544,14 +2516,14 @@ async function startTui({ kind, tempRoot, env, connectionArgs }) {
     "--model", `room-activity-${kind}-tui-drill`,
     "--client-id", `${runId}-${kind}-tui`,
   ])
-  const tui = spawn(invocation.command, invocation.args, {
+  const tui = spawnOwned(invocation.command, invocation.args, {
     cwd: repoRoot,
     env,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   })
-  tui.killProcessGroup = true
   children.push(tui)
+  tui.ownedProcessGroup = createOwnedDrillProcessGroup(tui)
   tui.stdout.on("data", (chunk) => {
     tuiOutput[kind] = `${tuiOutput[kind]}${chunk}`.slice(-16_000)
   })
@@ -2585,6 +2557,7 @@ function remoteTuiEnvironment(tempRoot) {
   return {
     ...env,
     HOME: remoteTuiHome,
+    CHARIOX_DRILL_ROOM_RELAY_TOKEN: remoteTuiRelayToken,
   }
 }
 
@@ -2659,14 +2632,10 @@ async function startFixture() {
       </style></head><body><main><h1>ROOM_COMPUTER_SECRET_READY</h1>
         <label for="user-secret">User-entered credential</label><input id="user-secret" type="password" autocomplete="off">
         <div class="status" id="user-status">USER_SECRET_WAITING</div>
-        <label for="generated-secret">Generated credential</label><input id="generated-secret" type="password" autocomplete="off">
-        <div class="status" id="generated-status">GENERATED_SECRET_WAITING</div>
       </main><script>
         const expectedUserDigest=${JSON.stringify(expectedUserDigest)};
-        const generatedLength=${generatedSecretLength};
         function fnv1a64(value){let hash=14695981039346656037n;for(const byte of new TextEncoder().encode(value)){hash^=BigInt(byte);hash=BigInt.asUintN(64,hash*1099511628211n)}return hash.toString(16).padStart(16,"0")}
         document.querySelector("#user-secret").addEventListener("input",(event)=>{document.querySelector("#user-status").textContent=fnv1a64(event.target.value)===expectedUserDigest?"USER_SECRET_OK":"USER_SECRET_WAITING"});
-        document.querySelector("#generated-secret").addEventListener("input",(event)=>{document.querySelector("#generated-status").textContent=event.target.value.length===generatedLength?"GENERATED_SECRET_OK":"GENERATED_SECRET_WAITING"});
       </script></body></html>`)
       return
     }
@@ -3317,6 +3286,7 @@ async function dockerLimits() {
 
 async function cleanup() {
   const tempRoot = await tempRootPromise
+  const childCleanupFailures = []
   let leakedEvidence = false
   try { localForwarding?.assertHealthy() } catch (error) { failure ??= error }
   if (failure) {
@@ -3339,7 +3309,6 @@ async function cleanup() {
   }
   if (client && requests) {
     await withTimeout(client.send(requests.deleteCredentialSecretRequest(userCredentialId)), 2_000, "cleanup credential").catch(() => undefined)
-    await withTimeout(client.send(requests.deleteCredentialSecretRequest(generatedCredentialId)), 2_000, "cleanup generated credential").catch(() => undefined)
   }
   if (client && requests && sessionId) {
     await withTimeout(client.send(requests.stopRoomEnvironmentRequest(sessionId)), 2_000, "cleanup StopRoomEnvironment").catch(() => undefined)
@@ -3380,7 +3349,17 @@ async function cleanup() {
   remoteAutomation?.close()
   await closeFixtureServer()
   if (localForwarding) await localForwarding.close().catch((error) => { failure ??= error })
-  for (const child of children.toReversed()) await terminateChild(child)
+  for (const child of children.toReversed()) {
+    try { await terminateChild(child) } catch (error) {
+      // Keep a refused group unsignaled, but continue tearing down independent
+      // children and resources. Cleanup remains failed even if removals succeed.
+      failure ??= error
+      childCleanupFailures.push({
+        pid: child?.pid ?? null,
+        message: redactDrillSecrets(error?.message ?? String(error)),
+      })
+    }
+  }
   // Stop resource producers before the final removal, including a kernel that
   // was still provisioning when interrupted. Otherwise a late container can
   // appear after cleanup has already removed its predecessor.
@@ -3434,6 +3413,7 @@ async function cleanup() {
     listenersReleased: occupiedPorts.length === 0,
     plaintextSecretLeak: leakedEvidence,
     occupiedPorts,
+    childCleanupFailures,
     resource: after,
   }
   await writeFile(path.join(evidenceRoot, "cleanup.json"), `${JSON.stringify(cleanupResult, null, 2)}\n`)
@@ -3492,23 +3472,23 @@ async function closeFixtureServer() {
 
 async function terminateChild(child) {
   if (!child) return
-  if (child.killProcessGroup) {
-    signalProcessGroup(child.pid, "SIGTERM")
+  if (child.ownedProcessGroup) {
+    child.ownedProcessGroup.signal("SIGTERM")
     await waitForChildExit(child, 5_000)
-    if (await waitForProcessGroupExit(child.pid, 500)) return
-    signalProcessGroup(child.pid, "SIGKILL")
-    await waitForProcessGroupExit(child.pid, 1_000)
+    if (await waitForProcessGroupExit(child.ownedProcessGroup, 500)) return
+    child.ownedProcessGroup.signal("SIGKILL")
+    await waitForProcessGroupExit(child.ownedProcessGroup, 1_000)
     return
   }
-  if (child.exitCode != null) return
-  child.kill("SIGTERM")
+  if (child.exitCode != null || child.signalCode != null) return
+  signalOwnedDrillChild(child, "SIGTERM")
   if (await waitForChildExit(child, 5_000)) return
-  child.kill("SIGKILL")
+  signalOwnedDrillChild(child, "SIGKILL")
   await waitForChildExit(child, 1_000)
 }
 
 function waitForChildExit(child, timeoutMs) {
-  if (child.exitCode != null) return Promise.resolve(true)
+  if (child.exitCode != null || child.signalCode != null) return Promise.resolve(true)
   return new Promise((resolve) => {
     let settled = false
     const finish = (exited) => {
@@ -3524,31 +3504,13 @@ function waitForChildExit(child, timeoutMs) {
   })
 }
 
-async function waitForProcessGroupExit(processGroupId, timeoutMs) {
+async function waitForProcessGroupExit(group, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (!processGroupExists(processGroupId)) return true
+    if (!group.exists()) return true
     await sleep(50)
   }
-  return !processGroupExists(processGroupId)
-}
-
-function processGroupExists(processGroupId) {
-  try {
-    process.kill(-processGroupId, 0)
-    return true
-  } catch (error) {
-    if (error?.code === "ESRCH") return false
-    throw error
-  }
-}
-
-function signalProcessGroup(processGroupId, signal) {
-  try {
-    process.kill(-processGroupId, signal)
-  } catch (error) {
-    if (error?.code !== "ESRCH") throw error
-  }
+  return !group.exists()
 }
 
 async function waitFor(operation, timeoutMs, message) {
@@ -3571,10 +3533,12 @@ async function waitFor(operation, timeoutMs, message) {
 function runCommand(command, args, timeoutMs) {
   interruption.check()
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => {
+      if (Number.isSafeInteger(child.pid) && child.pid > 1) signalOwnedDrillChild(child, "SIGTERM")
+    }, timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
@@ -3593,10 +3557,12 @@ function runCommand(command, args, timeoutMs) {
 function runCommandWithStdin(command, args, stdin, timeoutMs) {
   interruption.check()
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawnOwned(command, args, { cwd: repoRoot, env: process.env, stdio: ["pipe", "pipe", "pipe"] })
     const stdout = []
     const stderr = []
-    const timeout = setTimeout(() => child.kill("SIGTERM"), timeoutMs)
+    const timeout = setTimeout(() => {
+      if (Number.isSafeInteger(child.pid) && child.pid > 1) signalOwnedDrillChild(child, "SIGTERM")
+    }, timeoutMs)
     child.stdout.on("data", (chunk) => { stdout.push(chunk) })
     child.stderr.on("data", (chunk) => { stderr.push(chunk) })
     child.once("error", reject)
@@ -3618,7 +3584,7 @@ function actionState(environment, actionId) {
 }
 
 function unwrap(response, variant) {
-  assert.ok(response && typeof response === "object" && variant in response, `expected ${variant}, got ${JSON.stringify(response)}`)
+  assert.ok(response && typeof response === "object" && variant in response, `expected ${variant}, got ${publicRuntimeDiagnostic(response)}`)
   return response[variant]
 }
 
@@ -3626,7 +3592,7 @@ function unwrapOneOf(response, ...variants) {
   for (const variant of variants) {
     if (response && typeof response === "object" && variant in response) return response[variant]
   }
-  assert.fail(`expected ${variants.join(" or ")}, got ${JSON.stringify(response)}`)
+  assert.fail(`expected ${variants.join(" or ")}, got ${publicRuntimeDiagnostic(response)}`)
 }
 
 function sleep(ms) {

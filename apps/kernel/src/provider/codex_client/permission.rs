@@ -184,7 +184,7 @@ fn workspace_live_sync_allowed_writes(
         })
         .cloned()
         .collect::<Vec<_>>();
-    (!allowed.is_empty()).then(|| Value::Array(allowed))
+    (!allowed.is_empty()).then_some(Value::Array(allowed))
 }
 
 fn workspace_live_sync_write_is_disjoint_from_protected_roots(

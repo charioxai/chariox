@@ -1,5 +1,6 @@
 import type { KeyBinding, RGBA } from "@opentui/core"
-import { For } from "solid-js"
+import { For, Show, type JSX } from "solid-js"
+import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 
 import { PaneGridBorderChars, theme } from "./theme.js"
 
@@ -7,6 +8,11 @@ type RefHandler = (value: any) => void
 type IndexedRefHandler = (index: number, value: any) => void
 
 export type WorkspaceLayoutProps = {
+  roomWorkflowsPane?: (() => JSX.Element) | undefined
+  roomWorkflowsVisible?: (() => boolean) | undefined
+  roomWorkflowsAvailable?: (() => boolean) | undefined
+  roomWorkflowsOpen?: (() => void) | undefined
+  roomWorkflowsFocused?: (() => boolean) | undefined
   width: number
   height: number
   fatalError: boolean
@@ -58,8 +64,11 @@ export type WorkspaceLayoutProps = {
   onFooterSummaryBoxRef: RefHandler
   onHotkeysOverlayBoxRef: RefHandler
   onKernelApprovalBannerRef: RefHandler
+  onSudoBandRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
   onPasskeyPopupBoxRef: RefHandler
+  onPasskeyPopupBannerRef?: RefHandler
+  onProviderAccountRecoveryBoxRef?: RefHandler | undefined
 }
 
 export function WorkspaceLayout(props: WorkspaceLayoutProps) {
@@ -98,7 +107,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 paddingRight: 0,
               }}
               verticalScrollbarOptions={{
-                visible: true,
+                visible: TUI_MOUSE_ENABLED,
                 paddingLeft: 0,
                 trackOptions: {
                   backgroundColor: palette().backgroundElement,
@@ -152,7 +161,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 paddingRight: 0,
               }}
               verticalScrollbarOptions={{
-                visible: true,
+                visible: TUI_MOUSE_ENABLED,
                 paddingLeft: 0,
                 trackOptions: {
                   backgroundColor: palette().backgroundElement,
@@ -249,8 +258,12 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       backgroundColor={palette().background}
       onMouseUp={props.onRootMouseUp}
     >
+      <Show when={props.roomWorkflowsAvailable?.()}><text fg={palette().textMuted} onMouseDown={() => props.roomWorkflowsOpen?.()}>Workflows · Ctrl+W</text></Show>
+      <box flexGrow={1} flexDirection="row">
       <box
+        visible={!(props.roomWorkflowsVisible?.() && props.width < 110)}
         flexGrow={1}
+        flexBasis={0}
         backgroundColor={palette().backgroundPanel}
         onMouseUp={props.onResponseSurfaceMouseUp}
       >
@@ -299,8 +312,14 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         </box>
       </box>
 
+      <Show when={props.roomWorkflowsVisible?.()}>{props.roomWorkflowsPane?.()}</Show>
+      </box>
+
       <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />
+      <box ref={props.onSudoBandRef} flexShrink={0} flexDirection="column" />
+      <box {...(props.onPasskeyPopupBannerRef ? { ref: props.onPasskeyPopupBannerRef } : {})} flexShrink={0} flexDirection="column" visible={false} />
       <box
+        visible={!(props.roomWorkflowsVisible?.() && props.width < 110)}
         flexShrink={0}
         overflow="visible"
         border={false}
@@ -353,7 +372,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
 
       <box flexShrink={0} onMouseUp={props.onFooterMouseUp}>
         <box flexDirection="row" gap={1}>
-          <box ref={props.onStatusIndicatorBoxRef} flexDirection="row" />
+          <box ref={props.onStatusIndicatorBoxRef} flexDirection="row" flexShrink={0} />
           <box ref={props.onFooterSummaryBoxRef} flexDirection="row" />
         </box>
       </box>
@@ -364,6 +383,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
         left={0}
         top={0}
       />
+      <box {...(props.onProviderAccountRecoveryBoxRef ? { ref: props.onProviderAccountRecoveryBoxRef } : {})} position="absolute" left={0} top={0} />
       <box ref={props.onKernelApprovalBoxRef} position="absolute" left={0} top={0} />
       <box ref={props.onPasskeyPopupBoxRef} position="absolute" left={0} top={0} />
     </box>

@@ -72,6 +72,9 @@ function createDeps(overrides: Record<string, unknown> = {}) {
       calls.push(`notice:${message}:${tone ?? "default"}`)
     },
     connectedStatusLine: "Connected to the Chariox kernel.",
+    isAttached: () => true,
+    restartWaitingRoomEventStream: () => calls.push("replace-event-binding"),
+    onWaitingRoomTransportClosed: () => calls.push("waiting-room-disconnected"),
     markAssistantMessageCompleted: (agentId: string | null | undefined) => calls.push(`completed:${agentId ?? "null"}`),
     ...overrides,
   }
@@ -307,20 +310,16 @@ test("runtime notices and transport lifecycle update the kernel connection state
     "notice:provider resumed:default",
     "notice:worker switched:default",
     "daemon-disconnected:true",
-    "status:Lost connection to the Chariox kernel.",
+    "status:Reconnecting to the Chariox kernel…",
     "update-session-chrome",
-    "notice:connection lost:warning",
-    "activity:kernel_transport_resumed",
     "daemon-disconnected:false",
+    "activity:kernel_transport_resumed",
     "status:Connected to the Chariox kernel.",
     "update-session-chrome",
-    "notice:Reconnected to the Chariox kernel.:default",
   ])
   assert.deepEqual(notices, [
     { message: "provider resumed", tone: undefined },
     { message: "worker switched", tone: undefined },
-    { message: "connection lost", tone: "warning" },
-    { message: "Reconnected to the Chariox kernel.", tone: undefined },
   ])
 })
 
@@ -525,4 +524,68 @@ test("visible external observed output carries kernel observation metadata into 
       passive_telemetry: false,
     },
   })
+})
+
+test("waiting-room transport notices preserve the inventory display", () => {
+  const { deps, notices, calls } = createDeps({ isAttached: () => false })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("kernel websocket closed (1005)")
+  controller.applyTransportResumed()
+  assert.deepEqual(notices, [])
+  assert(calls.includes("daemon-disconnected:true"))
+  assert(calls.includes("daemon-disconnected:false"))
+  assert(calls.includes("waiting-room-disconnected"))
+})
+
+test("MP-08/MP-10/MP-11 waiting-room control loss replaces the event binding before resetting rows", () => {
+  const order: string[] = []
+  const {deps} = createDeps({isAttached:()=>false,
+    restartWaitingRoomEventStream:()=>order.push("replace-event-binding"),
+    onWaitingRoomTransportClosed:()=>order.push("reset-row-baseline"),
+  })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("control websocket closed")
+  assert.deepEqual(order, ["replace-event-binding", "reset-row-baseline"])
+})
+
+
+test("MP-08/MP-10 connection recovery never writes into agent scrollback", () => {
+  const { deps, calls, notices } = createDeps()
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("kernel websocket closed")
+  assert.deepEqual(notices, [])
+  assert(calls.includes("status:Reconnecting to the Chariox kernel…"))
+  controller.applyTransportResumed()
+  assert.deepEqual(notices, [])
+})
+
+
+test("MP-08/MP-10 generic resumed traffic cannot settle an in-flight session repair", () => {
+  const { deps, calls } = createDeps({ sessionBindingRepairInFlight: () => true })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("subscription failed")
+  calls.length = 0
+  controller.applyTransportResumed()
+  assert.equal(calls.length, 0)
+  controller.applyTransportResumed(true)
+  assert(calls.includes("daemon-disconnected:false"))
+  controller.disposeConnectionDisplay()
+})
+
+// MP-08/MP-10: a matching old attachment is not a live binding after a close.
+test("binding recovery cannot reuse the subscription invalidated by transport loss", () => {
+  let bindingReady = true
+  const { deps, calls } = createDeps({
+    currentSessionEventBindingReady: () => bindingReady,
+    onAttachedTransportClosed: () => { bindingReady = false },
+  })
+  const controller = createKernelEventController(deps as never)
+  controller.applyTransportClosed("event stream closed")
+  controller.applyTransportResumed(true)
+  assert.equal(bindingReady, false)
+  assert.equal(calls.includes("daemon-disconnected:false"), false)
+  bindingReady = true
+  controller.applyTransportResumed(true)
+  assert.equal(calls.includes("daemon-disconnected:false"), true)
+  controller.disposeConnectionDisplay()
 })

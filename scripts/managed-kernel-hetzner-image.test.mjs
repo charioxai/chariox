@@ -466,7 +466,7 @@ test("managed image and publication runtimes pin the same provider releases", as
   const dockerfile = await readFile(publicationDockerfileUrl, "utf8")
   assert.deepEqual(versions, {
     CHARIOX_CODEX_VERSION: "0.159.3",
-    CHARIOX_OPENCODE_VERSION: "1.18.23",
+    CHARIOX_OPENCODE_VERSION: "1.19.0",
     CHARIOX_CLAUDE_VERSION: "2.1.212",
   })
   for (const [name, version] of Object.entries(versions)) {
@@ -523,7 +523,7 @@ test("managed slice image locks every network and compiler input", async () => {
   assert.deepEqual(toolchainPackage.dependencies, {
     "@anthropic-ai/claude-code": "2.1.212",
     "@openai/codex": "0.159.3",
-    "opencode-ai": "1.18.23",
+    "opencode-ai": "1.19.0",
     pnpm: "11.22.0",
     ws: "8.21.3",
   })
@@ -575,10 +575,10 @@ test("managed Docker authority and publication access remain narrowly separated"
   const managedBroker = await readFile(managedBrokerUrl, "utf8")
   const rootlessNamespace = await readFile(rootlessNamespaceUrl, "utf8")
 
-  assert.match(bootstrapEntrypoint, /args\(\)\.any\(\|arg\| arg == "--disposable-worker"\)/)
+  assert.match(bootstrapEntrypoint, /\(Some\("--disposable-worker"\), 1\) => true/)
   assert.match(
     bootstrapEntrypoint,
-    /args\(\)\.any\(\|arg\| arg == "--disposable-worker"\)[\s\S]*worker::run_from_env\(\)/,
+    /if disposable_worker \{[\s\S]*worker::run_from_env\(\)/,
   )
   assert.match(managed, /Wants=network-online\.target chariox-rootless-docker\.service/)
   assert.doesNotMatch(managed, /(?:Wants|After)=.*chariox-slice-broker/)

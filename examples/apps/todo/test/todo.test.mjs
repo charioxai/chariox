@@ -7,7 +7,7 @@ import { occurrenceId } from '../../../../packages/app-sdk/src/occurrences.js';
 import { AppError } from '../../../../packages/app-sdk/src/errors.js';
 import register from '../bundle/runtime/main.mjs';
 
-function fakeKernel({ automation = true, automations = [], sdkReads = true } = {}) {
+function fakeKernel({ automation = true, automations = [], sdkReads = true, scheduled = false } = {}) {
   const state = new Map();
   const wakes = new Map();
   const occurrences = [];
@@ -35,6 +35,9 @@ function fakeKernel({ automation = true, automations = [], sdkReads = true } = {
         // Like the kernel, an occurrence for an unconfigured automation rolls
         // back the whole transaction.
         if (emitted.length && !automation) throw new AppError('NOT_FOUND', 'App automation was not found');
+        if (emitted.some(event => Object.hasOwn(event, 'scheduleRevision') !== scheduled)) {
+          throw new AppError('INVALID_ARGUMENT', 'Invalid App storage request');
+        }
         for (const check of checks) {
           if ((state.get(check.key)?.version ?? null) !== check.version) {
             throw Object.assign(new Error('conflict'), { code: 'CONFLICT' });
@@ -146,3 +149,33 @@ test('reminder status reports the reminders automation without naming its workfl
   // An App runtime enrolled before the SDK read has no events.automations.
   assert.deepEqual(await status({ sdkReads: false }), { state: 'unknown', last_delivery: null });
 });
+
+// MP-08/MP-10/MP-11: the App sees who called (human owner vs agent) and treats them differently.
+test('an agent may delete only Todos an agent created; a person may delete any', async () => {
+  const kernel = fakeKernel();
+  const person = { actor: { kind: 'human', id: 'owner' } };
+  const agent = { actor: { kind: 'agent', id: 'agent-7' }, agent_id: 'agent-7' };
+  const mine = await kernel.tools.get('create_todo')({ title: 'Person Todo' }, person);
+  const theirs = await kernel.tools.get('create_todo')({ title: 'Agent Todo' }, agent);
+  assert.equal(mine.created_by, 'person');
+  assert.equal(theirs.created_by, 'agent');
+  await assert.rejects(kernel.tools.get('delete_todo')({ id: mine.id }, agent), error => error.code === 'FORBIDDEN');
+  assert.deepEqual(await kernel.tools.get('delete_todo')({ id: theirs.id }, agent), { deleted: theirs.id });
+  assert.deepEqual(await kernel.tools.get('delete_todo')({ id: mine.id }, person), { deleted: mine.id });
+});
+
+for (const scheduled of [false, true]) {
+  test(`MP-08/MP-10 Todo reminders work with ${scheduled ? 'scheduled' : 'ordinary'} automations`, async () => {
+    const kernel = fakeKernel({ scheduled });
+    const todo = await kernel.tools.get('create_todo')({ title: 'Review public repo', due_at_ms: 1000 });
+    const wake = kernel.wakes.get(`todo-${todo.id}`);
+    await kernel.wake(wake);
+    await kernel.wake(wake);
+    assert.equal(kernel.occurrences.length, 1);
+    const [event] = kernel.occurrences;
+    assert.equal(Object.hasOwn(event, 'scheduleRevision'), scheduled);
+    assert.equal(event.occurrenceId, occurrenceId(`todo:${todo.id}:1`, 1000));
+    assert.equal((await kernel.tools.get('list_todos')({})).todos[0].reminded, true);
+    assert.equal(kernel.wakes.size, 0);
+  });
+}

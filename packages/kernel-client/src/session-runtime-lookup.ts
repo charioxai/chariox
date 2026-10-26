@@ -42,7 +42,6 @@ export function sameProviderRun(left: RuntimeProviderRun, right: RuntimeProvider
     && sameProviderRunUsage(left.usage, right.usage)
     && left.state === right.state
     && left.endpoint_mode === right.endpoint_mode
-    && left.process_label === right.process_label
     && left.structured_endpoint === right.structured_endpoint
     && left.provider_session_id === right.provider_session_id
     && left.working_directory === right.working_directory

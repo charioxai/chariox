@@ -222,3 +222,309 @@ async fn corrupt_restarted_room_public_lifecycle(delete_only: bool) {
         assert!(!store.marker(&room.session_id).exists());
     }
 }
+
+#[tokio::test]
+async fn public_history_new_vault_credential_retires_prior_public_value() {
+    // MP-08 / MP-10 / MP-11: supplementary regression for the real hidden-input
+    // Vault creation drill. Only successful creation can invalidate public text.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("vault-public-history-creation");
+    let owner = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let history = &room.runtime.owned.operational_history_store;
+    let prior = history
+        .append_operational_event(
+            crate::history::HistoryEventKind::UserPrompt,
+            None,
+            Some("before synthetic_vault_creation_value".into()),
+            Default::default(),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(room.session_id.clone()),
+                agent_id: Some(room.agent_id.clone()),
+                public_history_owner_user_id: Some(owner.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let safe = history
+        .append_operational_event(
+            crate::history::HistoryEventKind::UserPrompt,
+            None,
+            Some("earlier useful public review".into()),
+            Default::default(),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(room.session_id.clone()),
+                agent_id: Some(room.agent_id.clone()),
+                public_history_owner_user_id: Some(owner.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    {
+        let _guard = history.lock_public_history().unwrap();
+        assert!(history
+            .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
+            .unwrap()
+            .is_some());
+    }
+    create_room_vault_credential(&room, &root, "creation", "synthetic_vault_creation_value").await;
+    let _guard = history.lock_public_history().unwrap();
+    assert!(history
+        .search_public_history_locked(
+            &owner,
+            &room.session_id,
+            None,
+            "synthetic_vault_creation_value",
+            50,
+            None
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+    assert!(history
+        .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
+        .unwrap()
+        .is_none());
+    assert!(
+        history
+            .read_public_history_locked(&owner, &room.session_id, &safe.event_id)
+            .unwrap()
+            .is_some(),
+        "Vault creation must preserve unrelated public messages"
+    );
+}
+
+#[tokio::test]
+async fn public_history_protected_room_withholds_fragmented_answers() {
+    // MP-08 / MP-10 / MP-11: protected Rooms withhold provider streams even
+    // when each delta lacks a complete secret. Assembly must not recover raw
+    // fragments through read or turn.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("public-history-split-secret");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    room.runtime.owned.config_projection.update(config);
+    let session = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap();
+    let actor = room
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&room.agent_id)
+        .unwrap();
+    room.runtime
+        .owned
+        .room_secret_observations
+        .register(&room.session_id, "split_canary")
+        .unwrap();
+    let history = &room.runtime.owned.operational_history_store;
+    let append = |text: &str| {
+        history
+            .append_transcript(
+                &crate::history::SessionHistoryEntry::provider_output(
+                    &room.session_id,
+                    "split-run",
+                    Some(&room.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("split-message".into()),
+                    text.to_owned(),
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("split-run".into()),
+                    prompt_id: Some("split-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = append("prefix split_");
+    append("canary suffix");
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, first.event_id, None)
+        .await
+        .unwrap();
+    assert!(!read.ok);
+    assert_eq!(
+        read.payload["error"],
+        "Public history reference is unavailable"
+    );
+    let turn = room
+        .runtime
+        .room_public_turn(
+            &session,
+            &actor,
+            serde_json::from_value(serde_json::json!({"turn_ref":"split-prompt"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(turn.ok);
+    let events = turn.payload["events"].as_array().unwrap();
+    assert!(events.is_empty());
+}
+
+// MP-08 / MP-10 / MP-11: the runtime credential tools stamp the caller's Room
+// into metadata before this Vault mutation.
+async fn create_room_vault_credential(room: &TestRoom, root: &TestRoot, id: &str, secret: &str) {
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut credential = browser_credential(id, &format!("{id}-key"));
+    credential.metadata =
+        Some(serde_json::from_value(serde_json::json!({"session_id":room.session_id})).unwrap());
+    let vault_config = crate::config::UserCredentialVaultConfig {
+        path: root.path().join("vault").display().to_string(),
+        ..Default::default()
+    };
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let service =
+        crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), &vault_config).unwrap();
+    room.runtime
+        .upsert_observed_vault_credential(&service, &registry, credential, secret, false)
+        .await
+        .unwrap();
+    crate::secret::lock_chariox_encrypted_vault(&vault_config.path).unwrap();
+}
+
+#[tokio::test]
+async fn public_history_agent_vault_credential_keeps_room_output_visible() {
+    // MP-08 / MP-10 / MP-11: a Vault value that was never inserted into the
+    // Room is scrub-only. It must not fence the session's provider stream.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("vault-scrub-only");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    room.runtime.owned.config_projection.update(config);
+    create_room_vault_credential(&room, &root, "generated", "synthetic_generated_value").await;
+    let store = &room.runtime.owned.room_secret_observations;
+    assert_eq!(
+        store.protect_unframed_bytes(&room.session_id, b"later visible answer"),
+        b"later visible answer"
+    );
+    let session = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap();
+    let actor = room
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&room.agent_id)
+        .unwrap();
+    let entry = |text: &str| {
+        crate::history::SessionHistoryEntry::provider_output(
+            &room.session_id,
+            "later-run",
+            Some(&room.agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some(format!("later-{text}")),
+            text.to_owned(),
+        )
+    };
+    assert_eq!(
+        store
+            .protect_transcript_entry(entry("later visible answer"))
+            .text,
+        "later visible answer"
+    );
+    let history = &room.runtime.owned.operational_history_store;
+    let append = |text: &str| {
+        history
+            .append_transcript(
+                &entry(text),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("later-run".into()),
+                    prompt_id: Some("later-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let later = append("later visible answer");
+    let echo = append("echo synthetic_generated_value");
+    let events = store.protect_history_events(vec![later.clone(), echo]);
+    assert_eq!(events[0].content.as_deref(), Some("later visible answer"));
+    assert_eq!(events[1].content.as_deref(), Some("echo [redacted]"));
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, later.event_id, None)
+        .await
+        .unwrap();
+    assert!(read.ok);
+    assert_eq!(read.payload["event"]["text"], "later visible answer");
+    let split = |text: &str| {
+        history
+            .append_transcript(
+                &crate::history::SessionHistoryEntry::provider_output(
+                    &room.session_id,
+                    "later-run",
+                    Some(&room.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("split-stored-message".into()),
+                    text.to_owned(),
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("later-run".into()),
+                    prompt_id: Some("later-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = split("prefix synthetic_");
+    split("generated_value suffix");
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, first.event_id, None)
+        .await
+        .unwrap();
+    assert_eq!(read.payload["event"]["text"], "prefix [redacted] suffix");
+    let _guard = history.lock_public_history().unwrap();
+    assert!(history
+        .search_public_history_locked(
+            session.owner_user_id(),
+            &room.session_id,
+            None,
+            "synthetic_generated_value",
+            50,
+            None
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+}

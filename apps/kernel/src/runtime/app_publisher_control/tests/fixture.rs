@@ -28,7 +28,7 @@ impl Fixture {
             Some(path.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =
             Some(path.join("artifact-index.sqlite").display().to_string());
-        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let app = DaemonApp::bootstrap(config).unwrap();
         let mut session = RuntimeSession::new(
             "publisher-session",
             None,

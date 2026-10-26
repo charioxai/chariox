@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
+import { cpSync, mkdtempSync, rmSync } from "node:fs"
 import { readFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { test } from "node:test"
 
@@ -34,6 +37,15 @@ test("publication image copies compile-time workflow examples before building th
   assert.ok(examplesCopy < kernelBuild, "compile-time workflow examples must be copied before the kernel build")
 })
 
+test("publication Rust stage copies the deploy files the kernel embeds at compile time", async () => {
+  const source = await readFile(new URL("../apps/kernel/src/runtime/ssh_machine_control.rs", import.meta.url), "utf8")
+  const embedded = [...source.matchAll(/include_str!\("(?:\.\.\/)+(deploy\/managed-kernel\/[^"]+)"\)/g)].map((match) => match[1])
+  assert.ok(embedded.length > 0)
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
+  const rustStage = dockerfile.slice(rustStageStart, dockerfile.indexOf("\nFROM ", rustStageStart + 1))
+  for (const path of embedded) assert.ok(rustStage.includes(`COPY ${path} ${path}`), `the Rust stage must copy ${path}`)
+})
+
 test("publication Rust build consumes the workspace lock and every kernel path dependency", () => {
   const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
   const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
@@ -45,6 +57,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     "COPY Cargo.toml Cargo.lock ./",
     "COPY apps/relay apps/relay",
     "COPY packages/event-protocol packages/event-protocol",
+    "COPY packages/aegs-sdk packages/aegs-sdk",
     "COPY packages/app-package packages/app-package",
     "COPY packages/app-runtime packages/app-runtime",
     "COPY packages/app-sdk packages/app-sdk",
@@ -59,7 +72,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)].map((match) => match[1]),
   )]
   assert.deepEqual(kernelPathDependencies.sort(), [
-    "../../packages/app-package", "../../packages/app-runtime", "../../packages/event-protocol", "../relay",
+    "../../packages/aegs-sdk", "../../packages/app-package", "../../packages/app-runtime", "../../packages/event-protocol", "../relay",
   ])
   assert.match(
     rustStage,
@@ -117,7 +130,7 @@ test("publication image pins and verifies every official provider CLI", () => {
   assert.match(dockerfile, /ARG CHARIOX_OPENCODE_VERSION=\d+\.\d+\.\d+/)
   assert.match(dockerfile, /ARG CHARIOX_CLAUDE_VERSION=\d+\.\d+\.\d+/)
   assert.equal(toolchainPackage.dependencies["@openai/codex"], "0.159.3")
-  assert.equal(toolchainPackage.dependencies["opencode-ai"], "1.18.23")
+  assert.equal(toolchainPackage.dependencies["opencode-ai"], "1.19.0")
   assert.equal(toolchainPackage.dependencies["@anthropic-ai/claude-code"], "2.1.212")
   assert.equal(toolchainPackage.dependencies.pnpm, "9.15.0")
   assert.match(dockerfile, /npm ci --omit=dev/)
@@ -213,4 +226,26 @@ test("publication egress image runs only the dedicated unprivileged gateway", ()
     "the unprivileged gateway must remain readable when the build context was checked out under umask 077",
   )
   assert.doesNotMatch(egressDockerfile, /COPY apps|COPY packages|COPY \. \/|npm install/)
+})
+
+test("publication JS build stage holds every file the protocol pin check reads", () => {
+  const stageStart = dockerfile.indexOf("AS js-builder")
+  const stageEnd = dockerfile.indexOf("\nFROM ", stageStart)
+  const copies = [...dockerfile.slice(stageStart, stageEnd).matchAll(/^COPY (?!--)(.+)$/gm)]
+    .map((match) => match[1].trim().split(/\s+/))
+  const context = new URL("../", import.meta.url).pathname
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "publication-js-builder-"))
+  try {
+    for (const [...parts] of copies) {
+      const destination = parts.pop()
+      for (const source of parts) {
+        const target = destination.endsWith("/") ? join(root, destination, basename(source)) : join(root, destination)
+        cpSync(join(context, source), target, { recursive: true, filter: (path) => !path.includes("node_modules") })
+      }
+    }
+    const check = spawnSync(process.execPath, ["scripts/generate-protocol-versions.mjs", "--check"], { cwd: root, encoding: "utf8" })
+    assert.equal(check.status, 0, check.stderr)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

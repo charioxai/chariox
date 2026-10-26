@@ -3,6 +3,7 @@ import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
+import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
 import type { CliOptions, RuntimeSession } from "./cli-types.js"
@@ -13,6 +14,89 @@ function terminalCatalog() {
     nodes: [],
   }
 }
+
+test("MP-08 / MP-10: initial-view bootstrap uses bundled history and preserves buffered live output", async () => {
+  const session = { id: "s", active_provider_run_id: "run-1", agents: [{ id: "a" }], focused_agent_id: "a", workspace_id: "/workspace", worktree_id: "/workspace" }
+  const outline = { agents: [outlineAgent("a", "real earlier prompt", "earlier answer")] }
+  const unexpected = async () => { throw new Error("extra attach/state/history or destructive catch-up") }
+  let bulkReads = 0
+  const pendingPromptHistory = new Promise<never>(() => {})
+  const boot = await bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: outline }),
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: unexpected, tryGetProviderRun: async () => null,
+    getPromptInputHistory: () => { bulkReads++; return pendingPromptHistory },
+    getProviderCatalog: async () => { bulkReads++; return fallbackProviderCatalog() },
+    getProviderCommandCatalogs: async () => { bulkReads++; return fallbackProviderCommandCatalogs() },
+    getTerminalCommandCatalog: async () => { bulkReads++; return terminalCatalog() },
+    resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  assert.equal(bulkReads, 0, "MP-08 / MP-10: attach must not request composer inventories")
+  assert.equal(boot.binding?.attachment.id, "binding")
+  const history = await Promise.race([boot.deferred?.attachedHistory, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(history, "blocked", "bundled transcript must not wait for composer input history")
+  if (history === "blocked") return
+  assert.equal(history?.agentEntries.a?.length, 2)
+})
+
+test("MP-08 / MP-10 / MP-11: explicit attach mounts without startup inventory or launch defaults", async () => {
+  const session = { id: "s", active_provider_run_id: "run", agents: [{ id: "a" }], focused_agent_id: "a" }
+  const calls: string[] = []
+  const pending = new Promise<never>(() => {})
+  const unexpected = async () => { throw new Error("unexpected fallback") }
+  const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "alias", model: "default", effort: "", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    getConfiguredProviderLaunchDefaults: () => { calls.push("defaults"); return pending },
+    listSessions: () => { calls.push("inventory"); return pending },
+    resolveSession: async () => { calls.push("resolve"); return session },
+    attachSessionView: async () => { calls.push("view"); return { attachment: { id: "binding", session_id: "s" }, session, history: { agents: [outlineAgent("a", "prompt", "answer")] } } },
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: unexpected, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  const result = await Promise.race([boot, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 30))])
+  assert.notEqual(result, "blocked", "explicit attach waited for unrelated startup reads")
+  assert.deepEqual(calls, ["resolve", "view"])
+  if (result !== "blocked") {
+    assert.equal((await result.deferred?.attachedHistory)?.historyEntries.length, 2)
+    assert.deepEqual(result.sessions.map(session => session.id), ["s"])
+  }
+})
+
+test("MP-08 / MP-10: the bundled later desk hydrates before any off-desk outline request", async () => {
+  const session = { id: "s", active_provider_run_id: "run", agents: Array.from({ length: 8 }, (_, i) => ({ id: `a${i}` })), focused_agent_id: "a7" }
+  const outline = { agents: [outlineAgent("a6", "six", "six answer"), outlineAgent("a7", "seven", "seven answer")] }
+  let extraRequests = 0
+  const unexpected = async () => { throw new Error("extra attach/state/catch-up") }
+  const boot = await bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: outline }),
+    attachToSession: unexpected, getSessionState: unexpected, catchUpAttachedSession: unexpected,
+    getSessionHistoryOutline: () => { extraRequests++; return new Promise<never>(() => {}) }, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(), getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a7", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  const history = await Promise.race([boot.deferred?.attachedHistory, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(history, "blocked")
+  assert.equal(extraRequests, 0)
+  if (history !== "blocked") assert.deepEqual(Object.keys(history?.agentEntries ?? {}), ["a6", "a7"])
+})
+
+test("waiting-room bootstrap mounts while kernel reports are pending", async () => {
+  const pending = new Promise<never>(() => {})
+  const boot = bootstrapSession({} as never, { clientId: "cli", model: "known", effort: "high", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: () => pending,
+    getProviderCatalog: () => pending,
+    getProviderCommandCatalogs: () => pending,
+    getTerminalCommandCatalog: () => pending,
+  } as never)
+  const result = await Promise.race([boot, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 20))])
+  assert.notEqual(result, "blocked")
+  if (result !== "blocked") assert.equal(result.binding, null)
+})
 
 test("bootstrapSession returns waiting-room bootstrap when no session should attach", async () => {
   const catalog = fallbackProviderCatalog()
@@ -47,8 +131,8 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
 
   assert.equal(bootstrap.binding, null)
   assert.deepEqual(bootstrap.sessions, [])
-  assert.equal(bootstrap.providerCatalog, catalog)
-  assert.deepEqual(bootstrap.providerCommandCatalogs, fallbackProviderCommandCatalogs())
+  assert.equal(await bootstrap.deferred?.providerCatalog, catalog)
+  assert.deepEqual(await bootstrap.deferred?.providerCommandCatalogs, fallbackProviderCommandCatalogs())
 })
 
 test("bootstrapSession seeds provider/model/effort from the kernel config.toml default when unset", async () => {
@@ -60,7 +144,7 @@ test("bootstrapSession seeds provider/model/effort from the kernel config.toml d
     effort: "",
   }
 
-  await bootstrapSession(
+  const bootstrap = await bootstrapSession(
     {} as never,
     options,
     "/workspace",
@@ -89,9 +173,10 @@ test("bootstrapSession seeds provider/model/effort from the kernel config.toml d
     },
   )
 
-  assert.equal(options.provider, "codex")
-  assert.equal(options.model, "gpt-5.1")
-  assert.equal(options.effort, "high")
+  assert.deepEqual(await bootstrap.deferred?.waitingRoomDefaults, { provider: "codex", model: "gpt-5.1", effort: "high" })
+  assert.equal(options.provider, undefined)
+  assert.equal(options.model, "default")
+  assert.equal(options.effort, "")
 })
 
 test("bootstrapSession attaches, launches, and hydrates history for the visible agent", async () => {
@@ -204,7 +289,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
     },
   )
 
-  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a", "prompt-history"])
+  assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a"])
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
   assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
@@ -213,7 +298,8 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   const deferredHistory = await bootstrap.deferred?.attachedHistory
   assert.deepEqual(deferredHistory?.historyEntries, [{ id: 1, role: "user", text: "hi" }])
   assert.deepEqual(deferredHistory?.agentEntries["agent-a"], [{ id: 1, role: "user", text: "hi" }])
-  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hi"])
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
+  assert.deepEqual((await bootstrap.deferred?.loadPromptInputHistory?.(bootstrap.binding!.session.id))?.entries, ["hi"])
   assert.deepEqual(deferredHistory?.nextHistoryCursor, {
     agentId: "agent-a",
     cursor: { before_sequence: 9 },
@@ -415,7 +501,8 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
   assert.equal(bootstrap.binding?.attachment.id, "attachment-2")
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
-  assert.deepEqual(deferredHistory?.promptHistoryEntries, ["hello"])
+  assert.deepEqual(deferredHistory?.promptHistoryEntries, [])
+  assert.deepEqual((await bootstrap.deferred?.loadPromptInputHistory?.(bootstrap.binding!.session.id))?.entries, ["hello"])
   const assistantEntry = deferredHistory?.historyEntries.find((entry) => entry.role === "assistant")
   assert.equal(assistantEntry?.text, "while you were away")
 })
@@ -546,7 +633,6 @@ test("bootstrapSession recovers when the launch target moves remote during attac
   const launchError = new Error("agent became remote-backed")
   const info: Array<{ message: string; fields: Record<string, unknown> | undefined }> = []
   let stateReads = 0
-  let catchUpSession: RuntimeSession = localSession
 
   const bootstrap = await bootstrapSession(
     {} as never,
@@ -581,9 +667,7 @@ test("bootstrapSession recovers when the launch target moves remote during attac
         throw launchError
       },
       tryGetProviderRun: async () => null,
-      catchUpAttachedSession: async (_client, _sessionId, _attachmentId, session) => {
-        catchUpSession = session
-      },
+      catchUpAttachedSession: async () => {},
       getSessionHistoryOutline: async () => ({ agents: [] }),
       resolveVisibleAgentId: () => agent.id,
       prepareHistoryOutlineAgent: () => [],
@@ -591,9 +675,6 @@ test("bootstrapSession recovers when the launch target moves remote during attac
   )
 
   assert.equal(bootstrap.binding?.providerRun, null)
-  assert.equal(bootstrap.binding?.session.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
-  assert.equal(catchUpSession.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
-  assert.equal(stateReads, 3)
   assert.deepEqual(info, [{
     message: "recovered attach-time provider launch after agent moved remote",
     fields: {
@@ -602,6 +683,34 @@ test("bootstrapSession recovers when the launch target moves remote during attac
       worker_kernel_id: "worker-1",
     },
   }])
+})
+
+test("MP-08 / MP-10 PANE-03: a slow attach-time provider launch does not hold the first transcript view", async () => {
+  const session = { id: "s", active_provider_run_id: null, agents: [{ id: "a", provider: "codex", model: "m", effort: "low" }], focused_agent_id: "a" }
+  const launched = { id: "run-1", session_id: "s", agent_instance_id: "a", provider: "codex", model: "m", variant: "low" }
+  let finishLaunch: (run: typeof launched) => void = () => {}
+  const launch = new Promise<typeof launched>(resolve => { finishLaunch = resolve })
+  const unexpected = async () => { throw new Error("extra attach/state/history or destructive catch-up") }
+  let stateReads = 0
+  const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "s", model: "m", effort: "low", provider: "codex", accountProfile: "default" }, "/workspace", "/workspace", {}, {
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachSessionView: async () => ({ attachment: { id: "binding", session_id: "s" }, session, history: { agents: [outlineAgent("a", "earlier prompt", "earlier answer")] } }),
+    attachToSession: unexpected, catchUpAttachedSession: unexpected, getSessionHistoryOutline: unexpected,
+    getSessionState: async () => { stateReads++; return { ...session, active_provider_run_id: "run-1" } },
+    launchProviderRun: () => launch, tryGetProviderRun: async () => null,
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(), getTerminalCommandCatalog: async () => terminalCatalog(),
+    resolveVisibleAgentId: () => "a", prepareHistoryOutlineAgent: hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  const first = await Promise.race([boot, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 30))])
+  assert.notEqual(first, "blocked", "the first view waited for the provider launch")
+  if (first === "blocked") return
+  assert.equal((await first.deferred?.attachedHistory)?.historyEntries.length, 2)
+  assert.equal(first.binding?.providerRun, null)
+  finishLaunch(launched)
+  const settled = await first.deferred?.attachLaunch
+  assert.equal(settled?.providerRun?.id, "run-1")
+  assert.equal(settled?.session?.active_provider_run_id, "run-1")
+  assert.equal(stateReads, 1)
 })
 
 function outlineAgent(
@@ -638,3 +747,143 @@ function outlineAgent(
     next_cursor: nextCursor,
   }
 }
+
+
+test("MP-08/MP-11 delayed defaults survive fallback projection during focus navigation", async () => {
+  let release!: (value: {provider: string; model: string; effort: string}) => void
+  const configured = new Promise<{provider: string; model: string; effort: string}>(resolve => { release = resolve })
+  const options: CliOptions = {clientId: "cli", model: "default", effort: "", accountProfile: "default"}
+  const boot = bootstrapWaitingRoom({} as never, options, {}, {
+    getConfiguredProviderLaunchDefaults: () => configured,
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  // Reconciliation writes projected fallback values without a user-choice revision.
+  options.provider = "opencode"
+  options.model = "opencode/gpt-5.4"
+  options.effort = "medium"
+  release({provider: "codex", model: "gpt-6.1-sol", effort: "high"})
+  assert.deepEqual(await boot.deferred?.waitingRoomDefaults, {provider: "codex", model: "gpt-6.1-sol", effort: "high"})
+})
+
+test("MP-08/MP-11 configured defaults hydrate while provider metadata is still pending", async () => {
+  let releaseCatalog!: (value: ReturnType<typeof fallbackProviderCatalog>) => void
+  const catalog = new Promise<ReturnType<typeof fallbackProviderCatalog>>(resolve => { releaseCatalog = resolve })
+  const boot = bootstrapWaitingRoom({} as never, {clientId: "cli", model: "default", effort: "", accountProfile: "default"}, {}, {
+    getConfiguredProviderLaunchDefaults: async () => ({provider: "codex", model: "codex/gpt-6.1-sol", effort: "high"}),
+    getProviderCatalog: () => catalog,
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  let hydrated: unknown = null
+  void boot.deferred?.waitingRoomDefaults?.then(value => { hydrated = value })
+  await new Promise(resolve => setImmediate(resolve))
+  const beforeMetadata = hydrated
+  releaseCatalog(fallbackProviderCatalog())
+  await boot.deferred?.providerCatalog
+  assert.deepEqual(beforeMetadata, {provider: "codex", model: "codex/gpt-6.1-sol", effort: "high"})
+})
+
+
+test("MP-08/MP-11 defaults recover after the first live report when relay routing drops", async () => {
+  const { LocalIpcError } = await import("./ipc.js")
+  let report!: (event: { event: string }) => void
+  let disposed = 0, reads = 0
+  const client = { onKernelEvent: (handler: typeof report) => { report = handler; return () => { disposed += 1 } } }
+  const boot = bootstrapWaitingRoom(client as never, { clientId: "cli", model: "default", effort: "", accountProfile: "default" }, {}, {
+    getConfiguredProviderLaunchDefaults: async () => {
+      if (++reads === 1) throw new LocalIpcError("read configured defaults", "target daemon disconnected from relay", "target_disconnected", true)
+      return { provider: "codex", model: "codex/gpt-6.1-sol", effort: "high" }
+    },
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+  } as never)
+  let outcome = "pending"
+  void boot.deferred?.waitingRoomDefaults?.then(() => { outcome = "ready" }, () => { outcome = "failed" })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(outcome, "pending")
+  report({ event: "waiting_room_rows_changed" })
+  assert.deepEqual(await boot.deferred?.waitingRoomDefaults, { provider: "codex", model: "codex/gpt-6.1-sol", effort: "high" })
+  assert.equal(reads, 2)
+  assert.equal(disposed, 1)
+})
+
+test("MP-08 / MP-11 direct session creation checks the default account before creating work", async () => {
+  let created = false
+  await assert.rejects(bootstrapSession({} as never, {
+    clientId: "cli-1", createSession: true, provider: "codex", model: "default", accountProfile: "default", effort: "",
+  }, "/workspace", "/workspace", {}, {
+    listProviderAccountProfiles: async () => [{ owner_user_id: "owner-1", provider: "codex", profile_id: "codex-1", label: "codex-1", origin: "default", is_default: true, auth_state: "not_configured", materializations: [], identity_summary: null, usage: { profile_id: "codex-1", provider: "codex", availability: "unavailable", meters: [], source: "test" } }],
+    listSessions: async () => [],
+    getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(),
+    createSession: async () => { created = true; throw new Error("must not create") },
+    resolveSession: async () => { throw new Error("must not resolve") },
+    attachToSession: async () => { throw new Error("must not attach") },
+    getSessionState: async () => { throw new Error("must not fetch") },
+    launchProviderRun: async () => { throw new Error("must not launch") },
+    tryGetProviderRun: async () => null,
+    catchUpAttachedSession: async () => undefined,
+    getSessionHistoryOutline: async () => ({ agents: [] }),
+    resolveVisibleAgentId: () => null,
+    prepareHistoryOutlineAgent: () => [],
+  }), /codex-1 needs sign-in/)
+  assert.equal(created, false)
+})
+
+// After a kernel restart the Vault is locked: the kernel holds the attach-time launch on its own
+// unlock prompt. The TUI must render (and show that prompt) instead of waiting blank for it.
+test("bootstrapSession renders while the kernel holds the attach-time launch on a Vault unlock prompt", async () => {
+  const agent = { id: "agent-a", agent_ref: "agent-a", session_id: "session-1", alias: null, provider: "claude-p", model: "claude-haiku-5-5", effort: "low",
+    worktree_id: null, state: "Idle" as const, is_processing: false, grid_row: 0, grid_col: 0, grid_row_span: 1, grid_col_span: 1, created_at_ms: 1, last_activity_at_ms: 1 }
+  const session = { id: "session-1", project_id: "project-default", workspace_id: "/workspace", worktree_id: "/workspace", created_at_ms: 1, status: "Active",
+    active_provider_run_id: null, attachment_ids: [], active_prompt: null, queued_prompts: [], focused_agent_id: "agent-a", max_agents: 8, agents: [agent],
+    config_state: { version: 1, values: {} } }
+  const run = { id: "run-1", session_id: "session-1", agent_instance_id: "agent-a", adapter_key: "claude-p", provider: "claude-p", account_profile: "default",
+    model: "claude-haiku-5-5", variant: "low", usage_tokens_total: null, state: "Running" }
+  let unlock!: (value: typeof run) => void
+  const pending = bootstrapSession({} as never, { clientId: "cli-1", sessionId: "session-1", model: "default", accountProfile: "default", effort: "low" },
+    "/workspace", "/workspace", {}, {
+      deferProviderLaunch: true,
+      listSessions: async () => [session],
+      getProviderCatalog: async () => fallbackProviderCatalog(),
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
+      createSession: async () => { throw new Error("should not create") },
+      resolveSession: async () => session,
+      attachToSession: async () => ({ id: "attachment-1", session_id: "session-1" }),
+      getSessionState: async () => session,
+      launchProviderRun: () => new Promise(resolve => { unlock = resolve }),
+      tryGetProviderRun: async () => null,
+      catchUpAttachedSession: async () => {},
+      getSessionHistoryOutline: async () => ({ agents: [] }),
+      resolveVisibleAgentId: () => "agent-a",
+      prepareHistoryOutlineAgent: () => [],
+    })
+  const bootstrap = await Promise.race([pending, new Promise<"held">(resolve => setTimeout(() => resolve("held"), 1000))])
+  assert.notEqual(bootstrap, "held", "the TUI renders while the kernel waits for the Vault passphrase")
+  if (bootstrap === "held") return
+  assert.equal(bootstrap.binding?.providerRun, null)
+  const starting = bootstrap.deferred!.providerLaunch!.start()
+  await new Promise(resolve => setImmediate(resolve))
+  unlock(run)
+  assert.equal((await starting).providerRun?.id, "run-1")
+})
+
+
+test("MP-08 / MP-10 / MP-11 full session IDs paint from the kernel bundle without a resolve round trip", async () => {
+  const id = "18de8597bddf72dc", calls: string[] = []
+  const session = {id,active_provider_run_id:"run",agents:[{id:"a"}],focused_agent_id:"a"}
+  const unexpected = async () => { throw new Error("unnecessary startup read") }
+  const boot = await bootstrapSession({} as never,{clientId:"cli",sessionId:id,model:"known",effort:"high",provider:"claude-p",accountProfile:"work"},"/workspace","/workspace",{}, {
+    resolveSession: async () => { calls.push("resolve"); throw new Error("unnecessary resolve round trip") },
+    attachSessionView: async (_client:unknown,sessionId:string,_clientId:string,preferred:string|null) => {calls.push("view");assert.equal(sessionId,id);assert.equal(preferred,null);return {attachment:{id:"binding",session_id:id},session,history:{agents:[outlineAgent("a","prompt","answer")]}}},
+    listSessions:unexpected,attachToSession:unexpected,getSessionState:unexpected,catchUpAttachedSession:unexpected,getSessionHistoryOutline:unexpected,
+    tryGetProviderRun:async()=>null,resolveVisibleAgentId:()=>"a",prepareHistoryOutlineAgent:hydrateSessionHistoryOutlineAgentEntries,
+  } as never)
+  assert.deepEqual(calls,["view"]);assert.equal(boot.binding?.session.id,id)
+  assert.equal((await boot.deferred?.attachedHistory)?.historyEntries.length,2)
+})

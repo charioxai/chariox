@@ -19,12 +19,15 @@ impl KernelRuntimeState {
         interactive: bool,
     ) -> Result<crate::managed_context::development::DevelopmentProjectEnvironment, DaemonError>
     {
+        // MP-08 / MP-11: this layer travels with a context transfer that exports Vault artifacts.
         let prepared = self
-            .refresh_project_environment_state(
+            .refresh_project_environment_state_mode(
                 project_id,
                 repositories,
                 interactive,
                 target_kernel_id,
+                None,
+                true,
             )
             .await?;
         let config = self.owned.config_projection.snapshot();
@@ -46,6 +49,44 @@ impl KernelRuntimeState {
         )
     }
 
+    // MP-08/MP-11: use the native review while omitting all environment values.
+    pub(crate) async fn review_credential_free_project_context(
+        &self,
+        project_id: &str,
+        repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
+        context_id: &str,
+        target: &str,
+    ) -> Result<(), DaemonError> {
+        self.refresh_project_environment_state_mode(
+            project_id,
+            repositories,
+            true,
+            target,
+            Some(context_id),
+            true,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match &error {
+            DaemonError::LocalTransport {
+                operation: "Project environment",
+                message,
+            } if matches!(
+                message.as_str(),
+                "Project export cancelled" | "Project review timed out"
+            ) =>
+            {
+                DaemonError::ManagedContext {
+                    code: "managed_context_review_cancelled",
+                    operation: "owner-managed context review",
+                    message: "Owner-managed context review was cancelled or expired".into(),
+                    retryable: false,
+                }
+            }
+            _ => error,
+        })
+    }
+
     pub(crate) async fn refresh_project_environment_state(
         &self,
         project_id: &str,
@@ -53,6 +94,27 @@ impl KernelRuntimeState {
         interactive: bool,
         target_name: &str,
     ) -> Result<PreparedProjectEnvironmentExport, DaemonError> {
+        self.refresh_project_environment_state_mode(
+            project_id,
+            repositories,
+            interactive,
+            target_name,
+            None,
+            false,
+        )
+        .await
+    }
+
+    async fn refresh_project_environment_state_mode(
+        &self,
+        project_id: &str,
+        repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
+        interactive: bool,
+        target_name: &str,
+        owner_context_id: Option<&str>,
+        vault_transfer: bool,
+    ) -> Result<PreparedProjectEnvironmentExport, DaemonError> {
+        let without_credentials = owner_context_id.is_some();
         let project = self.owned.session_store.get_project(project_id)?;
         if repositories
             .iter()
@@ -74,7 +136,12 @@ impl KernelRuntimeState {
         let _lock = tokio::task::spawn_blocking(move || lock_store.lock(&lock_project))
             .await
             .map_err(|_| environment_failure("environment refresh lock task failed"))??;
-        let previous = store.load(project_id)?;
+        let mut previous = store.load(project_id)?;
+        if without_credentials {
+            if let Some(previous) = previous.as_mut() {
+                previous.manifest.entries.clear();
+            }
+        }
         let index_roots = roots.clone();
         let names: BTreeSet<_> = std::env::vars_os()
             .filter_map(|(name, _)| name.into_string().ok())
@@ -89,6 +156,9 @@ impl KernelRuntimeState {
                 .map_err(|_| environment_failure("environment reference index task failed"))??;
         retain_imported_private_candidates(&mut index, previous.as_ref());
         let mut references = index.references;
+        if without_credentials {
+            references.clear();
+        }
         // Explicitly supplied values survive incremental discovery and are never asked again.
         if let Some(previous) = &previous {
             for reference in &mut references {
@@ -156,9 +226,12 @@ impl KernelRuntimeState {
             );
         }
         normalize_project_config_file_decisions(&mut manifest);
+        if without_credentials {
+            manifest.entries.clear();
+        }
         // MP-08 / MP-10 / MP-11: Resolve and paste through the normal Vault
         // interaction before environment review; keep its lease through resolution.
-        let _vault_guard = if interactive && !manifest.entries.is_empty() {
+        let _vault_guard = if !without_credentials && interactive && !manifest.entries.is_empty() {
             if utility_identity.is_none() {
                 utility_identity = Some(
                     self.environment_utility_identity(&project, repositories)
@@ -178,7 +251,11 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        let vault = crate::secret::project_environment_vault(&config)?;
+        let vault: Arc<dyn crate::secret::CredentialVaultStore> = if without_credentials {
+            Arc::new(CredentialFreeVault)
+        } else {
+            crate::secret::project_environment_vault(&config)?
+        };
         let workspace_environment: BTreeMap<_, _> = roots
             .keys()
             .map(|workspace| {
@@ -220,7 +297,7 @@ impl KernelRuntimeState {
         };
         let review_identity;
         let mut additions = ProjectPrivateFileAdditions::default();
-        if project_environment_needs_review(&state) {
+        if without_credentials || project_environment_needs_review(&state) {
             let code = project_environment_code_summary(repositories);
             if interactive {
                 review_identity = match utility_identity.take() {
@@ -243,6 +320,8 @@ impl KernelRuntimeState {
                         target_name,
                         code,
                         vault.as_ref(),
+                        owner_context_id,
+                        vault_transfer,
                     )
                     .await?;
             } else {
@@ -263,7 +342,16 @@ impl KernelRuntimeState {
                 project.name()
             );
         }
-        store.save(&state)?;
+        if without_credentials {
+            if !state.manifest.entries.is_empty() {
+                return Err(environment_failure(
+                    "owner-managed review cannot include environment credentials",
+                ));
+            }
+            // The credential-free review does not replace the source's saved environment choices.
+        } else {
+            store.save(&state)?;
+        }
         additions.commit();
         let resolved = resolve_project_environment(
             &state.manifest,
@@ -292,7 +380,7 @@ impl KernelRuntimeState {
             &crate::local::AgentUtilityKind::ProjectEnvironmentSetup,
         )
         .await?;
-        let scratch = EnvironmentDiscoveryScratch::new(
+        let scratch = MetadataUtilityScratch::new(
             &self
                 .owned
                 .config_projection
@@ -303,8 +391,23 @@ impl KernelRuntimeState {
         let output = run_provider_utility_prompt(self, run, AgentUtilityPromptParts {
             visible_user_prompt: project_environment_discovery_prompt(input)?,
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
-        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery).await?;
-        parse_project_environment_discovery_output(&output, input)
+        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery, crate::runtime::agent_utility_executor::AGENT_UTILITY_TIMEOUT).await?;
+        let manifest = parse_project_environment_discovery_output(&output, input)?;
+        let decided = manifest
+            .private_files
+            .iter()
+            .filter(|file| file.reason != UNREVIEWED_PRIVATE_FILE_REASON)
+            .count();
+        crate::logging::info_with_fields(
+            "daemon.project_environment",
+            "MP-08: Project environment discovery decided ignored files",
+            serde_json::json!({
+                "inventory": input.private_files.len(),
+                "decided": decided,
+                "unreviewed": manifest.private_files.len() - decided,
+            }),
+        );
+        Ok(manifest)
     }
 
     async fn environment_utility_identity(
@@ -377,12 +480,14 @@ pub(super) fn environment_failure(message: &'static str) -> DaemonError {
         message: message.into(),
     }
 }
-struct EnvironmentDiscoveryScratch(PathBuf);
-impl EnvironmentDiscoveryScratch {
-    fn new(root: &Path) -> Result<Self, DaemonError> {
+/// A private, empty working directory for a metadata-only utility run, which
+/// must not see any source.
+pub(super) struct MetadataUtilityScratch(pub(super) PathBuf);
+impl MetadataUtilityScratch {
+    pub(super) fn new(root: &Path) -> Result<Self, DaemonError> {
         std::fs::create_dir_all(root)
             .map_err(|_| environment_failure("discovery state root unavailable"))?;
-        let path = root.join(format!("project-discovery-{}", rand::random::<u64>()));
+        let path = root.join(format!("metadata-utility-{}", rand::random::<u64>()));
         std::fs::create_dir(&path)
             .map_err(|_| environment_failure("discovery scratch unavailable"))?;
         #[cfg(unix)]
@@ -394,7 +499,7 @@ impl EnvironmentDiscoveryScratch {
         Ok(Self(path))
     }
 }
-impl Drop for EnvironmentDiscoveryScratch {
+impl Drop for MetadataUtilityScratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir(&self.0);
     }
@@ -428,3 +533,28 @@ impl Drop for EnvironmentUtilityCleanup {
         }
     }
 }
+
+// MP-11: even revised reviews cannot access or mutate the source Vault.
+#[derive(Debug)]
+struct CredentialFreeVault;
+impl crate::secret::CredentialVaultStore for CredentialFreeVault {
+    fn get_secret(&self, _: &str, _: &str) -> Result<String, DaemonError> {
+        Err(environment_failure(
+            "credential access is excluded from this transfer",
+        ))
+    }
+    fn set_secret(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+        Err(environment_failure(
+            "credential access is excluded from this transfer",
+        ))
+    }
+    fn delete_secret(&self, _: &str, _: &str) -> Result<(), DaemonError> {
+        Err(environment_failure(
+            "credential access is excluded from this transfer",
+        ))
+    }
+}
+
+#[cfg(test)]
+#[path = "project_environment_owner_tests.rs"]
+mod owner_tests;

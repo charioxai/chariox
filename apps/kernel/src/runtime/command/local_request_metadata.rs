@@ -72,6 +72,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
+        LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
+        LocalDaemonRequest::CaptureVisibleRegion(_) => {
+            LocalRequestMetadata::new("screenshot.capture", Normal)
+        }
         LocalDaemonRequest::BeginAppPublisherEnrollment(request) => {
             LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
@@ -127,6 +132,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("environment.tab.accessibility.get", Normal)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::RoomBrowserArtifact(request) => {
+            LocalRequestMetadata::new("environment.browser.artifact", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
             LocalRequestMetadata::new("environment.screenshot.capture", Normal)
                 .session(&request.session_id)
@@ -161,6 +170,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::AttachToSession(request) => {
             LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::AttachSessionView(request) => {
+            LocalRequestMetadata::new("session.view.attach", Interactive)
+                .session(&request.session_id)
         }
         LocalDaemonRequest::DetachFromSession(request) => {
             LocalRequestMetadata::new("session.detach", Interactive)
@@ -214,6 +227,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("credential_vault.manage", Interactive)
                 .session(&request.session_id)
                 .optional_agent(request.agent_id.as_deref())
+        }
+        LocalDaemonRequest::PreflightProviderAccountPortability(_) => {
+            LocalRequestMetadata::new("provider_account.portability.preflight", Interactive)
         }
         LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
             LocalRequestMetadata::new("managed_environment.catalog", Normal)
@@ -278,6 +294,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetManagedContextLaunchTarget(_) => {
             LocalRequestMetadata::new("managed_context.launch_target.get", Normal)
         }
+        LocalDaemonRequest::ExtendKernelSudo(request) => {
+            LocalRequestMetadata::new("kernel_access.sudo_extend", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
                 .session(&request.session_id)
@@ -309,6 +330,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 metadata = metadata.agent(agent_id);
             }
             metadata
+        }
+        LocalDaemonRequest::SteerActivePrompt(request) => {
+            LocalRequestMetadata::new("prompt.active.steer", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.target_agent_id)
         }
         LocalDaemonRequest::SteerQueuedPrompt(request) => {
             LocalRequestMetadata::new("prompt.queued.steer", Interactive)
@@ -346,6 +373,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::RespondToInteraction(request) => {
             LocalRequestMetadata::new("interaction.respond", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::RespondToHandoff(request) => {
+            LocalRequestMetadata::new("interaction.handoff", Interactive)
                 .session(&request.session_id)
         }
         LocalDaemonRequest::ArmDeploymentCredentialEnrollment(request) => {
@@ -454,6 +485,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::GetSessionHistoryBlobContents(request) => {
+            LocalRequestMetadata::new("session.history.blobs", Background)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::GetPromptInputHistory(request) => {
             LocalRequestMetadata::new("prompt_input_history.get", Background)
                 .session(&request.session_id)
@@ -540,6 +576,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .workflow_run(&request.workflow_run_ref)
         }
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => {
+            LocalRequestMetadata::new("room_workflow_runs.control", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::PauseWorkflowRun(request) => {
             LocalRequestMetadata::new("workflow_run.pause", Normal)
                 .session(&request.session_id)
@@ -556,10 +596,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
+        LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
+        LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
+        LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
+        LocalDaemonRequest::Notes(_) => "notes",
+        LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
         LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
         LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
@@ -580,6 +626,14 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
         LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
         LocalDaemonRequest::OpenAppView(_) => "app.view.open",
+        LocalDaemonRequest::OpenUserAppView(_) => "app.user_view.open",
+        LocalDaemonRequest::ListUserAppViews(_) => "app.user_view.list",
+        LocalDaemonRequest::CloseUserAppView(_) => "app.user_view.close",
+        LocalDaemonRequest::GetUserAppViewFrontend(_) => "app.user_view.frontend",
+        LocalDaemonRequest::CallUserAppView(_) => "app.user_view.call",
+        LocalDaemonRequest::SubscribeUserAppViews(_) => "app.user_view.subscribe",
+        LocalDaemonRequest::AnswerUserDomainInteraction(_) => "app.user_view.answer",
+
         LocalDaemonRequest::SetAppViewPanel(_) => "app.view.panel",
         LocalDaemonRequest::UninstallApp(_) => "app.uninstall",
         LocalDaemonRequest::RestoreAppDataSnapshot(_) => "app.snapshot.restore",
@@ -599,9 +653,47 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeAppFileGrants(_) => "app.file.revoke",
         LocalDaemonRequest::AcceptAppHostAction(_) => "app.host.accept",
         LocalDaemonRequest::CreateSession(_) => "session.create",
+        LocalDaemonRequest::DetectProjectEnvironment(_) => {
+            "project.environment.DetectProjectEnvironment"
+        }
+        LocalDaemonRequest::PreviewEnvironmentDiff(_) => {
+            "project.environment.PreviewEnvironmentDiff"
+        }
+        LocalDaemonRequest::SaveProjectEnvironmentRevision(_) => {
+            "project.environment.SaveProjectEnvironmentRevision"
+        }
+        LocalDaemonRequest::PlanProjectEnvironment(_) => {
+            "project.environment.PlanProjectEnvironment"
+        }
+        LocalDaemonRequest::ApplyProjectEnvironment(_) => {
+            "project.environment.ApplyProjectEnvironment"
+        }
+        LocalDaemonRequest::CheckProjectEnvironment(_) => {
+            "project.environment.CheckProjectEnvironment"
+        }
+        LocalDaemonRequest::GetEnvironmentOperation(_) => {
+            "project.environment.GetEnvironmentOperation"
+        }
+        LocalDaemonRequest::CancelEnvironmentOperation(_) => {
+            "project.environment.CancelEnvironmentOperation"
+        }
+        LocalDaemonRequest::RetryEnvironmentOperation(_) => {
+            "project.environment.RetryEnvironmentOperation"
+        }
+        LocalDaemonRequest::ExportProjectEnvironment(_) => {
+            "project.environment.ExportProjectEnvironment"
+        }
+        LocalDaemonRequest::PreviewEnvironmentImport(_) => {
+            "project.environment.PreviewEnvironmentImport"
+        }
+        LocalDaemonRequest::CommitEnvironmentImport(_) => {
+            "project.environment.CommitEnvironmentImport"
+        }
+        LocalDaemonRequest::GetProjectEnvironment(_) => "project.environment.get",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
         LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",
+        LocalDaemonRequest::SetProjectPinned(_) => "project.pin",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
         LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
@@ -644,6 +736,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "environment.tab.accessibility.get"
         }
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
+        LocalDaemonRequest::RoomBrowserArtifact(_) => "environment.browser.artifact",
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",
         LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(_) => "environment.screenshot.read",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
@@ -674,6 +767,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AbortMetaagentTask(_) => "metaagent.task.abort",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
+        LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
+        LocalDaemonRequest::GetClientCatalogRevisions(_) => "client.catalog_revisions.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::ListProviderAccountProfiles(_) => "provider_account.list",
         LocalDaemonRequest::GetProviderAccountProfile(_) => "provider_account.get",
@@ -834,6 +929,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RecordPromptInputHistory(_) => "prompt_input_history.record",
         LocalDaemonRequest::PollRuntimeNotices(_) => "runtime_notice.poll",
         LocalDaemonRequest::RespondToInteraction(_) => "interaction.respond",
+        LocalDaemonRequest::RespondToHandoff(_) => "interaction.handoff",
         LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_) => "credential_enrollment.arm",
         LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_) => {
             "credential_enrollment.interaction.request"
@@ -874,6 +970,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
+            "workflow.notifications.register"
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(_) => "workflow.notifications.attach",
+        LocalDaemonRequest::DetachWorkflowNotification(_) => "workflow.notifications.detach",
+        LocalDaemonRequest::ListWorkflowNotifications(_) => "workflow.notifications.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::CreateAgentWorkflow(_) => "workflow.create_from_agent",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",
@@ -985,6 +1087,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AckWorkflowTurn(_) => "workflow_turn.ack",
         LocalDaemonRequest::ValidateWorkflowHandoff(_) => "workflow_handoff.validate",
         LocalDaemonRequest::CancelWorkflowRun(_) => "workflow_run.cancel",
+        LocalDaemonRequest::ControlRoomWorkflowRuns(_) => "room_workflow_runs.control",
         LocalDaemonRequest::PauseWorkflowRun(_) => "workflow_run.pause",
         LocalDaemonRequest::ResumeWorkflowRun(_) => "workflow_run.resume",
         LocalDaemonRequest::ListWorkflowPromptQueues(_) => "workflow_prompt_queue.list",
@@ -1005,11 +1108,13 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListWorkflowSchedules(_) => "workflow_schedule.list",
         LocalDaemonRequest::PreviewWorkflowSchedule(_) => "workflow_schedule.preview",
         LocalDaemonRequest::AttachToSession(_)
+        | LocalDaemonRequest::AttachSessionView(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::SubmitPrompt(_)
         | LocalDaemonRequest::SubmitPrompts(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
+        | LocalDaemonRequest::SteerActivePrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)
         | LocalDaemonRequest::UpdateQueuedPrompt(_)
         | LocalDaemonRequest::ResizeTerminal(_)
@@ -1023,6 +1128,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
+        | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)
@@ -1046,6 +1152,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
+        | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
     }
 }

@@ -3,6 +3,7 @@ import type { RuntimeSession } from "./kernel-types-session.js"
 import type { AgentInstance } from "./kernel-types-runtime.js"
 
 export type WorkflowDefinition = {
+  created_by_agent_id?: string | null
   id: string
   alias: string | null
   prompt?: string | null
@@ -389,6 +390,7 @@ export type WorkflowRegistryEntrySummary = {
 }
 
 export type WorkflowRegistryEntryMetadata = {
+  created_by_agent_id?: string | null
   name: string
   source_scope: WorkflowRegistrySourceScope
   source_kind: WorkflowRegistrySourceKind
@@ -913,6 +915,7 @@ export type WorkflowPromptQueueDefinition = {
 }
 
 export type WorkflowQueuedPrompt = {
+  created_by_agent_id?: string | null
   id: string
   queue_id: string
   workflow_id: string
@@ -1029,6 +1032,8 @@ export type WorkflowFailureEvent = {
 }
 
 export type WorkflowRun = {
+  created_before_ownership_tracking?: boolean
+  created_by_agent_id?: string | null
   id: string
   workflow_id: string
   workflow_revision?: number
@@ -1101,4 +1106,45 @@ export type ReadDirectoryTreeResult = {
   session_id: string
   root_path: string
   entries: unknown[]
+}
+
+/** Protocol 436: public room-local inventory; independent of trigger admission. */
+export type RoomWorkflowInventory = {
+  session_id: string
+  home_kernel_id: string
+  revision: string
+  workflow_count: number
+  workflows: RoomWorkflowSummary[]
+}
+export type RoomWorkflowSummary = {
+  workflow_id: string
+  workflow_revision: number
+  label: string
+  state: "idle" | "running" | "paused" | "mixed"
+  running_count: number
+  paused_count: number
+  queued_count: number
+  runs: RoomWorkflowRunSummary[]
+  endpoints: RoomWorkflowEndpointSummary[]
+}
+export type RoomWorkflowRunSummary = {
+  created_before_ownership_tracking?: boolean
+  run_id: string
+  endpoint_id: string
+  status: WorkflowRun["status"]
+  can_pause: boolean
+  can_resume: boolean
+  can_stop: boolean
+}
+export type RoomWorkflowEndpointSummary = {
+  endpoint_id: string
+  label: string
+  entry_node_id: string
+  can_start: boolean
+  start_disabled_reason?: string | null
+}
+export type RoomWorkflowRunAction = "pause" | "resume" | "stop"
+export type RoomWorkflowRunsControlled = {
+  inventory: RoomWorkflowInventory
+  results: { run_id: string; outcome: "applied" | "unchanged" | "failed"; error?: string | null }[]
 }

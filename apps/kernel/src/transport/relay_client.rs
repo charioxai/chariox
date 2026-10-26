@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7,7 +7,9 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+#[cfg(test)]
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
@@ -24,37 +26,43 @@ use crate::runtime_transport::{
     WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, terminal_output_event_batches, workflow_run_only_changed,
-    workflow_run_updated_events, KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID,
-    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    event_is_relevant_to_attachment, subscription_event_stream_id, terminal_output_event_batches,
+    KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
+mod browser_display;
+mod browser_input_order;
 mod connection_config;
 mod connection_state;
 mod connector;
 mod daemon_requests;
+mod display_admission;
+mod display_delivery;
 mod display_ingress;
+mod display_pump;
 mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
+mod local_browser;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
 mod remote_inventory;
 mod request_errors;
+mod request_timing;
 mod sender_identity;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
     publish_offline_and_set_disconnected, set_connected, spawn_cloud_presence_publish,
 };
-use daemon_requests::handle_daemon_request;
+use daemon_requests::{
+    handle_daemon_request, handle_prepared_daemon_request, prepare_daemon_request,
+};
 use display_tunnel::handle_display_tunnel_open;
 use envelope_io::{
     encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,
@@ -62,6 +70,7 @@ use envelope_io::{
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
+use local_browser::LocalBrowserDirect;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;
@@ -70,7 +79,9 @@ pub(crate) use peer_client::{
     enqueue_peer_request_via_connected_relay_with_timeout,
     send_peer_request_to_known_kernel_via_relay,
     send_peer_request_to_known_kernel_via_relay_with_timeout,
+    send_peer_request_via_connected_relay_authenticated,
     send_peer_request_via_connected_relay_authorized,
+    send_peer_request_via_temporary_connection_authenticated,
     send_peer_request_via_temporary_connection_authorized, RelayPeerResponseWaiter,
 };
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
@@ -159,9 +170,25 @@ const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 pub(crate) struct RelayOutgoingSender {
     priority_tx: mpsc::Sender<RelayEnvelope>,
     event_tx: mpsc::Sender<RelayEnvelope>,
+    closing: Arc<AtomicBool>,
 }
 
 impl RelayOutgoingSender {
+    // MD-DISPLAY-02/04: only the admitted display producer selects this path.
+    // Small input acknowledgements avoid event batching; large repair/video
+    // envelopes stay on the bounded event lane so controls are not starved.
+    async fn send_display_event(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+        debug_assert!(matches!(envelope, RelayEnvelope::DaemonEvent { .. }));
+        let small = matches!(&envelope, RelayEnvelope::DaemonEvent { encrypted_event, .. } if encrypted_event.ciphertext.len() <= 12 * 1024);
+        if small {
+            self.priority_tx.send(envelope).await
+        } else {
+            self.send_event(envelope).await
+        }
+    }
     fn new(
         priority_tx: mpsc::Sender<RelayEnvelope>,
         event_tx: mpsc::Sender<RelayEnvelope>,
@@ -169,6 +196,7 @@ impl RelayOutgoingSender {
         Self {
             priority_tx,
             event_tx,
+            closing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -184,6 +212,10 @@ impl RelayOutgoingSender {
         (Self::new(priority_tx, event_tx), priority_rx, event_rx)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing try_send typed error contract"
+    )]
     pub(crate) fn try_send(
         &self,
         envelope: RelayEnvelope,
@@ -202,9 +234,56 @@ impl RelayOutgoingSender {
         debug_assert!(relay_envelope_uses_event_lane(&envelope));
         self.event_tx.send(envelope).await
     }
+
+    /// MP-08/MP-10/MP-11: replies wait for lane capacity; they are never dropped.
+    /// Returns false only when the writer is closed.
+    async fn send(&self, envelope: RelayEnvelope) -> bool {
+        if relay_envelope_uses_event_lane(&envelope) {
+            self.event_tx.send(envelope).await.is_ok()
+        } else {
+            self.priority_tx.send(envelope).await.is_ok()
+        }
+    }
+
+    // MP-08/MP-10/MP-11: discard stale stream events during reconnect,
+    // including coalesced events, but retain every queued reply and Close.
+    #[cfg(test)]
+    fn should_write(&self, envelope: &RelayEnvelope) -> bool {
+        relay_envelope_should_write(envelope, self.closing.load(Ordering::Acquire))
+    }
+
+    /// MP-08/MP-10/MP-11: a deferred reconnect Close follows every queued bulk
+    /// reply through the FIFO event lane instead of overtaking it.
+    /// Returns false only when the writer is closed.
+    fn send_after_queued_events(&self, envelope: RelayEnvelope) -> bool {
+        self.closing.store(true, Ordering::Release);
+        match self.event_tx.try_send(envelope) {
+            Err(mpsc::error::TrySendError::Full(envelope)) => {
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move { event_tx.send(envelope).await });
+                true
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+            Ok(()) => true,
+        }
+    }
+}
+
+fn relay_envelope_should_write(envelope: &RelayEnvelope, closing: bool) -> bool {
+    // Leased peer events carry projections whose cursor already advanced.
+    !closing || !matches!(envelope, RelayEnvelope::DaemonEvent { .. })
 }
 
 fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
+    // MP-08 / MP-10 / MP-11: bulk encrypted replies (catalogues, history,
+    // captures) must not fill the priority queue ahead of Computer control.
+    // The relay remains opaque; classify size without inspecting the payload.
+    if matches!(envelope, RelayEnvelope::DaemonResponse { encrypted_response: Some(payload), .. }
+        | RelayEnvelope::DaemonIncomingPeerResponse { encrypted_response: Some(payload), .. }
+        if payload.ciphertext.len() > 64 * 1024)
+    {
+        return true;
+    }
     matches!(
         envelope,
         RelayEnvelope::DaemonEvent { .. }

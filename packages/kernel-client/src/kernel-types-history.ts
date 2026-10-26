@@ -1,5 +1,8 @@
 export type SessionHistoryPageEntry = {
   entry_index: number
+  sequence_end?: number
+  sequence_byte_lengths?: number[]
+  sequence_indices?: number[]
   fragment_start: number
   fragment_end: number
   total_chars: number
@@ -44,6 +47,7 @@ export type SessionHistoryOutlineAgent = {
   agent_id: string
   turns: SessionHistoryOutlineTurn[]
   next_cursor?: SessionHistoryOutlineCursor | null
+  prefetched_blobs?: SessionHistoryBlobContent[]
 }
 
 export type SessionHistoryOutlineCursor = {
@@ -76,6 +80,9 @@ export type SessionHistoryOutlineBlob = {
   entry_count: number
   total_chars: number
   timestamp_ms: number
+  /** Protocol ≥508: a tool call's snapshot without output, or a thought's first line. */
+  preview?: string | null
+  steering?: boolean
 }
 
 export type SessionHistoryBlobContent = {
@@ -217,8 +224,12 @@ export type TranscriptEntry = {
   blobCollapsed?: boolean
   blobTitle?: string
   blobSummary?: string
+  /** Tool kind icon shown left of a tool row's title (`TOOL_DISPLAY_ICON_GLYPHS`). */
+  blobIcon?: string
   historyDeferred?: boolean
   historyEntryIndex?: number
+  /** Complete persisted rows already represented by this client entry. */
+  historySequenceRanges?: readonly (readonly [number, number])[]
   historyFragmentStart?: number
   historyFragmentEnd?: number
   historyTotalChars?: number

@@ -279,6 +279,7 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
     match harness
         .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
             ConfigureAppAutomationRequest {
+                delivery_mode: crate::local::NotificationDeliveryMode::Inject,
                 installation_id: "installed".into(),
                 automation_id: "reminders".into(),
                 expected_revision: 0,
@@ -331,6 +332,7 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
     assert_eq!(app["grants"], serde_json::json!([]));
     assert_eq!(app["automations"][0]["automation_id"], "reminders");
     assert_eq!(app["automations"][0]["event_name"], "changed");
+    assert_eq!(app["automations"][0]["delivery_mode"], "inject");
     assert_eq!(
         app["automations"][0]["endpoint_id"],
         graph.endpoint_id.as_str()
@@ -353,6 +355,7 @@ fn a_release_after_its_last_app_is_removed_records_an_empty_plan() {
     harness
         .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
             ConfigureAppAutomationRequest {
+                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 installation_id: "installed".into(),
                 automation_id: "reminders".into(),
                 expected_revision: 0,
@@ -431,6 +434,7 @@ fn a_release_without_apps_still_binds_after_a_later_release_records_a_plan() {
     harness
         .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
             ConfigureAppAutomationRequest {
+                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 installation_id: "installed".into(),
                 automation_id: "reminders".into(),
                 expected_revision: 0,
@@ -798,6 +802,7 @@ fn a_publication_previews_its_apps_before_and_after_preparation() {
     harness
         .dispatch(LocalDaemonRequest::ConfigureAppAutomation(
             ConfigureAppAutomationRequest {
+                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 installation_id: "installed".into(),
                 automation_id: "reminders".into(),
                 expected_revision: 0,

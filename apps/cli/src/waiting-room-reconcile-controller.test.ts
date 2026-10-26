@@ -14,6 +14,26 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 
+test("MP-08/MP-10 machine inventory updates reconcile the current waiting room without a draft", () => {
+  for (const method of ["reconcile", "reconcileProjection"] as const) {
+    const currentState = waitingRoomState({ projectSelectionId: "existing:project-one" })
+    const harness = createHarness({
+      currentState,
+      attached: true,
+      update: {
+        normalizedState: currentState,
+        nextProvider: "opencode",
+        nextModel: "gpt-5.4",
+        nextEffort: "medium",
+        shouldPersistProviderPreferences: false,
+      },
+      inspectNextState: (next) => assert.equal(next, currentState),
+    })
+    harness.controller[method]()
+    assert.equal(harness.state.currentState, currentState)
+  }
+})
+
 test("waiting room reconcile controller applies normalized state and refreshes detached UI", () => {
   const nextState = waitingRoomState({ themeId: "dark" })
   const harness = createHarness({
@@ -139,6 +159,7 @@ function createHarness(options: {
   update: WaitingRoomStateUpdate
   attached: boolean
   appliedThemeId?: string
+  inspectNextState?: (state: WaitingRoomState) => void
 }) {
   const calls: string[] = []
   const state = {
@@ -209,7 +230,10 @@ function createHarness(options: {
     syncCommandCenter: () => {
       calls.push("syncCommandCenter")
     },
-    deriveStateUpdate: () => options.update,
+    deriveStateUpdate: ({ nextState }) => {
+      options.inspectNextState?.(nextState)
+      return options.update
+    },
   })
   return { calls, state, controller }
 }
@@ -232,4 +256,15 @@ function waitingRoomState(overrides: Partial<WaitingRoomState>): WaitingRoomStat
     keyState: { up: false, down: false, left: false, right: false },
     ...overrides,
   } as WaitingRoomState
+}
+
+for (const method of ["reconcile", "reconcileProjection"] as const) {
+  test(`MP-08 / MP-10 / MP-11 machine inventory refresh ${method} uses current state without a launch override`, () => {
+    const current = waitingRoomState({ selectedMachineRef: "machine-local", selectedKernelRef: "kernel-local" })
+    const harness = createHarness({ currentState: current, update: { normalizedState: current, nextProvider: "codex", nextModel: "gpt-6.1-sol", nextEffort: "high", shouldPersistProviderPreferences: false }, attached: true })
+    // The real derivation consumes nextState before applying an inventory patch.
+    const derive = harness.controller[method]
+    const state = derive()
+    assert.equal(state, current)
+  })
 }

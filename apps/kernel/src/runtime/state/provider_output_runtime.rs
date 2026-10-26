@@ -15,7 +15,7 @@ impl KernelRuntimeState {
         recipient_attachment_ids: Vec<String>,
         initial_liveness_already_checked: bool,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        self.publish_credential_copy_notices(session_id);
+        self.publish_credential_copy_notices(session_id).await;
         let owned = &self.owned;
         self.reap_structured_prompt_jobs_and_dispatch();
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -23,7 +23,7 @@ impl KernelRuntimeState {
         if !initial_liveness_already_checked
             && uses_structured_prompt_io
             && self
-                .reconcile_provider_run_exit(session_id, provider_run_id)
+                .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                 .await?
         {
             return Ok(owned
@@ -66,15 +66,51 @@ impl KernelRuntimeState {
 
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let provider_run = provider_run.clone();
+            let native_tui = provider_run.client_interface()
+                == crate::provider::ProviderClientInterface::NativeTui;
+            if native_tui {
+                // Remember the admitted turn before the bridge can start and Stop it in one pass.
+                self.settle_finished_native_tui_turn(session_id, &provider_run)
+                    .await;
+            }
+            // Keep registration/retirement out of the final protected hook replay.
+            let room_guard = owned
+                .room_secret_observations
+                .barrier(session_id)?
+                .read_owned()
+                .await;
             let outcome = self
                 .with_app_side_effect(|app| {
-                    app.process_claude_native_bridge_for_runtime(
+                    app.process_claude_native_bridge_with_handoff_for_runtime(
                         session_id,
                         provider_run_id,
                         &provider_run,
+                        owned,
                     )
                 })
                 .await?;
+            drop(room_guard);
+            if !outcome.rejected_prompts.is_empty() {
+                if let Some(agent_id) = provider_run.agent_instance_id() {
+                    for prompt in &outcome.rejected_prompts {
+                        self.inject_metaagent_turn_failure_event(
+                            session_id,
+                            agent_id,
+                            prompt,
+                            Some(provider_run_id),
+                            crate::app::CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+                        )?;
+                    }
+                    Box::pin(
+                        self.advance_project_queued_prompt_after_settlement(session_id, agent_id),
+                    )
+                    .await;
+                }
+                self.spawn_workflow_prompt_dispatches(
+                    owned.workflow_maybe_start_next_queued_prompt(session_id),
+                );
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+            }
             if let Some(message) = outcome.terminal_failure {
                 let run = owned
                     .provider_store
@@ -98,6 +134,10 @@ impl KernelRuntimeState {
                 })
                 .await?;
             }
+            if native_tui {
+                self.settle_finished_native_tui_turn(session_id, &provider_run)
+                    .await;
+            }
         }
 
         let mut chunks = match self
@@ -112,7 +152,7 @@ impl KernelRuntimeState {
                     return Ok(Vec::new());
                 }
                 if self
-                    .reconcile_provider_run_exit(session_id, provider_run_id)
+                    .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                     .await?
                 {
                     return Ok(owned
@@ -160,6 +200,11 @@ impl KernelRuntimeState {
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
         );
+        let terminal_failure = terminal_failure.or_else(|| {
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run)
+                .then(|| crate::app::claude_native_recent_terminal_failure(&provider_run))
+                .flatten()
+        });
         let has_active_prompt = owned.provider_run_has_active_prompt(session_id, &provider_run)?;
         if !crate::app::provider_output::should_project_pty_output(
             has_active_prompt,
@@ -174,29 +219,22 @@ impl KernelRuntimeState {
             let agent_id = provider_run.agent_instance_id().map(str::to_string);
             let prompt_metadata =
                 owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
-            let mut history_entries = Vec::with_capacity(chunks.len());
             let terminal_outputs = chunks
                 .into_iter()
                 .map(|chunk| {
-                    let history_text = (!uses_transient_native_terminal)
-                        .then(|| String::from_utf8_lossy(&chunk.bytes).into_owned());
-                    if let Some(history_text) = history_text.as_ref() {
-                        history_entries.push(
-                            crate::history::SessionHistoryEntry::provider_output(
-                                session_id,
-                                provider_run_id,
-                                agent_id.as_deref(),
-                                crate::terminal::TerminalOutputKind::ProviderOutput,
-                                None,
-                                history_text.clone(),
-                            )
-                            .with_prompt_origin(prompt_metadata.prompt_origin)
-                            .with_source_attachment_id(
-                                prompt_metadata.source_attachment_id.clone(),
-                            ),
-                        );
-                    }
-                    super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                    let history_entry = (!uses_transient_native_terminal).then(|| {
+                        crate::history::SessionHistoryEntry::provider_output(
+                            session_id,
+                            provider_run_id,
+                            agent_id.as_deref(),
+                            crate::terminal::TerminalOutputKind::ProviderOutput,
+                            None,
+                            String::from_utf8_lossy(&chunk.bytes).into_owned(),
+                        )
+                        .with_prompt_origin(prompt_metadata.prompt_origin)
+                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone())
+                    });
+                    let output = super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                         provider_run_id: provider_run_id.to_string(),
                         agent_id: agent_id.clone(),
                         kind: if uses_transient_native_terminal {
@@ -205,17 +243,13 @@ impl KernelRuntimeState {
                             crate::terminal::TerminalOutputKind::ProviderOutput
                         },
                         merge_key: None,
+                        sequence: None,
                         bytes: chunk.bytes,
-                    }
+                    };
+                    (output, history_entry)
                 })
                 .collect::<Vec<_>>();
-            let records = owned.fan_out_terminal_outputs_to_recipients(
-                session_id,
-                recipient_attachment_ids,
-                terminal_outputs,
-            );
-            owned.append_history_entries(session_id, history_entries);
-            records
+            owned.append_history_and_fan_out(session_id, None, terminal_outputs)
         };
         if let Some(message) = terminal_failure {
             let run = owned
@@ -229,13 +263,14 @@ impl KernelRuntimeState {
         // Settlement can include cancellation, queue advancement, and remote
         // substitute reconciliation. Keep that future off enclosing
         // launch/dispatch/output stack frames.
-        if !Box::pin(self.reconcile_provider_run_exit(session_id, provider_run_id)).await? {
-            if records.is_empty() {
-                let _ = self
-                    .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
-                    .await?;
-                owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
-            }
+        if !Box::pin(self.reconcile_provider_run_exit_for_output(session_id, provider_run_id))
+            .await?
+            && records.is_empty()
+        {
+            let _ = self
+                .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
+                .await?;
+            owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
         }
         Ok(records)
     }
@@ -408,7 +443,8 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             .into_iter()
             .filter(|run| run.session_id() == session.id())
             .filter(|run| {
-                !run.client_interface().is_chariox()
+                (!run.client_interface().is_chariox()
+                    || crate::provider::provider_run_uses_claude_native_bridge(run))
                     && matches!(
                         run.state(),
                         crate::provider::ProviderRunState::Starting
@@ -433,7 +469,8 @@ fn provider_run_requires_owned_output_pump(
     if run.state() == crate::provider::ProviderRunState::Starting {
         return true;
     }
-    if !run.client_interface().is_chariox()
+    if (!run.client_interface().is_chariox()
+        || crate::provider::provider_run_uses_claude_native_bridge(run))
         && matches!(
             run.state(),
             crate::provider::ProviderRunState::Starting

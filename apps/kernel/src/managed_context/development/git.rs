@@ -67,17 +67,12 @@ fn charge_materialized_state(
 fn validate_materialization_estimate(
     estimate: RepositoryMaterializationEstimate,
     maximum_checkout_bytes: u64,
-    maximum_materialized_entries: u64,
+    _maximum_materialized_entries: u64,
     label: &str,
 ) -> Result<(), DaemonError> {
     if estimate.checkout_bytes > maximum_checkout_bytes {
         return Err(context_error(format!(
-            "{label} exceeds the {maximum_checkout_bytes}-byte checkout budget"
-        )));
-    }
-    if estimate.materialized_entries > maximum_materialized_entries {
-        return Err(context_error(format!(
-            "{label} exceeds the {maximum_materialized_entries}-entry materialization budget"
+            "{label} exceeds the {maximum_checkout_bytes} bytes of free disk available for checkout; free space on the destination volume, then retry"
         )));
     }
     Ok(())
@@ -86,12 +81,7 @@ fn validate_materialization_estimate(
 pub(super) fn inspect_export_repository(
     worktree: &Path,
 ) -> Result<RepositoryMaterializationEstimate, DaemonError> {
-    inspect_repository_features(
-        worktree,
-        false,
-        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
-    )
+    inspect_repository_features(worktree, false, UNBOUNDED_BYTES, u64::MAX)
 }
 
 pub(super) fn inspect_import_repository(
@@ -102,8 +92,8 @@ pub(super) fn inspect_import_repository(
     inspect_repository_features(
         worktree,
         true,
-        maximum_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
-        maximum_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+        maximum_checkout_bytes,
+        maximum_materialized_entries,
     )
 }
 
@@ -120,7 +110,7 @@ fn inspect_repository_features(
     )? == "true"
     {
         return Err(context_error(format!(
-            "repository `{}` is shallow; shallow repositories are not supported in development context version 1",
+            "repository `{}` is a shallow clone; fetch its full history with `git fetch --unshallow`, then copy again",
             worktree.display()
         )));
     }
@@ -138,7 +128,7 @@ fn inspect_repository_features(
     stream_git_nul_records_with_environment(
         worktree,
         &["ls-tree", "-r", "-l", "-z", "HEAD"],
-        MAX_REPOSITORY_TREE_ENTRIES,
+        usize::MAX,
         isolated,
         |record| {
             let Some((metadata, path)) = record.split_once('\t') else {
@@ -161,12 +151,6 @@ fn inspect_repository_features(
             materialized_entries = materialized_entries
                 .saturating_add(1)
                 .saturating_add(path.bytes().filter(|byte| *byte == b'/').count() as u64);
-            if materialized_entries > maximum_materialized_entries {
-                return Err(context_error(format!(
-                    "repository `{}` current tree exceeds the {maximum_materialized_entries}-entry materialization budget",
-                    worktree.display()
-                )));
-            }
             match mode {
                 "160000" => {
                     return Err(context_error(format!(
@@ -190,7 +174,7 @@ fn inspect_repository_features(
                 .saturating_add(allocation_bytes);
             if checkout_bytes > maximum_checkout_bytes {
                 return Err(context_error(format!(
-                    "repository `{}` current tree exceeds the {maximum_checkout_bytes}-byte checkout budget",
+                    "repository `{}` current tree exceeds the {maximum_checkout_bytes} bytes of free disk available for checkout; free space on the destination volume, then retry",
                     worktree.display()
                 )));
             }
@@ -331,10 +315,34 @@ pub(super) fn create_git_bundle(
 ) -> Result<(), DaemonError> {
     let mut cleanup = BundleCleanup::new(destination.to_path_buf());
     let mut file = private_create_new(destination)?;
+    create_git_bundle_to_writer(worktree, &mut file, maximum_bytes)?;
+    file.sync_all()
+        .map_err(|error| context_io_error("sync Git bundle", error))?;
+    cleanup.keep();
+    Ok(())
+}
+
+pub(super) fn create_git_bundle_bytes(
+    worktree: &Path,
+    maximum_bytes: u64,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, DaemonError> {
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    create_git_bundle_to_writer(worktree, &mut *bytes, maximum_bytes)?;
+    Ok(bytes)
+}
+
+fn create_git_bundle_to_writer(
+    worktree: &Path,
+    writer: &mut impl Write,
+    maximum_bytes: u64,
+) -> Result<(), DaemonError> {
     let mut child = Command::new("git")
         .args([OsStr::new("bundle"), OsStr::new("create"), OsStr::new("-")])
         .arg("HEAD")
         .current_dir(worktree)
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -354,7 +362,9 @@ pub(super) fn create_git_bundle(
         let read = match stdout.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => {
-                let _ = child.kill();
+                if child.id() > 1 {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
                 let _ = stderr_reader.join();
                 return Err(context_io_error("read Git bundle", error));
@@ -365,15 +375,19 @@ pub(super) fn create_git_bundle(
         }
         written = written.saturating_add(read as u64);
         if written > maximum_bytes {
-            let _ = child.kill();
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             let _ = stderr_reader.join();
             return Err(context_error(format!(
                 "repository Git bundle exceeds {maximum_bytes} bytes"
             )));
         }
-        if let Err(error) = file.write_all(&buffer[..read]) {
-            let _ = child.kill();
+        if let Err(error) = writer.write_all(&buffer[..read]) {
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             let _ = stderr_reader.join();
             return Err(context_io_error("write Git bundle", error));
@@ -383,15 +397,13 @@ pub(super) fn create_git_bundle(
         .wait()
         .map_err(|error| context_io_error("wait for Git bundle", error))?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    require_git_not_interrupted(status, "create Git bundle")?;
     if !status.success() {
         return Err(context_error(format!(
             "create Git bundle failed: {}",
             String::from_utf8_lossy(&stderr).trim()
         )));
     }
-    file.sync_all()
-        .map_err(|error| context_io_error("sync Git bundle", error))?;
-    cleanup.keep();
     Ok(())
 }
 
@@ -411,24 +423,29 @@ pub(super) fn verify_git_bundle_isolated(
     verify_git_bundle_with_environment(worktree, bundle, expected_head, true)
 }
 
-fn verify_git_bundle_with_environment(
-    worktree: &Path,
+pub(super) fn verify_git_bundle_header(
     bundle: &Path,
     expected_head: &str,
-    isolated: bool,
 ) -> Result<(), DaemonError> {
     let file = File::open(bundle).map_err(|error| context_io_error("open Git bundle", error))?;
-    let mut reader = BufReader::new(file);
+    verify_git_bundle_header_reader(&mut BufReader::new(file), expected_head)
+}
+
+pub(super) fn verify_git_bundle_header_reader(
+    reader: &mut impl BufRead,
+    expected_head: &str,
+) -> Result<(), DaemonError> {
     let mut header_bytes = 0_usize;
     let mut header_records = 0_usize;
     let signature =
-        read_bounded_bundle_header_line(&mut reader, &mut header_bytes, &mut header_records)?
+        read_bounded_bundle_header_line(reader, &mut header_bytes, &mut header_records)?
             .unwrap_or_default();
     if !signature.starts_with("# v") || !signature.ends_with(" git bundle") {
         return Err(context_error("Git bundle has an invalid signature"));
     }
+    let mut head_seen = false;
     while let Some(line) =
-        read_bounded_bundle_header_line(&mut reader, &mut header_bytes, &mut header_records)?
+        read_bounded_bundle_header_line(reader, &mut header_bytes, &mut header_records)?
     {
         if line.is_empty() {
             break;
@@ -438,16 +455,48 @@ fn verify_git_bundle_with_environment(
                 "Git bundle has prerequisites and is not self-contained",
             ));
         }
+        if line.starts_with('@') {
+            continue; // Version 3 capability, not an advertised ref.
+        }
+        let (oid, reference) = line
+            .split_once(' ')
+            .ok_or_else(|| context_error("Git bundle has malformed refs"))?;
+        if reference != "HEAD" || head_seen {
+            return Err(context_error(
+                "Git bundle advertises unexpected refs; only HEAD is supported",
+            ));
+        }
+        if oid != expected_head {
+            return Err(context_error(
+                "Git bundle HEAD does not match the captured repository HEAD",
+            ));
+        }
+        head_seen = true;
     }
+    if !head_seen {
+        return Err(context_error(
+            "Git bundle HEAD does not match the captured repository HEAD",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_git_bundle_with_environment(
+    worktree: &Path,
+    bundle: &Path,
+    expected_head: &str,
+    isolated: bool,
+) -> Result<(), DaemonError> {
+    verify_git_bundle_header(bundle, expected_head)?;
     let bundle_text = bundle
         .to_str()
         .ok_or_else(|| context_error("Git bundle path is not valid UTF-8"))?;
     let heads = if isolated {
-        git_text_isolated(worktree, &["bundle", "list-heads", bundle_text, "HEAD"])?
+        git_text_isolated(worktree, &["bundle", "list-heads", bundle_text])?
     } else {
-        git_text(worktree, &["bundle", "list-heads", bundle_text, "HEAD"])?
+        git_text(worktree, &["bundle", "list-heads", bundle_text])?
     };
-    if heads.split_whitespace().next() != Some(expected_head) {
+    if heads.split_whitespace().collect::<Vec<_>>() != [expected_head, "HEAD"] {
         return Err(context_error(
             "Git bundle HEAD does not match the captured repository HEAD",
         ));
@@ -617,7 +666,9 @@ fn run_git_output_bounded(
         let read = match stdout.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => {
-                let _ = child.kill();
+                if child.id() > 1 {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
                 let _ = stderr_reader.join();
                 return Err(context_io_error("read bounded Git output", error));
@@ -627,7 +678,9 @@ fn run_git_output_bounded(
             break;
         }
         if stdout_bytes.len().saturating_add(read) > maximum_stdout_bytes {
-            let _ = child.kill();
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             let _ = stderr_reader.join();
             return Err(context_error(format!(
@@ -705,7 +758,7 @@ where
 fn stream_git_nul_records_with_environment<F>(
     worktree: &Path,
     args: &[&str],
-    maximum_records: usize,
+    _maximum_records: usize,
     isolated: bool,
     mut on_record: F,
 ) -> Result<(), DaemonError>
@@ -731,15 +784,18 @@ where
         .take()
         .ok_or_else(|| context_error("streaming Git command did not provide stderr"))?;
     let stderr_reader = std::thread::spawn(move || read_capped_and_drain(stderr));
-    let mut records = 0_usize;
+    let started = std::time::Instant::now();
+    let mut output_bytes = 0u64;
     let mut record = Vec::new();
     let mut buffer = [0_u8; 64 * 1024];
+    let mut reached_eof = false;
     let result = 'stream: loop {
         let read = match stdout.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => break Err(context_io_error("read streaming Git output", error)),
         };
         if read == 0 {
+            reached_eof = true;
             break if record.is_empty() {
                 Ok(())
             } else {
@@ -748,14 +804,14 @@ where
                 ))
             };
         }
+        output_bytes = output_bytes.saturating_add(read as u64);
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            break Err(context_error(
+                "Git path stream exceeds the 120 second time limit",
+            ));
+        }
         for byte in &buffer[..read] {
             if *byte == 0 {
-                records = records.saturating_add(1);
-                if records > maximum_records {
-                    break 'stream Err(context_error(format!(
-                        "Git command returned more than {maximum_records} records"
-                    )));
-                }
                 let value = match String::from_utf8(std::mem::take(&mut record)) {
                     Ok(value) => value,
                     Err(_) => {
@@ -777,13 +833,23 @@ where
             }
         }
     };
-    if result.is_err() {
+    let killed_for_refusal = result.is_err() && !reached_eof;
+    if killed_for_refusal && child.id() > 1 {
         let _ = child.kill();
     }
     let status = child
         .wait()
         .map_err(|error| context_io_error("wait for streaming Git command", error))?;
     let stderr = stderr_reader.join().unwrap_or_default();
+    // A parser/policy refusal kills its own child with SIGKILL. Preserve that
+    // refusal; a shutdown signal must not turn truncated output into invalidity.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if !killed_for_refusal || status.signal() != Some(9) {
+            require_git_not_interrupted(status, "run streaming Git command")?;
+        }
+    }
     result?;
     if !status.success() {
         return Err(context_error(format!(
@@ -841,10 +907,31 @@ fn read_bounded_bundle_header_line(
     }
 }
 
+fn require_git_not_interrupted(
+    status: std::process::ExitStatus,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return Err(context_io_error(
+                operation,
+                io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    format!("Git interrupted by signal {signal}"),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn require_git_success(output: Output, operation: &'static str) -> Result<Output, DaemonError> {
     if output.status.success() {
         return Ok(output);
     }
+    require_git_not_interrupted(output.status, operation)?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Err(context_error(format!(
@@ -868,4 +955,92 @@ pub(super) fn split_nul(bytes: &[u8]) -> Result<Vec<String>, DaemonError> {
                 .map_err(|_| context_error("Git returned a non-UTF-8 repository path"))
         })
         .collect()
+}
+
+#[cfg(all(test, unix))]
+mod interruption_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    // MP-08 / MP-10 / MP-11: stopping the target can interrupt Git after
+    // the upload completes. That must retain the import for a fresh retry.
+    #[test]
+    fn terminated_git_command_remains_retryable_for_copy_recovery() {
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                "if [ \"$$\" -gt 1 ]; then kill -TERM \"$$\"; else exit 1; fi",
+            ])
+            .output()
+            .expect("run owned interruption probe");
+        assert_eq!(output.status.signal(), Some(15));
+        let error = require_git_success(output, "run Git command")
+            .expect_err("interrupted Git must fail retryably");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                code: "managed_context_unavailable",
+                retryable: true,
+                ..
+            }
+        ));
+
+        let output = Command::new("sh")
+            .args(["-c", "exit 1"])
+            .output()
+            .expect("run ordinary command failure probe");
+        assert!(matches!(
+            require_git_success(output, "run Git command"),
+            Err(DaemonError::ManagedContext {
+                code: "invalid_managed_context",
+                retryable: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn interrupted_git_path_stream_does_not_retire_a_truncated_import() {
+        // The alias's parent is the Git command this test launched. Reject any
+        // other parent before signalling; the short-lived shell exits itself.
+        for signal in ["TERM", "KILL"] {
+            let alias = format!(
+                "alias.copy-interrupt=!if [ \"$PPID\" -gt 1 ] && [ \"$(cat /proc/$PPID/comm)\" = git ]; then printf truncated; kill -{signal} \"$PPID\"; fi"
+            );
+            let error = stream_git_nul_records(
+                &std::env::current_dir().expect("test working directory"),
+                &["-c", &alias, "copy-interrupt"],
+                1,
+                |_| Ok(()),
+            )
+            .expect_err("signal-truncated Git output must remain retryable");
+            assert!(matches!(
+                error,
+                DaemonError::ManagedContext {
+                    code: "managed_context_unavailable",
+                    retryable: true,
+                    ..
+                }
+            ));
+        }
+    }
+    #[test]
+    fn interrupted_policy_refusal_keeps_its_terminal_classification() {
+        let error = stream_git_nul_records(
+            &std::env::current_dir().expect("test working directory"),
+            &["ls-files", "-z"],
+            1,
+            |_| Err(context_error("refused by repository policy")),
+        )
+        .expect_err("policy refusal must survive killing its own Git child");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                code: "invalid_managed_context",
+                retryable: false,
+                ..
+            }
+        ));
+    }
 }

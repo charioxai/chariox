@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import test from "node:test"
 
-import { providerAccountCapacity, providerAccountCapacityLabel } from "./provider-account-capacity.js"
+import { providerAccountAdmissionBlocked, providerAccountCapacity, providerAccountCapacityResetLabel, providerAccountName, providerAccountStatusLabel } from "./provider-account-capacity.js"
 import type { ProviderAccountProfile, ProviderAccountUsageMeter } from "./kernel-types-provider.js"
 
 const nowMs = 10_000
@@ -29,7 +29,7 @@ const credits: ProviderAccountUsageMeter = {
 test("blocks provider exhaustion but requires both allowance and credits for Claude and Codex", () => {
   const openCode = profile("opencode", [usage])
   assert.equal(providerAccountCapacity(openCode, nowMs).state, "warning")
-  assert.equal(providerAccountCapacityLabel(openCode, nowMs), "Account")
+  assert.equal(providerAccountName(openCode), "Account")
 
   for (const provider of ["codex", "claude", "claude-headless", "claude-p"]) {
     assert.equal(providerAccountCapacity(profile(provider, [usage]), nowMs).state, "warning")
@@ -81,7 +81,8 @@ test("scopes OpenCode Go exhaustion to Go rather than Zen or arbitrary upstream 
   assert.equal(providerAccountCapacity(openCode, nowMs, "opencode/gpt-5.2").detail, "OpenCode Zen balance not reported")
   assert.equal(providerAccountCapacity(openCode, nowMs, "gpt-5.2").detail, "OpenCode Zen balance not reported")
   assert.equal(providerAccountCapacity(openCode, nowMs, "openai/gpt-5.2").state, "unknown")
-  assert.equal(providerAccountCapacityLabel(openCode, nowMs, "opencode-go/deepseek-v4-pro"), "Account · OpenCode Go (exhausted)")
+  assert.equal(providerAccountName(openCode, "opencode-go/deepseek-v4-pro"), "Account · OpenCode Go")
+  assert.equal(providerAccountStatusLabel(openCode, nowMs, "opencode-go/deepseek-v4-pro"), "usage limit until 1 Jan")
   assert.equal(providerAccountCapacity(openCode, nowMs).state, "warning")
 
   const zenExhausted = profile("opencode", [{ ...usage, service_id: "opencode" }])
@@ -127,7 +128,7 @@ test("presentation capacity matches the shared kernel admission fixtures", () =>
     }))
     const state = providerAccountCapacity(profile(fixture.provider, meters), fixture.now_ms, fixture.model).state
     assert.equal(state, fixture.expected_state, fixture.name)
-    assert.equal(state === "exhausted", fixture.expected_blocked, `${fixture.name} presentation/admission contract`)
+    assert.equal(providerAccountAdmissionBlocked(profile(fixture.provider, meters), fixture.now_ms, fixture.model), fixture.expected_blocked, `${fixture.name} admission contract`)
   }
 })
 
@@ -150,3 +151,48 @@ function profile(provider: string, meters: ProviderAccountUsageMeter[]): Provide
     materializations: [],
   }
 }
+
+test("inline status names only what stops an account, and healthy accounts have none", () => {
+  const day = Date.UTC(2026, 9, 22, 6, 13)
+  const exhausted = (provider: string, resetsAt: number | null) => profile(provider, [
+    { ...usage, resets_at_ms: resetsAt, observed_at_ms: day - 1_000 },
+    { ...credits, observed_at_ms: day - 1_000 },
+  ])
+  assert.equal(providerAccountStatusLabel(profile("codex", []), nowMs), null)
+  assert.equal(providerAccountStatusLabel(profile("codex", [{ ...usage, state: "healthy" }]), nowMs), null)
+  assert.equal(providerAccountStatusLabel(exhausted("codex", day), day - 1_000), "usage limit until 22 Oct")
+  assert.equal(providerAccountStatusLabel(exhausted("claude", null), day - 1_000), "usage limit reached")
+  const later = { ...usage, meter_id: "weekly", resets_at_ms: day + 86_400_000, observed_at_ms: day - 1_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [
+    { ...usage, resets_at_ms: day, observed_at_ms: day - 1_000 }, later, { ...credits, observed_at_ms: day - 1_000 },
+  ]), day - 1_000), "usage limit until 23 Oct")
+  // Admission reopens when the allowance windows all reset or any credit meter resets, whichever is first.
+  const at = day - 3 * 86_400_000
+  const weekly = { ...usage, resets_at_ms: day, observed_at_ms: at }
+  const spend = { ...credits, meter_id: "spend", kind: "spend_limit" as const, observed_at_ms: at }
+  const creditsBack = { ...spend, resets_at_ms: day - 86_400_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [weekly, creditsBack]), at), "usage limit until 21 Oct")
+  assert.equal(providerAccountCapacityResetLabel(profile("codex", [weekly, creditsBack]), at), "resets 2026-10-21 06:13 UTC")
+  const creditsLater = { ...spend, resets_at_ms: day + 86_400_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [weekly, creditsLater]), at), "usage limit until 22 Oct")
+  assert.equal(providerAccountStatusLabel(profile("codex", [weekly, spend]), at), "usage limit until 22 Oct")
+  // An exhausted allowance with no scheduled reset keeps the account limited: never drop it or invent a date.
+  const undated = { ...usage, meter_id: "five-hour", resets_at_ms: null, observed_at_ms: day - 1_000 }
+  const dated = { ...usage, resets_at_ms: day, observed_at_ms: day - 1_000 }
+  const credit = { ...credits, observed_at_ms: day - 1_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [undated, credit]), day - 1_000), "usage limit reached")
+  assert.equal(providerAccountStatusLabel(profile("codex", [dated, credit]), day - 1_000), "usage limit until 22 Oct")
+  assert.equal(providerAccountStatusLabel(profile("codex", [undated, dated, credit]), day - 1_000), "usage limit reached")
+  assert.equal(providerAccountCapacityResetLabel(profile("codex", [undated, dated, credit]), day - 1_000), null)
+  const creditBack = { ...credit, resets_at_ms: day + 86_400_000 }
+  assert.equal(providerAccountStatusLabel(profile("codex", [undated, dated, creditBack]), day - 1_000), "usage limit until 23 Oct")
+  assert.equal(providerAccountStatusLabel(profile("opencode", [{ ...dated, service_id: "opencode" }, { ...undated, meter_id: "zen", service_id: "opencode" }]), day - 1_000, "opencode/x"), "usage limit reached")
+  for (const [authState, label] of [
+    ["unknown", "sign-in not checked"],
+    ["not_configured", "sign in"],
+    ["expired", "sign in again"],
+    ["error", "sign in again"],
+  ] as const) {
+    assert.equal(providerAccountStatusLabel({ ...profile("codex", []), auth_state: authState }, nowMs), label, authState)
+  }
+})

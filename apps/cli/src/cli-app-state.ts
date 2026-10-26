@@ -118,7 +118,9 @@ export function createCliAppState(options: {
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
-  const [providerAccountsState, setProviderAccountsState] = createSignal<import("./cli-types.js").ProviderAccountProfile[]>([])
+  // MP-08 / MP-11: An account inventory that has not arrived is unknown.
+  // The kernel remains authoritative for a prompt submitted during hydration.
+  const [providerAccountsState, setProviderAccountsState] = createSignal<import("./cli-types.js").ProviderAccountProfile[]>()
   const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
   const [externalProviderSessionsState, setExternalProviderSessionsState] = createSignal<ExternalProviderSessionRecord[]>([])
@@ -181,11 +183,7 @@ export function createCliAppState(options: {
   const [streamingAgentId, setStreamingAgentId] = createSignal<string | null>(
     sessionProjectedStreamingAgentId(initialSession),
   )
-  const [statusLine, setStatusLine] = createSignal(
-    initialBinding?.providerLaunchIssue === "credential_vault_locked"
-      ? "Chariox vault locked. Run /credential vault manage."
-      : DEFAULT_CONNECTED_STATUS,
-  )
+  const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)
   const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)
@@ -195,7 +193,8 @@ export function createCliAppState(options: {
   const [agentPanePreviews, setAgentPanePreviews] = createSignal<Record<string, string>>({})
   const [agentPaneEntries, setAgentPaneEntries] = createSignal<Record<string, TranscriptEntry[]>>({})
   const [agentBusyLatches, setAgentBusyLatches] = createSignal<Record<string, boolean>>({})
-  const [sessionHydrating, setSessionHydrating] = createSignal(false)
+  // A startup attach applies its history later; until then the pane is loading, not empty.
+  const [sessionHydrating, setSessionHydrating] = createSignal(Boolean(options.bootstrap.deferred?.attachedHistory))
   const [loadingHistory, setLoadingHistory] = createSignal(false)
   const [historyLoadingMessage, setHistoryLoadingMessage] = createSignal<string | null>(null)
   const [workingAnimationFrame, setWorkingAnimationFrame] = createSignal(0)

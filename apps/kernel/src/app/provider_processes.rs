@@ -25,6 +25,7 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         Self { app }
     }
 
+    #[cfg(test)]
     pub(crate) fn spawn_for_launch(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
         self.spawn_for_launch_with_credentials(
             run,
@@ -33,6 +34,26 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
     }
 
     pub(crate) fn spawn_for_launch_with_credentials(
+        &mut self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
+        let store = self.app.providers.clone();
+        store
+            .with_current_live_launch(run, |current| {
+                self.spawn_authorized_launch(current, credentials)
+            })?
+            .ok_or_else(|| DaemonError::InvalidProviderRunState {
+                provider_run_id: run.id().into(),
+                state: store
+                    .get_run(run.id())
+                    .map(|run| run.state())
+                    .unwrap_or(ProviderRunState::Ended),
+                operation: "spawn current provider launch",
+            })
+    }
+
+    fn spawn_authorized_launch(
         &mut self,
         run: &RuntimeProviderRun,
         credentials: &crate::provider::ProviderCredentialEnvironment,
@@ -108,6 +129,7 @@ impl<'a> ProviderProcessTracker<'a> {
                 process_id: process_id.clone(),
                 pid,
                 identity,
+                endpoint_identity: None,
                 endpoint_mode: run.endpoint_mode(),
                 process_label: run.process_label().to_string(),
                 started_at_ms: run.started_at_ms(),
@@ -131,6 +153,28 @@ impl<'a> ProviderProcessTracker<'a> {
             }),
         );
         Ok(())
+    }
+
+    pub(crate) fn bind_endpoint_identity(
+        tracking_store: &crate::app::ProviderProcessTrackingStore,
+        run: &RuntimeProviderRun,
+    ) {
+        let mut tracking = tracking_store.write();
+        let Some(key) = tracking.run_processes.get(run.id()).cloned() else {
+            return;
+        };
+        let Some(process) = tracking.processes.get_mut(&key) else {
+            return;
+        };
+        if process.endpoint_identity.is_none() {
+            process.endpoint_identity = process
+                .identity
+                .as_ref()
+                .zip(run.structured_endpoint())
+                .and_then(|(launcher, endpoint)| {
+                    super::provider_endpoint_identity::capture(launcher, endpoint)
+                });
+        }
     }
 
     pub(crate) fn remove_run(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
@@ -360,7 +404,7 @@ impl<'a> ProviderProcessTracker<'a> {
                     app.sessions
                         .get_session(session_id)
                         .ok()
-                        .map(|session| session.workflow_runs().iter().cloned().collect::<Vec<_>>())
+                        .map(|session| session.workflow_runs().to_vec())
                         .into_iter()
                         .flatten()
                         .filter(|run| {

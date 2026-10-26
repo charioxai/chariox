@@ -2,11 +2,11 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{Read, Write};
 use std::net::TcpListener as StdTcpListener;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use futures_util::{Sink, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError};
@@ -39,9 +39,13 @@ mod local_presence;
 mod unix_access;
 
 pub(crate) mod command_cache;
+mod outbound;
 mod outgoing;
 mod socket_options;
+mod subscription_projection;
 mod subscriptions;
+
+pub(crate) use subscription_projection::session_projection_events;
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
 use command_cache::{
@@ -49,10 +53,12 @@ use command_cache::{
 };
 use local_auth::KernelLocalAuth;
 use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
+#[cfg(test)]
+pub(crate) use subscriptions::watch_subscription_state;
+pub(crate) use subscriptions::WatchResult;
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
 };
-pub(crate) use subscriptions::{watch_subscription_state, WatchResult};
 
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
@@ -71,10 +77,16 @@ pub const KERNEL_RUNTIME_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 pub const CONNECTION_INBOUND_REQUEST_LIMIT: usize = 32;
-const MIN_PROCESS_INBOUND_REQUEST_LIMIT: usize = 32;
+// Even the smallest process pool must outlast one saturated connection, so a
+// stuck client cannot refuse other clients' health and control requests.
+const MIN_PROCESS_INBOUND_REQUEST_LIMIT: usize = 2 * CONNECTION_INBOUND_REQUEST_LIMIT;
 const MAX_PROCESS_INBOUND_REQUEST_LIMIT: usize = 256;
 const PROCESS_INBOUND_REQUESTS_PER_CPU: usize = 8;
 const RESERVED_INTERACTIVE_REQUESTS: usize = 8;
+const _: () = assert!(
+    MIN_PROCESS_INBOUND_REQUEST_LIMIT - RESERVED_INTERACTIVE_REQUESTS
+        > CONNECTION_INBOUND_REQUEST_LIMIT
+);
 static KERNEL_LOCAL_AUTH_TOKEN: OnceLock<Option<Arc<str>>> = OnceLock::new();
 
 pub fn initialize_kernel_local_auth_from_env() -> Result<(), DaemonError> {
@@ -144,7 +156,7 @@ fn read_kernel_local_auth_token_file(path: &str) -> Result<String, DaemonError> 
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut file = options
         .open(path)
@@ -190,7 +202,9 @@ fn read_opened_kernel_local_auth_token_file(
         }
     }
     let mut value = String::new();
-    let read_result = file.read_to_string(&mut value);
+    let read_result = (&mut *file)
+        .take(MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES + 1)
+        .read_to_string(&mut value);
     consume_opened_kernel_local_auth_token_path(path, &metadata)?;
     #[cfg(unix)]
     {
@@ -213,6 +227,12 @@ fn read_opened_kernel_local_auth_token_file(
         operation: "read kernel websocket auth file",
         message: error.to_string(),
     })?;
+    if value.len() as u64 > MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES {
+        return Err(DaemonError::LocalTransport {
+            operation: "read kernel websocket auth file",
+            message: "auth file exceeds byte limit".to_string(),
+        });
+    }
     let token = value.trim();
     if token.is_empty() {
         return Err(DaemonError::LocalTransport {
@@ -391,6 +411,10 @@ impl KernelTransportRuntime {
 
 #[derive(Debug)]
 struct ConnectionState {
+    // MD-3: generated after admission, stable only for this live connection.
+    local_terminal_id: String,
+    terminal_lifetime: crate::runtime::command::TerminalLifetime,
+    browser_terminal_contexts: std::collections::BTreeSet<(String, String)>,
     subscription: Option<KernelSubscription>,
     watch_task: Option<JoinHandle<()>>,
 }
@@ -648,14 +672,24 @@ where
     tokio::pin!(shutdown);
 
     let pump_router = Arc::clone(&router);
+    // MP-08 / MP-10: maintenance and one agent's settlement cannot hold every
+    // provider's already-readable output. Mutations still use the same lanes.
+    let provider_output_pump_task = {
+        let runtime = router.runtime_state().clone();
+        tokio::spawn(async move { runtime.run_provider_output_pump().await })
+    };
     let pump_task = tokio::spawn(async move {
+        let pump_state = pump_router.runtime_state();
         loop {
+            // MP-08 / MP-10: capture readiness before draining, so an arrival
+            // during the pump cannot be hidden by the post-pump sleep.
+            let output_ready_sequence = pump_state.provider_output_ready_sequence();
+            let provider_actor_completion_sequence =
+                pump_router.provider_run_actor_completion_sequence();
             pump_router.runtime_state().pump_kernel_access();
             pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
-            let provider_actor_completion_sequence =
-                pump_router.provider_run_actor_completion_sequence();
             let delay_ms = pump_router.transport_runtime_pump_interval_ms(
                 PUMP_INTERVAL_MS,
                 IDLE_PUMP_INTERVAL_MS,
@@ -667,6 +701,7 @@ where
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
                 _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
                 _ = pump_router.wait_for_started_app_refreshes() => {}
+                _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => {}
             }
         }
     });
@@ -698,6 +733,9 @@ where
         .runtime_state()
         .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
     let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
+    let wake_state = router.runtime_state();
+    let wake_scheduler_task =
+        tokio::spawn(async move { wake_state.run_agent_wake_scheduler().await });
 
     loop {
         tokio::select! {
@@ -710,7 +748,9 @@ where
                     task.abort();
                 }
                 drop(_restart_recovery_task);
+                wake_scheduler_task.abort();
                 pump_task.abort();
+                provider_output_pump_task.abort();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 app_wake_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {
@@ -762,6 +802,7 @@ struct EventWriteCoalescer<T> {
     delay_ms: u64,
     frames: VecDeque<T>,
     ready_at: Option<tokio::time::Instant>,
+    last_emitted_at: Option<tokio::time::Instant>,
 }
 
 impl<T> EventWriteCoalescer<T> {
@@ -770,6 +811,7 @@ impl<T> EventWriteCoalescer<T> {
             delay_ms,
             frames: VecDeque::new(),
             ready_at: None,
+            last_emitted_at: None,
         }
     }
 
@@ -778,18 +820,26 @@ impl<T> EventWriteCoalescer<T> {
     }
 
     fn push_event(&mut self, frame: T, now: tokio::time::Instant) -> Option<T> {
-        if self.delay_ms == 0 {
+        let window = Duration::from_millis(self.delay_ms);
+        if self.frames.is_empty()
+            && (self.delay_ms == 0
+                || self
+                    .last_emitted_at
+                    .is_none_or(|last| now.saturating_duration_since(last) >= window))
+        {
+            self.last_emitted_at = Some(now);
             return Some(frame);
         }
         self.frames.push_back(frame);
         if self.ready_at.is_none() {
-            self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
+            self.ready_at = Some(self.last_emitted_at.unwrap_or(now) + window);
         }
         None
     }
 
-    fn drain_ready(&mut self) -> Vec<T> {
+    fn drain_ready(&mut self, now: tokio::time::Instant) -> Vec<T> {
         self.ready_at = None;
+        self.last_emitted_at = Some(now);
         self.frames.drain(..).collect()
     }
 }
@@ -859,6 +909,28 @@ async fn handle_kernel_connection(
     .await
 }
 
+// MP-08/MP-10/MP-11: socket fixtures supply an already admitted terminal;
+// routing, reply serialization, queues and cleanup remain production paths.
+#[cfg(test)]
+pub(crate) async fn serve_admitted_test_socket<S>(
+    router: Arc<CommandRouter>,
+    socket: tokio_tungstenite::WebSocketStream<S>,
+) -> Result<(), DaemonError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let runtime = Arc::new(KernelTransportRuntime::new(router.transport_health_store()));
+    serve_kernel_socket(
+        runtime,
+        router,
+        InboundRequestAdmission::new(process_inbound_request_limit()),
+        socket,
+        KernelConnectionClass::Terminal,
+        None,
+    )
+    .await
+}
+
 async fn serve_kernel_socket<S>(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
@@ -887,13 +959,15 @@ where
     let connection_inbound_request_permits =
         Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
+        local_terminal_id: format!("{:032x}", rand::random::<u128>()),
+        terminal_lifetime: Default::default(),
+        browser_terminal_contexts: Default::default(),
         subscription: None,
         watch_task: None,
     }));
 
-    let delivery_peer = peer.clone();
-    let delivery_grant = bound_grant.clone();
-    let delivery_runtime = router.runtime_state();
+    let outbound =
+        outbound::OutboundBoundary::new(router.runtime_state(), peer.clone(), bound_grant.clone());
     let writer_task = tokio::spawn(async move {
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
@@ -904,41 +978,38 @@ where
                 tokio::select! {
                     biased;
                     Some(command) = close_rx.recv() => {
-                        let _ = writer.send(Message::Close(Some(CloseFrame {
+                        let _ = outbound.send(&mut writer, outbound::Payload::Control(Message::Close(Some(CloseFrame {
                             code: CloseCode::Policy,
                             reason: command.reason.into(),
-                        }))).await;
+                        })))).await;
                         break;
                     }
                     Some(payload) = pong_rx.recv() => {
-                        if writer.send(Message::Pong(payload.into())).await.is_err() {
+                        if !outbound.send(&mut writer, outbound::Payload::Control(Message::Pong(payload.into()))).await {
                             break;
                         }
                     }
                     _ = transport_ping.tick() => {
-                        if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        if !outbound.send(&mut writer, outbound::Payload::Control(Message::Ping(Vec::new().into()))).await {
                             break;
                         }
                     }
                     Some(frame) = priority_rx.recv() => {
-                        if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                            || !send_kernel_frame(&mut writer, frame).await {
+                        if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                             break;
+                        }
+                    }
+                    _ = tokio::time::sleep_until(ready_at) => {
+                        for frame in event_write_coalescer.drain_ready(tokio::time::Instant::now()) {
+                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
+                                break 'writer_loop;
+                            }
                         }
                     }
                     Some(frame) = event_rx.recv() => {
                         if let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) {
-                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                            || !send_kernel_frame(&mut writer, frame).await {
+                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                                 break;
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep_until(ready_at) => {
-                        for frame in event_write_coalescer.drain_ready() {
-                            if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                            || !send_kernel_frame(&mut writer, frame).await {
-                                break 'writer_loop;
                             }
                         }
                     }
@@ -950,25 +1021,24 @@ where
             tokio::select! {
                 biased;
                 Some(command) = close_rx.recv() => {
-                    let _ = writer.send(Message::Close(Some(CloseFrame {
+                    let _ = outbound.send(&mut writer, outbound::Payload::Control(Message::Close(Some(CloseFrame {
                         code: CloseCode::Policy,
                         reason: command.reason.into(),
-                    }))).await;
+                    })))).await;
                     break;
                 }
                 Some(payload) = pong_rx.recv() => {
-                    if writer.send(Message::Pong(payload.into())).await.is_err() {
+                    if !outbound.send(&mut writer, outbound::Payload::Control(Message::Pong(payload.into()))).await {
                         break;
                     }
                 }
                 _ = transport_ping.tick() => {
-                    if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    if !outbound.send(&mut writer, outbound::Payload::Control(Message::Ping(Vec::new().into()))).await {
                         break;
                     }
                 }
                 Some(frame) = priority_rx.recv() => {
-                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                        || !send_kernel_frame(&mut writer, frame).await {
+                    if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                         break;
                     }
                 }
@@ -976,8 +1046,7 @@ where
                     let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) else {
                         continue;
                     };
-                    if !unix_access::delivery_live(&delivery_runtime, delivery_peer.as_ref(), &delivery_grant)
-                        || !send_kernel_frame(&mut writer, frame).await {
+                    if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                         break;
                     }
                 }
@@ -1058,6 +1127,7 @@ where
         }
     }
 
+    connection_state.lock().await.terminal_lifetime.cancel();
     {
         let mut state = connection_state.lock().await;
         if let Some(task) = state.watch_task.take() {
@@ -1069,6 +1139,7 @@ where
             detach_connection_subscription(&router, subscription).await;
         }
     }
+    disconnect_browser_terminal(&router, &connection_state).await;
     writer_task.abort();
 
     if let Some(error) = read_error {
@@ -1148,17 +1219,6 @@ async fn record_connection_subscription_heartbeat(
     }
 }
 
-async fn send_kernel_frame<S>(writer: &mut S, frame: KernelOutgoingFrame) -> bool
-where
-    S: Sink<Message> + Unpin,
-{
-    let payload = match serialize_frame(&frame) {
-        Ok(payload) => payload,
-        Err(_) => return false,
-    };
-    writer.send(Message::Text(payload.into())).await.is_ok()
-}
-
 /// Builds the error reply for a frame that failed typed decoding. When the
 /// payload is still a JSON object carrying a `request_id` (e.g. a request whose
 /// `LocalDaemonRequest` body is malformed or names an unknown variant), the reply
@@ -1194,6 +1254,19 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
     }
 }
 
+async fn disconnect_browser_terminal(router: &CommandRouter, connection: &Mutex<ConnectionState>) {
+    let contexts = {
+        let mut state = connection.lock().await;
+        state.terminal_lifetime.cancel();
+        std::mem::take(&mut state.browser_terminal_contexts)
+    };
+    for (user, actor) in contexts {
+        router
+            .runtime_state()
+            .kernel_browser_terminal_disconnected(&user, &actor);
+    }
+}
+
 struct IncomingConnection<'a> {
     runtime: &'a Arc<KernelTransportRuntime>,
     router: &'a Arc<CommandRouter>,
@@ -1222,6 +1295,12 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
         peer,
         ..
     } = connection;
+
+    // A connection closing for backpressure can no longer receive responses;
+    // its pipelined frames would only hold shared admission capacity.
+    if close_requested.load(Ordering::SeqCst) {
+        return;
+    }
 
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
         Ok(frame) => frame,
@@ -1265,13 +1344,19 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             runtime.transport_health.record_incoming_request();
             let caller = match external_caller {
                 Some(caller) => caller,
+                None if connection_class == KernelConnectionClass::Terminal => {
+                    let connection_id = connection_state.lock().await.local_terminal_id.clone();
+                    router
+                        .local_terminal_caller(KernelCommandSource::LocalCli, &connection_id)
+                        .await
+                }
                 None => {
                     router
                         .local_command_caller(KernelCommandSource::LocalCli, connection_class)
                         .await
                 }
             };
-            let command = KernelCommand::from_local_request_with_caller(
+            let mut command = KernelCommand::from_local_request_with_caller(
                 command_id.unwrap_or_else(|| request_id.clone()),
                 if peer.is_some() {
                     KernelCommandSource::LocalIpc
@@ -1283,6 +1368,18 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 causation_id.clone(),
                 &request,
             );
+            command.terminal_lifetime =
+                Some(connection_state.lock().await.terminal_lifetime.clone());
+            if let Ok(context) = router
+                .runtime_state()
+                .kernel_browser_terminal_context(&command)
+            {
+                connection_state
+                    .lock()
+                    .await
+                    .browser_terminal_contexts
+                    .insert(context);
+            }
             // Unix admission above checks current peer/grant authority before
             // any receipt lookup. Reconnects from that same authority share a
             // reservation; another peer or grant has a separate command scope.
@@ -1290,17 +1387,40 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 || command.command_id.clone(),
                 |peer| unix_access::command_cache_id(peer, &command),
             );
+            let browser_revision = match router
+                .runtime_state()
+                .kernel_browser_receipt_revision(&command, &request)
+            {
+                Ok(revision) => revision,
+                Err(error) => {
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        &runtime.transport_health,
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: Box::new(None),
+                            error: Some(map_kernel_error(&error)),
+                        },
+                        command.session_id.as_deref(),
+                        command.attachment_id.as_deref(),
+                    );
+                    return;
+                }
+            };
             let fingerprint = ((peer.is_some()
                 || connection_class != KernelConnectionClass::ExternalAgent)
                 && request_is_cacheable(&request))
             .then(|| {
-                if peer.is_some() {
+                let fingerprint = if peer.is_some() {
                     // Reuse the authenticated exact-request fingerprint used
                     // by App receipts; the cache ID additionally scopes OS identity.
                     CommandFingerprint::for_app_control(&command, &request)
                 } else {
                     CommandFingerprint::from_command_and_request(&command, &request)
-                }
+                };
+                fingerprint.with_browser_protection_revision(browser_revision)
             });
             if let Some(fingerprint) = fingerprint.as_ref() {
                 match runtime
@@ -1315,6 +1435,9 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         let transport_health = runtime.transport_health.clone();
                         let session_id = command.session_id.clone();
                         let attachment_id = command.attachment_id.clone();
+                        let replay_state = router.runtime_state();
+                        let replay_command = command.clone();
+                        let replay_request = Box::new(request.clone());
                         tokio::spawn(async move {
                             let Ok(cached) = wait_rx.await else {
                                 let _ = try_send_outgoing_frame(
@@ -1338,6 +1461,17 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 );
                                 return;
                             };
+                            let (response, error) = match replay_state
+                                .validate_kernel_browser_receipt(
+                                    &replay_command,
+                                    &replay_request,
+                                    browser_revision,
+                                )
+                                .await
+                            {
+                                Ok(()) => (cached.response_value(), cached.error),
+                                Err(error) => (Box::new(None), Some(map_kernel_error(&error))),
+                            };
                             let _ = try_send_outgoing_frame(
                                 &outgoing_tx,
                                 &close_tx,
@@ -1345,8 +1479,8 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
                                     request_id,
-                                    response: cached.response_value(),
-                                    error: cached.error,
+                                    response,
+                                    error,
                                 },
                                 session_id.as_deref(),
                                 attachment_id.as_deref(),
@@ -1445,13 +1579,36 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 let attachment_id = command.attachment_id.clone();
                 let response = router.dispatch(command, request).await;
                 let outgoing = match response {
-                    Ok(response) => KernelOutgoingFrame::Response {
-                        request_id,
-                        response: Box::new(Some(
-                            serde_json::to_value(response).unwrap_or(Value::Null),
-                        )),
-                        error: None,
-                    },
+                    Ok(response) => {
+                        let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
+                        if let Some((_, _, event)) =
+                            crate::transport::kernel_browser_display::take_display_event(
+                                &mut response,
+                            )
+                        {
+                            if !try_send_outgoing_frame(
+                                &outgoing_tx,
+                                &close_tx,
+                                &close_requested,
+                                &runtime.transport_health,
+                                KernelOutgoingFrame::Event {
+                                    // MD-DISPLAY-04: no durable replay cursor.
+                                    // Per-display sequence lives inside frame.
+                                    event_id: 0,
+                                    event: Box::new(event),
+                                },
+                                None,
+                                None,
+                            ) {
+                                return;
+                            }
+                        }
+                        KernelOutgoingFrame::Response {
+                            request_id,
+                            response: Box::new(Some(response)),
+                            error: None,
+                        }
+                    }
                     Err(error) => KernelOutgoingFrame::Response {
                         request_id,
                         response: Box::new(None),
@@ -1799,4 +1956,12 @@ mod boot_listener_tests {
         }
         second.join().expect("runtime client should join");
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_kernel_local_auth_token_file(path.to_str().unwrap()).is_err()
+    });
 }

@@ -179,6 +179,13 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         .expect("default provider launch should succeed")
     });
 
+    // Keep work in flight: the echo PTY otherwise legitimately settles after
+    // its short quiet interval while another test occupies the executor.
+    let _in_flight_tool = harness.with_app(|app| {
+        app.runtime_tool_call_activity
+            .hold_for_test(_default_run.id())
+    });
+
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             account_profile: None,
@@ -201,7 +208,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         _ => panic!("unexpected local response"),
     };
 
-    let _focused_run = harness.with_app_mut(|app| {
+    let focused_run = harness.with_app_mut(|app| {
         app.launch_provider(
             LaunchProviderRequest::new(session.id(), "dev-stub", "claude-code", "default", "opus")
                 .with_agent_id(spawned.id()),
@@ -286,24 +293,34 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     harness.with_app_mut(|app| {
         pump_active_prompt_outputs(app);
+        // Legacy focus updates can leave this hint on the viewed agent.
+        // Published state must resolve the working run from the prompt owner.
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(focused_run.id().to_string()))
+            .expect("the legacy focus hint should be reproducible");
     });
-    harness.with_app(|app| {
-        let session_state = app
-            .sessions()
-            .get_session(session.id())
-            .expect("session should still exist");
-        assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
-        assert_eq!(
-            session_state.active_provider_run_id(),
-            Some(_default_run.id())
-        );
-        assert!(
-            session_state
-                .active_prompt_for_agent(default_agent.id())
-                .is_some(),
-            "background prompt should remain owned by the original agent while unfocused"
-        );
-    });
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("published session state should load after pumping")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+    assert_eq!(
+        session_state.active_provider_run_id(),
+        Some(_default_run.id())
+    );
+    assert!(
+        session_state
+            .active_prompt_for_agent(default_agent.id())
+            .is_some(),
+        "background prompt should remain owned by the original agent while unfocused"
+    );
 }
 
 #[test]
@@ -540,6 +557,8 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
     );
 }
 
+// MP-08/MP-11: OpenCode usage never gates admission (#1002), so a fresh exhausted
+// Codex account (usage and credits) exercises the pre-launch usage rejection.
 #[test]
 fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
     let worktree = crate::test_support::TestWorktree::new("prompt-routing-exhausted-account");
@@ -558,15 +577,15 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
             .provider_account_profile_registry()
             .create_managed(
                 crate::session::DEFAULT_LOCAL_USER_ID,
-                "opencode",
-                "Exhausted Go account",
+                "codex",
+                "Exhausted Codex account",
             )
             .expect("exhausted account profile should register");
         let now_ms = crate::session::unix_epoch_ms();
         app.provider_account_profile_registry()
             .update_observation(
                 crate::session::DEFAULT_LOCAL_USER_ID,
-                "opencode",
+                "codex",
                 &profile.profile_id,
                 crate::account_profile::ProviderAccountAuthState::Authenticated,
                 None,
@@ -574,14 +593,30 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
                 None,
                 Some(crate::account_profile::ProviderAccountUsageSnapshot {
                     profile_id: profile.profile_id.clone(),
-                    provider: "opencode".to_string(),
+                    provider: "codex".to_string(),
                     availability:
                         crate::account_profile::ProviderAccountUsageAvailability::Available,
                     meters: vec![crate::account_profile::ProviderAccountUsageMeter {
-                        meter_id: "go/monthly".to_string(),
+                        meter_id: "weekly".to_string(),
                         label: "Monthly".to_string(),
-                        service_id: Some("opencode-go".to_string()),
+                        service_id: None,
                         kind: crate::account_profile::ProviderAccountUsageMeterKind::RollingLimit,
+                        scope: crate::account_profile::ProviderAccountUsageMeterScope::Plan,
+                        used_percent: Some(100.0),
+                        used: None,
+                        remaining: None,
+                        total: None,
+                        unit: None,
+                        window_duration_minutes: None,
+                        resets_at_ms: Some(now_ms + 60_000),
+                        state: crate::account_profile::ProviderAccountUsageMeterState::Exhausted,
+                        source: "test".to_string(),
+                        observed_at_ms: now_ms,
+                    }, crate::account_profile::ProviderAccountUsageMeter {
+                        meter_id: "credits".to_string(),
+                        label: "Credits".to_string(),
+                        service_id: None,
+                        kind: crate::account_profile::ProviderAccountUsageMeterKind::CreditBalance,
                         scope: crate::account_profile::ProviderAccountUsageMeterScope::Plan,
                         used_percent: Some(100.0),
                         used: None,
@@ -607,10 +642,10 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
             UpdateAgentProfileRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
-                provider: Some("opencode".to_string()),
+                provider: Some("codex".to_string()),
                 account_profile: Some(exhausted_account.profile_id.clone()),
-                model: Some("opencode-go/deepseek-v4-pro".to_string()),
-                effort: Some("high".to_string()),
+                model: Some("gpt-6-luna".to_string()),
+                effort: Some("low".to_string()),
                 clear_effort: false,
             },
         ))
@@ -639,8 +674,11 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
         }))
         .expect_err("a fresh exhausted account must block a new prompt");
     let message = error.to_string();
-    assert!(message.contains("Exhausted Go account"), "{message}");
-    assert!(message.contains("usage is exhausted"), "{message}");
+    assert!(message.contains("Exhausted Codex account"), "{message}");
+    assert!(
+        message.contains("usage allowance and credits are exhausted"),
+        "{message}"
+    );
     assert!(message.contains("refresh"), "{message}");
     assert!(
         !message.contains(&exhausted_account.profile_id),
@@ -973,6 +1011,7 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: None,
+                expected_prompt_id: None,
             },
         ))
         .expect("cancel should resolve the single active agent")
@@ -1064,35 +1103,55 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
                 target_agent_id: Some(prompt_agent.id().to_string()),
+                expected_prompt_id: None,
             },
         ))
         .expect("cancel should use the explicit target agent")
     {
         LocalDaemonResponse::PromptCancelled { cancellation } => {
             assert_eq!(cancellation.prompt.target_agent_id(), prompt_agent.id());
+            assert_eq!(
+                cancellation.prompt.status(),
+                crate::session::PromptStatus::Cancelling
+            );
             assert!(cancellation.started_next.is_none());
         }
         other => panic!("unexpected local response: {other:?}"),
     }
 
-    let session_state = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should still exist")
-            .clone()
-    });
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load after cancellation")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
     assert_eq!(
         session_state
             .active_prompt_for_agent(default_agent.id())
             .map(|prompt| prompt.status()),
         Some(crate::session::PromptStatus::Running)
     );
-    assert_eq!(
-        session_state
-            .active_prompt_for_agent(prompt_agent.id())
-            .map(|prompt| prompt.status()),
-        Some(crate::session::PromptStatus::Cancelling)
-    );
+    // A dropped pre-submit dispatch can finish cancellation in the output
+    // pump before this snapshot. The request above proves the transition;
+    // any still-active target must be cancelling, never running again.
+    assert!(session_state
+        .active_prompt_for_agent(prompt_agent.id())
+        .is_none_or(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling));
+    harness.with_app(|app| {
+        let agent = app.agents().get_agent(prompt_agent.id()).unwrap();
+        assert_ne!(
+            agent.state(),
+            crate::agent::AgentState::Error,
+            "target cancellation failed: {:?}",
+            agent.failed_requests()
+        );
+        assert!(agent.failed_requests().is_empty());
+    });
 }
 
 #[test]

@@ -4,7 +4,10 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn install_operation_protocol_shapes_preserve_owner_decision_and_immediate_ack() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let requests = vec![
         LocalDaemonRequest::BeginAppInstall(BeginAppInstallRequest {
             session_id: "session".into(),

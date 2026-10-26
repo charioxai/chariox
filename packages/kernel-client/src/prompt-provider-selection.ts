@@ -71,7 +71,9 @@ export function providerRunForPromptSelection(
   if (!providerRun || !focusedAgent) {
     return providerRun
   }
-  return providerRun.agent_instance_id === focusedAgent.id ? providerRun : null
+  return providerRun.agent_instance_id === focusedAgent.id && runDescribesAgent(providerRun, focusedAgent)
+    ? providerRun
+    : null
 }
 
 export function applyProviderRunProfileToSession(
@@ -79,18 +81,19 @@ export function applyProviderRunProfileToSession(
   providerRun: RuntimeProviderRun | null,
 ): RuntimeSession {
   const agentId = providerRun?.agent_instance_id
-  if (!agentId) {
+  // A cached run is observational state. Only the kernel-selected current run
+  // may refine an agent profile; a replaced or cleared run cannot undo a switch.
+  if (!agentId || providerRun.id !== session.active_provider_run_id) {
     return session
   }
 
   let changed = false
   const agents = session.agents.map((agent) => {
-    if (agent.id !== agentId) {
+    if (agent.id !== agentId || !runDescribesAgent(providerRun, agent)) {
       return agent
     }
     if (
-      agent.provider === providerRun.provider
-      && agent.model === providerRun.model
+      agent.model === providerRun.model
       && agent.effort === providerRun.variant
     ) {
       return agent
@@ -139,4 +142,22 @@ export function normalizePromptProvider(provider?: string | null): string | null
     return null
   }
   return provider
+}
+
+// OpenCode runs report their backend provider (e.g. "openai").
+const harnessIds = new Set(["opencode", "codex", "claude-headless", "claude-p"])
+// Only the kernel commits a provider switch: a run describes its agent when it
+// runs the agent's provider or one of its turn substitutes, so a lagging run of
+// the previous provider cannot revert the switch.
+function runDescribesAgent(run: RuntimeProviderRun, agent: AgentInstance): boolean {
+  return sameHarness(run.provider, agent.provider)
+    || (agent.substitutes ?? []).some((substitute) =>
+      sameHarness(substitute.provider, run.provider)
+      && substitute.model === run.model
+      && (!substitute.account_profile || substitute.account_profile === run.account_profile))
+}
+
+function sameHarness(left: string, right: string): boolean {
+  const harness = (id: string) => id === "claude" ? "claude-p" : harnessIds.has(id) ? id : "opencode"
+  return harness(left) === harness(right)
 }

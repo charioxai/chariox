@@ -31,7 +31,7 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = global_mcp_registry()?;
-        let path = registry.install(&args.config)?;
+        let path = self.with_forwarded_binding_operation(|| registry.install(&args.config))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -94,7 +94,8 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = global_skill_registry()?;
-        let (skill, path) = registry.upsert_from_path(&source_path)?;
+        let (skill, path) =
+            self.with_forwarded_binding_operation(|| registry.upsert_from_path(&source_path))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -155,7 +156,7 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = global_environment_registry()?;
-        let path = registry.install(&args.config)?;
+        let path = self.with_forwarded_binding_operation(|| registry.install(&args.config))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -213,7 +214,9 @@ impl KernelRuntimeState {
                 })?;
         let registry = global_script_registry()?;
         let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
-        let (script, path) = registry.install(&source_path, args.name.as_deref(), &env)?;
+        let (script, path) = self.with_forwarded_binding_operation(|| {
+            registry.install(&source_path, args.name.as_deref(), &env)
+        })?;
         self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
@@ -277,7 +280,9 @@ impl KernelRuntimeState {
         let registry = connector_registry()?;
         let adapters = connector_adapter_registry()?;
         let previous_catalog = self.runtime_catalog_signature_for_agent(agent);
-        let (connector, path) = registry.install_from_file(&source_path, &adapters)?;
+        let (connector, path) = self.with_forwarded_binding_operation(|| {
+            registry.install_from_file(&source_path, &adapters)
+        })?;
         self.runtime_catalog_registration_changed(agent, &previous_catalog);
         self.append_extension_registration_audit_event(
             "extension.registration.created",
@@ -343,7 +348,8 @@ impl KernelRuntimeState {
             return Ok(result);
         }
         let registry = connector_adapter_registry()?;
-        let (adapter, path) = registry.install_from_file(&source_path)?;
+        let (adapter, path) =
+            self.with_forwarded_binding_operation(|| registry.install_from_file(&source_path))?;
         self.append_extension_registration_audit_event(
             "extension.registration.created",
             session,
@@ -366,7 +372,7 @@ impl KernelRuntimeState {
         ))
     }
 
-    async fn maybe_gate_extension_registration(
+    pub(in crate::runtime::state) async fn maybe_gate_extension_registration(
         &self,
         session: &crate::session::RuntimeSession,
         agent: &crate::agent::AgentInstance,
@@ -378,6 +384,26 @@ impl KernelRuntimeState {
             crate::session::effective_agent_extension_registration_authority(session, Some(agent));
         if !authority.requires_approval() {
             return Ok(None);
+        }
+        // MP-08 / MP-11 S18: reuse consent for source in this workspace.
+        // Inline descriptors and outside/staged source roots still ask.
+        if let Some(source) = source_path {
+            if self
+                .sudo_task_authorizes_agent(session.id(), agent.id())
+                .await
+            {
+                let root = self
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(session.id(), agent.id())
+                    .and_then(|run| run.working_directory().cloned())
+                    .unwrap_or_else(|| session.worktree_id().into());
+                if let (Ok(source), Ok(root)) = (source.canonicalize(), root.canonicalize()) {
+                    if source.starts_with(root) {
+                        return Ok(None);
+                    }
+                }
+            }
         }
         let title = "Chariox extension registration approval".to_string();
         let subject = name
@@ -429,6 +455,7 @@ impl KernelRuntimeState {
                     "extension registration approval dropped before resolution: {error}"
                 ),
             })?;
+        self.authorize_current_forwarded_binding()?;
         if resolution.choice_id.as_deref() == Some("allow") {
             self.append_extension_registration_audit_event(
                 "extension.registration.approved",
@@ -468,6 +495,10 @@ impl KernelRuntimeState {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_extension_registration_audit_event operation signature and explicit context arguments"
+    )]
     fn append_extension_registration_audit_event(
         &self,
         event_kind: &'static str,
@@ -515,6 +546,10 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing grant_registered_extension_if_requested operation signature and explicit context arguments"
+    )]
     async fn grant_registered_extension_if_requested(
         &self,
         session: &crate::session::RuntimeSession,

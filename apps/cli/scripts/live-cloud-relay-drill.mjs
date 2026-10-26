@@ -1,23 +1,25 @@
 #!/usr/bin/env node
-import { mkdir } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { createDrillInterruption } from "./lib/drill-interruption.mjs"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import {
   addWorkflowEdgeRequest,
   addWorkflowNodeRequest,
   assert,
   buildKernelIfNeeded,
+  buildRustBinary,
+  connectSessionScopedCloudClient,
+  createCloudDrillClient,
+  loadCloudRelayDrillModules,
   createMinimalCommandDeps,
   createWorkflowEndpointRequest,
   expectReject,
-  issueSessionScopedClientToken,
   log,
   loginCloudDrillUser,
   makePorts,
-  parseCloudClientTokenNotice,
-  postJson,
-  removePersistedCloudSessionToken,
   removeWorkflowEdgeRequest,
   run,
   spawnProcess,
@@ -27,7 +29,6 @@ import {
   waitForCloudRelayTarget,
   waitForHttp,
   waitForLocalDaemon,
-  waitForRelayTarget,
 } from "./lib/live-cloud-relay-drill-helpers.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -41,21 +42,20 @@ const DATABASE_URL =
 const CLOUD_SECRET = "chariox-cloud-live-drill-secret"
 const CLOUD_ISSUER = "chariox-cloud-live-drill"
 const DEV_AUTH_SECRET = "chariox-cloud-live-drill-dev-auth-secret"
-const machineCredentialOnly = process.env.CHARIOX_CLOUD_MACHINE_CREDENTIAL_ONLY === "1"
+const kernelCredentialOnly = process.env.CHARIOX_CLOUD_KERNEL_CREDENTIAL_ONLY === "1"
 
 async function main() {
   const ports = makePorts()
   const runId = `cloud-relay-${process.pid}-${Date.now()}`
-  const rootDir = path.join(repoRoot, ".artifacts", "live-cloud-relay-drill", runId)
-  const workspace = path.join(rootDir, "workspace")
-  const home = path.join(rootDir, "home")
-  const configHome = path.join(rootDir, "xdg-config")
+  const rootDir = path.join(process.env.CHARIOX_DRILL_EVIDENCE_DIR ?? path.join(homedir(), ".codex", "evidence", "live-cloud-relay"), runId)
+  const stateRoot = await mkdtemp(path.join(tmpdir(), "chariox-cloud-relay-"))
+  const workspace = path.join(stateRoot, "workspace")
+  const home = path.join(stateRoot, "home")
+  const configHome = path.join(stateRoot, "xdg-config")
   const daemonId = `cloud-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `cloud-home-${process.pid}`
-  const clientId = `cloud-cli-${process.pid}-${Date.now()}`
+
   const apiUrl = `http://127.0.0.1:${ports.cloudPort}`
-  await prepareDrillArtifacts(rootDir)
-  await mkdir(workspace, { recursive: true })
 
   const relayEnv = {
     ...process.env,
@@ -68,15 +68,17 @@ async function main() {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: configHome,
-    XDG_STATE_HOME: path.join(rootDir, "xdg-state"),
+    XDG_STATE_HOME: path.join(stateRoot, "xdg-state"),
+    CHARIOX_HOME: path.join(stateRoot, "kernel"),
+    CHARIOX_PROVIDER_DEV_STUB: "1",
     CHARIOX_KERNEL_PORT: String(ports.kernelPort),
     CHARIOX_MCP_PORT: String(ports.mcpPort),
     CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
     CHARIOX_CODEX_PORT: String(ports.codexPort),
     CHARIOX_DAEMON_ID: daemonId,
     CHARIOX_DAEMON_ALIAS: daemonAlias,
-    CHARIOX_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
-    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, "session-history"),
+    CHARIOX_DAEMON_SOCKET: path.join(stateRoot, "daemon.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(stateRoot, "session-history"),
   }
   const cloudEnv = {
     ...process.env,
@@ -96,34 +98,37 @@ async function main() {
   let localClient = null
   let remoteClient = null
   const profileRef = { current: null }
+  const terminals = []
+  const scopedClients = []
+  let terminal = null
+  let clientId = null
   const notices = []
   let db = null
   let succeeded = false
   let failure = null
+  const sourceCommits = { oss: null, cloud: null }
+  const lifecycle = createDrillInterruption()
+  const stage = (name, details) => { lifecycle.check(); log(name, details) }
 
-  try {
-    const [{ LocalIpcClient }, requests, cloudRelay, commandActions, cloudDb] = await Promise.all([
-      import("../../../packages/kernel-client/dist/ipc.js"),
-      import("../../../packages/kernel-client/dist/ipc-requests.js"),
-      import("../dist/cloud-relay.js"),
-      import("../dist/command-actions.js"),
-      import(path.join(cloudRoot, "packages/db/dist/index.js")),
-    ])
-    const kernelPath = await buildKernelIfNeeded()
-    db = cloudDb.createCloudDatabase({ databaseUrl: DATABASE_URL })
-
-    log("build-cli")
-    const cliBuild = await run("pnpm", ["run", "build"], { cwd: cliRoot, env: process.env })
-    if (cliBuild.code !== 0) {
-      throw new Error(`chariox cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
+  await lifecycle.run(async () => {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(workspace, { recursive: true })
+    for (const [name, cwd] of [["oss", repoRoot], ["cloud", cloudRoot]]) {
+      const source = await run("git", ["rev-parse", "HEAD"], { cwd })
+      assert(source.code === 0, "drill source identity must be available")
+      sourceCommits[name] = source.stdout.trim()
     }
+    const modules = await loadCloudRelayDrillModules()
+    const { LocalIpcClient, requests } = modules
+    const kernelPath = await buildKernelIfNeeded()
+    const relayPath = await buildRustBinary(path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
 
-    log("build-cloud-db")
+    stage("build-cloud-db")
     const cloudDbBuild = await run("pnpm", ["--filter", "@chariox-cloud/db", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
     if (cloudDbBuild.code !== 0) {
       throw new Error(`chariox-cloud db build failed\n${cloudDbBuild.stdout}\n${cloudDbBuild.stderr}`)
     }
-    log("build-cloud-api")
+    stage("build-cloud-api")
     const cloudApiBuild = await run("pnpm", ["--filter", "@chariox-cloud/api", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
     if (cloudApiBuild.code !== 0) {
       throw new Error(`chariox-cloud api build failed\n${cloudApiBuild.stdout}\n${cloudApiBuild.stderr}`)
@@ -136,7 +141,10 @@ async function main() {
       throw new Error(`chariox-cloud migrate failed\n${migrate.stdout}\n${migrate.stderr}`)
     }
 
-    log("start-cloud")
+    const cloudDb = await import(path.join(cloudRoot, "packages/db/dist/index.js"))
+    db = cloudDb.createCloudDatabase({ databaseUrl: DATABASE_URL })
+
+    stage("start-cloud")
     cloudServer = spawnProcess("node", [path.join(cloudRoot, "apps/api/dist/node-server.js")], {
       cwd: cloudRoot,
       env: cloudEnv,
@@ -144,8 +152,8 @@ async function main() {
     })
     await waitForHttp(`${apiUrl}/health`)
 
-    log("start-relay-and-kernel")
-    relay = spawnProcess("cargo", ["run", "--manifest-path", path.join(repoRoot, "apps/relay/Cargo.toml"), "--bin", "chariox-relay"], {
+    stage("start-relay-and-kernel")
+    relay = spawnProcess(relayPath, [], {
       cwd: repoRoot,
       env: relayEnv,
       name: "relay",
@@ -154,130 +162,54 @@ async function main() {
 
     const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}/kernel`
     await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, daemonEnv)
-    localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
+    localClient = lifecycle.guardClient(new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv }))
 
-    let handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
-      apiUrl,
-      runId,
-      workspace,
-      clientId,
-      localClient,
-      requests,
-      cloudRelay,
-      profileRef,
-      notices,
+    terminal = createCloudDrillClient(modules, stateRoot, "owner-terminal")
+    terminals.push(terminal)
+    clientId = `cli:${terminal.identity.publicKeyThumbprint}`
+    const handlers = modules.createCommandActionHandlers(createMinimalCommandDeps({
+      apiUrl, runId, workspace, localClient, modules, terminal, profileRef, notices,
     }))
 
-    log("command-cloud-login")
-    await handlers.handleRelayCommand({
-      kind: "relay",
-      raw: "/relay cloud login",
-      args: ["cloud", "login"],
-    })
-    assert(profileRef.current?.accountSlug === runId, "cloud login command should save the profile", profileRef.current)
-    assert(profileRef.current?.machineCredential, "cloud login should save the machine credential", profileRef.current)
+    stage("command-cloud-link")
+    await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud link", args: ["link"] })
+    const kernelProfile = await modules.relayApi.getKernelCloudRelayProfile(localClient)
+    assert(kernelProfile?.accountSlug === runId && kernelProfile.kernelEnrolled, "cloud link should enroll this kernel")
+    assert(kernelProfile.kernelId === daemonId, "enrollment should identify the current kernel")
+    assert(!kernelProfile.cloudSessionToken && !kernelProfile.machineCredential && !kernelProfile.kernelCredential, "kernel public profile must not export authority")
+    assert(kernelProfile.machineId, "enrollment should record the local machine")
+    const linkedMachineId = kernelProfile.machineId
 
-    log("command-cloud-pair")
-    await handlers.handleRelayCommand({
-      kind: "relay",
-      raw: "/relay cloud pair drill-cli",
-      args: ["cloud", "pair", "drill-cli"],
-    })
-    assert(profileRef.current?.clientId === clientId, "cloud pair command should save client id", profileRef.current)
+    stage("command-cloud-login")
+    await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud login", args: ["login"] })
+    const humanProfile = await terminal.client.profile()
+    assert(humanProfile?.accountId === kernelProfile.accountId, "terminal sign-in should use the enrolled account")
+    assert(humanProfile?.clientId === clientId && !humanProfile.machineId && !humanProfile.kernelId, "terminal login should use separate CLIENT authority")
 
-    log("command-cloud-pair-machine")
-    const linkedMachineId = profileRef.current?.machineId
-    assert(linkedMachineId, "cloud login should link the local machine id before pair-machine", profileRef.current)
-    await handlers.handleRelayCommand({
-      kind: "relay",
-      raw: `/relay cloud pair-machine ${linkedMachineId} drill-machine`,
-      args: ["cloud", "pair-machine", linkedMachineId, "drill-machine"],
-    })
-    assert(profileRef.current?.machineId === linkedMachineId, "cloud pair-machine command should preserve machine id", profileRef.current)
-    assert(profileRef.current?.machineCredential, "cloud pair-machine should preserve the machine credential", profileRef.current)
+    stage("command-cloud-connect")
+    await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud connect", args: ["cloud", "connect"] })
+    const onlineTarget = await waitForCloudRelayTarget(terminal.client, { daemonId, status: "ONLINE" })
+    assert(onlineTarget.machineId === linkedMachineId, "cloud presence should associate the target with the enrolled machine")
 
-    log("command-cloud-connect")
-    await handlers.handleRelayCommand({
-      kind: "relay",
-      raw: "/relay cloud connect",
-      args: ["cloud", "connect"],
-    })
-    const onlineTarget = await waitForCloudRelayTarget(apiUrl, {
-      accountId: profileRef.current.accountId,
-      realmId: profileRef.current.realmId,
-      daemonId,
-      status: "ONLINE",
-    })
-    assert(onlineTarget.machineId === linkedMachineId, "cloud presence should associate the target with the linked machine", onlineTarget)
+    // No hand edits to persisted credentials: ordinary enrollment already has
+    // only kernel authority. Restart proves its normal product recovery path.
+    stage("cloud-kernel-credential-restart")
+    await localClient.close()
+    localClient = null
+    await terminateChild(daemon, "SIGINT")
+    daemon = null
+    await waitForCloudRelayTarget(terminal.client, { daemonId, status: "OFFLINE" })
+    daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
+    await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, daemonEnv)
+    localClient = lifecycle.guardClient(new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv }))
+    const reonlineTarget = await waitForCloudRelayTarget(terminal.client, { daemonId, status: "ONLINE" })
+    assert(reonlineTarget.machineId === linkedMachineId, "restarted kernel should preserve enrollment")
+    assert((await modules.relayApi.getRelayStatus(localClient)).connected, "restarted kernel should reconnect using its own enrollment")
 
-    if (machineCredentialOnly) {
-      log("cloud-machine-credential-restart")
-      await localClient.close().catch(() => {})
-      localClient = null
-      await terminateChild(daemon, "SIGINT")
-      daemon = null
-      log("cloud-target-offline")
-      const offlineTarget = await waitForCloudRelayTarget(apiUrl, {
-        accountId: profileRef.current.accountId,
-        realmId: profileRef.current.realmId,
-        daemonId,
-        status: "OFFLINE",
-      })
-      assert(offlineTarget.machineId === linkedMachineId, "cloud target status should expose the disconnected linked kernel", offlineTarget)
-      const strippedConfigPath = await removePersistedCloudSessionToken(configHome)
-      log("cloud-session-token-removed", { configPath: strippedConfigPath })
-      daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })
-      await waitForLocalDaemon(LocalIpcClient, requests, kernelUrl, workspace, daemonEnv)
-      localClient = new LocalIpcClient(kernelUrl, { localAuthEnvironment: daemonEnv })
-      log("cloud-target-reonline")
-      const reonlineTarget = await waitForCloudRelayTarget(apiUrl, {
-        accountId: profileRef.current.accountId,
-        realmId: profileRef.current.realmId,
-        daemonId,
-        status: "ONLINE",
-      })
-      assert(reonlineTarget.machineId === linkedMachineId, "cloud target status should expose the reconnected linked kernel", reonlineTarget)
-      const restartedRelayStatus = unwrap(
-        await localClient.send(requests.relayStatusRequest()),
-        "RelayStatus",
-      ).status
-      assert(restartedRelayStatus.connected, "restarted kernel should reconnect to cloud relay using machine credential", restartedRelayStatus)
-      handlers = commandActions.createCommandActionHandlers(createMinimalCommandDeps({
-        apiUrl,
-        runId,
-        workspace,
-        clientId,
-        localClient,
-        requests,
-        cloudRelay,
-        profileRef,
-        notices,
-      }))
-    }
+    stage("cloud-private-client-connect")
+    remoteClient = lifecycle.guardClient(await terminal.client.connect(daemonId))
 
-    log("command-cloud-client-token")
-    await handlers.handleRelayCommand({
-      kind: "relay",
-      raw: `/relay cloud client-token ${daemonAlias}`,
-      args: ["cloud", "client-token", daemonAlias],
-    })
-    const clientRelay = parseCloudClientTokenNotice(notices)
-
-    await waitForRelayTarget(
-      LocalIpcClient,
-      requests,
-      clientRelay.relayUrl,
-      clientRelay.relayToken,
-      daemonAlias,
-    )
-    remoteClient = new LocalIpcClient(clientRelay.relayUrl, {
-      relayAuthToken: clientRelay.relayToken,
-      targetDaemonAlias: daemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    })
-
-    log("remote-session-create")
+    stage("remote-session-create")
     const created = unwrap(
       await remoteClient.send(requests.createSessionRequest(workspace, workspace)),
       "SessionCreated",
@@ -300,117 +232,74 @@ async function main() {
       listed,
     )
 
-    if (machineCredentialOnly) {
-      console.log("live cloud machine credential drill passed")
+    if (kernelCredentialOnly) {
+      lifecycle.check()
+      succeeded = true
       return
     }
 
-    log("cloud-shared-session-invite")
+    stage("cloud-shared-session-invite")
     const localInvite = unwrap(
       await remoteClient.send(requests.createSessionInviteRequest(created.session.id, null, 3)),
       "SessionInviteCreated",
     )
-    const cloudInvite = unwrap(
-      await localClient.send(requests.createCloudSessionInviteRequest(created.session.id, {
-        displayName: "Cloud relay shared session drill",
-        maxUses: 3,
-      })),
-      "CloudSessionInviteCreated",
-    )
+    const cloudInvite = await terminal.client.collaboration.createSessionInvite(created.session.id, {
+      displayName: "Cloud relay shared session drill", maxUses: 2,
+    })
     const localInviteToken = localInvite.invite?.invite_token
     const cloudInviteToken = cloudInvite.invite?.invite_token
     assert(localInviteToken, "local session invite token should be returned", localInvite)
     assert(cloudInviteToken, "cloud session invite token should be returned", cloudInvite)
 
-    log("cloud-owner-session-scoped-token")
-    const ownerScopedToken = await issueSessionScopedClientToken(apiUrl, {
-      sessionToken: profileRef.current.cloudSessionToken,
-      accountId: profileRef.current.accountId,
-      realmId: profileRef.current.realmId,
-      subject: clientId,
-      userId: profileRef.current.userId,
-      clientId,
-      sessionId: created.session.id,
-      targetDaemonAlias: daemonAlias,
-    })
-    const ownerScopedClient = new LocalIpcClient(profileRef.current.relayUrl, {
-      relayAuthToken: ownerScopedToken,
-      targetDaemonAlias: daemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    })
+    const scope = { accountId: kernelProfile.accountId, realmId: kernelProfile.realmId, sessionId: created.session.id, targetDaemonId: daemonId }
+    stage("cloud-owner-session-scoped-client")
+    const ownerScopedClient = await connectSessionScopedCloudClient(modules, terminal, scope)
+    lifecycle.guardClient(ownerScopedClient)
+    scopedClients.push(ownerScopedClient)
 
-    log("cloud-peer-login")
-    const peerClientId = `${clientId}-peer`
-    const peerLogin = await loginCloudDrillUser(apiUrl, {
-      email: `${runId}-peer@example.com`,
-      accountSlug: `${runId}-peer`,
-      clientId: peerClientId,
-      clientAlias: "drill-peer-cli",
+    stage("cloud-peer-login")
+    let peerLogin = await loginCloudDrillUser(apiUrl, {
+      modules, stateRoot, name: "peer-terminal", email: `${runId}-peer@example.com`, accountSlug: `${runId}-peer`,
     })
+    terminals.push(peerLogin)
     const peerProfile = peerLogin.profile
-    const peerCloudSessionToken = peerLogin.cloudSessionToken
+    const peerClientId = peerProfile.clientId
 
-    log("cloud-third-login")
-    const thirdClientId = `${clientId}-third`
-    const thirdLogin = await loginCloudDrillUser(apiUrl, {
-      email: `${runId}-third@example.com`,
-      accountSlug: `${runId}-third`,
-      clientId: thirdClientId,
-      clientAlias: "drill-third-cli",
+    stage("cloud-third-login")
+    let thirdLogin = await loginCloudDrillUser(apiUrl, {
+      modules, stateRoot, name: "third-terminal", email: `${runId}-third@example.com`, accountSlug: `${runId}-third`,
     })
+    terminals.push(thirdLogin)
     const thirdProfile = thirdLogin.profile
-    const thirdCloudSessionToken = thirdLogin.cloudSessionToken
+    const thirdClientId = thirdProfile.clientId
 
-    log("cloud-peer-accept-invite")
-    const peerAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
-      sessionToken: peerCloudSessionToken,
-    })
-    assert(peerAcceptance.userId === peerProfile.userId, "peer should accept the cloud invite as itself", peerAcceptance)
+    stage("cloud-peer-accept-invite")
+    const peerAcceptance = await peerLogin.client.collaboration.acceptSessionInvite(cloudInviteToken)
+    assert(peerAcceptance.acceptance.user_id === peerProfile.userId, "peer should accept the cloud invite as itself")
+    stage("cloud-third-accept-invite")
+    const thirdAcceptance = await thirdLogin.client.collaboration.acceptSessionInvite(cloudInviteToken)
+    assert(thirdAcceptance.acceptance.user_id === thirdProfile.userId, "third user should accept the cloud invite as itself")
+    const cloudMembers = await terminal.client.collaboration.sessionMembers(created.session.id)
+    assert(cloudMembers.members.some(member => member.user_id === peerProfile.userId)
+      && cloudMembers.members.some(member => member.user_id === thirdProfile.userId), "Cloud membership should include accepted collaborators")
+    // MP-08 / MP-10 / MP-11: distinct personal accounts must list the shared
+    // account's session using their own private CLIENT authority.
+    for (const [name, login] of [["peer", peerLogin], ["third", thirdLogin]]) {
+      stage(`cloud-${name}-session-members`)
+      assert(login.profile.accountId !== kernelProfile.accountId, "collaborator must have a distinct personal account")
+      const listed = await login.client.collaboration.sessionMembers(created.session.id)
+      assert(listed.members.some(member => member.user_id === kernelProfile.userId)
+        && listed.members.some(member => member.user_id === peerProfile.userId)
+        && listed.members.some(member => member.user_id === thirdProfile.userId), "collaborator should list all shared session members")
+    }
 
-    log("cloud-third-accept-invite")
-    const thirdAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
-      sessionToken: thirdCloudSessionToken,
-    })
-    assert(thirdAcceptance.userId === thirdProfile.userId, "third user should accept the cloud invite as itself", thirdAcceptance)
-
-    log("cloud-peer-session-scoped-token")
-    const peerRelayToken = await issueSessionScopedClientToken(apiUrl, {
-      sessionToken: peerCloudSessionToken,
-      accountId: profileRef.current.accountId,
-      realmId: profileRef.current.realmId,
-      subject: peerClientId,
-      userId: peerProfile.userId,
-      clientId: peerClientId,
-      sessionId: created.session.id,
-      targetDaemonAlias: daemonAlias,
-    })
-
-    log("cloud-third-session-scoped-token")
-    const thirdRelayToken = await issueSessionScopedClientToken(apiUrl, {
-      sessionToken: thirdCloudSessionToken,
-      accountId: profileRef.current.accountId,
-      realmId: profileRef.current.realmId,
-      subject: thirdClientId,
-      userId: thirdProfile.userId,
-      clientId: thirdClientId,
-      sessionId: created.session.id,
-      targetDaemonAlias: daemonAlias,
-    })
-
-    log("cloud-peer-relay-join")
-    const peerRemoteClient = new LocalIpcClient(profileRef.current.relayUrl, {
-      relayAuthToken: peerRelayToken,
-      targetDaemonAlias: daemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    })
-    const thirdRemoteClient = new LocalIpcClient(profileRef.current.relayUrl, {
-      relayAuthToken: thirdRelayToken,
-      targetDaemonAlias: daemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    })
+    stage("cloud-peer-relay-join")
+    let peerRemoteClient = await connectSessionScopedCloudClient(modules, peerLogin, scope)
+    lifecycle.guardClient(peerRemoteClient)
+    scopedClients.push(peerRemoteClient)
+    let thirdRemoteClient = await connectSessionScopedCloudClient(modules, thirdLogin, scope)
+    lifecycle.guardClient(thirdRemoteClient)
+    scopedClients.push(thirdRemoteClient)
     try {
       await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
       await thirdRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, thirdProfile.userId))
@@ -424,6 +313,31 @@ async function main() {
         "SessionAttached",
       )
       assert(thirdAttached.attachment?.session_id === created.session.id, "third user should attach to joined session", thirdAttached)
+
+      await peerRemoteClient.close(); await thirdRemoteClient.close()
+      // MP-08 / MP-10 / MP-11: the two-use invite is exhausted. Reconstruct
+      // both terminals from their saved private profiles without accepting again.
+      stage("cloud-collaborator-terminal-restart")
+      peerLogin.client.stop(); thirdLogin.client.stop()
+      peerLogin = {...createCloudDrillClient(modules, stateRoot, "peer-terminal"), profile: peerProfile}
+      thirdLogin = {...createCloudDrillClient(modules, stateRoot, "third-terminal"), profile: thirdProfile}
+      terminals.push(peerLogin, thirdLogin)
+      await peerLogin.client.resume(); await thirdLogin.client.resume()
+
+      peerRemoteClient = await connectSessionScopedCloudClient(modules, peerLogin, scope)
+      thirdRemoteClient = await connectSessionScopedCloudClient(modules, thirdLogin, scope)
+      for (const [client, clientId] of [[peerRemoteClient, peerClientId], [thirdRemoteClient, thirdClientId]]) {
+        lifecycle.guardClient(client); scopedClients.push(client)
+        const reattached = unwrap(await client.send(requests.attachToSessionRequest(created.session.id, `${clientId}-restarted`)), "SessionAttached")
+        assert(reattached.attachment?.session_id === created.session.id, "restarted collaborator should reattach without rejoining")
+      }
+      for (const [name, login] of [["peer", peerLogin], ["third", thirdLogin]]) {
+        stage(`cloud-${name}-restored-members-and-contacts`)
+        const restored = await login.client.collaboration.sessionMembers(created.session.id)
+        assert(restored.members.some(member => member.user_id === login.profile.userId), "restarted collaborator should list shared members without accepting again")
+        const contacts = await login.client.collaboration.collaborators()
+        assert(contacts.some(contact => contact.user_id === kernelProfile.userId), "restarted collaborator should list the inviter from its shared account")
+      }
       const members = unwrap(
         await peerRemoteClient.send(requests.listSessionMembersRequest(created.session.id)),
         "SessionMembersListed",
@@ -439,7 +353,7 @@ async function main() {
         members,
       )
 
-      log("cloud-session-scoped-workflow-assertions")
+      stage("cloud-session-scoped-workflow-assertions")
       const ownerAgent = unwrap(
         await ownerScopedClient.send(requests.spawnAgentRequest(created.session.id, "dev-stub", "owner-agent", "multi-user-drill", workspace, "low")),
         "AgentSpawned",
@@ -579,57 +493,52 @@ async function main() {
       await ownerScopedClient.close().catch(() => {})
     }
 
+    lifecycle.check()
     succeeded = true
-    console.log("live cloud relay drill passed")
-  } catch (error) {
-    failure = error
-    throw error
-  } finally {
-    const accountId = profileRef?.current?.accountId
-    const realmId = profileRef?.current?.realmId
+  }, async () => {
+    const cleanupFailures = []
+    const settle = async work => {
+      try { await work() } catch { cleanupFailures.push("owned resource cleanup failed") }
+    }
+    for (const client of scopedClients) client.destroy()
     await remoteClient?.close().catch(() => {})
     await localClient?.close().catch(() => {})
-    await terminateChild(daemon, "SIGINT")
-    if (accountId && realmId) {
-      await waitForCloudRelayTarget(apiUrl, {
-        accountId,
-        realmId,
-        daemonId,
-        status: "OFFLINE",
-      }, 10_000).catch((error) => log("cloud-offline-presence-timeout", { message: error.message }))
+    await settle(() => terminateChild(daemon, "SIGINT"))
+    if (terminal && profileRef.current) {
+      await waitForCloudRelayTarget(terminal.client, { daemonId, status: "OFFLINE" }, 10_000)
+        .catch(() => log("cloud-offline-presence-timeout"))
     }
-    await terminateChild(relay)
-    await terminateChild(cloudServer)
-    await db?.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`, `${runId}-third`] } } }).catch(() => {})
-    await db?.user.deleteMany({ where: { email: { in: [`${runId}@example.com`, `${runId}-peer@example.com`, `${runId}-third@example.com`] } } }).catch(() => {})
-    await db?.$disconnect().catch(() => {})
+    for (const entry of terminals) entry.client.stop()
+    await settle(() => terminateChild(relay))
+    await settle(() => terminateChild(cloudServer))
+    await settle(() => db?.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`, `${runId}-third`] } } }))
+    await settle(() => db?.user.deleteMany({ where: { email: { in: [`${runId}@example.com`, `${runId}-peer@example.com`, `${runId}-third@example.com`] } } }))
+    await settle(() => db?.$disconnect())
+    await settle(() => rm(stateRoot, { recursive: true, force: true }))
+    if (cleanupFailures.length) { succeeded = false; failure ??= new Error("Cloud relay drill cleanup incomplete") }
+    const metadata = {
+      mpItems: ["MP-08", "MP-10", "MP-11"], sourceCommits, runId,
+      apiUrl, relayUrl: `ws://127.0.0.1:${ports.relayPort}`, daemonId, daemonAlias,
+      clientId, cloudRoot, kernelCredentialOnly, noticeCount: notices.length,
+      cleanupComplete: cleanupFailures.length === 0,
+    }
+    await writeFile(path.join(rootDir, "result.json"), `${JSON.stringify({ passed: succeeded, ...metadata }, null, 2)}\n`)
     await finalizeDrillArtifacts({
       rootDir,
       passed: succeeded,
       preserveOnFailure: true,
       failure,
-      metadata: {
-        drill: "live-cloud-relay",
-        runId,
-        apiUrl,
-        relayUrl: `ws://127.0.0.1:${ports.relayPort}`,
-        daemonId,
-        daemonAlias,
-        clientId,
-        cloudRoot,
-        databaseUrl: DATABASE_URL.replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@"),
-        machineCredentialOnly,
-        profile: profileRef.current ? {
-          accountId: profileRef.current.accountId,
-          userId: profileRef.current.userId,
-          machineId: profileRef.current.machineId,
-          clientId: profileRef.current.clientId,
-          relayUrl: profileRef.current.relayUrl,
-        } : null,
-        noticeCount: notices.length,
-      },
+      preserveOnSuccess: true,
+      metadata,
     })
-  }
+  }, error => { failure = error; succeeded = false })
+  if (failure) throw failure
+  console.log(`MP-08 / MP-10 / MP-11: live cloud ${kernelCredentialOnly ? "kernel credential" : "relay"} drill passed`)
 }
 
-await main()
+if (process.argv.includes("--check")) {
+  await loadCloudRelayDrillModules()
+  console.log("MP-08 / MP-10 / MP-11: live Cloud relay drill runtime imports passed")
+} else {
+  await main()
+}

@@ -1,3 +1,4 @@
+import {requireScopedProviderPath,withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
 import { execFile, spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import net from 'node:net'
@@ -11,7 +12,7 @@ import { portIsAvailable, resolveBuiltBinary } from './lib/drill-runtime-helpers
 import {
   assertHetznerCharioxBinaries,
   assertHetznerTcpPortAvailable,
-  remoteEnvCommand,
+  spawnRemoteEnv,
   runHetznerCommand,
   shellQuote,
   sshArgs,
@@ -24,26 +25,9 @@ const repoRoot = path.resolve(cliRoot, '..', '..')
 const execFileAsync = promisify(execFile)
 const realHomeDir = os.homedir()
 
-async function loadCliModules(runtimeDir) {
-  const [{ transformAsync }, tsPreset] = await Promise.all([
-    import('@babel/core'),
-    import('@babel/preset-typescript'),
-  ])
-  for (const rel of ['src/ipc.ts', 'src/ipc-requests.ts']) {
-    const sourcePath = path.join(cliRoot, rel)
-    const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, '.js'))
-    const code = await readFile(sourcePath, 'utf8')
-    const transformed = await transformAsync(code, {
-      filename: sourcePath,
-      presets: [[tsPreset.default ?? tsPreset]],
-      sourceMaps: false,
-    })
-    await writeFile(outPath, transformed?.code ?? '', 'utf8')
-  }
-  const ipcUrl = new URL(`file://${path.join(runtimeDir, 'ipc.js')}`).href
-  const requestsUrl = new URL(`file://${path.join(runtimeDir, 'ipc-requests.js')}`).href
-  const { LocalIpcClient } = await import(ipcUrl)
-  const requests = await import(requestsUrl)
+async function loadCliModules() {
+  const { LocalIpcClient } = await import('../dist/ipc.js')
+  const requests = await import('../dist/ipc-requests.js')
   return { LocalIpcClient, requests }
 }
 
@@ -155,12 +139,14 @@ function daemonEnv({
   return {
     ...process.env,
     HOME: homeDir,
-    CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, '.codex'),
-    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
+    CODEX_HOME: process.env.CODEX_HOME,
+    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+    OPENCODE_DATA_HOME: process.env.OPENCODE_DATA_HOME,
     XDG_CONFIG_HOME: path.join(homeDir, '.config'),
-    XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(realHomeDir, '.local', 'share'),
-    XDG_STATE_HOME: process.env.XDG_STATE_HOME ?? path.join(realHomeDir, '.local', 'state'),
-    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(homeDir, '.local', 'share'),
+    XDG_STATE_HOME: path.join(homeDir, '.local', 'state'),
+    XDG_CACHE_HOME: path.join(homeDir, '.cache'),
+    CHARIOX_HOME: path.join(homeDir,'.chariox'),
     CHARIOX_KERNEL_PORT: String(kernelPort),
     CHARIOX_MCP_PORT: String(mcpPort),
     CHARIOX_OPENCODE_PORT: String(opencodePort),
@@ -198,7 +184,7 @@ async function runCommand(command, args, options = {}) {
 }
 
 async function buildKernelClient() {
-  const result = await runCommand('pnpm', ['--workspace-root', 'run', 'build:kernel-client'])
+  const result = await runCommand('pnpm', ['--workspace-root', 'run', 'build:cli'])
   if (result.code !== 0) {
     throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -232,26 +218,9 @@ async function assertHetznerBinaries(options) {
   await assertHetznerCharioxBinaries(options)
 }
 
-function localCodexAuthPath() {
-  const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
-  return path.join(codexHome, 'auth.json')
-}
-
 async function syncHetznerCodexAuth(options) {
-  const authPath = localCodexAuthPath()
-  await access(authPath)
-  await execFileAsync('ssh', sshArgs(options, 'mkdir -p /root/.codex && chmod 700 /root/.codex'))
-  await execFileAsync('scp', [
-    '-i',
-    options.hetznerKey,
-    '-o',
-    'BatchMode=yes',
-    '-o',
-    'StrictHostKeyChecking=accept-new',
-    authPath,
-    `${options.hetznerHost}:/root/.codex/auth.json.tmp`,
-  ])
-  await execFileAsync('ssh', sshArgs(options, 'mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json'))
+  const workerProfile=requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")
+  await execFileAsync("ssh",sshArgs(options,`test -f ${shellQuote(path.posix.join(workerProfile,"auth.json"))}`))
 }
 
 async function assertHetznerRelayPortAvailable(options, port) {
@@ -411,7 +380,7 @@ async function waitForRemoteMachineKernel(client, machineRef, providers) {
   throw new Error(`remote machine ${machineRef} did not advertise providers ${providers.join(',')}; last=${JSON.stringify(last)} error=${lastError ?? 'unknown error'}`)
 }
 
-async function main() {
+async function runDrill(privateRoot) {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
     console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--mode managed|tracked] [--hetzner-worker]')
@@ -426,13 +395,20 @@ async function main() {
     return
   }
 
+  for (const provider of options.providers) {
+    if (provider === 'codex') requireScopedProviderPath(process.env,'CODEX_HOME')
+    if (provider.startsWith('claude')) requireScopedProviderPath(process.env,'CLAUDE_CONFIG_DIR')
+    if (provider === 'opencode') {
+      requireScopedProviderPath(process.env,'OPENCODE_CONFIG_DIR')
+      if (!process.env.OPENCODE_DATA_HOME) requireScopedProviderPath(process.env,'XDG_DATA_HOME')
+    }
+  }
   const ports = await makePorts()
   const runId = `${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), `chariox-remote-workspace-live-sync-permission-${runId}`)
-  const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-workspace-live-sync-permission-drill-${runId}`)
-  await prepareDrillArtifacts(rootDir)
-  await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
-  await mkdir(cliRuntimeDir, { recursive: true })
+  const rootDir = privateRoot
+  const evidenceRoot=path.join(os.homedir(),".codex","evidence","remote-permission",runId)
+  const cliRuntimeDir = path.join(cliRoot, "dist")
+  await mkdir(rootDir, { recursive: true, mode: 0o700 })
 
   await buildKernelClient()
   const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
@@ -492,13 +468,13 @@ async function main() {
       }
       await assertHetznerRelayPortAvailable(options, ports.relayPort)
       await assertHetznerWorkerPortsAvailable(options, ports)
-      relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      relayChild = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_TOKEN: relayToken,
         CHARIOX_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
-      }, './apps/relay/target/debug/chariox-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+      }, './apps/relay/target/debug/chariox-relay', { stdio: ['ignore', 'ignore', 'inherit'] })
       relayTunnel = spawn('ssh', [
         '-i',
         options.hetznerKey,
@@ -541,7 +517,7 @@ async function main() {
 
     if (options.hetznerWorker) {
       const remoteRoot = `/tmp/chariox-remote-workspace-live-sync-permission-${runId}`
-      workerChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      workerChild = spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         PATH: '/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         HOME: '/root',
@@ -549,8 +525,10 @@ async function main() {
         XDG_STATE_HOME: '/root/.local/state',
         XDG_DATA_HOME: '/root/.local/share',
         XDG_CACHE_HOME: '/root/.cache',
-        CODEX_HOME: '/root/.codex',
-        OPENCODE_CONFIG_DIR: '/root/.config/opencode',
+        CODEX_HOME: options.providers.includes('codex') ? requireScopedProviderPath(process.env,'CHARIOX_DRILL_WORKER_CODEX_HOME') : undefined,
+        OPENCODE_CONFIG_DIR: options.providers.includes('opencode') ? requireScopedProviderPath(process.env,'CHARIOX_DRILL_WORKER_OPENCODE_CONFIG_DIR') : undefined,
+        OPENCODE_DATA_HOME: options.providers.includes('opencode') ? requireScopedProviderPath(process.env,'CHARIOX_DRILL_WORKER_OPENCODE_DATA_HOME') : undefined,
+        CHARIOX_HOME: path.posix.join(remoteRoot,'kernel-home'),
         CHARIOX_LOG_DIR: path.posix.join(remoteRoot, 'worker-logs'),
         CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
         CHARIOX_MCP_PORT: String(ports.workerMcpPort),
@@ -565,7 +543,7 @@ async function main() {
         CHARIOX_ACCEPT_REMOTE_LEASES: '1',
         CHARIOX_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
         CHARIOX_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
-      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/chariox-kernel`)), {
+      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/chariox-kernel`, {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
     } else {
@@ -689,7 +667,7 @@ async function main() {
       await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})
     }
     await finalizeDrillArtifacts({
-      rootDir,
+      rootDir: evidenceRoot,
       passed: succeeded,
       preserveOnFailure: options.keepArtifactsOnFailure,
       failure,
@@ -703,13 +681,10 @@ async function main() {
       },
       log: (name, details) => console.log(`[remote-workspace-live-sync-permission-drill] ${name}`, JSON.stringify(details)),
     })
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      console.error(`remote workspace live sync permission drill transient CLI modules kept at ${cliRuntimeDir}`)
-      if (childRootDir) console.error(`remote workspace live sync permission child drill artifacts kept at ${childRootDir}`)
-    }
+
   }
 }
+
+function main() { return withPrivateDrillRuntime("remote-permission-runtime", runDrill) }
 
 await main()

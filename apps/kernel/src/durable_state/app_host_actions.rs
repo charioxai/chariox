@@ -2,7 +2,8 @@
 //! generation fencing. Only a human terminal can take the offered action.
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::local::AppHostAction;
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::sync::mpsc;
 
 pub(crate) const OFFER_MS: u64 = 5 * 60 * 1000;
@@ -37,6 +38,7 @@ pub(crate) enum HostActionCommand {
 
 pub(super) struct HostActionRequest {
     command: HostActionCommand,
+    budget: Option<AppOperationBudget>,
     response: mpsc::Sender<Result<Option<HostOffer>, &'static str>>,
 }
 impl std::fmt::Debug for HostActionRequest {
@@ -83,10 +85,32 @@ impl DurableKernelStateStore {
         &self,
         command: HostActionCommand,
     ) -> Result<Option<HostOffer>, &'static str> {
+        self.app_host_action_admitted(command, None)
+    }
+
+    /// MP-08/MP-10/MP-11: retain the view's cancellation and grant epoch in
+    /// the writer queue; the caller holds no browser mutex while waiting.
+    pub(crate) fn offer_app_host_action(
+        &self,
+        offer: HostOffer,
+        budget: AppOperationBudget,
+    ) -> Result<Option<HostOffer>, &'static str> {
+        self.app_host_action_admitted(HostActionCommand::Create(offer), Some(budget))
+    }
+
+    fn app_host_action_admitted(
+        &self,
+        command: HostActionCommand,
+        budget: Option<AppOperationBudget>,
+    ) -> Result<Option<HostOffer>, &'static str> {
         let (response, receiver) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AppHostAction(Box::new(
-                HostActionRequest { command, response },
+                HostActionRequest {
+                    command,
+                    budget,
+                    response,
+                },
             )))
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         receiver.recv().map_err(|_| "STORAGE_UNAVAILABLE")?
@@ -114,15 +138,25 @@ impl DurableKernelStateStore {
 }
 
 pub(super) fn execute(connection: &mut Connection, request: HostActionRequest) {
-    let _ = request.response.send(apply(connection, request.command));
+    let _ = request
+        .response
+        .send(apply(connection, request.command, request.budget.as_ref()));
 }
 
 fn apply(
     connection: &mut Connection,
     command: HostActionCommand,
+    budget: Option<&AppOperationBudget>,
 ) -> Result<Option<HostOffer>, &'static str> {
     let storage = |_| "STORAGE_UNAVAILABLE";
-    let transaction = connection.transaction().map_err(storage)?;
+    if let Some(budget) = budget {
+        budget.check().map_err(|_| "AGENT_APP_NOT_GRANTED")?;
+    }
+    // Reserve SQLite before the browser-grant commit, just as ordinary App
+    // tools do. An external writer wait must leave browser revocation free.
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
     let reply = match command {
         HostActionCommand::Create(offer) => {
             let active: bool = transaction.query_row(
@@ -146,21 +180,30 @@ fn apply(
                 return Err("LIMIT_EXCEEDED");
             }
             let json = serde_json::to_string(&offer.action).map_err(|_| "INVALID_ARGUMENT")?;
-            transaction
-                .execute(
-                    "INSERT INTO app_host_actions VALUES (?1,?2,?3,?4,?5,'pending',?6,?7)",
-                    params![
-                        offer.operation_id,
-                        offer.owner,
-                        offer.installation,
-                        offer.generation as i64,
-                        json,
-                        offer.expires_ms as i64,
-                        now_ms as i64
-                    ],
-                )
-                .map_err(storage)?;
-            Some(offer)
+            let create = || {
+                transaction
+                    .execute(
+                        "INSERT INTO app_host_actions VALUES (?1,?2,?3,?4,?5,'pending',?6,?7)",
+                        params![
+                            offer.operation_id,
+                            offer.owner,
+                            offer.installation,
+                            offer.generation as i64,
+                            json,
+                            offer.expires_ms as i64,
+                            now_ms as i64
+                        ],
+                    )
+                    .map_err(storage)?;
+                transaction.commit().map_err(storage)?;
+                Ok(Some(offer))
+            };
+            return match budget {
+                Some(budget) => budget
+                    .commit(|| Ok::<_, AppOperationStopped>(create()))
+                    .map_err(|_| "AGENT_APP_NOT_GRANTED")?,
+                None => create(),
+            };
         }
         HostActionCommand::Accept {
             owner,
@@ -394,5 +437,44 @@ mod tests {
                 })),
             Err("CONFLICT")
         ));
+    }
+
+    #[test]
+    fn mp11_app_host_expired_budget_after_sqlite_wait_creates_no_offer() {
+        use std::{sync::Arc, time::Duration};
+        let f = Fixture::new();
+        let connection = Connection::open(f.store.path()).unwrap();
+        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (entered, waiting) = mpsc::channel();
+        let budget = AppOperationBudget::fixture(
+            tokio::time::Instant::now() + Duration::from_millis(200),
+            || false,
+        )
+        .fixture_observe_checks(Arc::new(move || {
+            let _ = entered.send(());
+        }));
+        let store = f.store.clone();
+        let request = std::thread::spawn(move || {
+            store.offer_app_host_action(
+                HostOffer {
+                    operation_id: "expired-budget".into(),
+                    owner: "alice".into(),
+                    installation: "docs".into(),
+                    generation: 3,
+                    action: AppHostAction::OpenLink {
+                        url: "https://en.wikipedia.org/".into(),
+                    },
+                    expires_ms: crate::session::unix_epoch_ms() + OFFER_MS,
+                },
+                budget,
+            )
+        });
+        let began = waiting.recv_timeout(Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(250));
+        connection.execute_batch("ROLLBACK").unwrap();
+        let result = request.join().unwrap();
+        began.unwrap();
+        assert!(matches!(result, Err("AGENT_APP_NOT_GRANTED")));
+        assert!(f.store.pending_app_host_actions(4).unwrap().is_empty());
     }
 }

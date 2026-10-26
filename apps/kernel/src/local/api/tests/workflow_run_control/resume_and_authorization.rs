@@ -83,17 +83,15 @@ fn local_request_api_pauses_and_resumes_active_workflow_node_runs() {
         _ => panic!("unexpected local response"),
     };
     assert_eq!(paused.status(), crate::session::WorkflowRunStatus::Paused);
-    assert_eq!(
-        harness.with_app(|app| {
-            app.sessions()
-                .get_session(session.id())
-                .expect("session should resolve")
-                .active_prompt()
-                .expect("workflow prompt should be cancelling")
-                .status()
-        }),
-        crate::session::PromptStatus::Cancelling
-    );
+    // Cancellation may already have settled before the response is inspected.
+    let paused_prompt = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_prompt()
+            .map(|prompt| prompt.status())
+    });
+    assert!(paused_prompt.is_none_or(|status| status == crate::session::PromptStatus::Cancelling));
     // Resume immediately. The request must wait for the provider cancellation to settle so the
     // old cancellation callback cannot stop the newly resumed workflow generation.
     let resumed = match harness

@@ -165,11 +165,39 @@ pub(crate) struct ViewCall {
     session: String,
     number: u64,
     cancelled: tokio::sync::watch::Receiver<()>,
+    browser_grant: Option<super::kernel_browser_host::KernelBrowserResourceGrant>,
 }
 
 impl ViewCall {
+    pub(crate) fn retain_browser_grant(
+        &mut self,
+        grant: super::kernel_browser_host::KernelBrowserResourceGrant,
+    ) {
+        self.browser_grant = Some(grant);
+    }
+    pub(crate) fn browser_grant(
+        &self,
+    ) -> Option<super::kernel_browser_host::KernelBrowserResourceGrant> {
+        self.browser_grant.clone()
+    }
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.has_changed().is_err()
+    }
+
+    /// Queue work retains this document's cancellation even while SQLite
+    /// admission waits, so a closed view never starts queued work later.
+    pub(crate) fn operation_budget(
+        &self,
+    ) -> crate::runtime::app_operation_budget::AppOperationBudget {
+        let cancelled = self.cancelled.clone();
+        let budget =
+            crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(move || {
+                cancelled.has_changed().is_err()
+            });
+        match self.browser_grant.clone() {
+            Some(grant) => budget.with_resource(grant),
+            None => budget,
+        }
     }
 
     /// Resolves once the call is cancelled.
@@ -771,6 +799,7 @@ impl AppViews {
             session: session.to_owned(),
             number,
             cancelled,
+            browser_grant: None,
         }
     }
 
@@ -878,7 +907,7 @@ mod tests {
             placement: None,
             minimized: true,
         };
-        assert_eq!(resolve_panel(none, minimized).minimized, false);
+        assert!(!resolve_panel(none, minimized).minimized);
         assert_eq!(resolve_panel(none, moved).placement, right);
         assert_eq!(PanelRequest::from_manifest(None), PanelRequest::default());
     }

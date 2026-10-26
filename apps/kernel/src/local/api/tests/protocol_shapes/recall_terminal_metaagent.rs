@@ -2,7 +2,10 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let request = LocalDaemonRequest::SemanticSearchRecall(SemanticSearchRecallRequest {
         query: "why did the build fail".to_string(),
@@ -42,6 +45,7 @@ fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
     );
 
     let event = crate::history::HistoryEvent {
+        public_history_owner_user_id: None,
         event_id: "event-1".to_string(),
         sequence: 7,
         timestamp_ms: 1234,
@@ -120,7 +124,10 @@ fn local_daemon_protocol_semantic_recall_search_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let request = LocalDaemonRequest::QueryRecall(QueryRecallRequest {
         session_id: Some("session-1".to_string()),
@@ -153,7 +160,10 @@ fn local_daemon_protocol_query_recall_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let request = LocalDaemonRequest::UpdateAgentConfig(UpdateAgentConfigRequest {
         session_id: "session-1".to_string(),
@@ -186,7 +196,10 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let request =
         LocalDaemonRequest::UpdateProviderRunSelection(UpdateProviderRunSelectionRequest {
@@ -216,7 +229,10 @@ fn local_daemon_protocol_native_tui_provider_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_input_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let request = LocalDaemonRequest::SendTerminalInput(SendTerminalInputRequest {
         session_id: "session-1".to_string(),
@@ -252,7 +268,10 @@ fn local_daemon_protocol_terminal_input_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_terminal_output_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let batch_request = LocalDaemonRequest::AppendNativeProviderOutputBatch(
         AppendNativeProviderOutputBatchRequest {
@@ -289,6 +308,9 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
         records: vec![
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(7),
+                sequence: Some(41),
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
@@ -319,6 +341,9 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
             },
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(8),
+                sequence: None,
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: 1_700_000_000_001,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
@@ -340,6 +365,17 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
         snapshot.pointer("/TerminalOutput/records/0/record_id"),
         Some(&serde_json::json!(7))
     );
+    // MP-08 / MP-10 (panes R5): live records carry their history sequence
+    // since local protocol 508; records without a history row omit it.
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/0/sequence"),
+        Some(&serde_json::json!(41))
+    );
+    assert_eq!(snapshot.pointer("/TerminalOutput/records/1/sequence"), None);
     assert_eq!(
         snapshot.pointer("/TerminalOutput/records/0/timestamp_ms"),
         Some(&serde_json::json!(1_700_000_000_000u64))
@@ -393,13 +429,16 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "e482165e9cbadadaa8daff7cac05690baf98eb18441fc7a78786c090b339ef6d"
+        "a89f6930effd0f870e6a3afc57bfded2d2138bd9d973d5b7e194022e89b87a1b"
     );
 }
 
 #[test]
 fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let search =
         LocalDaemonRequest::SearchMetaagentCommands(crate::local::SearchMetaagentCommandsRequest {
@@ -642,7 +681,10 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let account = RelayProviderAccountSummary {
         provider: "codex".to_string(),
@@ -709,7 +751,10 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
 
 #[test]
 fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
 
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ResolveKernelClientConnection(ResolveKernelClientConnectionRequest {
@@ -717,6 +762,7 @@ fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
             machine_ref: Some("machine-1".to_string()),
             client_id: Some("cli-1".to_string()),
             session_id: None,
+            public_key_thumbprint: Some("cli-thumbprint".to_string()),
         }),
         LocalDaemonResponse::KernelClientConnectionResolved {
             connection: KernelClientConnection {
@@ -743,6 +789,6 @@ fn local_daemon_protocol_kernel_client_connection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "623235862705f7aa8f85c6b29f98188caa2b75ac7acf0f8f72f63f822b888e9a"
+        "95694df43a9dddcbad7b1e27875327748492d034a0ed5b1eac292125115dff8f"
     );
 }

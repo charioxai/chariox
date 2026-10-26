@@ -36,7 +36,9 @@ mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 mod failed_request_owned_state;
-use context_handoff::*;
+mod native_prompt_handoff;
+use context_handoff::PendingAgentContextHandoff;
+pub(crate) use context_handoff::PendingAgentContextHandoffStore;
 mod app_automation_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_connection_runtime;
@@ -72,6 +74,8 @@ mod app_host_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_host;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
@@ -80,13 +84,25 @@ mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
 mod sudo;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod user_app_view_browser;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod user_app_view_restore;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod user_app_view_runtime;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
-pub(crate) use sudo::{is_sudo_prompt, sudo_approval_receipt};
+#[cfg(test)]
+pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
+pub(crate) use sudo::SudoWindowProjection;
+#[cfg(test)]
+pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
+pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
+mod owner_context_review;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
@@ -101,10 +117,17 @@ mod provider_reload;
 mod room_computer_readiness;
 #[cfg(test)]
 mod room_computer_readiness_tests;
-use provider_output_deadline_store::ProviderOutputDeadlineStore;
+pub(crate) use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
+#[cfg(all(
+    test,
+    any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))
+))]
+mod app_event_path_tests;
 mod browser_import_consent;
 mod browser_import_execution_gate;
+#[cfg(test)]
+mod computer_hold_tests;
 mod environment_execution_gate;
 mod event_delivery_runtime_state;
 mod human_browser_action_runtime_state;
@@ -120,11 +143,14 @@ mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
+mod public_history;
 mod publication_activation;
+mod room_browser_artifact;
 mod room_browser_controller;
 mod room_browser_controller_admission;
 mod room_browser_manifest_sync;
 mod room_browser_start_failure;
+mod room_computer_access;
 mod room_computer_observation;
 mod room_display;
 mod room_environment_health;
@@ -132,16 +158,28 @@ mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_shared_display;
 mod runtime_tool_call_activity;
+mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
+    room_provider_origin: Option<(String, String)>,
+    room_request_origin: Option<(String, LocalDaemonRequest)>,
+    /// MP-08 / MP-11: the transport admitted this command from a terminal
+    /// (local token or relay client), not from a granted or launched agent.
+    terminal_caller: bool,
+    relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
+    forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
+    #[cfg(test)]
+    queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
@@ -154,7 +192,16 @@ struct KernelRuntimeOwnedState {
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
-    sudo_process_cutoffs: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    /// Window timer proof of life: entry -> (armed revision, alerted revision).
+    sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
+    sudo_scopes: Arc<std::sync::Mutex<BTreeMap<String, std::collections::BTreeSet<String>>>>,
+    sudo_timer_changes: Arc<RuntimeChangeSignal>,
+    sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
+    sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
+    /// Worker side of A10 leased sudo windows, keyed by backing agent.
+    leased_sudo_grants: Arc<std::sync::Mutex<BTreeMap<String, sudo::leased::WorkerSudoGrant>>>,
+    /// Home side of A10: windows whose first worker fence was confirmed.
+    leased_sudo_fenced: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
@@ -174,10 +221,20 @@ struct KernelRuntimeOwnedState {
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
+    kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    leased_computer_changes: Arc<std::sync::Mutex<()>>,
+    leased_computer_grants: Arc<
+        std::sync::Mutex<BTreeMap<String, crate::transport::relay_peer::LeasedComputerGrant>>,
+    >,
+    app_grant_epochs: Arc<capability_grant_runtime::AppGrantEpochs>,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
+    kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -185,7 +242,7 @@ struct KernelRuntimeOwnedState {
     next_room_browser_health_at_ms: Arc<AtomicU64>,
     room_environment_health_probes: Arc<room_environment_health::RoomEnvironmentHealthProbes>,
     browser_controller_generations:
-        Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
+        Arc<std::sync::Mutex<BTreeMap<String, browser_controller_runtime_state::ControllerGenerationObservation>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     agent_runtime_projection: crate::runtime::projection::AgentRuntimeProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -215,6 +272,7 @@ struct KernelRuntimeOwnedState {
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
     provider_auth_recovery_runs: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    claude_token_checks: Arc<claude_token_checks::ClaudeTokenChecks>,
     event_connection_registry: crate::event_connection::EventConnectionRegistry,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -233,11 +291,19 @@ struct KernelRuntimeOwnedState {
         crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor,
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
+    private_assessment_results: agent_assessment_result::AssessmentResults,
+    private_work_results: agent_assessment_result::AssessmentResults,
+    /// The turn each native provider TUI run was last seen on, to settle it once it ends.
+    native_tui_turns: std::sync::Arc<
+        std::sync::Mutex<std::collections::BTreeMap<String, crate::session::PromptQueueItem>>,
+    >,
+    private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
+    handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal,
@@ -251,9 +317,13 @@ struct KernelRuntimeOwnedState {
     agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
     runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
+    next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
+    agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
+    notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
+    remote_prompt_projection_serial: Arc<remote_prompt_claim_runtime::RemotePromptProjectionSerialStore>,
     remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
@@ -338,6 +408,7 @@ struct SlicePrivateRelayConnector {
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_profile_compaction;
 mod agent_profile_owned_state;
 mod agent_prompt_schedule_runtime_state;
 mod agent_turn_actions_runtime_state;
@@ -350,6 +421,7 @@ pub(crate) use browser_controller_action_execution_runtime_state::BrowserControl
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
 mod browser_download_cancellation_runtime_state;
+mod browser_snapshot_observation_runtime_state;
 mod browser_upload_runtime_state;
 mod capability_owned_state;
 mod detached_provider_run_owned_state;
@@ -363,10 +435,12 @@ use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
+mod structured_prompt_dispatch;
 pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
+mod active_prompt_steering;
 mod external_command_authority;
 mod project_runtime_state;
 mod prompt;
@@ -379,6 +453,8 @@ mod prompt_queue_owned_state;
 mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
+mod provider_account_admission;
+mod provider_account_authority;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
@@ -397,10 +473,15 @@ pub(in crate::runtime) use provider_login_state::{
     ProviderLoginProcessBackend, ProviderLoginProcessRecord, ProviderLoginProcessStore,
     PROVIDER_LOGIN_TIMEOUT_MS,
 };
+mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
+mod provider_mcp_task_continuation_runtime;
+mod provider_output_pump_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
+mod forwarded_peer_authority;
+mod leased_profile_transition_runtime;
 mod project_environment_setup;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -425,7 +506,11 @@ mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
+mod claude_token_checks;
+mod claude_token_first_use;
+mod provider_login_workflow;
 mod runtime_interaction_owned_state;
+pub(crate) use runtime_interaction_owned_state::interaction_waits;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;
@@ -437,11 +522,29 @@ mod session_lookup_state;
 mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
+mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod kernel_browser_command_error;
+mod kernel_browser_mirror;
+mod kernel_browser_receipts;
+mod kernel_browser_runtime;
+mod kernel_browser_secret_runtime;
+mod kernel_browser_state_wait;
+mod owner_handoff_runtime;
+pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
+mod kernel_computer_runtime;
+mod leased_computer_runtime;
+#[cfg(test)]
+mod leased_computer_runtime_tests;
+mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
+mod terminal_subscription_runtime;
 mod tool_dispatch;
 mod transport_runtime_state;
+mod user_domain_access_runtime;
+
+mod capability_grant_runtime;
 mod workflow;
 mod workflow_access_owned_state;
 mod workflow_admin;
@@ -458,13 +561,20 @@ mod workflow_definition_owned_state;
 mod workflow_definition_settings_owned_state;
 mod workflow_dispatch;
 mod workflow_endpoint_owned_state;
+mod workflow_history_admission;
 mod workflow_launch_owned_state;
 mod workflow_node_owned_state;
 mod workflow_output_tool;
 mod workflow_prompt_dispatches;
 mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
+mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
+pub(crate) mod notification_delivery;
+mod room_workflow_control_runtime_state;
+mod workflow_notification_grants;
+mod workflow_notification_peers;
+mod workflow_notification_router;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;
 mod workflow_publication_owned_state;
@@ -487,6 +597,10 @@ impl KernelRuntimeState {
     }
 
     #[allow(dead_code)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new_with_owned_state operation signature and explicit context arguments"
+    )]
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
         config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
@@ -565,6 +679,10 @@ impl KernelRuntimeState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new_with_owned_state_and_lanes operation signature and explicit context arguments"
+    )]
     pub(crate) fn new_with_owned_state_and_lanes(
         app: Arc<Mutex<DaemonApp>>,
         provider_runtime_lanes: ProviderRunOperationLanes,
@@ -600,11 +718,16 @@ impl KernelRuntimeState {
             provider_process_projection,
             provider_launch_failure_retries,
             relay_state,
+            notification_inventory_projection,
             legacy_workflow_history,
             agent_runtime_projection,
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            kernel_browser_host,
+            room_computer_revoked,
+            sudo_windows,
+            pending_agent_context_handoffs,
         ) = {
             let started = Instant::now();
             loop {
@@ -614,11 +737,16 @@ impl KernelRuntimeState {
                         app.provider_process_projection_store(),
                         app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
+                        app.remote_relay_inventory_projection_store(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.kernel_browser_host.clone(),
+                        app.room_computer_revoked.clone(),
+                        app.sudo_window_projection(),
+                        app.pending_agent_context_handoff_store(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -741,12 +869,49 @@ impl KernelRuntimeState {
                 .as_ref()
                 .map(|binding| binding.session_id.clone()),
         );
+        // MP-08 / MP-11 A09: capture only newly admitted, sanitized public rows.
+        let projection_protection = room_secret_observations.clone();
+        operational_history_store.set_public_history_projector(Arc::new(move |event| {
+            projection_protection
+                .public_history_document(event, event.public_history_owner_user_id.as_deref()?)
+        }));
+        let room_secret_observations =
+            room_secret_observations.with_public_history(operational_history_store.clone());
+        let private_assessment_dispatch = {
+            let started = Instant::now();
+            loop {
+                if let Ok(mut app) = app.try_lock() {
+                    break app
+                        .private_assessment_dispatch
+                        .get_or_insert_with(|| {
+                            PrivateAssessmentDispatch::new(
+                                config_projection.clone(),
+                                durable_state_store.clone(),
+                                room_secret_observations.clone(),
+                            )
+                        })
+                        .clone();
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    panic!("KernelRuntimeState could not bind private assessment dispatch");
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
         let runtime = Self {
             external_command_authority: None,
+            room_provider_origin: None,
+            room_request_origin: None,
+            terminal_caller: false,
+            relay_peer_authority: None,
+            forwarded_peer_binding: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
+            #[cfg(test)]
+            queue_promotion_exit_probe: None,
             app,
             provider_runtime_lanes,
+            provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
@@ -757,8 +922,14 @@ impl KernelRuntimeState {
                     ),
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
-                sudo_turns: Default::default(),
-                sudo_process_cutoffs: Default::default(),
+                sudo_turns: sudo_windows.store(),
+                sudo_timers: Default::default(),
+                sudo_scopes: Default::default(),
+                sudo_timer_changes: Default::default(),
+                sudo_verified_at: Default::default(),
+                sudo_end_wakes: Default::default(),
+                leased_sudo_grants: Default::default(),
+                leased_sudo_fenced: Default::default(),
                 config_projection,
                 session_store,
                 agent_store,
@@ -776,12 +947,23 @@ impl KernelRuntimeState {
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
+                kernel_browser_host,
+                leased_computer_changes: Default::default(),
+                leased_computer_grants: Default::default(),
+                app_grant_epochs: Arc::default(),
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
+                human_control_task_waits: Default::default(),
+                room_computer_revoked,
                 room_secret_observations,
+                room_display_leases: Default::default(),
+                kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
+                    config.private_runtime_state_root().join("kernel-browser/observations"),
+                    BTreeSet::new(),
+                ).with_identity(&config.relay_private_key),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -813,6 +995,7 @@ impl KernelRuntimeState {
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),
                 provider_auth_recovery_runs: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+                claude_token_checks: Arc::default(),
                 prompt_state_owner,
                 active_turns,
                 prompt_activity,
@@ -831,14 +1014,19 @@ impl KernelRuntimeState {
                     crate::io::ArtifactExternalChangeMonitor::default(),
                 workspace_identity_monitor:
                     crate::runtime::workspace_identity_monitor::WorkspaceIdentityMonitor::default(),
-                pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
+                pending_agent_context_handoffs,
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
+                private_assessment_results: Default::default(),
+                private_work_results: private_assessment_dispatch.work_results.clone(),
+                private_assessment_dispatch,
+                native_tui_turns: Default::default(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
+                handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 completed_git_turn_snapshots,
                 workspace_live_sync_journal,
@@ -854,8 +1042,12 @@ impl KernelRuntimeState {
                 )),
                 runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
+                next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
+                agent_wakes: Arc::new(agent_wake_scheduler::AgentWakeMonitor::new()),
                 relay_state,
+                notification_inventory_projection,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+                remote_prompt_projection_serial: Arc::default(),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(
                     BTreeSet::new(),
@@ -869,7 +1061,18 @@ impl KernelRuntimeState {
         };
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
+        // Access grants are process-bound and never survive a kernel restart.
+        runtime.retire_notification_grants(None);
+        runtime.recover_app_grant_expiries();
         runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_provider_reload_for_test(&self, agent_id: &str) -> bool {
+        self.owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(agent_id)
     }
 
     #[cfg(test)]
@@ -943,6 +1146,10 @@ impl KernelRuntimeState {
         )
     }
 
+    pub(in crate::runtime) fn provider_login_kernel_id(&self) -> String {
+        self.owned.config_projection.snapshot().daemon_id
+    }
+
     pub(in crate::runtime) fn provider_login_process_store(&self) -> &ProviderLoginProcessStore {
         &self.owned.provider_login_processes
     }
@@ -981,13 +1188,20 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         capability_name: Option<&str>,
     ) -> Result<(), DaemonError> {
-        let agent = agent.clone();
-        let capability_name = capability_name.map(str::to_string);
+        self.record_agent_durable_event(kind, agent, capability_name)
+    }
+
+    fn record_agent_durable_event(
+        &self,
+        kind: &'static str,
+        agent: &crate::agent::AgentInstance,
+        capability_name: Option<&str>,
+    ) -> Result<(), DaemonError> {
         self.owned.durable_state_store.append_event(
             kind,
             Some(agent.id().to_string()),
             serde_json::json!({
-                "agent": &agent,
+                "agent": agent,
                 "capability_name": capability_name,
             }),
         )?;
@@ -1035,22 +1249,22 @@ impl KernelRuntimeState {
 }
 
 #[derive(Debug, Default)]
-struct RuntimeChangeSignal {
+pub(crate) struct RuntimeChangeSignal {
     sequence: AtomicU64,
     notify: Notify,
 }
 
 impl RuntimeChangeSignal {
-    fn sequence(&self) -> u64 {
+    pub(crate) fn sequence(&self) -> u64 {
         self.sequence.load(Ordering::Acquire)
     }
 
-    fn record_change(&self) {
+    pub(crate) fn record_change(&self) {
         self.sequence.fetch_add(1, Ordering::AcqRel);
         self.notify.notify_waiters();
     }
 
-    async fn wait_for_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
         if self.sequence() != sequence {
             return;
         }
@@ -1134,3 +1348,31 @@ impl KernelRuntimeState {
         ).await
     }
 }
+
+mod room_agent_admission;
+
+mod agent_assessment_result;
+mod agent_delegation_runtime;
+pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
+mod agent_goal_context;
+mod agent_goal_migration;
+mod agent_goal_runtime;
+mod agent_inbox_delivery;
+mod agent_leased_process_home;
+mod agent_leased_process_receipts;
+mod agent_leased_process_worker;
+mod agent_lifecycle_runtime;
+mod agent_process_group;
+mod agent_process_output;
+mod agent_process_watch;
+mod agent_task_cancellation;
+mod agent_task_human_control_wait;
+mod agent_task_owner_interactions;
+mod agent_task_owner_resolution;
+mod agent_task_projection;
+mod agent_wake_cancellation;
+mod agent_wake_scheduler;
+mod agent_workflow_tasks;
+mod room_dispatch_obligation;
+// MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
+pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

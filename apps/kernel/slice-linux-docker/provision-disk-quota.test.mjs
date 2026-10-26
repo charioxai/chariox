@@ -1,3 +1,4 @@
+import { localProtocolVersion } from "../../../scripts/lib/protocol-versions.mjs"
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
@@ -36,7 +37,7 @@ test("every brokered Docker start and unpause requires allocator admission befor
     read("./slice-disk-quota-admission.mjs"),
   ])
   assert.match(source, /runWithSliceDiskQuotaAdmission,[\s\S]*from "\.\/slice-disk-quota-admission\.mjs"/)
-  const execute = source.slice(source.indexOf("async function execute(request)"), source.indexOf("function errorResponse"))
+  const execute = source.slice(source.indexOf("async function execute(request"), source.indexOf("function errorResponse"))
   const runPrepared = execute.indexOf("const runPrepared = async (admission) =>")
   const prepare = execute.indexOf("prepared = request.kind === \"docker\" ? prepareDocker(request.args)", runPrepared)
   const spawn = execute.indexOf("return spawnBounded(command, args", prepare)
@@ -77,7 +78,7 @@ test("quota reservations survive failed destroy and are released only after cont
     read("./slice-disk-quota-allocator.mjs"),
     read("./slice-disk-quota-xfs-backend.mjs"),
   ])
-  const execute = broker.slice(broker.indexOf("async function execute(request)"), broker.indexOf("function errorResponse"))
+  const execute = broker.slice(broker.indexOf("async function execute(request"), broker.indexOf("function errorResponse"))
   const destroy = execute.slice(execute.indexOf('request.kind === "provisioner" && request.action === "destroy"'))
   const removalSuccess = destroy.indexOf("request.action === \"destroy\" && result.status === 0")
   const release = destroy.indexOf('operation: "release"')
@@ -136,7 +137,7 @@ test("shared allocator coordination helper is packaged and writable to the broke
   assert.match(installer, /slice-disk-quota-coordinator\.mjs/)
 })
 
-test("paired disk-cap user-config fields are covered by local-daemon protocol 416", async () => {
+test("MP-03/MP-10/MP-11 paired disk-cap fields remain covered by the current union protocol", async () => {
   const [rust, client, snapshot] = await Promise.all([
     read("../src/local/api/types.rs"),
     read("../../../packages/kernel-client/src/kernel-types.ts"),
@@ -144,10 +145,9 @@ test("paired disk-cap user-config fields are covered by local-daemon protocol 41
   ])
   const runtimeVersion = Number(rust.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+)/)?.[1])
   const clientVersion = Number(client.match(/LOCAL_DAEMON_PROTOCOL_VERSION = (\d+)/)?.[1])
-  const snapshotVersion = Number(snapshot.match(/assert_eq!\(LOCAL_DAEMON_PROTOCOL_VERSION, (\d+)\)/)?.[1])
-  assert.equal(runtimeVersion, 416)
+  assert.match(snapshot, /assert_eq!\(\s*LOCAL_DAEMON_PROTOCOL_VERSION,\s*crate::test_support::expected_local_protocol_version\(\)\s*\)/)
+  assert.equal(runtimeVersion, localProtocolVersion)
   assert.equal(clientVersion, runtimeVersion)
-  assert.equal(snapshotVersion, runtimeVersion)
   assert.match(snapshot, /disk_layer_mb/)
   assert.match(snapshot, /disk_home_mb/)
 })

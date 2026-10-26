@@ -711,6 +711,10 @@ fn confirm_registration(
     remove_bound_envelope(config, envelope)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing report_pre_reimage_runtime_identity operation signature and explicit context arguments"
+)]
 fn report_pre_reimage_runtime_identity(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
@@ -1204,6 +1208,9 @@ fn validate_profile(
 
 fn persisted_profile(profile: ManagedCloudRelayProfile) -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: profile.api_url,
         email: profile.email,
         account_id: profile.account_id,

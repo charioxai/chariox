@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use super::types::unix_epoch_ms;
 
+mod handoff;
+pub(crate) use handoff::bounded_display_text;
+pub use handoff::{
+    HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,
+    HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
+    HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
+};
 mod subject;
 pub use subject::RuntimeInteractionSubject;
 
@@ -195,7 +202,8 @@ pub enum NativeInteractionOrigin {
         provider_run_id: String,
         native_turn_id: String,
     },
-    /// Workspace trust is requested before a task is dispatched.
+    /// Run-scoped interaction: workspace trust before dispatch, or a kernel
+    /// review while the provider is idle.
     ProviderStartup { provider_run_id: String },
 }
 
@@ -215,6 +223,12 @@ impl NativeInteractionOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sudo_request: Option<crate::local::SudoRequestPresentation>,
+    /// Protocol 470: structured OS requester for external access decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::local::KernelAccessRequester>,
     id: String,
     #[serde(flatten)]
     subject: RuntimeInteractionSubject,
@@ -238,6 +252,12 @@ pub struct RuntimeInteraction {
     /// Ephemeral provider-native login UI, never model context or history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_login: Option<RuntimeProviderLogin>,
+    /// Protocol 477: a protected owner hand-off (safe target metadata only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff: Option<RuntimeHandoff>,
+    /// Local only: when a forwarded decision stops being actionable.
+    #[serde(skip)]
+    decision_expires_at: Option<tokio::time::Instant>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,7 +308,31 @@ impl RuntimeInteraction {
             requested_at_ms: unix_epoch_ms(),
             project_environment_review: None,
             provider_login: None,
+            handoff: None,
+            requester: None,
+            decision_expires_at: None,
+            sudo_request: None,
         }
+    }
+
+    pub fn sudo_request(&self) -> Option<&crate::local::SudoRequestPresentation> {
+        self.sudo_request.as_ref()
+    }
+    pub(crate) fn with_sudo_request(
+        mut self,
+        request: crate::local::SudoRequestPresentation,
+    ) -> Self {
+        self.sudo_request = Some(request);
+        self
+    }
+
+    pub fn requester(&self) -> Option<&crate::local::KernelAccessRequester> {
+        self.requester.as_ref()
+    }
+
+    pub(crate) fn with_requester(mut self, requester: crate::local::KernelAccessRequester) -> Self {
+        self.requester = Some(requester);
+        self
     }
 
     pub fn native_origin(&self) -> Option<&NativeInteractionOrigin> {
@@ -326,6 +370,13 @@ impl RuntimeInteraction {
 
     pub(crate) fn valid_subject(&self) -> bool {
         self.subject.valid()
+            && self.handoff.as_ref().is_none_or(|h| {
+                h.valid()
+                    && self.id == RuntimeHandoff::interaction_id(&h.obligation_id)
+                    && self.kernel_operation_id() == Some(self.id.as_str())
+                    && self.custom_choice.is_none()
+                    && self.default_on_timeout.is_none()
+            })
     }
 
     /// A kernel-owned decision, projected without creating an agent or prompt.
@@ -354,6 +405,10 @@ impl RuntimeInteraction {
             requested_at_ms: unix_epoch_ms(),
             project_environment_review: None,
             provider_login: None,
+            handoff: None,
+            requester: None,
+            decision_expires_at: None,
+            sudo_request: None,
         }
     }
 
@@ -361,6 +416,25 @@ impl RuntimeInteraction {
     pub(crate) fn with_timeout_sec(mut self, seconds: u64) -> Self {
         self.timeout_sec = Some(seconds);
         self
+    }
+
+    /// Fixes the instant the decision expires, however long it takes to reach
+    /// the kernel that shows it.
+    pub(crate) fn with_decision_expiry(mut self, expires_at: tokio::time::Instant) -> Self {
+        self.decision_expires_at = Some(expires_at);
+        self.rebase_decision_budget();
+        self
+    }
+
+    /// Restates the relative timeout from the fixed expiry; transports call it
+    /// right before serializing so setup time is not handed to the receiver.
+    pub(crate) fn rebase_decision_budget(&mut self) {
+        let Some(expires_at) = self.decision_expires_at else {
+            return;
+        };
+        let left = expires_at.saturating_duration_since(tokio::time::Instant::now());
+        let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+        self.timeout_sec = Some(seconds.max(1));
     }
 
     pub fn with_provider_login(mut self, login: RuntimeProviderLogin) -> Self {
@@ -376,6 +450,16 @@ impl RuntimeInteraction {
         self.provider_login.as_ref()
     }
 
+    /// A kernel-operation decision carrying a protected owner hand-off.
+    pub(crate) fn with_handoff(mut self, handoff: RuntimeHandoff) -> Self {
+        self.handoff = Some(handoff);
+        self
+    }
+
+    pub fn handoff(&self) -> Option<&RuntimeHandoff> {
+        self.handoff.as_ref()
+    }
+
     pub fn kind(&self) -> RuntimeInteractionKind {
         self.kind
     }
@@ -386,6 +470,11 @@ impl RuntimeInteraction {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    pub(crate) fn with_message(mut self, message: String) -> Self {
+        self.message = message;
+        self
     }
 
     pub fn message(&self) -> &str {

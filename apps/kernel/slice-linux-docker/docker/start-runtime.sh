@@ -46,6 +46,12 @@ mkdir -p "$BROWSER_DOWNLOAD_DIR"
 mkdir -p "$KERNEL_HOME" /tmp/chariox-slice-state
 mkdir -p "$KERNEL_HOME/daemon"
 install -d -m 0700 "$PROVIDER_HOME" "$PRIVATE_RUNTIME_ROOT"
+# MP-08/MP-10/MP-11: download Cisco's binary at installation, outside the
+# source kit/image. A warm restart verifies and reuses the kernel-owned cache.
+if [[ "${CHARIOX_SLICE_DISPLAY_MODE:-}" == "headed" && -z "${CHARIOX_BROWSER_DISPLAY_OPENH264:-}" ]]; then
+  CHARIOX_BROWSER_DISPLAY_OPENH264="$(python3 "$ROOT/install-display-codec.py" --root "$PRIVATE_RUNTIME_ROOT/display-codecs")"
+  export CHARIOX_BROWSER_DISPLAY_OPENH264
+fi
 # A protected layout captures /home/slice, which must never hold provider state.
 # Every managed run also binds the shared provider HOME, so default accounts kept
 # there would be readable by runs that select another account. Keep them in the
@@ -94,7 +100,8 @@ screen -S chariox-slice-provider-bridge -X quit >/dev/null 2>&1 || true
 # A restored container can retain the provider bridge briefly after its screen
 # socket has already become stale. Kill only that orphan before rebinding the
 # published provider ranges so the first restart is as reliable as a retry.
-pkill -f "$ROOT/provider-port-bridge.mjs" >/dev/null 2>&1 || true
+python3 "$ROOT/runtime-process-owner.py" stop --record "$PRIVATE_RUNTIME_ROOT/bridge-owner.json"
+python3 "$ROOT/runtime-process-owner.py" stop --record "$PRIVATE_RUNTIME_ROOT/kernel-owner.json"
 
 if [[ -z "$CLOUD_RELAY_CONFIG_JSON" && -n "$CLOUD_RELAY_CONFIG_PATH" && -f "$CLOUD_RELAY_CONFIG_PATH" ]]; then
   CLOUD_RELAY_CONFIG_JSON="$(cat "$CLOUD_RELAY_CONFIG_PATH")"
@@ -112,7 +119,7 @@ rm -f "$PROVIDER_BRIDGE_READY_FILE"
 screen -L -Logfile "$PROVIDER_BRIDGE_LOG" -dmS chariox-slice-provider-bridge env \
   CHARIOX_SLICE_PROVIDER_BRIDGE_PORT_RANGES="$CODEX_PORT_RANGE,$OPENCODE_PORT_RANGE" \
   CHARIOX_SLICE_PROVIDER_BRIDGE_READY_FILE="$PROVIDER_BRIDGE_READY_FILE" \
-  node "$ROOT/provider-port-bridge.mjs"
+  python3 "$ROOT/runtime-process-owner.py" run --record "$PRIVATE_RUNTIME_ROOT/bridge-owner.json" -- node "$ROOT/provider-port-bridge.mjs"
 for attempt in $(seq 1 40); do
   if [[ -s "$PROVIDER_BRIDGE_READY_FILE" ]]; then
     break
@@ -166,7 +173,9 @@ start_slice_kernel() {
   dd if=/dev/urandom bs=48 count=1 status=none | base64 | tr -d '\n' >"$KERNEL_LOCAL_AUTH_FILE"
   chmod 600 "$KERNEL_LOCAL_AUTH_FILE"
   KERNEL_LOCAL_AUTH_TOKEN="$(cat "$KERNEL_LOCAL_AUTH_FILE")"
-  screen -dmS chariox-slice-kernel env \
+  : >"$LOGS/kernel.log"
+  chmod 600 "$LOGS/kernel.log"
+  screen -L -Logfile "$LOGS/kernel.log" -dmS chariox-slice-kernel env \
     "${default_provider_env[@]}" \
     CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
     CHARIOX_MCP_PORT="$MCP_PORT" \
@@ -196,7 +205,7 @@ start_slice_kernel() {
     "${kernel_relay_env[@]}" \
     CHARIOX_ACCEPT_REMOTE_LEASES=1 \
     "$@" \
-    "$ROOT/bin/chariox-kernel"
+    python3 "$ROOT/runtime-process-owner.py" run --record "$PRIVATE_RUNTIME_ROOT/kernel-owner.json" -- "$ROOT/bin/chariox-kernel"
   sleep 1
   wait_for_screen_session chariox-slice-kernel kernel
   wait_for_kernel_auth_consumption
@@ -227,16 +236,7 @@ if [[ "$PROVIDER_ISOLATION_PROBE" == "1" ]]; then
   fi
   cat "$provider_probe_log"
   # Stop the probe kernel and any Codex app-server it launched before the real start.
-  pkill -TERM -f "^$ROOT/bin/chariox-kernel" >/dev/null 2>&1 || true
-  pkill -TERM -f "codex[^ ]* app-server" >/dev/null 2>&1 || true
-  for attempt in $(seq 1 120); do
-    pgrep -f "^$ROOT/bin/chariox-kernel|codex[^ ]* app-server" >/dev/null || break
-    sleep 0.25
-  done
-  if pgrep -f "^$ROOT/bin/chariox-kernel|codex[^ ]* app-server" >/dev/null; then
-    printf '[slice-runtime] probe kernel or its Codex app-server did not stop\n' >&2
-    exit 1
-  fi
+  python3 "$ROOT/runtime-process-owner.py" stop --record "$PRIVATE_RUNTIME_ROOT/kernel-owner.json"
   screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
   screen -wipe >/dev/null 2>&1 || true
 fi

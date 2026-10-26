@@ -7,6 +7,7 @@ import {
 
 import type { HotkeySection } from "./hotkey-help.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
+import { projectEnvironmentPanelWidth } from "./project-environment-read-controller.js"
 import {
   formatPairingExpiry,
   formatTerminalTypeLabel,
@@ -22,7 +23,7 @@ import { formatWaitingRoomMenuRow } from "./waiting-room-menu-row.js"
 
 const HOTKEY_DIALOG_WIDTH = 72
 
-export type CliDialogOverlayMode = "closed" | "managed-machine" | "session-browser" | "terminal-pairing" | "hotkeys"
+export type CliDialogOverlayMode = "closed" | "environment" | "managed-machine" | "session-browser" | "terminal-pairing" | "hotkeys"
 
 type CliDialogOverlayOptions = {
   overlayBox: BoxRenderable | undefined
@@ -36,6 +37,7 @@ type CliDialogOverlayOptions = {
   terminalPairing: TerminalPairingLinkView | null
   terminalPairingQrLines: string[]
   hotkeySections: HotkeySection[]
+  environmentLines?: string[]
   managedMachineRows?: WaitingRoomRow[]
 }
 
@@ -65,7 +67,12 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   })
   scrim.onMouseUp = options.onDismiss
 
-  if (options.mode === "managed-machine") {
+  if (options.mode === "environment") {
+    const panel = dialogPanel(renderer, projectEnvironmentPanelWidth(dimensions.width), dimensions.width)
+    panel.add(dialogHeader(renderer, "Environment · Read-only", "↑/↓ scroll • Esc close"))
+    panel.add(new TextRenderable(renderer, { content: (options.environmentLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))
+    scrim.add(panel)
+  } else if (options.mode === "managed-machine") {
     scrim.add(renderManagedMachinePanel(options))
   } else if (options.mode === "session-browser") {
     scrim.add(renderSessionBrowserPanel(options))

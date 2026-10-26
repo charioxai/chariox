@@ -184,6 +184,34 @@ impl<'a> KernelAgentService<'a> {
             });
         };
 
+        let session = self.app.sessions.get_session(&session_id)?;
+        let expected_prompt = self
+            .app
+            .prompt_state_owner()
+            .active_prompt_for_agent(&session, &agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.clone(),
+            })?;
+        let revalidate = |app: &crate::DaemonApp| -> Result<(), DaemonError> {
+            let agent = app.agents().get_agent(&agent_id)?;
+            let session = app.sessions.get_session(&session_id)?;
+            if agent.session_id() != session_id
+                || agent.remote_execution() != Some(&remote_execution)
+                || app
+                    .prompt_state_owner()
+                    .active_prompt_for_agent(&session, &agent_id)
+                    .as_ref()
+                    .map(|prompt| prompt.id())
+                    != Some(expected_prompt.id())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "complete remote prompt",
+                    message: "completion receipt was superseded".into(),
+                });
+            }
+            Ok(())
+        };
+        revalidate(self.app)?;
         let relay_config = self
             .app
             .relay_config_for_remote_execution(&remote_execution);
@@ -208,6 +236,15 @@ impl<'a> KernelAgentService<'a> {
                     workspace_live_sync_change,
                     ..
                 } => {
+                    revalidate(self.app)?;
+                    if provider_run_id.as_deref()
+                        != remote_execution.active_worker_provider_run_id.as_deref()
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "complete remote prompt",
+                            message: "completion receipt names another provider run".into(),
+                        });
+                    }
                     let _ = crate::git_observer::append_observations(
                         &self.app.operational_history_store(),
                         git_observations,
@@ -218,6 +255,7 @@ impl<'a> KernelAgentService<'a> {
                             Some(&remote_execution.worker_kernel_id),
                         );
                     }
+                    revalidate(self.app)?;
                     (provider_run_id, provider_termination)
                 }
                 other => {
@@ -243,13 +281,12 @@ impl<'a> KernelAgentService<'a> {
             }
             Err(error) => return Err(error),
         };
-        let completed = self
-            .app
-            .prompt_owner_complete_active_prompt_only(&session_id, &agent_id)?;
-        let _ = self
-            .app
-            .agents()
-            .set_remote_execution_active_worker_provider_run_id(&agent_id, None)?;
+        let completed = self.app.prompt_owner_complete_remote_receipt(
+            &session_id,
+            &agent_id,
+            expected_prompt.id(),
+            &remote_execution,
+        )?;
         let settlement_status = if provider_termination.is_some() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
@@ -460,14 +497,8 @@ impl<'a> KernelAgentService<'a> {
             .ensure_remote_agent_binding_protocol(remote_execution)?;
         let workflow_context = crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
             .remote_workflow_turn_context_for_prompt(session_id, agent_id, &peeked)?;
-        let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();
-        let (_session, next_candidate) = self
-            .activate_next_queued_prompt_for_mirror_with_prompt_id(
-                session_id,
-                agent_id,
-                Some(&peeked),
-                home_prompt_id,
-            )?;
+        let (_session, next_candidate) =
+            self.activate_next_queued_prompt_for_mirror(session_id, agent_id, Some(&peeked))?;
         let Some(active) = next_candidate else {
             return Ok(None);
         };
@@ -543,13 +574,8 @@ impl<'a> KernelAgentService<'a> {
                     message: format!("agent `{agent_id}` lost its remote binding"),
                 })?;
         self.app.ensure_remote_agent_binding_protocol(&remote)?;
-        let prompt_id = self.app.sessions_mut().reserve_prompt_id();
-        let (_, Some(active)) = self.activate_next_queued_prompt_for_mirror_with_prompt_id(
-            session_id,
-            agent_id,
-            Some(&candidate),
-            prompt_id,
-        )?
+        let (_, Some(active)) =
+            self.activate_next_queued_prompt_for_mirror(session_id, agent_id, Some(&candidate))?
         else {
             // The expected candidate can disappear before promotion. Do not
             // spin under the app lock when authoritative state cannot admit it.
@@ -738,7 +764,7 @@ mod tests {
             .expect("second prompt should remain queued");
         assert_eq!(peeked.id(), queued.id());
 
-        let canonical_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let canonical_prompt_id = peeked.id().to_string();
         let context = remote_git_turn_context_for_prompt(
             &app,
             session.id(),
@@ -747,13 +773,8 @@ mod tests {
             &canonical_prompt_id,
         );
         let (_session, active) = KernelAgentService::new(&mut app)
-            .activate_next_queued_prompt_for_mirror_with_prompt_id(
-                session.id(),
-                agent.id(),
-                Some(&peeked),
-                canonical_prompt_id,
-            )
-            .expect("queued prompt should activate with the reserved id");
+            .activate_next_queued_prompt_for_mirror(session.id(), agent.id(), Some(&peeked))
+            .expect("queued prompt should activate with its submitted id");
         let active = active.expect("queued prompt should become active");
         let expected_merge_key = format!("prompt:{}", active.id());
         assert_eq!(
@@ -781,7 +802,8 @@ mod tests {
             )
             .expect("queued remote prompt should finish activation");
 
-        assert_ne!(queued.id(), active.id());
+        assert_eq!(queued.id(), active.id());
+        assert_eq!(active.pending_prompt_id(), None);
         assert_eq!(context.home_prompt_id, active.id());
         assert_eq!(context.home_turn_id, active.id());
         assert_eq!(active.status(), PromptStatus::Running);

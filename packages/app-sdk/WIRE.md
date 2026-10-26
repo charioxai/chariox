@@ -150,6 +150,11 @@ An agent's call carries `agent_id` and, when the agent made it during a turn,
 `turn_id`: the id of that turn's Chariox prompt, as session history records it.
 It is captured when the call is submitted, so a later turn or focus change does
 not re-attribute it.
+A call from the App's own page in the owner's kernel browser carries the actor
+that drove its Tab: `{kind: "human", id: <owner>}`, or `{kind: "agent", id:
+<agent>}` plus `agent_id` and `room_id` when an agent's input caused it (while
+that input runs, for five seconds after it, and until a person's input follows).
+An agent-driven page call runs only with that agent's own grant for the App.
 Background work carries one too: `events.deliver` and `schedule.wake` have
 `actor: {kind: "background", id: "inbox:<route>" | "schedule"}`, an operation per
 delivery (`inbox-<sequence>`) or per wake firing (`wake-<id>-<dueAtMs>`, the same

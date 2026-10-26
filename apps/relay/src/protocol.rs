@@ -237,6 +237,17 @@ pub struct RelayError {
     pub retryable: bool,
 }
 
+/// MP-08/MP-10/MP-11: one initial535 registration, never a target/scope choice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialDisplayResumeRegistration {
+    pub request_id: String,
+    pub subscription_id: String,
+    pub session_id: String,
+    pub attachment_id: String,
+    pub client_public_key: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayEnvelope {
@@ -251,6 +262,12 @@ pub enum RelayEnvelope {
     ClientConnect {
         auth_token: String,
         target: ClientTarget,
+    },
+    ClientConnectDisplayResume {
+        auth_token: String,
+        target: ClientTarget,
+        expected_daemon_public_key: String,
+        registration: InitialDisplayResumeRegistration,
     },
     ClientConnected {
         target: ClientTarget,

@@ -38,6 +38,10 @@ pub(crate) enum AppEventClassification {
     TargetGone,
     Expired,
 }
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing AppEventMaintenanceOperation typed actor payload layout"
+)]
 pub(crate) enum AppEventMaintenanceOperation {
     Sweep {
         owner: String,
@@ -52,11 +56,19 @@ pub(crate) enum AppEventMaintenanceOperation {
     },
 }
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing AppEventMaintenanceOutcome typed actor payload layout"
+)]
 pub(crate) enum AppEventMaintenanceOutcome {
     Swept {
         maintenance: Maintenance,
         queued_sessions: Vec<String>,
     },
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Classified(Receipt),
 }
 pub(super) struct AppEventMaintenanceRequest {

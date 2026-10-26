@@ -368,3 +368,21 @@ test("resolveSessionAgentDefaults ignores blank or default provider settings", (
     { provider: "codex", model: "codex/gpt-5", effort: "low" },
   )
 })
+
+
+test("a restored leased projection is not loaded as a local provider run", () => {
+  const remote = makeAgent("agent-a", {
+    remote_execution: {
+      worker_kernel_id: "worker-1", worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1", leased_agent_id: "worker-agent-1",
+    },
+  })
+  const decision = resolveAttachTimeProviderLaunch(
+    makeSession({ agents: [remote], active_provider_run_id: "leased:worker-agent-1:provider-run-22" }),
+    { provider: "codex", model: "codex/gpt-5", effort: "low" }, false,
+  )
+  assert.equal(decision.action, "skip_launch")
+  if (decision.action !== "skip_launch") return
+  assert.equal(decision.reason, "remote_backed_agent")
+  assert.equal(decision.targetAgent, remote)
+})

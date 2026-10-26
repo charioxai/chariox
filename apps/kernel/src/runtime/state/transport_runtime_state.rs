@@ -31,11 +31,14 @@ impl KernelRuntimeState {
         Some(
             crate::durable_snapshot::DurableSnapshotScheduler::new_with_policy(
                 config.daemon_id,
-                self.owned.durable_state_store.clone(),
-                self.owned.session_store.clone(),
-                self.owned.agent_store.clone(),
-                self.owned.slice_store.clone(),
-                self.owned.metaagent_events.clone(),
+                crate::durable_snapshot::DurableSnapshotSources {
+                    durable_state: self.owned.durable_state_store.clone(),
+                    sessions: self.owned.session_store.clone(),
+                    agents: self.owned.agent_store.clone(),
+                    slices: self.owned.slice_store.clone(),
+                    metaagent_events: self.owned.metaagent_events.clone(),
+                    room_computer_revoked: self.owned.room_computer_revoked.clone(),
+                },
                 policy,
             ),
         )
@@ -43,6 +46,7 @@ impl KernelRuntimeState {
 
     pub(crate) async fn pump_transport_runtime(&self) {
         self.owned.announce_durable_writer_condition();
+        self.refresh_user_domain_grants();
         self.schedule_room_browser_health();
         self.app_control().schedule_maintenance();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -54,6 +58,28 @@ impl KernelRuntimeState {
         }
         if !self.owned.publication_activation.is_active() {
             return;
+        }
+        let now = crate::session::unix_epoch_ms();
+        let next = self
+            .owned
+            .next_agent_lifecycle_sweep_ms
+            .load(Ordering::Acquire);
+        if next > now.saturating_add(crate::durable_state::agent_lifecycle::SWEEP_MS) {
+            let _ = self.owned.next_agent_lifecycle_sweep_ms.compare_exchange(
+                next,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        if claim_periodic_sweep(
+            &self.owned.next_agent_lifecycle_sweep_ms,
+            now,
+            crate::durable_state::agent_lifecycle::SWEEP_MS,
+        ) {
+            if let Err(error) = self.sweep_agent_lifecycle().await {
+                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
+            }
         }
         self.owned.sweep_kernel_operation_interactions(false);
         self.owned.withdraw_stale_agent_interactions();
@@ -84,65 +110,16 @@ impl KernelRuntimeState {
                 );
             }
         }
-        let mut ready_provider_run_ids = self.owned.pty_output_signal.take_ready_provider_run_ids();
-        ready_provider_run_ids.extend(
-            self.owned
-                .provider_store
-                .run_actor_completion_signal()
-                .take_ready_provider_run_ids(),
-        );
-        ready_provider_run_ids.extend(
-            self.owned
-                .structured_output_records
-                .take_due_provider_run_ids(now_ms),
-        );
-        ready_provider_run_ids.extend(
-            self.owned
-                .provider_output_deadlines
-                .take_due_provider_run_ids(now_ms),
-        );
         self.reap_structured_prompt_jobs_and_dispatch();
-        let mut pumped_provider_run_ids = Vec::with_capacity(ready_provider_run_ids.len());
-        for provider_run_id in ready_provider_run_ids {
-            let Ok(provider_run) = self.owned.provider_store.get_run(&provider_run_id) else {
-                continue;
-            };
-            let session_id = provider_run.session_id().to_string();
-            let recipients = self
-                .owned
-                .attachment_store
-                .list_session_attachment_ids(&session_id);
-            // Browser/CLI terminal-output requests use this same provider lane. Keep the
-            // background pump in it too: otherwise both paths can apply one completion
-            // concurrently, allowing a queued prompt promoted by the first path to be
-            // settled immediately by the second path's stale turn state.
-            let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-            match self
-                .pump_owned_provider_output(&session_id, &provider_run_id, recipients, false)
-                .await
-            {
-                Ok(_) => pumped_provider_run_ids.push(provider_run_id),
-                Err(error) => crate::logging::warn_with_fields(
-                    "daemon.provider_output",
-                    "ready provider output pump failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
-                    }),
-                ),
-            }
-        }
+        // MP-08 / MP-10: only the independent output scheduler consumes ready
+        // run IDs. A serial maintenance pass must not strand ready siblings
+        // behind one run's history acknowledgement or provider lane.
         let watchdog_dispatches = self
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
         self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
             .await;
-        for provider_run_id in pumped_provider_run_ids {
-            self.observe_git_after_provider_activity_if_pending(&provider_run_id)
-                .await;
-        }
     }
 
     pub(crate) async fn record_terminal_attachment_heartbeat(
@@ -360,6 +337,17 @@ impl KernelRuntimeState {
             .await;
     }
 
+    pub(crate) fn provider_output_ready_sequence(&self) -> u64 {
+        self.owned.provider_store.output_ready_signal().sequence()
+    }
+    pub(crate) async fn wait_for_provider_output_ready_after(&self, sequence: u64) {
+        self.owned
+            .provider_store
+            .output_ready_signal()
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
     pub(crate) fn provider_run_actor_completion_sequence(&self) -> u64 {
         self.owned
             .provider_store
@@ -430,6 +418,26 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.stop_app_grant_wakes();
+        for id in self.app_control().user_views().shutdown() {
+            self.app_control().views().forget_session(&id);
+            self.app_control().views().keep_pumping(&id);
+        }
+        let browser_host = self.owned.kernel_browser_host.clone();
+        let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown())
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "kernel_browser.shutdown",
+                message: "MD-2: shutdown task failed".into(),
+            })
+            .and_then(|result| {
+                result.map_err(|message| DaemonError::LocalTransport {
+                    operation: "kernel_browser.shutdown",
+                    message,
+                })
+            });
+        let wakes = self.owned.agent_wakes.clone();
+        let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
             self.owned.withdraw_agent_interactions(session.id(), None)?;
@@ -477,10 +485,14 @@ impl KernelRuntimeState {
         let app_result = self
             .with_app_side_effect(|app| app.shutdown_cleanup())
             .await;
+        let history_result = self.provider_history_appends.flush_all().await;
+        browser_result?;
         controller_result?;
-        app_result
+        app_result?;
+        history_result
     }
 
+    #[cfg(test)]
     pub(crate) fn session_snapshot_projection(
         &self,
         session_id: &str,
@@ -508,6 +520,10 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+                &session,
+                unread_for_user_id.unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
+            ),
             metadata: crate::runtime::projection::ProjectionMetadata::new(
                 crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
                 last_event_id,
@@ -531,36 +547,12 @@ impl KernelRuntimeState {
                 attachment_id: attachment_id.to_string(),
             });
         }
-        let mut projection = self.session_snapshot_projection_for_user(
+        let projection = self.session_snapshot_projection_for_user(
             session_id,
             last_event_id,
             Some(attachment.owner_user_id()),
         )?;
-        projection.session = projection
-            .session
-            .redacted_for_user(attachment.owner_user_id());
-        projection.agent_activity.retain(|agent_id, _| {
-            projection
-                .session
-                .agents()
-                .iter()
-                .any(|agent| agent.id() == agent_id)
-        });
-        if projection
-            .provider_run
-            .as_ref()
-            .and_then(|run| run.agent_instance_id())
-            .is_some_and(|agent_id| {
-                !projection
-                    .session
-                    .agents()
-                    .iter()
-                    .any(|agent| agent.id() == agent_id)
-            })
-        {
-            projection.provider_run = None;
-        }
-        Ok(projection)
+        projection.redacted_for_user(attachment.owner_user_id(), &self.owned.durable_state_store)
     }
 }
 
@@ -590,10 +582,10 @@ fn transport_runtime_pump_interval_for_state(
 }
 
 fn provider_process_gc_interval_ms(idle_ttl_ms: u64, orphan_ttl_ms: u64) -> u64 {
-    idle_ttl_ms
-        .min(orphan_ttl_ms)
-        .min(MAX_PROVIDER_PROCESS_GC_INTERVAL_MS)
-        .max(MIN_PROVIDER_PROCESS_GC_INTERVAL_MS)
+    idle_ttl_ms.min(orphan_ttl_ms).clamp(
+        MIN_PROVIDER_PROCESS_GC_INTERVAL_MS,
+        MAX_PROVIDER_PROCESS_GC_INTERVAL_MS,
+    )
 }
 
 fn claim_periodic_sweep(next_at_ms: &AtomicU64, now_ms: u64, interval_ms: u64) -> bool {

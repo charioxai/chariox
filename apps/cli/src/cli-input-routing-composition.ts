@@ -1,4 +1,7 @@
-import { parseKeypress } from "@opentui/core"
+import { createComputerCommandController } from "./computer-command-controller.js"
+import { createAccessCommandController } from "./access-command-controller.js"
+import { cloudShellClient } from "./cloud-shell-client.js"
+import { StdinParser } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
@@ -7,6 +10,7 @@ import { createFocusedInteractionChoiceController } from "./focused-interaction-
 import { createGlobalKeyboardShortcutController } from "./global-keyboard-shortcut-controller.js"
 import { routeInteractionPastes } from "./interaction-paste-routing.js"
 import { createNormalPromptSubmitController } from "./normal-prompt-submit-controller.js"
+import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 import { createPromptKeyDownController } from "./prompt-keydown-controller.js"
 import { createPromptSubmitCoordinator } from "./prompt-submit-coordinator.js"
 import { createPromptTurnNavigationController } from "./prompt-turn-navigation-controller.js"
@@ -20,10 +24,11 @@ import {
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
 import { getSessionState } from "./session-api.js"
-import { sharedShellCommandForSlashCommand } from "./commands.js"
+import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import { renderPromptTranscript } from "./transcript-render.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 import { createWaitingRoomPromptBootstrapController } from "./waiting-room-prompt-bootstrap-controller.js"
 import { handleWaitingRoomSlashCommand } from "./waiting-room-slash-command-policy.js"
 import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
@@ -32,6 +37,13 @@ import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-c
 type AnyFn = (...args: any[]) => any
 
 export type CliInputRoutingCompositionDeps = {
+  hydrateComposer?: () => Promise<void>
+  hydratePromptInputHistory?: () => Promise<void>
+  bootstrapProviderLaunch?: import("./cli-types.js").BootstrapDeferredState["providerLaunch"]
+  cloudClient?: import("./cloud-client.js").CloudClient
+
+  roomWorkflowsOwnsInput?: () => boolean
+  handleRoomWorkflowsKey?: (event: import("./global-keyboard-shortcut-controller.js").GlobalKeyboardShortcutEvent) => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
   kernelApprovalOwnsInput?: () => boolean
@@ -40,6 +52,7 @@ export type CliInputRoutingCompositionDeps = {
   appLogger: any
   formatError: AnyFn
   isAttached: AnyFn
+  isSessionSelecting: AnyFn
   sessionState: AnyFn
   recordPromptAreaHistoryEntry: AnyFn
   promptTextController: {
@@ -51,8 +64,10 @@ export type CliInputRoutingCompositionDeps = {
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
   clearCommandCenter: AnyFn
+  onProviderAccountPromptBlocked?: (target: {sessionId: string; agentId: string}) => void
   flashFooter: AnyFn
   appendNotice: AnyFn
+  providerLoginInteractions: import("./provider-login-interaction-controller.js").ProviderLoginInteractionController
   requestExit: AnyFn
   requestWaitingRoom: AnyFn
   promptStopController: {
@@ -140,6 +155,7 @@ export type CliInputRoutingCompositionDeps = {
   setFatalError: AnyFn
   setStatusLine: AnyFn
   promptInputRefController: {
+    blur?: AnyFn
     plainText: AnyFn
     isFocused: AnyFn
     hasInput: AnyFn
@@ -163,6 +179,8 @@ export type CliInputRoutingCompositionDeps = {
   applyResponseLayout: AnyFn
   handleHotkeysToggleShortcut: AnyFn
   dialogOverlayOpen: AnyFn
+  providerAccountRecoveryOwnsInput?: () => boolean
+  handleProviderAccountRecoveryKey?: (event: import("./cli-stdin-key-controller.js").CliStdinKeyEvent) => boolean
   closeActiveDialogOverlay: AnyFn
   hasActiveTurnWork: AnyFn
   handleCommandCenterKey: AnyFn
@@ -200,13 +218,17 @@ export type CliInputRoutingCompositionDeps = {
   activateWaitingRoom: AnyFn
   startSessionFromWaitingRoomDefaults: AnyFn
   handleSessionBrowserKey: AnyFn
+  openProjectEnvironment: AnyFn
+  handleProjectEnvironmentKey: AnyFn
   handleManagedMachineDialogKey: AnyFn
   openManagedMachineDialog: AnyFn
   toggleWorkspaceScreen: AnyFn
+  toggleTranscriptDetails: AnyFn
   workflowScreenActive: AnyFn
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
   copyPromptSelection: AnyFn
+  clearTextSelection?: () => void
   removePromptAttachmentsForEdit: AnyFn
   removeLastPendingPromptAttachment: AnyFn
 }
@@ -227,9 +249,18 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
         : {}),
     }
   }
+  const computerCommands = createComputerCommandController({client: deps.client, appendNotice: deps.appendNotice})
+  const accessCommands = createAccessCommandController({
+    client: deps.client,
+    appendNotice: deps.appendNotice,
+  })
+  accessCommands.start()
+  onCleanup(() => accessCommands.stop())
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
+  let pendingNewProjectName = false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
+    getPromptText: () => deps.promptTextController.currentText(),
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
     recordPromptAreaHistoryEntry: deps.recordPromptAreaHistoryEntry,
@@ -286,9 +317,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
     client: deps.client,
     clientId: deps.options.clientId,
+    cloudAccountClient: cloudShellClient(deps.cloudClient),
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
     workspaceShellContext: deps.workspaceShellContext,
+    attachmentId: () => deps.attachmentState()?.id ?? null,
     setWorkspaceShellContext: (context) => {
       deps.setWorkspaceShellContext(context)
     },
@@ -317,6 +350,15 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
   const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
   handleSharedShellCommand = async (rawCommand) => {
+    const access = parseSlashCommand(rawCommand)
+    if (access?.kind === "computer") {
+      await computerCommands.handle(access.args)
+      return true
+    }
+    if (access?.kind === "access") {
+      await accessCommands.handle(access.args)
+      return true
+    }
     const shellCommand = sharedShellCommandForSlashCommand(rawCommand)
     if (!shellCommand) {
       return false
@@ -387,6 +429,20 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const normalPromptSubmitController = createNormalPromptSubmitController({
+    ...(deps.onProviderAccountPromptBlocked ? {onPromptRejected: deps.onProviderAccountPromptBlocked} : {}),
+    promptBlockReason: (agentId, alias) => {
+      const agent = deps.sessionState().agents.find((candidate: { id: string; alias?: string | null }) =>
+        alias ? candidate.alias?.toLowerCase() === alias.toLowerCase() : candidate.id === agentId,
+      )
+      const launch = deps.bootstrapProviderLaunch
+      if (launch && launch.sessionId === deps.sessionState().id && launch.isPending()
+        && (!launch.agentId || launch.agentId === agent?.id)) {
+        return "Agent is starting. Answer its pending request before sending a prompt."
+      }
+      const reason = agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined, agent.remote_execution, agent.model) : null
+      if (reason && agent) deps.onProviderAccountPromptBlocked?.({sessionId: deps.sessionState().id, agentId: agent.id})
+      return reason
+    },
     getPendingAttachments: deps.pendingAttachments,
     waitForPendingAgentFocusTransition: deps.waitForPendingAgentFocusTransition,
     getFocusedAgentId: deps.focusedAgentId,
@@ -435,23 +491,37 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const waitingRoomPromptBootstrapController = createWaitingRoomPromptBootstrapController({
     isAttached: deps.isAttached,
-    startSessionFromWaitingRoomDefaults: async () => {
-      if (pendingProjectRenameId) {
-        const projectId = pendingProjectRenameId
-        pendingProjectRenameId = null
-        const name = deps.promptTextController.currentText().trim()
-        await deps.renameWaitingRoomProject(projectId, name)
-        deps.promptTextController.setText("")
-        return
-      }
-      return deps.startSessionFromWaitingRoomDefaults()
-    },
+    isSessionSelecting: deps.isSessionSelecting,
+    startSessionFromWaitingRoomDefaults: deps.startSessionFromWaitingRoomDefaults,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
   })
 
+  const submitProjectNameEntry = (rawPrompt: string) => {
+    if (pendingNewProjectName) {
+      const name = rawPrompt.trim()
+      if (!name) { deps.flashFooter("Enter a project name", "error"); return true }
+      pendingNewProjectName = false
+      deps.setWaitingRoomState({ ...deps.waitingRoomState(), projectSelectionId: "new", projectNameDraft: name })
+      deps.promptTextController.setText("")
+      deps.promptInputRefController.blur?.()
+      deps.rebuildTranscript()
+      return true
+    }
+    if (pendingProjectRenameId) {
+      const projectId = pendingProjectRenameId
+      pendingProjectRenameId = null
+      return deps.renameWaitingRoomProject(projectId, rawPrompt.trim()).then(() => {
+        deps.promptTextController.setText("")
+        return true
+      })
+    }
+    return false
+  }
+
   const promptSubmitCoordinator = createPromptSubmitCoordinator({
+    submitProjectNameEntry,
     getPromptText: deps.promptInputRefController.plainText,
     ensureBackgroundPollersStarted: () => deps.ensureBackgroundPollersStarted(),
     getPendingAttachmentCount: () => deps.pendingAttachments().length,
@@ -487,6 +557,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     getFocusedInteraction: deps.focusedAgentInteraction,
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
+    getComposerText: () => deps.promptTextController.currentText(),
     getSelectedIndex: deps.interactionChoiceStore.getSelectedIndex,
     setSelectedIndex: deps.interactionChoiceStore.setSelectedIndex,
     getCustomReply: deps.interactionChoiceStore.customReply,
@@ -501,6 +572,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     applySessionState: deps.applySessionState,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
+    providerLogin: deps.providerLoginInteractions,
   })
   const submitFocusedInteractionChoice = focusedInteractionChoiceController.submitChoice
   const cycleFocusedInteractionChoice = focusedInteractionChoiceController.cycleChoice
@@ -513,6 +585,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const globalKeyboardShortcutController = createGlobalKeyboardShortcutController({
     handleKernelApprovalKey: (event) => deps.handleKernelApprovalKey?.(event) ?? false,
+    handleProviderAccountRecoveryKey: (event) => deps.handleProviderAccountRecoveryKey?.(event) ?? false,
     handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
     dialogOverlayOpen: deps.dialogOverlayOpen,
     requestExit: () => {
@@ -523,7 +596,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     },
     hasActiveTurnWork: deps.hasActiveTurnWork,
   })
-  useKeyboard(globalKeyboardShortcutController.handleKey)
+  useKeyboard(event => {
+    if (globalKeyboardShortcutController.handleKey(event)) return
+    if (!deps.kernelApprovalOwnsInput?.()) deps.handleRoomWorkflowsKey?.(event)
+  })
   const handleSigint = globalKeyboardShortcutController.handleSigint
 
   const promptKeyDownController = createPromptKeyDownController({
@@ -543,17 +619,20 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   const handlePromptKeyDown = (
     event: Parameters<typeof promptKeyDownController.handleKeyDown>[0],
   ) => {
+    void deps.hydrateComposer?.()
+    if (event.name === "up") void deps.hydratePromptInputHistory?.()
     if (deps.kernelApprovalOwnsInput?.()) {
       event.preventDefault?.()
       event.stopPropagation?.()
       return true
     }
     if (
-      pendingProjectRenameId
+      (pendingProjectRenameId || pendingNewProjectName)
       && event.eventType !== "release"
       && event.name === "escape"
     ) {
       pendingProjectRenameId = null
+      pendingNewProjectName = false
       deps.promptTextController.clear()
       deps.flashFooter("project rename canceled", "info")
       event.preventDefault?.()
@@ -577,6 +656,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const waitingRoomKeyController = createWaitingRoomKeyController({
+    ...(userAppViewsPrototypeEnabled() ? { beginCommand: () => {
+      deps.promptTextController.setText("/")
+      deps.promptInputRefController.focus()
+    } } : {}),
     isAttached: deps.isAttached,
     hotkeysOpen: deps.dialogOverlayOpen,
     promptFocused: deps.promptInputRefController.isFocused,
@@ -601,6 +684,18 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     rebuildTranscript: deps.rebuildTranscript,
     applyLifecycleAction: (action) => {
       void deps.applyWaitingRoomSessionLifecycleAction(action)
+    },
+    openProjectEnvironment: projectId => { void deps.openProjectEnvironment(projectId) },
+    pinProject: (projectId, pinned) => {
+      void deps.client.send({ SetProjectPinned: { project_id: projectId, pinned } })
+        .then(() => deps.flashFooter(pinned ? "Project pinned" : "Project unpinned", "info"))
+        .catch((error: unknown) => deps.flashFooter(error instanceof Error ? error.message : "Project pin failed", "error"))
+    },
+    beginNewProject: () => {
+      pendingNewProjectName = true
+      deps.promptTextController.setText(deps.waitingRoomState().projectNameDraft ?? "")
+      deps.promptInputRefController.focus()
+      deps.flashFooter("Name the new project and press Enter", "info")
     },
     beginProjectRename: (projectId, currentName) => {
       pendingProjectRenameId = projectId
@@ -671,10 +766,14 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   }
 
   const stdinKeyController = createCliStdinKeyController({
+    providerAccountRecoveryOwnsInput: deps.providerAccountRecoveryOwnsInput,
+    roomWorkflowsOwnsInput: () => deps.roomWorkflowsOwnsInput?.() ?? false,
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
-    parseKeypress: (chunk, options) => parseKeypress(chunk, options),
+    // Same settings as the renderer's own parser, so both agree on every chunk.
+    createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
+    handleProjectEnvironmentKey: deps.handleProjectEnvironmentKey,
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
     handleSessionBrowserKey: deps.handleSessionBrowserKey,
     requestExit: () => {
@@ -688,6 +787,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     commandCenterQuery: () => deps.commandCenterController.query(),
     clearCommandCenter: deps.clearCommandCenter,
     toggleWorkspaceScreen: deps.toggleWorkspaceScreen,
+    toggleTranscriptDetails: deps.toggleTranscriptDetails,
     isAttached: deps.isAttached,
     workflowScreenActive: deps.workflowScreenActive,
     cycleWorkflowCanvasNode: deps.cycleWorkflowCanvasNode,
@@ -696,6 +796,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.handleCycleAgentFocus()
     },
     copyPromptSelection: deps.copyPromptSelection,
+    ...(deps.clearTextSelection ? { clearTextSelection: deps.clearTextSelection } : {}),
     hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()

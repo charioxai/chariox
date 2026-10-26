@@ -9,6 +9,10 @@ use super::provider_liveness::clear_active_provider_run_session_pointer;
 
 impl DaemonApp {
     pub(crate) fn project_session_runtime_view(&self, session: &mut RuntimeSession) {
+        session.set_sudo_windows(
+            self.sudo_window_projection
+                .windows_for_session(session.id()),
+        );
         let prompt_session = session.clone();
         let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
         let projected_run_id = projected_active_provider_run_id(
@@ -73,23 +77,36 @@ impl DaemonApp {
             .map(str::to_string);
 
         if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-            let active_run = self.providers.get_run(current_active_run_id).or_else(|_| {
-                self.provider_run_projection
-                    .get(current_active_run_id)
-                    .ok_or_else(|| DaemonError::ProviderRunNotFound {
-                        provider_run_id: current_active_run_id.to_string(),
-                    })
-            })?;
+            let local = self.providers.get_run(current_active_run_id).ok();
+            let projected = local.is_none();
+            let active_run = local
+                .or_else(|| self.provider_run_projection.get(current_active_run_id))
+                .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                    provider_run_id: current_active_run_id.to_string(),
+                })?;
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == ProviderRunState::Running
                 && active_run.client_interface().is_chariox()
                 && !self.provider_run_has_prompt_work(session_id, &active_run)?
             {
-                let outcome = self
-                    .providers
-                    .park_run_provider_only(session_id, current_active_run_id)?;
-                clear_active_provider_run_session_pointer(self, session_id, outcome.run().id())?;
-                self.update_provider_run_projection(outcome.into_run());
+                if projected {
+                    // A leased run lives on its worker: only drop the focus.
+                    clear_active_provider_run_session_pointer(
+                        self,
+                        session_id,
+                        current_active_run_id,
+                    )?;
+                } else {
+                    let outcome = self
+                        .providers
+                        .park_run_provider_only(session_id, current_active_run_id)?;
+                    clear_active_provider_run_session_pointer(
+                        self,
+                        session_id,
+                        outcome.run().id(),
+                    )?;
+                    self.update_provider_run_projection(outcome.into_run());
+                }
             }
         }
 

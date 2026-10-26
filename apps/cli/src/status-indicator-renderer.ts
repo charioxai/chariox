@@ -57,7 +57,7 @@ function ensureStatusIndicatorRenderables(options: StatusIndicatorRenderOptions)
   options.state.closeText = new TextRenderable(options.renderer, { content: "", fg: theme.textMuted, wrapMode: "none" })
   options.box.add(options.state.openText)
   options.state.labelTexts = Array.from({ length: options.badgeWidth }, () => {
-    const text = new TextRenderable(options.renderer, { wrapMode: "none" })
+    const text = new TextRenderable(options.renderer, { wrapMode: "none", width: 1, minWidth: 1, flexShrink: 0 })
     options.box!.add(text)
     return text
   })
@@ -73,7 +73,7 @@ function ensureStatusLabelTextCount(options: StatusIndicatorRenderOptions, count
     options.box.remove(options.state.closeText.id)
   }
   while (options.state.labelTexts.length < count) {
-    const text = new TextRenderable(options.renderer, { wrapMode: "none" })
+    const text = new TextRenderable(options.renderer, { wrapMode: "none", width: 1, minWidth: 1, flexShrink: 0 })
     options.state.labelTexts.push(text)
     options.box.add(text)
   }

@@ -77,7 +77,20 @@ pub(crate) fn execute_search_workspace_directories_request(
     let limit = request.limit.unwrap_or(12).clamp(1, 50);
     let directories =
         search_workspace_directories(&request.query, limit, infer_waiting_room_launch_target())?;
-    Ok(LocalDaemonResponse::WorkspaceDirectoriesSearched { directories })
+    let workspace_git = directories
+        .iter()
+        .map(|path| crate::local::WorkspaceDirectoryGitSummary {
+            workspace_id: path.clone(),
+            repository_state: crate::runtime::workspace_git_common::workspace_repository_state(
+                path,
+            ),
+            workspace_label: crate::runtime::workspace_git_common::workspace_display_label(path),
+        })
+        .collect();
+    Ok(LocalDaemonResponse::WorkspaceDirectoriesSearched {
+        directories,
+        workspace_git,
+    })
 }
 
 pub(crate) fn execute_create_workspace_directory_request(

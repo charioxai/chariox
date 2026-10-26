@@ -19,7 +19,7 @@ use super::types::{
     ProviderRunState,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProviderRun {
     id: String,
     session_id: String,
@@ -29,6 +29,8 @@ pub struct RuntimeProviderRun {
     adapter_key: String,
     provider: String,
     account_profile: String,
+    #[serde(skip)]
+    pub(crate) resolved_provider_account: Option<crate::account_profile::ResolvedProviderAccount>,
     model: String,
     variant: Option<String>,
     usage_tokens_total: Option<u64>,
@@ -105,6 +107,8 @@ pub struct RuntimeProviderRun {
     #[serde(skip)]
     metadata_only_discovery: bool,
     #[serde(skip)]
+    utility_system_prompt_file: Option<PathBuf>,
+    #[serde(skip)]
     project_environment_revision: Option<String>,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
@@ -124,6 +128,16 @@ pub struct RuntimeProviderRun {
     last_activity_at_ms: u64,
 }
 
+impl std::fmt::Debug for RuntimeProviderRun {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeProviderRun")
+            .field("id", &self.id)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RuntimeProviderRun {
     pub fn new(
         id: impl Into<String>,
@@ -140,6 +154,7 @@ impl RuntimeProviderRun {
             adapter_key: request.adapter_key.clone(),
             provider: request.provider.clone(),
             account_profile: request.account_profile.clone(),
+            resolved_provider_account: request.resolved_provider_account.clone(),
             model: request.model.clone(),
             variant: request.variant.clone(),
             usage_tokens_total: None,
@@ -180,6 +195,7 @@ impl RuntimeProviderRun {
             read_only_discovery: false,
             turn_substitute: request.turn_substitute.clone(),
             metadata_only_discovery: false,
+            utility_system_prompt_file: None,
             project_environment_revision: request.project_environment_revision.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
@@ -217,6 +233,7 @@ impl RuntimeProviderRun {
             adapter_key: adapter_key.clone(),
             provider: adapter_key.clone(),
             account_profile: "default".to_string(),
+            resolved_provider_account: None,
             model: String::new(),
             variant: None,
             usage_tokens_total: None,
@@ -250,6 +267,7 @@ impl RuntimeProviderRun {
             read_only_discovery: false,
             turn_substitute: None,
             metadata_only_discovery: false,
+            utility_system_prompt_file: None,
             project_environment_revision: None,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
@@ -307,6 +325,9 @@ impl RuntimeProviderRun {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+        if self.metadata_only_discovery && self.adapter_key() == "claude" {
+            self.pty_args = self.metadata_only_claude_args();
+        }
     }
 
     pub fn set_variant(&mut self, variant: Option<String>) {
@@ -504,32 +525,57 @@ impl RuntimeProviderRun {
             )
         });
         if self.adapter_key() == "claude" {
-            self.pty_args = vec![
-                "-p".into(),
-                "--input-format".into(),
-                "stream-json".into(),
-                "--output-format".into(),
-                "stream-json".into(),
-                "--verbose".into(),
-                "--tools".into(),
-                "".into(),
-                "--strict-mcp-config".into(),
-                "--setting-sources".into(),
-                "".into(),
-                "--disable-slash-commands".into(),
-                "--permission-mode".into(),
-                "plan".into(),
-            ];
-            if self.model != "default" {
-                self.pty_args.extend([
-                    "--model".into(),
-                    self.model
-                        .strip_prefix("claude/")
-                        .unwrap_or(&self.model)
-                        .to_string(),
-                ]);
-            }
+            self.pty_args = self.metadata_only_claude_args();
         }
+    }
+
+    // Metadata utilities own a fresh CLI command. Keep that executable
+    // selection aligned when a definite model rejection triggers a retry.
+    fn metadata_only_claude_args(&self) -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            "-p".into(),
+            "--input-format".into(),
+            "stream-json".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--no-session-persistence".into(),
+            "--tools".into(),
+            "".into(),
+            "--strict-mcp-config".into(),
+            "--setting-sources".into(),
+            "".into(),
+            "--disable-slash-commands".into(),
+            "--permission-mode".into(),
+            "plan".into(),
+        ];
+        if self.model != "default" {
+            args.extend([
+                "--model".into(),
+                self.model
+                    .strip_prefix("claude/")
+                    .unwrap_or(&self.model)
+                    .to_string(),
+            ]);
+        }
+        if let Some(path) = &self.utility_system_prompt_file {
+            args.extend([
+                "--append-system-prompt-file".into(),
+                path.display().to_string(),
+            ]);
+        }
+        super::managed_isolation::fresh_provider_child_args(&self.pty_args, args)
+    }
+
+    /// Only the isolated Claude assessment clone receives this private input file.
+    /// It is kept so a model-retry rebuild of the fresh command still carries it.
+    pub(in crate::provider) fn append_claude_utility_system_prompt_file(
+        &mut self,
+        path: &std::path::Path,
+    ) {
+        debug_assert!(self.metadata_only_discovery && self.adapter_key() == "claude");
+        self.utility_system_prompt_file = Some(path.to_path_buf());
+        self.pty_args = self.metadata_only_claude_args();
     }
 
     pub(crate) fn read_only_discovery(&self) -> bool {
@@ -979,4 +1025,75 @@ mod tests {
             None,
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn mp11_runtime_provider_run_debug_excludes_execution_capabilities() {
+    let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "default");
+    let secret = "mp11-synthetic-execution-capability";
+    let launch = ProviderLaunchResult {
+        endpoint_mode: AgentEndpointMode::Managed,
+        process_label: "codex".into(),
+        pty_target: None,
+        pty_program: None,
+        pty_args: vec![secret.into()],
+        pty_env: BTreeMap::from([("UNRELATED".into(), secret.into())]),
+        pty_env_remove: Vec::new(),
+        working_directory: None,
+        structured_endpoint: None,
+    };
+    let mut run = RuntimeProviderRun::new("provider-run-1", &request, launch);
+    run.set_runtime_mcp_auth_token(Some(secret.into()));
+    assert!(!format!("{run:?}").contains(secret));
+}
+
+#[cfg(test)]
+#[test]
+fn metadata_utility_keeps_the_managed_launch_and_runs_in_an_empty_directory() {
+    let request = LaunchProviderRequest::new("session", "claude", "claude", "default", "default");
+    let managed_prefix = [
+        "--unshare-all",
+        "--setenv",
+        super::managed_isolation::MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
+        "1",
+        "--chdir",
+        "/work/project",
+        "--",
+        "/opt/claude",
+    ];
+    let launch = ProviderLaunchResult {
+        endpoint_mode: AgentEndpointMode::Managed,
+        process_label: "claude:managed-isolated".into(),
+        pty_target: None,
+        pty_program: Some("/usr/bin/bwrap".into()),
+        pty_args: managed_prefix
+            .iter()
+            .map(|arg| arg.to_string())
+            .chain(["--model".into(), "claude-sonnet-5-5".into()])
+            .collect(),
+        pty_env: BTreeMap::new(),
+        pty_env_remove: Vec::new(),
+        working_directory: None,
+        structured_endpoint: None,
+    };
+    let mut run = RuntimeProviderRun::new("provider-run-1", &request, launch);
+    run.set_metadata_only_discovery(std::env::temp_dir().join("metadata-utility-test"));
+    run.set_model("claude-haiku-4-5");
+    let args = run.pty_args();
+    let separator = args.iter().position(|arg| arg == "--").expect("separator");
+    assert_eq!(run.pty_program(), Some("/usr/bin/bwrap"));
+    assert_eq!(args[separator + 1], "/opt/claude");
+    assert_eq!(
+        args[separator + 2..separator + 4],
+        ["-p", "--input-format"],
+        "the utility child must start the provider with its own tool-free arguments"
+    );
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--model", "claude-haiku-4-5"]));
+    assert!(
+        args.windows(2).any(|pair| pair == ["--chdir", "/tmp"]),
+        "the utility child must not start inside the workspace: {args:?}"
+    );
 }

@@ -10,7 +10,7 @@ export const SHUTDOWN_SCENARIOS = Object.freeze({
   shutdown_idle_30m: Object.freeze({ mode: "idle_stop", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 1_800 }, minimumSeconds: 2_400 }),
   shutdown_minimum_3h: Object.freeze({ mode: "minimum_runtime", policy: { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 900 }, minimumSeconds: 12_600 }),
   shutdown_disabled: Object.freeze({ mode: "disabled", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: null }, minimumSeconds: 600 }),
-  shutdown_keep_running: Object.freeze({ mode: "keep_running", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_500 }),
+  shutdown_keep_running: Object.freeze({ mode: "keep_running", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_800 }),
   shutdown_restart_reconciliation: Object.freeze({ mode: "restart_reconciliation", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_800 }),
   shutdown_all_clients_disconnected: Object.freeze({ mode: "all_clients_disconnected", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }, minimumSeconds: 1_800 }),
   shutdown_manual: Object.freeze({ mode: "manual", policy: { minimumRuntimeSeconds: 0, idleDelaySeconds: null }, minimumSeconds: 600 }),
@@ -25,6 +25,7 @@ export const SHUTDOWN_TRIGGER_LIMITS = Object.freeze({
   pollMs: 10_000,
   maximumObservations: 64,
   maximumOperations: 100,
+  maximumOperationObservations: 400,
 })
 
 const FIXED_COMPUTE_CLASS = "agent-small"

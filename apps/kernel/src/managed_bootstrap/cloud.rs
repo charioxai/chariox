@@ -257,9 +257,7 @@ enum PostError {
 
 fn map_http_error(error: ureq::Error) -> PostError {
     match error {
-        ureq::Error::Status(status, _) if matches!(status, 400 | 401 | 403 | 409 | 410 | 422) => {
-            PostError::Rejected
-        }
+        ureq::Error::Status(400 | 401 | 403 | 409 | 410 | 422, _) => PostError::Rejected,
         ureq::Error::Status(status, _) => PostError::Failure(cloud_error(format!(
             "Cloud bootstrap request failed with HTTP {status}"
         ))),

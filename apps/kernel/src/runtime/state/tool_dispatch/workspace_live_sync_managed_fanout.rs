@@ -12,7 +12,7 @@ pub(super) fn workspace_live_sync_runtime_tool_applied(
 }
 
 pub(super) fn workspace_live_sync_managed_mode_before_snapshots(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     operations: &[ManagedPatchOperation],
 ) -> Result<BTreeMap<PathBuf, Option<Vec<u8>>>, DaemonError> {
     let mut snapshots = BTreeMap::new();
@@ -24,7 +24,7 @@ pub(super) fn workspace_live_sync_managed_mode_before_snapshots(
             continue;
         }
         snapshots.insert(
-            path.clone(),
+            path.to_path_buf(),
             workspace_live_sync_managed_read_optional_bytes(workspace_root, &path)?,
         );
     }
@@ -37,15 +37,15 @@ fn workspace_live_sync_managed_mode_patch_operation_paths(
     match operation {
         ManagedPatchOperation::Add { path, .. }
         | ManagedPatchOperation::Update { path, .. }
-        | ManagedPatchOperation::Delete { path } => vec![path.clone()],
+        | ManagedPatchOperation::Delete { path } => vec![path.to_path_buf()],
         ManagedPatchOperation::Move {
             from_path, to_path, ..
-        } => vec![from_path.clone(), to_path.clone()],
+        } => vec![from_path.to_path_buf(), to_path.to_path_buf()],
     }
 }
 
 pub(super) fn workspace_live_sync_managed_mode_patch_file_changes(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     operations: &[ManagedPatchOperation],
     before_snapshots: BTreeMap<PathBuf, Option<Vec<u8>>>,
 ) -> Result<Vec<crate::git_observer::WorkspaceLiveSyncFileChange>, DaemonError> {
@@ -56,7 +56,7 @@ pub(super) fn workspace_live_sync_managed_mode_patch_file_changes(
             | ManagedPatchOperation::Update { path, .. }
             | ManagedPatchOperation::Delete { path } => {
                 Ok(workspace_live_sync_managed_mode_file_change(
-                    path.clone(),
+                    path.to_path_buf(),
                     None,
                     before_snapshots.get(path).cloned().flatten(),
                     workspace_live_sync_managed_read_optional_bytes(workspace_root, path)?,
@@ -65,8 +65,8 @@ pub(super) fn workspace_live_sync_managed_mode_patch_file_changes(
             ManagedPatchOperation::Move {
                 from_path, to_path, ..
             } => Ok(workspace_live_sync_managed_mode_file_change(
-                to_path.clone(),
-                Some(from_path.clone()),
+                to_path.to_path_buf(),
+                Some(from_path.to_path_buf()),
                 before_snapshots.get(from_path).cloned().flatten(),
                 workspace_live_sync_managed_read_optional_bytes(workspace_root, to_path)?,
             )),
@@ -190,7 +190,7 @@ fn remote_state_file_changes_for_paths(
 
 fn remote_workspace_live_sync_optional_state_bytes(
     states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<Option<Vec<u8>>, DaemonError> {
     match remote_workspace_live_sync_state_for_path(states, path) {
         Some(state) => remote_workspace_live_sync_state_bytes(state),
@@ -240,8 +240,8 @@ pub(super) fn workspace_live_sync_managed_mode_file_change(
 }
 
 pub(super) fn workspace_live_sync_managed_read_optional_bytes(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
 ) -> Result<Option<Vec<u8>>, DaemonError> {
     workspace_live_sync_validate_patch_path(workspace_root, path)?;
     let full_path = workspace_root.join(path);

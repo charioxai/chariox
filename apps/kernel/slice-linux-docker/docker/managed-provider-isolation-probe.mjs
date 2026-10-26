@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { publicRuntimeDiagnostic, publicProviderRun } from "./public-runtime-diagnostics.mjs"
 
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
@@ -184,7 +185,7 @@ try {
   assert.ok(
     launched?.ProviderRunLaunched?.provider_run ||
       launched?.ProviderRunLaunchAccepted?.provider_run,
-    `kernel did not launch the real Codex provider: ${JSON.stringify(launched)}`,
+    `kernel did not launch the real Codex provider: ${publicRuntimeDiagnostic(launched)}`,
   )
   const providerRun = launched.ProviderRunLaunched?.provider_run ??
     launched.ProviderRunLaunchAccepted.provider_run

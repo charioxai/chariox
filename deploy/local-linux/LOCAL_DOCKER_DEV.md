@@ -174,3 +174,106 @@ hold their inodes; `/tmp` clears them on reboot.
 `deploy/local-linux/provision-docker-admission-locks.py`. The service provisions
 at boot before managed kernel activation. Manual repair follows the same rule
 about stopping every kernel before removing an unsafe inode.
+
+## MP-02/MP-03/MP-08/MP-10/MP-11 isolated storage qualification
+
+For the fresh-VM replay of normal Start after saved-home removal, including
+the exact enrollment, operator fixture and Save/Backup commands, follow
+[MP-03/MP-08/MP-10/MP-11 storage restore replay](STORAGE_RESTORE_REPLAY.md).
+
+Use a disposable Linux VM for this rootful DEV grant. Keep source, public
+binaries, runtime state, and evidence in separate directories. Install the
+public worker through the standard Dockerfile and pin its actual kernel hash,
+runtime-source-revision label, and immutable image ID. Obtain standalone public
+Node 22 and Buildx bytes, verify their published checksums, and retain those
+pins. The installer checks executable ancestry and the loader before use.
+No provider account is needed for this storage fixture. DEV enrollment remains
+unsigned; this recipe does not replace signed Path-1 deployment or its matrix.
+
+1. Create an ordinary account with legitimate Docker access as host operator.
+   Run the enrollment command above as root. It refuses foreign, writable, or
+   symlinked destination ancestry before writing into it; never repair foreign
+   protected roots to get a passing run.
+2. Provision admission locks using the documented product helper as root:
+   `python3 deploy/local-linux/provision-docker-admission-locks.py`.
+   Re-run it while holding an existing lock to check inode preservation. This
+   manual DEV preparation does not install the signed deployment's boot unit;
+   re-run the product helper after a host reboot before starting kernels.
+3. Build the matching kernel client with the frozen dependency lockfile and
+   `pnpm --workspace-root run build:kernel-client`. Keep source provenance and
+   native binary hashes in the receipt; protocol equality alone is insufficient.
+4. On Ubuntu with restricted user namespaces, load the shipped
+   `apps/kernel/slice-linux-docker/chariox-slice-provider.apparmor` through
+   `apparmor_parser -r` as root and select
+   `CHARIOX_SLICE_APPARMOR_PROFILE=chariox-slice-provider` for the replay.
+   Keep the isolation probe enabled; its failure is a RED prerequisite.
+5. Run the executable replay below as the enrolled ordinary user. It verifies
+   public DEV enrollment, leaves broker launch to the kernel, and clears ambient
+   provider configuration. Use a fresh runtime/evidence directory for each run.
+
+```sh
+CHARIOX_STORAGE_QUALIFICATION_ISOLATED_HOST=1 \
+M20_KERNEL_BINARY=/absolute/public/chariox-kernel \
+M20_SLICE_IMAGE=sha256:VERIFIED_WORKER_IMAGE_ID \
+M20_RUNTIME_ROOT="$HOME/.chariox/dev/storage-qualification/run-1" \
+M20_ARTIFACT_DIR="$HOME/.codex/evidence/storage-qualification/run-1" \
+PATH=/absolute/public/node-directory:/usr/bin:/bin \
+bash deploy/local-linux/replay-storage-qualification.sh
+```
+
+The replay retains the existing M20 assertions: real browser storage, installed
+editor/configuration/document. For protected DEV archives, the ordinary user
+cannot read the archive or inject corruption directly. On the isolated VM only,
+the operator may install `storage-qualification-fixture.py` as a root-owned
+mode-0555 public file under a root-controlled directory outside source. Grant
+the enrolled fixture user passwordless sudo for only `/usr/bin/python3` with
+that exact file and each of the arguments `verify`, `corrupt`, and `quarantine`.
+Use a root-owned mode-0440 sudoers drop-in validated with `visudo -cf`.
+Set `M20_STORAGE_FIXTURE_HELPER` to that absolute installed file in the replay.
+Its hash is retained in the source receipt. The helper accepts bounded kernel
+state metadata on stdin, requires the caller's enrolled protected artifact root,
+pins the user-owned kernel manifest and root-owned private capture metadata
+and archive through no-follow descriptors, and never prints
+archive members or contents. Corruption additionally requires the direct-root
+operator to pin the exact disposable backup ID/generation, digest, size and
+inode in a root-owned authorization file, using the separate command in the
+restore replay runbook. It is never included in the user sudo grant. The replay
+waits up to ten minutes for that pin after recording the candidate response;
+a user-supplied `corrupt-candidate` name cannot authorize another backup.
+Restore and integrity rejection
+still run through the normal kernel/broker. This is operator fault injection
+on a disposable fixture VM, not a product permission or archive-export path.
+
+The complete replay covers
+editor/configuration/document, save plus container/home-volume destruction,
+recreation, external-service invalidation, offline service-worker behavior,
+corrupt-backup rejection (protected archives remain in place), and repeated
+immutable named-backup restore. A RED
+run's assertion list is planned coverage, not passed coverage: inspect `ok`,
+first failure, reached phases, and cleanup independently. Sample available
+memory and free disk every five seconds on the VM; forecast one 2 GiB slice,
+the 512 MiB helper, the home kernel, and capture disk before starting. Send
+SIGTERM to the drill process if its owned work approaches the recovery reserve;
+the interruption lifecycle settles provisioning and performs owned cleanup.
+
+After each run verify the manifest's cleanup and independently inspect exact
+owned containers, volumes, image references, ports, and state roots. Restart the
+isolated Docker daemon only after all drill-owned kernels and helpers are gone,
+then replay to prove the regenerated socket is accepted for the same engine.
+Never restart a shared daemon. Record exact source/binary/image identities and
+exit codes for every run; no passing run closes an MP item.
+
+The current DEV installer has no uninstall command. `install-root.sh uninstall`
+manages the distinct signed App runtime installation and must not be used as a
+DEV slice uninstaller. Preserve DEV enrollment and protected state until a
+reviewed removal procedure exists, or let the coordinator destroy this entire
+disposable VM after retained evidence and runtime-identity cleanup. Do not
+recursively remove a protected storage parent or delete shared images/locks.
+
+MP-03/MP-08/MP-10/MP-11 qualification limitation: a fresh kernel state starts
+Slice numbering again at `slice-1`, while the per-user DEV enrollment may still
+retain that Slice's protected private home and identity backup after Delete.
+If the new replay refuses `EEXIST`, preserve the retained state and report it.
+For independent fixture preparation use a fresh ordinary user with a separate
+supported enrollment on the isolated host. This avoids adoption or repair; it
+does not establish same-user repeated fresh-kernel cleanup or DEV uninstall.

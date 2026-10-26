@@ -661,7 +661,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
         _ => panic!("unexpected local response"),
     }
 
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         harness.pump_transport_runtime();
         let delivered = harness.with_app(|app| {
@@ -943,12 +943,12 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
     // delivery holds the shared agent.
     let shared_agent = harness.spawn_workflow_test_agent(session.id(), "audit-shared-agent");
     let alpha_worktree = WorkflowCollisionDrillWorktree::create(
-        std::env::temp_dir()
+        crate::test_support::test_workspace_root()
             .join("chariox-collision-drill-alpha")
             .join(session.id()),
     );
     let beta_worktree = WorkflowCollisionDrillWorktree::create(
-        std::env::temp_dir()
+        crate::test_support::test_workspace_root()
             .join("chariox-collision-drill-beta")
             .join(session.id()),
     );
@@ -1472,7 +1472,7 @@ fn local_request_api_serializes_two_workflows_sharing_an_agent_inner() {
         LocalDaemonResponse::WorkflowRunCancelled { .. } => {}
         _ => panic!("unexpected local response"),
     }
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         harness.pump_transport_runtime();
         let promoted = harness.with_app(|app| {
@@ -1508,10 +1508,10 @@ fn local_request_api_runs_independent_workflows_concurrently_inner() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
-    let first_worktree = std::env::temp_dir()
+    let first_worktree = crate::test_support::test_workspace_root()
         .join("chariox-independent-workflow-first")
         .join(session.id());
-    let second_worktree = std::env::temp_dir()
+    let second_worktree = crate::test_support::test_workspace_root()
         .join("chariox-independent-workflow-second")
         .join(session.id());
     std::fs::create_dir_all(&first_worktree).expect("first worktree should exist");

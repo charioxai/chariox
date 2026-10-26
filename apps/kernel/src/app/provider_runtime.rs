@@ -209,6 +209,10 @@ impl DaemonApp {
             self.providers
                 .apply_runtime_binding(started.run.id(), binding)?;
         }
+        ProviderProcessTracker::bind_endpoint_identity(
+            &self.provider_process_tracking,
+            &started.run,
+        );
         self.finish_provider_launch_success(&started.run)
     }
 
@@ -414,12 +418,17 @@ impl DaemonApp {
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
-                Some(run.account_profile().to_string()),
+                Some(crate::account_profile::provider_account_selection_for_run(&run).to_string()),
                 run.resume_state().clone(),
                 Some(run.id()),
                 None,
             )?;
-            let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            if !self
+                .prompt_state_owner
+                .has_idle_queue_promotion(run.session_id(), agent_id)
+            {
+                let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            }
             crate::app::KernelSessionReadService::new(self).session_snapshot(run.session_id())?;
         }
         self.update_provider_run_projection(run.clone());
@@ -433,6 +442,7 @@ impl DaemonApp {
         self.launch_provider_with_lease(request, false)
     }
 
+    #[cfg(test)]
     pub(crate) fn launch_leased_provider(
         &mut self,
         request: LaunchProviderRequest,
@@ -490,6 +500,7 @@ impl DaemonApp {
         workflow_tools_enabled: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
+        crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let initial_run = self.providers.launch_run_detached(request)?;
         let run_id = initial_run.id().to_string();
@@ -521,7 +532,10 @@ impl DaemonApp {
                     run.provider(),
                     Some(run.model().to_string()),
                     run.variant().map(str::to_string),
-                    Some(run.account_profile().to_string()),
+                    Some(
+                        crate::account_profile::provider_account_selection_for_run(&run)
+                            .to_string(),
+                    ),
                     run.resume_state().clone(),
                     Some(run.id()),
                     None,

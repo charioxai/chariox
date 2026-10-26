@@ -62,7 +62,13 @@ async fn revoked_input_helper(kind: &str) {
     let authorized = state.with_external_command_authority(Some((&grant, &request)));
     let command = Command::ComputerInput {
         action_id: "input-action".into(),
-        actor_id: crate::session::agent_environment_actor_id(&room.agent_id),
+        // MP-11 #904: agent clipboard writes are refused before queueing; the
+        // queued-helper recheck still covers a human clipboard write.
+        actor_id: if kind == "clipboard" {
+            crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID)
+        } else {
+            crate::session::agent_environment_actor_id(&room.agent_id)
+        },
         runtime_generation: 1,
         viewport_revision: 1,
         desktop_pixel_width: 1280,
@@ -179,13 +185,14 @@ async fn revoked_native_recovery(discovery: bool) {
         let request = request.clone();
         let grant = grant.clone();
         async move {
-            state
-                .launch_remote_native_provider_run_with_grant(
-                    &request,
-                    crate::session::DEFAULT_LOCAL_USER_ID,
-                    Some(&grant),
-                )
-                .await
+            let launch = state.launch_remote_native_provider_run_with_grant(
+                &request,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                Some(&grant),
+            );
+            // MP-08 / MP-10 / MP-11: the stale-binding callbacks must fit the default task stack.
+            assert!(std::mem::size_of_val(&launch) <= 64 * 1024);
+            launch.await
         }
     });
     timeout(

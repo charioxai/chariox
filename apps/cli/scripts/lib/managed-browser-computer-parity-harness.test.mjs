@@ -1,3 +1,4 @@
+import { scanSyntheticCredentialSurfaces } from "./managed-parity-credential-evidence.mjs"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -134,6 +135,8 @@ function successfulResult(step, input) {
     syntheticValueInserted: true,
     valueObservedOnlyAtTarget: true,
     leakScan: { arguments: 0, logs: 0, evidence: 0, prompts: 0, fixtures: 0 },
+    vaultValidation: { status: "measured", runId: input.runId, storagePath: "kernel-vault", inputPath: "credential-backed-target-input" },
+    leakValidation: scanSyntheticCredentialSurfaces({ marker: "synthetic-vault-marker-v1", runId: input.runId, surfaces: Object.fromEntries(["arguments", "logs", "evidence", "prompts", "fixtures", "observations"].map(name => [name, []])) }),
   }
   if (step.endsWith(".git")) return { ...binding, available: true, source: "product-managed" }
   if (step.endsWith(".reconnect")) return { ...binding, faultInjected: true, reconnected: true, duplicateActions: 0, duplicateBrowsers: 0 }
@@ -444,4 +447,22 @@ test("cleanup command success cannot hide residual resources or leak evidence", 
     assert.equal(report.failure.code, "cleanup_incomplete")
     assert.equal(report.cleanup.clean, false)
   }
+})
+
+test("MP11 clipboard-only Vault claims and incomplete scan receipts cannot pass", async () => {
+  for (const leakScan of [{}, { arguments: 0, logs: 0, evidence: 0, prompts: 0, fixtures: 0 }]) {
+    const injected = transport({ mutate: { "selkies.vault": () => ({ ...target("selkies"), syntheticValueInserted: true, valueObservedOnlyAtTarget: true, leakScan }) } })
+    const report = await runManagedBrowserComputerParityHarness({ config: config(), transport: injected })
+    assert.equal(report.status, "failed", "unmeasured Vault/leak evidence was accepted")
+  }
+})
+
+
+test("MP11 measured injected synthetic marker leak fails acceptance", async () => {
+  const marker = "synthetic-vault-marker-v1"
+  const scan = scanSyntheticCredentialSurfaces({ marker, runId: config().runId, surfaces: { arguments: [], logs: [`injected leak: ${marker}`], evidence: [], prompts: [], fixtures: [], observations: [] } })
+  const injected = transport({ mutate: { "selkies.vault": () => ({ ...successfulResult("selkies.vault", { displayBackend: "selkies", runId: config().runId }), leakValidation: scan }) } })
+  const report = await runManagedBrowserComputerParityHarness({ config: config(), transport: injected })
+  assert.equal(report.status, "failed")
+  assert.ok(JSON.stringify(report).includes("synthetic_vault_leak_detected"))
 })

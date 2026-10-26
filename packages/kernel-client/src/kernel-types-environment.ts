@@ -76,6 +76,18 @@ export type RoomEnvironmentInputTarget =
 
 export type RoomEnvironmentActionArguments =
   | {
+      kind: "keyboard_hold"
+      duration_ms: number
+    }
+  | {
+      kind: "pointer_hold"
+      x: number
+      y: number
+      button: "left" | "middle" | "right"
+      duration_ms: number
+      viewport_revision: number
+    }
+  | {
       kind: "pointer_click"
       x: number
       y: number
@@ -319,4 +331,9 @@ export type RoomEnvironmentActionCancellationUpdatedResponse = {
     outcome: RoomEnvironmentActionCancellationOutcome
     environment: RoomEnvironmentSnapshot
   }
+}
+
+// MP-08/MP-10/MP-11: opaque metadata and bounded bytes from one shared service.
+export type RoomBrowserArtifactResponse = {
+  RoomBrowserArtifact: { result: { ok: boolean; payload: Record<string, unknown> } }
 }

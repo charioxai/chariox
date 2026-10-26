@@ -153,3 +153,35 @@ test("live persistence drill wires exact workspace selection without reducing pe
     "external service session",
   ]) assert.ok(source.includes(retainedAssertion), `missing persistence assertion: ${retainedAssertion}`)
 })
+
+test("MP-08/MP-10/MP-11 local DEV uses kernel-owned enrollment without an injected broker socket", async (t) => {
+  const tree = await scratch(t)
+  let verified = 0
+  const fixture = await prepareBrowserStateDrillWorkspace({
+    env: { M20_LOCAL_DEV_ENROLLMENT: "1" },
+    repositoryRoot: tree.repositoryRoot,
+    homeRoot: tree.homeRoot,
+    verifyEngineAccess: async () => { throw new Error("no direct engine fixture") },
+    verifyLocalDevEnrollment: async () => { verified++ },
+  })
+  assert.equal(verified, 1)
+  assert.deepEqual(fixture, { kind: "broker", lease: null, workspace: null, localDev: true })
+  assert.deepEqual(browserStateDrillWorkspaceSliceOptions(fixture), {})
+  await assert.rejects(prepareBrowserStateDrillWorkspace({
+    env: { M20_LOCAL_DEV_ENROLLMENT: "1" },
+    repositoryRoot: tree.repositoryRoot, homeRoot: tree.homeRoot,
+    verifyLocalDevEnrollment: async () => { throw new Error("foreign enrollment") },
+  }), /foreign enrollment/)
+  await assert.rejects(prepareBrowserStateDrillWorkspace({
+    env: { M20_LOCAL_DEV_ENROLLMENT: "1", M20_WORKSPACE_ROOT: tree.workspaceRoot },
+    repositoryRoot: tree.repositoryRoot, homeRoot: tree.homeRoot,
+  }), /cannot be combined/)
+})
+
+test("MP-08/MP-10/MP-11 local DEV finalization rejects a host publication and retains volume mode", async () => {
+  const fixture = { kind: "broker", lease: null, workspace: null, localDev: true }
+  assert.equal(await finalizeBrowserStateDrillWorkspace({ fixture, slice: {}, repositoryRoot: "/unused" }), fixture)
+  for (const slice of [{ workspace_mount: "/host/workspace" }, { development: { kind: "empty" } }]) {
+    await assert.rejects(finalizeBrowserStateDrillWorkspace({ fixture, slice, repositoryRoot: "/unused" }), /local DEV/)
+  }
+})

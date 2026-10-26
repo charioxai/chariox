@@ -399,7 +399,13 @@ async fn browser_health_receipts_classify_routes_and_keep_transient_failures_inc
         let before = state.room_environment_snapshot(&room).unwrap();
         // This is the same receipt consumer called by refresh after real relay
         // delivery. Typed errors cannot be produced by the local stdio tool.
-        state.observe_room_browser_health_receipt(&room, before.runtime_generation, Err(error));
+        state.observe_room_browser_health_receipt(
+            &room,
+            state
+                .admit_room_browser_health_probe(&room, before.runtime_generation)
+                .unwrap(),
+            Err(error),
+        );
         let after = state.room_environment_snapshot(&room).unwrap();
         if lost {
             assert_eq!(after.lifecycle, Lifecycle::Degraded);
@@ -449,4 +455,182 @@ async fn local_room_keeps_live_app_authority_on_route_loss_and_retains_intent_on
     assert!(call.is_cancelled());
     assert!(views.binding_state(&room, "app").is_none());
     assert_eq!(views.next_cold_start_attempt(&room), Some(binding));
+}
+
+// MP-08/MP-10: a worker can restart its controller during a background probe.
+// The receipt must attribute that loss without projecting stale tabs/viewport.
+#[tokio::test]
+async fn browser_health_receipt_attributes_controller_generation_without_stale_projection() {
+    use crate::runtime::browser_controller_process::BrowserControllerReconciliation;
+    use crate::transport::room_browser_controller::RoomBrowserControllerResult;
+    let (state, room, _tool, _) = fixture().await;
+    let before = state.room_environment_snapshot(&room).unwrap();
+    let mut process = state
+        .ensure_browser_controller_process_started(&room)
+        .await
+        .unwrap()
+        .unwrap();
+    process.runtime_generation += 1;
+    let reconciliation = BrowserControllerReconciliation {
+        process,
+        // Deliberately stale/empty browser data: background health cannot own it.
+        browser: serde_json::from_value(serde_json::json!({
+            "browser_generation": 1, "event_cursor": 1, "tabs": [],
+            "focused_target_id": null,
+            "resource_inventory": {"browser_ids": [], "profile_ids": []},
+            "viewport": {"css_width": 10, "css_height": 10, "device_scale_factor": 1,
+                "desktop_pixel_width": 10, "desktop_pixel_height": 10}
+        }))
+        .unwrap(),
+    };
+    let admission = state
+        .admit_room_browser_health_probe(&room, before.runtime_generation)
+        .unwrap();
+    let receipt = || {
+        Ok(RoomBrowserControllerResult::Reconciled {
+            reconciliation: Some(reconciliation.clone()),
+        })
+    };
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
+    let attributed = state.room_environment_snapshot(&room).unwrap();
+    let controller = attributed
+        .health
+        .iter()
+        .find(|health| health.component == Component::BrowserController)
+        .unwrap();
+    assert_eq!(controller.state, Health::Starting);
+    assert_eq!(
+        controller.diagnostic_code.as_deref(),
+        Some("controller_restarted")
+    );
+    assert_eq!(attributed.lifecycle, Lifecycle::Degraded);
+    assert_eq!(attributed.tabs, before.tabs);
+    assert_eq!(attributed.viewport, before.viewport);
+    assert_eq!(attributed.runtime_generation, before.runtime_generation);
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap(),
+        attributed,
+        "same controller generation must not reopen recovery or clear its fence"
+    );
+    state.stop_room_environment(&room).unwrap();
+    let stopped = state.room_environment_snapshot(&room).unwrap();
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap(),
+        stopped,
+        "late controller receipts cannot resurrect a stopped Room"
+    );
+    state
+        .start_room_environment(&room, before.viewport)
+        .unwrap();
+    state
+        .transition_room_environment(&room, Lifecycle::Ready)
+        .unwrap();
+    let newer = state.room_environment_snapshot(&room).unwrap();
+    state.observe_room_browser_health_receipt(&room, admission, receipt());
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap(),
+        newer,
+        "late controller receipts cannot mutate a newer Room generation"
+    );
+}
+
+// MP-08 / MP-10: A foreground recovery supersedes an in-flight health receipt.
+#[tokio::test]
+async fn browser_health_receipt_after_foreground_recovery_cannot_reopen_recovery() {
+    use crate::runtime::browser_controller_process::BrowserControllerReconciliation;
+    use crate::transport::room_browser_controller::RoomBrowserControllerResult;
+    let (state, room, _tool, _) = fixture().await;
+    let before = state.room_environment_snapshot(&room).unwrap();
+    let process = state
+        .ensure_browser_controller_process_started(&room)
+        .await
+        .unwrap()
+        .unwrap();
+    let old_receipt = BrowserControllerReconciliation {
+        process: process.clone(),
+        browser: serde_json::from_value(serde_json::json!({
+            "browser_generation": 1, "event_cursor": 1, "tabs": [],
+            "focused_target_id": null,
+            "resource_inventory": {"browser_ids": [], "profile_ids": []},
+            "viewport": {"css_width": 1280, "css_height": 800, "device_scale_factor": 1,
+                "desktop_pixel_width": 1280, "desktop_pixel_height": 800}
+        }))
+        .unwrap(),
+    };
+    let admission = state
+        .admit_room_browser_health_probe(&room, before.runtime_generation)
+        .unwrap();
+    let mut newer = old_receipt.clone();
+    newer.process.runtime_generation += 1;
+    newer.browser.browser_generation += 1;
+    newer.browser.tabs = vec![
+        crate::runtime::browser_controller_process::BrowserControllerTabSnapshot {
+            target_id: "recovered-target".into(),
+            document_id: "recovered-document".into(),
+            url: "https://fixture.test/recovered".into(),
+            title: "Recovered page".into(),
+        },
+    ];
+    newer.browser.focused_target_id = Some("recovered-target".into());
+    let fresh = newer.clone();
+    state
+        .observe_browser_controller_reconciliation(&room, newer)
+        .unwrap();
+    let recovered = state.room_environment_snapshot(&room).unwrap();
+    assert_eq!(recovered.runtime_generation, before.runtime_generation);
+    assert_eq!(recovered.lifecycle, Lifecycle::Ready);
+    assert!(recovered
+        .health
+        .iter()
+        .all(|health| health.state == Health::Ready));
+    state.observe_room_browser_health_receipt(
+        &room,
+        admission,
+        Ok(RoomBrowserControllerResult::Reconciled {
+            reconciliation: Some(old_receipt),
+        }),
+    );
+    assert_eq!(state.room_environment_snapshot(&room).unwrap(), recovered,
+        "late controller A receipt must not degrade recovered controller B or invalidate references");
+    // Delayed loss diagnostics must also be fenced after the foreground recovery.
+    state.observe_room_browser_health_receipt(
+        &room,
+        admission,
+        Err(crate::error::DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser_debugger_unavailable".into(),
+        }),
+    );
+    assert_eq!(state.room_environment_snapshot(&room).unwrap(), recovered);
+    assert_eq!(recovered.tabs.len(), 1);
+    let binding = state
+        .room_environment_controller_tab_binding(&room, &recovered.tabs[0].tab_id)
+        .unwrap();
+    assert_eq!(binding.document_id, "recovered-document");
+    assert_eq!(binding.runtime_target_id, "recovered-target");
+    // The foreground B observation must still be authoritative afterward.
+    let same_generation_admission = state
+        .admit_room_browser_health_probe(&room, before.runtime_generation)
+        .unwrap();
+    assert_eq!(
+        state
+            .observe_browser_controller_reconciliation(&room, fresh)
+            .unwrap(),
+        recovered
+    );
+    state.observe_room_browser_health_receipt(
+        &room,
+        same_generation_admission,
+        Err(crate::error::DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser_debugger_unavailable".into(),
+        }),
+    );
+    assert_eq!(
+        state.room_environment_snapshot(&room).unwrap(),
+        recovered,
+        "even an unchanged-generation foreground observation supersedes an older health probe"
+    );
 }

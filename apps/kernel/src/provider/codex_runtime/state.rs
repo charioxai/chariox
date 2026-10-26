@@ -40,7 +40,11 @@ pub struct CodexRuntimeState {
     /// event drain reconstructs a client for server requests.
     read_only_discovery_permissions: bool,
     pub(super) ephemeral: bool,
+    pub(super) metadata_only_discovery: bool,
+    pub(super) notification_only: bool,
     pub(super) socket: CodexSocket,
+    #[cfg(unix)]
+    output_readiness: Option<super::output_ready::CodexOutputReadiness>,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
     pub(super) active_turn_id: Option<String>,
@@ -49,6 +53,8 @@ pub struct CodexRuntimeState {
     pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
     pub(super) text_items: BTreeMap<String, CodexTextTranscriptState>,
     pub(super) tool_items: BTreeMap<String, CodexToolTranscriptState>,
+    pub(super) tool_snapshots: super::tool_snapshots::ToolSnapshots,
+    pub(super) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
 }
 
 impl std::fmt::Debug for CodexRuntimeState {
@@ -76,6 +82,22 @@ impl std::fmt::Debug for CodexRuntimeState {
 }
 
 impl CodexRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn active_turn_binding_fixture(
+        endpoint: String,
+        socket: CodexSocket,
+    ) -> crate::provider::ProviderRuntimeBinding {
+        let mut state = Self::new(endpoint, "notification-thread".into(), socket, 1);
+        state.active_turn_id = Some("notification-turn".into());
+        crate::provider::ProviderRuntimeBinding::Codex(CodexRuntimeBinding {
+            state,
+            selection: CodexRunSelection {
+                model: None,
+                variant: None,
+            },
+        })
+    }
+
     pub(super) fn new(
         endpoint: String,
         thread_id: String,
@@ -88,7 +110,11 @@ impl CodexRuntimeState {
             thread_ready: true,
             read_only_discovery_permissions: false,
             ephemeral: false,
+            metadata_only_discovery: false,
+            notification_only: false,
             socket,
+            #[cfg(unix)]
+            output_readiness: None,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
@@ -97,6 +123,8 @@ impl CodexRuntimeState {
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
+            tool_snapshots: Default::default(),
+            output_notifier: Default::default(),
         }
     }
 
@@ -112,7 +140,11 @@ impl CodexRuntimeState {
             thread_ready: false,
             read_only_discovery_permissions: false,
             ephemeral: false,
+            metadata_only_discovery: false,
+            notification_only: false,
             socket,
+            #[cfg(unix)]
+            output_readiness: None,
             next_request_id,
             buffered_notifications: Vec::new(),
             active_turn_id: None,
@@ -121,6 +153,29 @@ impl CodexRuntimeState {
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
+            tool_snapshots: Default::default(),
+            output_notifier: Default::default(),
+        }
+    }
+
+    pub(crate) fn bind_output_ready(
+        &mut self,
+        run_id: String,
+        signal: crate::provider::output_ready::ProviderOutputReadySignal,
+    ) {
+        self.output_notifier.bind(run_id, signal);
+        #[cfg(unix)]
+        {
+            self.output_readiness = super::output_ready::CodexOutputReadiness::start(
+                &self.socket,
+                self.output_notifier.clone(),
+            );
+        }
+    }
+    pub(crate) fn acknowledge_output_poll(&self) {
+        #[cfg(unix)]
+        if let Some(readiness) = &self.output_readiness {
+            readiness.polled();
         }
     }
 

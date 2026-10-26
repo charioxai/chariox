@@ -72,17 +72,34 @@ pub(crate) fn isolate_environment_test() -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        // MP-11: retain an exclusive-session launch witness for safe timeout cleanup.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
     }
     let mut child = command
         .spawn()
         .expect("isolated environment test should start");
+    #[cfg(unix)]
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).ok();
     let status = child.wait_timeout(Duration::from_secs(180)).unwrap();
     if status.is_none() {
+        let pid = i32::try_from(child.id()).expect("isolated child PID fits the signal API");
+        assert!(pid > 1, "refusing to signal a reserved isolated child PID");
         #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        if let Some(signals) = signals.as_mut() {
+            let _ = signals.kill_group();
+            // Detached descendants may survive even a successful group signal.
+            let _ = signals.kill_owned_processes();
         }
+        // The std Child handle still owns this unreaped, validated positive PID.
         let _ = child.kill();
         let _ = child.wait();
     }

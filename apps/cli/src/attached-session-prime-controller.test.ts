@@ -19,7 +19,6 @@ test("attached session prime clears the transcript when no agent is visible", as
   await harness.controller.prime(session({ agents: [], focused_agent_id: null }))
 
   assert.deepEqual(harness.historyCalls, [])
-  assert.deepEqual(harness.promptHistoryCalls, [{ sessionId: "session-1", generation: 1 }])
   assert.deepEqual(harness.replaceCalls, [{ agentId: null, entries: [] }])
   assert.equal(harness.nextHistoryCursor, null)
 })
@@ -32,7 +31,6 @@ test("attached session prime seeds the visible agent transcript and pane preview
   await harness.controller.prime(session())
 
   assert.deepEqual(harness.historyCalls, [{ sessionId: "session-1", agentIds: ["agent-1"] }])
-  assert.deepEqual(harness.promptHistoryCalls, [{ sessionId: "session-1", generation: 1 }])
   assert.deepEqual(harness.agentPaneEntries["agent-1"]?.map((entry) => entry.text), ["hello", "world"])
   assert.equal(harness.agentPanePreviews["agent-1"], "You: hello\nAsst: world")
   assert.deepEqual(harness.replaceCalls, [{
@@ -173,9 +171,7 @@ function primeHarness(options: {
   outline?: SessionHistoryOutline
 } = {}) {
   const harness = {
-    promptGeneration: 0,
     historyCalls: [] as Array<{ sessionId: string; agentIds: string[] }>,
-    promptHistoryCalls: [] as Array<{ sessionId: string; generation: number }>,
     nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
     agentPanePreviews: {} as Record<string, string>,
@@ -187,15 +183,6 @@ function primeHarness(options: {
     controller: null as ReturnType<typeof createAttachedSessionPrimeController> | null,
   }
   harness.controller = createAttachedSessionPrimeController({
-    promptHistoryHydrationController: {
-      begin: () => {
-        harness.promptGeneration += 1
-        return harness.promptGeneration
-      },
-      loadAndApply: async (sessionId, generation) => {
-        harness.promptHistoryCalls.push({ sessionId, generation })
-      },
-    },
     splitAgentResponseMode: () => options.split ?? false,
     maxAgentsPerScreen: () => options.maxAgentsPerScreen ?? 3,
     loadSessionHistoryOutline: async (sessionId, agentIds) => {
@@ -348,3 +335,70 @@ function externalProviderImport(
     imported_at_ms: 1,
   }
 }
+
+test("MP-08 / MP-10 waiting-room attachment keeps delayed older-room prompt navigation after priming", async () => {
+  const { bootstrapWaitingRoom } = await import("./waiting-room-bootstrap.js")
+  const { fallbackProviderCatalog } = await import("./provider-catalog.js")
+  const { fallbackProviderCommandCatalogs } = await import("./provider-command-catalog.js")
+  const { createPromptHistoryHydrationController } = await import("./prompt-history-hydration-controller.js")
+  const { createPromptHistoryAttachmentController } = await import("./prompt-history-attachment-controller.js")
+  const boot = bootstrapWaitingRoom({} as never, { clientId: "cli", model: "default", effort: "", accountProfile: "default" }, {}, {
+    getConfiguredProviderLaunchDefaults: async () => ({}), getProviderCatalog: async () => fallbackProviderCatalog(),
+    getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(), getTerminalCommandCatalog: async () => ({ revision: "r", nodes: [] }),
+  } as never)
+  assert.equal(boot.binding, null)
+  let current = "newer-A", entries: string[] = [], sequence = 0
+  let release!: (page: import("./cli-types.js").PromptInputHistoryPage) => void
+  const delayed = new Promise<import("./cli-types.js").PromptInputHistoryPage>(resolve => { release = resolve })
+  const row = (sessionId: string, sequence: number, text: string) => ({ session_id: sessionId, sequence, text, timestamp_ms: sequence, kind: "prompt" as const })
+  const hydration = createPromptHistoryHydrationController({
+    loadHistory: id => id === "newer-A" ? Promise.resolve({ entries: [row(id, 100, "newer A input")] }) : delayed,
+    isCurrentSession: id => current === id,
+    applyHistory: (_id, next, latest) => { entries = next; sequence = latest },
+  })
+  const attachment = createPromptHistoryAttachmentController({
+    getAttachedSessionId: () => current, restorePromptHistory: () => { entries = [] },
+    invalidateHydration: hydration.invalidate, hydratePromptHistory: hydration.hydrate, isCurrentSession: id => current === id,
+  })
+  await attachment.sync()
+  assert.equal(sequence, 100)
+  current = "older-B"
+  const pending = attachment.sync()
+  const prime = createAttachedSessionPrimeController({
+    splitAgentResponseMode: () => false, maxAgentsPerScreen: () => 1,
+    loadSessionHistoryOutline: async () => outlineForAgents(["agent-1"]), setAgentPaneEntries: () => {}, setAgentPanePreview: () => {},
+    replaceTranscriptEntries: () => {}, setNextHistoryCursor: () => {},
+  })
+  await prime.prime(session({ id: "older-B" }))
+  release({ entries: [row("older-B", 5, "older B input")] })
+  await pending
+  assert.deepEqual(entries, ["older B input"], "Up must recover B's existing input after its late response")
+  assert.equal(sequence, 5, "B resets A's newer incremental-history cursor")
+})
+
+test("MP-08 / MP-10 OWNER-24 a superseded prime writes nothing after its history arrives", async () => {
+  let release!: () => void
+  const writes: string[] = []
+  let owned = true
+  const controller = createAttachedSessionPrimeController({
+    splitAgentResponseMode: () => false,
+    maxAgentsPerScreen: () => 1,
+    loadSessionHistoryOutline: async () => {
+      await new Promise<void>(resolve => { release = resolve })
+      return { agents: [{ agent_id: "agent-1", turns: [] }] } as never
+    },
+    setAgentPaneEntries: () => { writes.push("pane") },
+    setAgentPanePreview: () => { writes.push("preview") },
+    replaceTranscriptEntries: () => { writes.push("transcript") },
+    setNextHistoryCursor: () => { writes.push("cursor") },
+  })
+  const priming = controller.prime({
+    id: "session-b",
+    agents: [{ id: "agent-1" }],
+    focused_agent_id: "agent-1",
+  } as never, () => owned)
+  owned = false
+  release()
+  await priming
+  assert.deepEqual(writes, [])
+})

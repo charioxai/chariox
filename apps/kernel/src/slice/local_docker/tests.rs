@@ -314,6 +314,75 @@ fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
 
 #[cfg(unix)]
 #[test]
+fn image_build_starts_a_stopped_docker_engine_before_building() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _lock = crate::env_lock::lock();
+    let root = test_root("image-build-docker-start");
+    let bin = root.join("bin");
+    let started = root.join("colima-started");
+    let provisioner = root.join("provision.sh");
+    std::fs::create_dir_all(&bin).expect("fake launcher directory should create");
+    let write_script = |path: &std::path::Path, body: String| {
+        std::fs::write(path, body).expect("fake script should write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("fake script should become executable");
+    };
+    write_script(
+        &bin.join("docker"),
+        format!(
+            "#!/bin/sh\n[ \"$1\" = info ] && [ -e '{}' ]\n",
+            started.display()
+        ),
+    );
+    write_script(
+        &bin.join("colima"),
+        format!("#!/bin/sh\n: > '{}'\n", started.display()),
+    );
+    write_script(&provisioner, "#!/bin/sh\nexit 0\n".to_string());
+    let saved: Vec<_> = [
+        "PATH",
+        "CHARIOX_SLICE_DOCKER_PROVISIONER",
+        "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+    ]
+    .into_iter()
+    .map(|name| (name, std::env::var_os(name)))
+    .collect();
+    let mut path = bin.clone().into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    std::env::set_var("PATH", path);
+    std::env::set_var("CHARIOX_SLICE_DOCKER_PROVISIONER", &provisioner);
+    std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+
+    let options = LocalDockerSliceOptions::from_config(&DaemonConfig::for_tests());
+    let result = run_local_docker_slice_action(
+        &test_record(),
+        LocalDockerSliceAction::BuildImage,
+        None,
+        None,
+        None,
+        &options,
+    );
+    let engine_was_started = started.exists();
+    // Restore before assertions so a RED test cannot contaminate the suite.
+    for (name, value) in saved {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        engine_was_started,
+        "the image build skipped the Docker engine start: {result:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn disk_pressure_admission_fault_probe() {
     crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
@@ -764,7 +833,10 @@ fn backup_restore_never_quarantines_a_file_outside_the_owned_archive_shape() {
     let error = validate_local_docker_slice_backup(&test_record(), &backup)
         .expect_err("an invalid archive path must fail without renaming it");
 
-    assert!(error.to_string().contains("cannot be quarantined safely"));
+    assert!(
+        error.to_string().contains("cannot be quarantined safely"),
+        "{error}"
+    );
     assert_eq!(
         std::fs::read(&unowned).expect("unowned file must remain readable"),
         b"must-remain"
@@ -1004,10 +1076,12 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "slice-screen.sh",
         "tint2rc",
         "browser-app-restore.mjs",
+        "browser-app-drafts.mjs",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-apps.mjs",
         "browser-controller-bar.mjs",
+        "browser-focus-world.mjs",
         "browser-controller-cdp.mjs",
         "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",
@@ -1279,18 +1353,19 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             "mousemove 640 400\n",
             "click --repeat 3 --delay 20 6\n",
             "click --repeat 5 --delay 20 5\n",
-            "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
         )
     );
+    // MP-08/MP-11: repeated chords use the same strict XTEST helper as text
+    // (xdotool can report success for unknown keysyms without input).
     assert_eq!(
         std::fs::read_to_string(&keyboard_stdin_log)
             .expect("keyboard text should reach the Selkies helper stdin"),
-        "Grüße 世界"
+        "Grüße 世界ctrl+shift+p"
     );
     assert_eq!(
         std::fs::read_to_string(&keyboard_log)
-            .expect("text and reset should use the shared keyboard helper"),
-        "slice-keyboard.py\nslice-keyboard.py reset\n"
+            .expect("text, repeat and reset should use the shared keyboard helper"),
+        "slice-keyboard.py\nslice-keyboard.py key-repeat\nslice-keyboard.py reset\n"
     );
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }
@@ -3147,4 +3222,82 @@ exit 0
     std::env::remove_var("CALL_LOG");
     std::env::remove_var("PARENT_DEPTH");
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(unix)]
+fn mp11_relay_config_has_no_host_file_even_under_foreign_paths() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    for layout in ["absent", "loose-file", "leaf-symlink", "ancestor-symlink"] {
+        let root = std::env::temp_dir().join(format!(
+            "mp11-relay-input-{layout}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut options = test_options();
+        options.root = root.clone();
+        let record = test_record();
+        let foreign = root.join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let runtime = root.join("runtime");
+        let destination = runtime.join(&record.id).join("cloud-relay-config.json");
+        if layout == "ancestor-symlink" {
+            symlink(&foreign, &runtime).unwrap();
+        } else if layout != "absent" {
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            if layout == "leaf-symlink" {
+                std::fs::write(foreign.join("user-file"), b"user data").unwrap();
+                symlink(foreign.join("user-file"), &destination).unwrap();
+            } else {
+                std::fs::write(&destination, b"user data").unwrap();
+                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o644))
+                    .unwrap();
+            }
+        }
+        let relay = LocalDockerSliceRelay {
+            relay_url: "wss://relay.example.test".into(),
+            container_relay_url: None,
+            relay_token: "synthetic".into(),
+            owner_public_key: None,
+            cloud_relay_config_json: Some("synthetic non-secret config".into()),
+            worker_machine_id: None,
+        };
+        let mut command = Command::new("slice-provisioner");
+        configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true)
+            .unwrap();
+        assert!(!command
+            .get_envs()
+            .any(|(key, _)| key == "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH"));
+        if layout == "absent" {
+            assert!(!runtime.exists());
+        }
+        if layout == "ancestor-symlink" {
+            assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+        }
+        if layout == "loose-file" || layout == "leaf-symlink" {
+            assert_eq!(std::fs::read(&destination).unwrap(), b"user data");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
+    let root = test_root("mp11-log");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("run.log");
+    // A 4000-byte tail starts inside this multibyte scalar on the old code.
+    std::fs::write(&path, format!("{}x", "€".repeat(2000))).unwrap();
+    let result = std::panic::catch_unwind(|| command_log_preview(&path));
+    std::fs::write(&path, "a".repeat(2 * 1024 * 1024)).unwrap();
+    let projected = read_slice_log_file_entry("fixture", &path, 1);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.is_ok(), "log slicing panicked inside a UTF-8 scalar");
+    assert!(
+        projected.text.len() <= 65536,
+        "single-line log projection is unbounded"
+    );
+    assert!(projected.truncated);
 }

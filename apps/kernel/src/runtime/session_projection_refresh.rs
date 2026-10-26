@@ -307,7 +307,7 @@ pub(crate) fn redact_agent_activity_for_session(
         session
             .agents()
             .iter()
-            .any(|agent| agent.id() == agent_id.as_str())
+            .any(|agent| agent.id() == agent_id.as_str() && agent.visible_in_freeform())
     });
     agent_activity
 }
@@ -346,6 +346,58 @@ mod tests {
         SpawnAgentRequest, SpawnAgentsRequest,
     };
     use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
+
+    // MP-08 / MP-10 / MP-11: hidden roster entries never admit active/completed private turn metadata.
+    #[test]
+    fn private_agent_activity_requires_trace_visibility() {
+        use crate::agent::{AgentInstance, GridPosition};
+        let mut session = RuntimeSession::new(
+            "private-room",
+            None,
+            "workspace",
+            "tree",
+            "machine",
+            "kernel",
+        );
+        session.set_owner_user_id("owner");
+        let agents = [("own", "owner"), ("foreign", "peer")]
+            .into_iter()
+            .map(|(id, owner)| {
+                let mut agent = AgentInstance::new(
+                    id,
+                    id,
+                    session.id(),
+                    None,
+                    "codex",
+                    None,
+                    None,
+                    None,
+                    GridPosition::new(0, 0, 1, 1),
+                );
+                agent.set_owner_user_id(owner);
+                agent
+            })
+            .collect();
+        session.set_agents(agents);
+        let activity: AgentRuntimeActivity = serde_json::from_value(serde_json::json!({"status":"idle","prompt_status":"none","busy":false,"active_prompt_count":0,"queued_prompt_count":0})).unwrap();
+        for (level, expected) in [
+            (crate::session::CollaborationLevel::Private, 1),
+            (crate::session::CollaborationLevel::Transparent, 2),
+            (crate::session::CollaborationLevel::Full, 2),
+        ] {
+            let mut wire = serde_json::to_value(&session).unwrap();
+            wire["members"][0]["collaboration_level"] = serde_json::to_value(level).unwrap();
+            let projected: RuntimeSession = serde_json::from_value(wire).unwrap();
+            let projected = projected.redacted_for_user("owner");
+            let map = std::collections::BTreeMap::from([
+                ("own".into(), activity.clone()),
+                ("foreign".into(), activity.clone()),
+            ]);
+            let visible = redact_agent_activity_for_session(map, &projected);
+            assert_eq!(visible.len(), expected);
+            assert!(visible.contains_key("own"));
+        }
+    }
 
     #[test]
     fn focus_projection_refresh_tracks_agent_identity_changes() {

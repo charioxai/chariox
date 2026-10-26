@@ -307,12 +307,7 @@ async fn recurring_agent_prompt_schedules_coalesce_active_and_restored_occurrenc
         .complete_active_prompt_only(&session, agent.id())
         .expect("first occurrence should finish");
     prompt_owner
-        .activate_next_queued_prompt_with_prompt_id(
-            &session,
-            agent.id(),
-            None,
-            "active-second-schedule".to_string(),
-        )
+        .activate_next_queued_prompt_for_dispatch(&session, agent.id(), None)
         .unwrap()
         .expect("second schedule should start");
     boxed_schedule_future(|| {

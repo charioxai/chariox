@@ -2,6 +2,584 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+// MP-08 / MP-09 / MP-10 / MP-11 R2: the scheduler can verify and fire
+// a one-shot in one tick before its caller observes the arm receipt.
+#[tokio::test]
+async fn a03_verification_survives_one_shot_firing_before_observation() {
+    use crate::durable_state::agent_lifecycle::{AgentWake, Operation, Outcome};
+    let fixture = interrupt_fixture();
+    let store = &fixture.runtime.owned.durable_state_store;
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("interrupt-provider-run".into()),
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("task");
+    };
+    for (id, due) in [
+        ("already-fired", now + 1_000),
+        ("still-armed", now + 60_000),
+    ] {
+        let wake: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":id, "task_id":task.task_id, "room_id":task.room_id, "agent_id":task.agent_id,
+            "registration_id":format!("completion-{id}"), "kind":"timer", "label":id,
+            "state":"", "created_at_ms":now, "verified_at_ms":null,
+            "next_due_ms":due, "interval_ms":null, "command":[], "match_text":null,
+            "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0,
+            "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null,
+            "last_delivery":null, "last_delivered_at_ms":null,
+            "last_acknowledged_at_ms":null, "alerted_sequence":null
+        }))
+        .unwrap();
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: prompt.id().into(),
+                wake,
+            })
+            .unwrap();
+    }
+    store
+        .agent_lifecycle(Operation::VerifyWakes { now: now + 1_000 })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::FireWakes { now: now + 1_000 })
+        .unwrap();
+    let fired = store
+        .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|w| w.id == "already-fired")
+        .unwrap();
+    assert_eq!(fired.state, "fired");
+    assert_eq!(fired.verified_at_ms, Some(now + 1_000));
+    assert_eq!(
+        fixture.runtime.await_wake_verification("still-armed").await,
+        Some(now + 1_000)
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .await_wake_verification("already-fired")
+            .await,
+        Some(now + 1_000),
+        "scheduler confirmation must survive firing before the caller observes it"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 G14: native turn settlement is not
+// workflow completion while its kernel task still owns a supervised wait.
+#[tokio::test]
+async fn a03_workflow_wait_keeps_returned_run_addressable_and_cancel_settles_task() {
+    workflow_wait_cancellation(false).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 R1: cancelling the creator owns the
+// canonical workflow_run and must release its waiting child's resources.
+#[tokio::test]
+async fn a03_creator_task_cancels_canonical_waiting_workflow_run() {
+    workflow_wait_cancellation(true).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A01 (accam r3): a workflow node turn settles
+// through workflow completion (handoff/final output), not a plain completion
+// check that could only see the handoff after the node completes.
+#[tokio::test]
+async fn a01_workflow_node_turn_settles_without_a_plain_completion_check() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a01-workflow-node-settle"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: fixture.session_id.clone(),
+            prompt: prompt.clone(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    let Outcome::Task(task) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("interrupt-provider-run".into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task")
+    };
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Settle {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: "interrupt-provider-run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let settled = owned
+        .durable_state_store
+        .agent_tasks(Some(&fixture.session_id), Some(&fixture.target_agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == task.task_id)
+        .unwrap();
+    assert_eq!(settled.state, ExecutionState::Done, "{settled:?}");
+    assert!(settled.pending_prompt_id.is_none(), "{settled:?}");
+}
+
+// A plain turn only gets a task row: ending after a tool call with no answer is
+// settled Done, never corrected, held to a wait or blocked for the owner.
+#[tokio::test]
+async fn plain_turn_ending_without_an_answer_settles_done_without_a_correction() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("plain-turn-settle"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let prompt = crate::session::PromptQueueItem::new(
+        "plain-turn",
+        "client",
+        &fixture.target_agent_id,
+        "Read the attached notes after the refresh",
+        crate::session::PromptStatus::Running,
+    );
+    owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: fixture.session_id.clone(),
+            prompt: prompt.clone(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    let (task, correction) = owned
+        .settle_agent_task(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            &prompt,
+            "plain-provider-run",
+            false,
+        )
+        .unwrap()
+        .expect("plain turn settlement");
+    assert!(!correction, "{task:?}");
+    assert_eq!(task.state, ExecutionState::Done, "{task:?}");
+    assert!(task.pending_prompt_id.is_none() && !task.correction_used);
+}
+
+async fn workflow_wait_cancellation(cancel_creator: bool) {
+    use crate::durable_state::agent_lifecycle::{AgentWake, ExecutionState, Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a03-workflow-wait"),
+        config,
+        true,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: fixture.session_id.clone(),
+            prompt: prompt.clone(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    let Outcome::Task(task) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("interrupt-provider-run".into()),
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("task")
+    };
+    assert_eq!(
+        owned.agent_workflow_task_context(&task).unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    );
+    assert!(owned
+        .durable_state_store
+        .agent_lifecycle(Operation::BindWorkflow {
+            task: task.task_id.clone(),
+            prompt: prompt.id().into(),
+            run: "foreign-run".into(),
+            node: fixture.node_run_id.clone()
+        })
+        .is_err());
+    let wake = AgentWake {
+        id: "workflow-timer".into(),
+        task_id: task.task_id.clone(),
+        room_id: task.room_id.clone(),
+        agent_id: task.agent_id.clone(),
+        registration_id: "completion-workflow-timer".into(),
+        kind: "timer".into(),
+        label: "workflow wait".into(),
+        state: String::new(),
+        created_at_ms: now,
+        verified_at_ms: None,
+        next_due_ms: Some(now + 60_000),
+        interval_ms: Some(60_000),
+        command: vec![],
+        match_text: None,
+        matched_at_ms: None,
+        pid: None,
+        exit_code: None,
+        fire_count: 0,
+        missed_fires: 0,
+        last_fired_at_ms: None,
+        last_sequence: None,
+        last_delivery: None,
+        last_delivered_at_ms: None,
+        last_acknowledged_at_ms: None,
+        alerted_sequence: None,
+    };
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.task_id.clone(),
+            prompt: prompt.id().into(),
+            wake,
+        })
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: prompt.id().into(),
+            registrations: vec!["completion-workflow-timer".into()],
+            cursor: 0,
+            deadline: now + 120_000,
+            reason: "wait for actual source".into(),
+            now,
+        })
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Settle {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: "interrupt-provider-run".into(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    // Remove the same workflow's duplicate fixture prompts, then reserve the
+    // actual native completion, as the provider settlement path does. Only
+    // the Waiting task remains to keep this run alive.
+    owned
+        .prompt_state_owner
+        .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+    for agent in owned.agent_store.get_session_agents(&fixture.session_id) {
+        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+        owned
+            .session_store
+            .mirror_agent_prompt_state(&fixture.session_id, agent.id(), active, queued)
+            .unwrap();
+    }
+    owned
+        .reserve_local_workflow_prompt_completion_if_matches(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            prompt.id(),
+        )
+        .unwrap()
+        .expect("reserve native completion");
+    owned
+        .workflow_complete_prompt(&fixture.session_id, &prompt, None)
+        .unwrap();
+    let run = owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&fixture.session_id, &fixture.workflow_run_id)
+        .expect("returned run must remain addressable during a task wait");
+    assert_eq!(
+        run.status(),
+        crate::session::WorkflowRunStatus::Running,
+        "native end must not complete a supervised workflow node"
+    );
+    let targets = owned
+        .supervised_workflow_targets(&fixture.session_id)
+        .unwrap();
+    assert_eq!(
+        owned
+            .session_store
+            .write()
+            .reconcile_live_orphaned_workflow_runs_with_tasks(
+                &fixture.session_id,
+                u64::MAX,
+                5_000,
+                &targets
+            )
+            .unwrap(),
+        0,
+        "a workflow with a Waiting task is not an orphan"
+    );
+    // The same private task binding survives inbox turn promotion.
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::FireWakes { now: now + 60_000 })
+        .unwrap();
+    let event = owned
+        .durable_state_store
+        .agent_inbox(&task.room_id, &task.agent_id, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.source_id == "workflow-timer")
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Attempt {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            sequence: event.sequence,
+            prompt: "workflow-event".into(),
+            target: None,
+            run: None,
+            now: now + 60_001,
+            work: None,
+        })
+        .unwrap();
+    let Outcome::Task(promoted) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: "workflow-event".into(),
+            run: Some("interrupt-provider-run".into()),
+            now: now + 60_002,
+        })
+        .unwrap()
+    else {
+        panic!("promoted task")
+    };
+    assert_eq!(promoted.task_id, task.task_id);
+    assert_eq!(
+        owned.agent_workflow_task_context(&promoted).unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    );
+    // MP-08 / MP-09 / MP-10 / MP-11: the real room command registers
+    // workflow_run, rather than the legacy workflow spelling.
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: session.owner_user_id().into(),
+            room: task.room_id.clone(),
+            agent: fixture.unrelated_agent_id.clone(),
+            prompt: "g14-supervisor".into(),
+            run: None,
+            id: "g14-workflow-obligation".into(),
+            kind: "workflow_run".into(),
+            resource: Some(run.id().into()),
+            now,
+        })
+        .unwrap();
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::DispatchReceipt {
+            id: "g14-workflow-obligation".into(),
+            accepted: true,
+            resource: Some(run.id().into()),
+        })
+        .unwrap();
+    if cancel_creator {
+        // Observe the cancelled parent's completion source independently.
+        use crate::durable_state::agent_lifecycle::Registration;
+        let Outcome::Task(observer) = owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: session.owner_user_id().into(),
+                room: task.room_id.clone(),
+                agent: fixture.second_target_agent_id.clone(),
+                prompt: "completion-observer".into(),
+                run: None,
+                now,
+            })
+            .unwrap()
+        else {
+            panic!("observer task");
+        };
+        owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Subscribe {
+                task: observer.task_id.clone(),
+                prompt: observer.prompt_id.clone(),
+                registration: Registration {
+                    id: "parent-completion".into(),
+                    task_id: observer.task_id,
+                    source_id: "g14-supervisor".into(),
+                    obligation_id: None,
+                    source_cursor: 0,
+                    live: true,
+                },
+            })
+            .unwrap();
+        let parent = owned
+            .durable_state_store
+            .agent_tasks(Some(&task.room_id), Some(&fixture.unrelated_agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == "g14-supervisor")
+            .unwrap();
+        assert_eq!(run.created_by_agent_id(), Some(parent.agent_id.as_str()));
+        let Outcome::Task(cancelled) = owned
+            .durable_state_store
+            .agent_lifecycle(Operation::CancelTask {
+                task: parent.task_id.clone(),
+                owner: session.owner_user_id().into(),
+                revision: parent.revision,
+            })
+            .unwrap()
+        else {
+            panic!("cancel task");
+        };
+        fixture
+            .runtime
+            .cancel_agent_task_resources(&cancelled)
+            .await
+            .unwrap();
+    } else {
+        let (cancelled, _) = fixture
+            .runtime
+            .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+                session_id: fixture.session_id.clone(),
+                workflow_run_ref: run.id().into(),
+            })
+            .await;
+        let LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } = cancelled.unwrap()
+        else {
+            panic!("cancel response");
+        };
+        assert_eq!(workflow_run.id(), run.id());
+    }
+    // Terminal runs leave the live cache; their durable record is authoritative.
+    assert_eq!(
+        owned
+            .durable_state_store
+            .resolve_workflow_run(session.host_daemon_id(), &fixture.session_id, run.id())
+            .unwrap()
+            .unwrap()
+            .status(),
+        crate::session::WorkflowRunStatus::Stopped,
+        "creator cancellation must reach the waiting child workflow"
+    );
+    assert_eq!(
+        owned
+            .durable_state_store
+            .agent_tasks(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == task.task_id)
+            .unwrap()
+            .state,
+        ExecutionState::Cancelled
+    );
+    assert_eq!(
+        owned
+            .durable_state_store
+            .agent_wakes(Some(&task.room_id), Some(&task.agent_id))
+            .unwrap()[0]
+            .state,
+        "cancelled"
+    );
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    let parent = owned
+        .durable_state_store
+        .agent_tasks(Some(&task.room_id), Some(&fixture.unrelated_agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == "g14-supervisor")
+        .unwrap();
+    assert_ne!(
+        parent.obligations[0].status, "open",
+        "cancelled workflow must settle its real workflow_run obligation"
+    );
+    assert!(
+        !owned.agent_task_resources_unsettled(&parent).unwrap(),
+        "the parent completion source must no longer be held by child resources"
+    );
+    if cancel_creator {
+        // The first sweep settles the workflow obligation; the next observes
+        // the parent with no owned resources and releases its completion source.
+        fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+        assert!(
+            owned
+                .durable_state_store
+                .agent_inbox(&task.room_id, &fixture.second_target_agent_id, 0)
+                .unwrap()
+                .iter()
+                .any(|e| e.source_id == "g14-supervisor" && e.kind == "source_lost"),
+            "creator cancellation must release its own completion source after child settlement"
+        );
+    }
+    assert!(owned
+        .durable_state_store
+        .agent_inbox(&task.room_id, &fixture.unrelated_agent_id, 0)
+        .unwrap()
+        .iter()
+        .any(|e| e.source_id == run.id() && e.kind == "source_lost"));
+}
+
 #[tokio::test]
 async fn pause_append_failure_preserves_interrupt_state_and_retries_once() {
     run_interrupt_append_failure_regression(true).await;
@@ -539,6 +1117,14 @@ fn interrupt_fixture_with_config(
     worktree: crate::test_support::TestWorktree,
     config: crate::config::DaemonConfig,
 ) -> InterruptFixture {
+    interrupt_fixture_with_creator(worktree, config, true)
+}
+
+fn interrupt_fixture_with_creator(
+    worktree: crate::test_support::TestWorktree,
+    config: crate::config::DaemonConfig,
+    agent_created: bool,
+) -> InterruptFixture {
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -578,15 +1164,49 @@ fn interrupt_fixture_with_config(
             Some("entry".to_string()),
         )
         .expect("workflow endpoint should be created");
-    let workflow_run = app
-        .sessions_mut()
-        .invoke_workflow_endpoint(
-            session.id(),
-            workflow.id(),
-            endpoint.id(),
-            Some("interrupt exactly once".to_string()),
-        )
-        .expect("workflow run should be created");
+    let workflow_run = if agent_created {
+        let queued = app
+            .sessions_mut()
+            .enqueue_workflow_prompt_by_agent(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("interrupt exactly once".into()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+                None,
+                Some(unrelated_agent.id()),
+            )
+            .unwrap();
+        app.sessions_mut()
+            .remove_queued_workflow_prompt(session.id(), queued.id())
+            .unwrap();
+        app.sessions_mut()
+            .invoke_queued_workflow_endpoint(session.id(), &queued)
+            .unwrap()
+    } else {
+        let queued = app
+            .sessions_mut()
+            .enqueue_workflow_prompt_by_agent(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("interrupt exactly once".into()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+                None,
+                None,
+            )
+            .expect("current user invocation should queue");
+        app.sessions_mut()
+            .remove_queued_workflow_prompt(session.id(), queued.id())
+            .expect("the started invocation must not remain queued for a second dispatch");
+        app.sessions_mut()
+            .invoke_queued_workflow_endpoint(session.id(), &queued)
+            .expect("workflow run should be created")
+    };
     let node_run_id = workflow_run.node_runs()[0].id().to_string();
     app.sessions_mut()
         .prepare_workflow_turn(
@@ -757,10 +1377,38 @@ fn interrupt_fixture_with_config(
     let second_target_agent_id = second_target_agent.id().to_string();
     let unrelated_agent_id = unrelated_agent.id().to_string();
     let runtime = runtime_state_from_app(app);
-    runtime
-        .owned
-        .persist_workflow_runtime_session(&session_id, "interrupt_failure_test_baseline")
-        .expect("running workflow baseline should persist");
+    if !agent_created {
+        let activity_mutation = runtime.owned.begin_managed_activity_mutation();
+        let current = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let run = current.workflow_run(&workflow_run_id).unwrap();
+        runtime
+            .owned
+            .durable_state_store
+            .persist_workflow_runtime_transition_with_invocation(
+                &current,
+                "interrupt_failure_test_baseline",
+                Some(
+                    crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
+                        queue_item_id: run
+                            .queue_item_id()
+                            .expect("current invocation has queue provenance")
+                            .into(),
+                        user_id: current.owner_user_id().into(),
+                    },
+                ),
+            )
+            .unwrap();
+        activity_mutation.record();
+    } else {
+        runtime
+            .owned
+            .persist_workflow_runtime_session(&session_id, "interrupt_failure_test_baseline")
+            .expect("running workflow baseline should persist");
+    }
     let claim_id =
         runtime
             .owned
@@ -996,17 +1644,29 @@ async fn kernel_access_workflow_control_resume_rechecks_settlement_wait() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_app_wait() {
-    revoked_remote_workflow_interrupt(false).await;
+async fn kernel_access_committed_workflow_control_remote_pause_survives_revocation_at_app_wait() {
+    revoked_remote_workflow_interrupt(false, true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_access_committed_workflow_control_remote_cancel_survives_revocation_at_discovery_wait(
+async fn kernel_access_committed_workflow_control_remote_pause_survives_revocation_at_discovery_wait(
 ) {
-    revoked_remote_workflow_interrupt(true).await;
+    revoked_remote_workflow_interrupt(true, true).await;
 }
 
-async fn revoked_remote_workflow_interrupt(discovery: bool) {
+// MP-08 / MP-11: both stop dispositions acknowledge their committed settlement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_access_committed_workflow_control_remote_stop_survives_revocation_at_app_wait() {
+    revoked_remote_workflow_interrupt(false, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_access_committed_workflow_control_remote_stop_survives_revocation_at_discovery_wait(
+) {
+    revoked_remote_workflow_interrupt(true, false).await;
+}
+
+async fn revoked_remote_workflow_interrupt(discovery: bool, pause: bool) {
     use crate::runtime::state::kernel_access::test_support::worker_spy::WorkerSpy;
     use std::sync::atomic::Ordering;
     let worker = WorkerSpy::new(discovery);
@@ -1063,10 +1723,17 @@ async fn revoked_remote_workflow_interrupt(discovery: bool) {
         )
         .unwrap();
     let grant = state.insert_access_grant_for_test(&fixture.session_id);
-    let request = LocalDaemonRequest::PauseWorkflowRun(crate::local::PauseWorkflowRunRequest {
-        session_id: fixture.session_id.clone(),
-        workflow_run_ref: fixture.workflow_run_id.clone(),
-    });
+    let request = if pause {
+        LocalDaemonRequest::PauseWorkflowRun(crate::local::PauseWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+    } else {
+        LocalDaemonRequest::CancelWorkflowRun(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+    };
     let runtime = crate::runtime::workflow_actor::WorkflowRuntime::new(
         state.clone(),
         state.owned.session_projection.clone(),
@@ -1123,5 +1790,623 @@ async fn revoked_remote_workflow_interrupt(discovery: bool) {
         .unwrap();
     assert_eq!(remaining.id(), active.id());
     assert_eq!(remaining.status(), crate::session::PromptStatus::Cancelling);
-    result.unwrap();
+    // MP-08 / MP-10 / MP-11: like committed Meta control, a stop that committed
+    // before revocation still acknowledges its own settlement.
+    assert!(matches!(
+        result.unwrap(),
+        LocalDaemonResponse::WorkflowRunPaused { .. }
+            | LocalDaemonResponse::WorkflowRunCancelled { .. }
+    ));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 R1: canonical spelling retains the creator fence.
+#[tokio::test]
+async fn a03_creator_task_rejects_foreign_canonical_workflow_cancellation() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a03-foreign-workflow-cancel"),
+        config,
+        true,
+    );
+    let store = &fixture.runtime.owned.durable_state_store;
+    let session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.second_target_agent_id.clone(),
+            prompt: "foreign-creator".into(),
+            run: None,
+            id: "foreign-workflow-obligation".into(),
+            kind: "workflow_run".into(),
+            resource: Some(fixture.workflow_run_id.clone()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task");
+    };
+    let Outcome::Task(cancelled) = store
+        .agent_lifecycle(Operation::CancelTask {
+            task: task.task_id,
+            owner: session.owner_user_id().into(),
+            revision: task.revision,
+        })
+        .unwrap()
+    else {
+        panic!("cancel task");
+    };
+    let error = fixture
+        .runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("workflow cancellation creator binding changed"));
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&fixture.session_id, &fixture.workflow_run_id)
+            .unwrap()
+            .status(),
+        crate::session::WorkflowRunStatus::Running
+    );
+    assert!(fixture
+        .runtime
+        .owned
+        .agent_task_resources_unsettled(&cancelled)
+        .unwrap());
+}
+
+// MP-08 / MP-10 / MP-11: Paused can publish before its prompt enters Cancelling.
+#[tokio::test]
+async fn mp08_workflow_resume_waits_for_running_paused_prompt() {
+    let fixture = interrupt_fixture();
+    let state = &fixture.runtime;
+    state
+        .owned
+        .session_store
+        .write()
+        .pause_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+        .unwrap();
+    let session = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let old = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    assert_eq!(old.status(), crate::session::PromptStatus::Running);
+    let request = crate::local::ResumeWorkflowRunRequest {
+        session_id: fixture.session_id.clone(),
+        workflow_run_ref: fixture.workflow_run_id.clone(),
+    };
+    let pending = state.execute_workflow_resume_run_request(request);
+    tokio::pin!(pending);
+    tokio::select! { biased;
+        result = &mut pending => panic!("MP-08 Resume crossed unfinished Pause cancellation: {}", result.0.is_ok()),
+        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+    }
+    // The delayed Pause now reaches its normal owned cancellation admission.
+    state
+        .owned
+        .prompt_state_owner
+        .begin_cancelling_active_prompt(&session, &fixture.target_agent_id)
+        .unwrap();
+    state
+        .owned
+        .workflow_cancel_prompt(&fixture.session_id, &old)
+        .unwrap();
+    state
+        .owned
+        .cancel_active_prompt_only(&fixture.session_id, &fixture.target_agent_id)
+        .unwrap();
+    let (result, _) = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+        .await
+        .unwrap();
+    let crate::local::LocalDaemonResponse::WorkflowRunResumed { workflow_run, .. } =
+        result.unwrap()
+    else {
+        panic!("resume response required")
+    };
+    assert_ne!(
+        workflow_run.status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+    let current = state.owned.session_snapshot(&fixture.session_id).unwrap();
+    assert_ne!(
+        current
+            .workflow_run(&fixture.workflow_run_id)
+            .unwrap()
+            .status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+}
+
+#[tokio::test]
+async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
+    let fixture = interrupt_fixture();
+    let state = &fixture.runtime;
+    let before = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let active = state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&before, &fixture.target_agent_id)
+        .unwrap();
+    let request = crate::local::ResumeWorkflowRunRequest {
+        session_id: fixture.session_id.clone(),
+        workflow_run_ref: fixture.workflow_run_id.clone(),
+    };
+    let (result, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        state.execute_workflow_resume_run_request(request),
+    )
+    .await
+    .expect("already-running Resume must not wait for its current turn");
+    assert!(matches!(
+        result.unwrap_err(),
+        DaemonError::InvalidWorkflowRunState {
+            status: crate::session::WorkflowRunStatus::Running,
+            operation: "resume workflow run",
+            ..
+        }
+    ));
+    let after = state
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    assert_eq!(
+        state
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&after, &fixture.target_agent_id)
+            .unwrap(),
+        active
+    );
+}
+
+// MP-08 / MP-10 / MP-11: downstream startup never admitted a child task;
+// the parent's workflow receipt was already acknowledged before it blocked.
+#[tokio::test]
+async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
+    failed_workflow_delegate_settlement(false, false, false).await;
+}
+
+// MP-08 / MP-10 / MP-11: a second accepted invocation of the same parent still
+// needs the delegate when the first invocation fails before admitting a task.
+#[tokio::test]
+async fn a01_failed_workflow_keeps_delegate_shared_with_live_invocation() {
+    failed_workflow_delegate_settlement(false, true, false).await;
+}
+
+// The surviving invocation is still on an upstream node: the shared delegate
+// has no node-run record there yet, only its runtime agent mapping.
+#[tokio::test]
+async fn a01_failed_workflow_keeps_delegate_a_live_invocation_has_not_reached() {
+    failed_workflow_delegate_settlement(false, true, true).await;
+}
+
+// MP-08 / MP-10 / MP-11: successful task receipts survive a later startup
+// failure in the same invocation, including repeated lifecycle sweeps.
+#[tokio::test]
+async fn a01_failed_workflow_preserves_fully_settled_successful_task() {
+    failed_workflow_delegate_settlement(true, false, false).await;
+}
+
+async fn failed_workflow_delegate_settlement(
+    settled_upstream: bool,
+    shared_live_invocation: bool,
+    downstream_unreached: bool,
+) {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a01-failed-delegate"),
+        config,
+        true,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let store = &owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    let successful = if settled_upstream {
+        // Restore a distinct completed upstream node. C remains the original
+        // failed node, with no admitted task, as in the real B->C drill.
+        let mut restored = serde_json::to_value(&session).unwrap();
+        let run = &mut restored["workflow_runs"][0];
+        let mut node = run["node_runs"][0].clone();
+        node["id"] = serde_json::json!("successful-upstream-node");
+        node["node_id"] = serde_json::json!("successful-upstream-definition");
+        node["agent_id"] = serde_json::json!(fixture.second_target_agent_id);
+        node["status"] = serde_json::json!("Completed");
+        node["turn_envelope"] = serde_json::Value::Null;
+        run["node_runs"].as_array_mut().unwrap().push(node);
+        run["runtime_agent_ids_by_node"]["successful-upstream-definition"] =
+            serde_json::json!(fixture.second_target_agent_id);
+        owned
+            .session_store
+            .write()
+            .restore_session(serde_json::from_value(restored).unwrap());
+        owned
+            .persist_workflow_runtime_session(session.id(), "successful_upstream_fixture")
+            .unwrap();
+        let prompt = crate::session::PromptQueueItem::new(
+            "settled-upstream",
+            "upstream-client",
+            &fixture.second_target_agent_id,
+            "completed upstream work",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(&fixture.workflow_run_id, "successful-upstream-node");
+        owned
+            .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+                session_id: fixture.session_id.clone(),
+                prompt: prompt.clone(),
+                force_queue: false,
+                refresh_projection: false,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: session.owner_user_id().into(),
+                room: session.id().into(),
+                agent: fixture.second_target_agent_id.clone(),
+                prompt: prompt.id().into(),
+                run: Some("upstream-provider-run".into()),
+                now,
+            })
+            .unwrap();
+        let Outcome::Settled { task, correction } = store
+            .agent_lifecycle(Operation::Settle {
+                room: session.id().into(),
+                agent: fixture.second_target_agent_id.clone(),
+                prompt: prompt.id().into(),
+                run: "upstream-provider-run".into(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap()
+        else {
+            panic!("successful settlement")
+        };
+        assert_eq!(task.state, ExecutionState::Done);
+        assert!(!owned.agent_task_resources_unsettled(&task).unwrap());
+        fixture
+            .runtime
+            .finish_agent_task_settlement(Some((task.clone(), correction)), &prompt)
+            .await
+            .unwrap();
+        Some(task)
+    } else {
+        None
+    };
+    if shared_live_invocation {
+        let mut restored = serde_json::to_value(&session).unwrap();
+        let mut run = restored["workflow_runs"][0].clone();
+        run["id"] = serde_json::json!("second-invocation");
+        run["status"] = serde_json::json!("Running");
+        run["node_runs"][0]["id"] = serde_json::json!("second-invocation-node");
+        run["active_node_run_id"] = serde_json::json!("second-invocation-node");
+        if downstream_unreached {
+            run["node_runs"][0]["agent_id"] = serde_json::json!(fixture.second_target_agent_id);
+            run["runtime_agent_ids_by_node"] = serde_json::json!({
+                "upstream-definition": fixture.second_target_agent_id,
+                "delegate-definition": fixture.target_agent_id,
+            });
+        }
+        restored["workflow_runs"].as_array_mut().unwrap().push(run);
+        owned
+            .session_store
+            .write()
+            .restore_session(serde_json::from_value(restored).unwrap());
+        owned
+            .persist_workflow_runtime_session(session.id(), "second_invocation_fixture")
+            .unwrap();
+    }
+    for (parent, agent) in [
+        ("failed-parent", &fixture.unrelated_agent_id),
+        ("independent-parent", &fixture.second_target_agent_id),
+    ] {
+        for (id, kind, resource) in [
+            (
+                format!("{parent}-delegate"),
+                "delegate",
+                fixture.target_agent_id.clone(),
+            ),
+            (
+                format!("{parent}-workflow"),
+                "workflow_run",
+                if parent == "failed-parent" {
+                    fixture.workflow_run_id.clone()
+                } else {
+                    "another-workflow".into()
+                },
+            ),
+        ] {
+            store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: session.owner_user_id().into(),
+                    room: fixture.session_id.clone(),
+                    agent: agent.clone(),
+                    prompt: parent.into(),
+                    run: None,
+                    id: id.clone(),
+                    kind: kind.into(),
+                    resource: Some(resource.clone()),
+                    now,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id,
+                    accepted: true,
+                    resource: Some(resource),
+                })
+                .unwrap();
+        }
+    }
+    if shared_live_invocation {
+        for op in [
+            Operation::RegisterObligation {
+                owner: session.owner_user_id().into(),
+                room: fixture.session_id.clone(),
+                agent: fixture.unrelated_agent_id.clone(),
+                prompt: "failed-parent".into(),
+                run: None,
+                id: "failed-parent-workflow-2".into(),
+                kind: "workflow_run".into(),
+                resource: Some("second-invocation".into()),
+                now,
+            },
+            Operation::DispatchReceipt {
+                id: "failed-parent-workflow-2".into(),
+                accepted: true,
+                resource: Some("second-invocation".into()),
+            },
+        ] {
+            store.agent_lifecycle(op).unwrap();
+        }
+    }
+    store
+        .agent_lifecycle(Operation::Block {
+            task: "failed-parent".into(),
+            prompt: "failed-parent".into(),
+            reason: "downstream startup rejected; correct the profile ID and retry".into(),
+        })
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .workflow_fail_provider_prompt(
+            &fixture.session_id,
+            &prompt,
+            None,
+            "account profile label is not a registered stable ID",
+        )
+        .unwrap();
+    // Simulate the original workflow error receipt being handled already.
+    store
+        .agent_lifecycle(Operation::SourceOutcome {
+            room: fixture.session_id.clone(),
+            source: fixture.workflow_run_id.clone(),
+            occurrence: "original-failure".into(),
+            success: false,
+            now,
+            public_answer: None,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::ReconcileFailedWorkflow {
+            owner_id: "different-host".into(),
+            room: fixture.session_id.clone(),
+            run: fixture.workflow_run_id.clone(),
+        })
+        .unwrap();
+    let retained = store.agent_tasks(Some(&fixture.session_id), None).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .find(|t| t.task_id == "failed-parent")
+            .unwrap()
+            .obligations[0]
+            .status,
+        "open",
+        "a different durable host cannot settle this invocation"
+    );
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    let tasks = store.agent_tasks(Some(&fixture.session_id), None).unwrap();
+    if let Some(successful) = successful {
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|t| t.task_id == successful.task_id)
+                .unwrap(),
+            &successful,
+            "successful task and its receipts must remain unchanged"
+        );
+        // The successful occurrence is still idempotent; failure must never
+        // replace it or stop supervision of subsequent tasks.
+        store
+            .agent_lifecycle(Operation::SourceOutcome {
+                room: successful.room_id,
+                source: successful.task_id.clone(),
+                occurrence: format!("task-terminal-{}", successful.task_id),
+                success: true,
+                now,
+                public_answer: None,
+            })
+            .unwrap();
+    }
+    let parent = tasks.iter().find(|t| t.task_id == "failed-parent").unwrap();
+    assert_eq!(parent.state, ExecutionState::Blocked);
+    if shared_live_invocation {
+        assert_eq!(
+            parent.obligations[0].status, "open",
+            "a delegate still used by another accepted invocation must stay bound"
+        );
+    } else {
+        assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");
+    }
+    let independent = tasks
+        .iter()
+        .find(|t| t.task_id == "independent-parent")
+        .unwrap();
+    assert_eq!(
+        independent.obligations[0].status, "open",
+        "another invocation must retain its delegation"
+    );
+    let events = store
+        .agent_inbox(&fixture.session_id, &fixture.unrelated_agent_id, 0)
+        .unwrap();
+    assert!(
+        shared_live_invocation
+            || events.iter().any(
+                |e| e.payload.get("workflow_run_id").and_then(|v| v.as_str())
+                    == Some(fixture.workflow_run_id.as_str())
+                    && e.payload.get("recovery").is_some()
+            ),
+        "failure settlement needs a reason and recovery receipt"
+    );
+}
+
+// MP-08 / MP-10 / MP-11 A12-S06: terminal legacy runs leave the hot cache;
+// the adoption wrapper must receive completion, not a fabricated source loss.
+#[tokio::test]
+async fn amfix_r11_adopted_goal_observes_archived_workflow_completion() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("amfix-adopted-archive"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let run = session
+        .workflow_runs()
+        .iter()
+        .find(|r| r.id() == fixture.workflow_run_id)
+        .unwrap();
+    let Outcome::Task(goal) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::AdoptGoal {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: fixture.target_agent_id.clone(),
+            run: run.id().into(),
+            nodes: run.node_runs().iter().map(|n| n.node_id().into()).collect(),
+            objective: "Verify the retained predecessor audit result without relaunching nodes"
+                .into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("adopted goal")
+    };
+    // Its original provider prompts have already drained; retain unrelated
+    // queue items, then archive the completed predecessor normally.
+    owned
+        .prompt_state_owner
+        .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+    owned
+        .reserve_local_workflow_prompt_completion_if_matches(
+            session.id(),
+            &fixture.target_agent_id,
+            "interrupt-active",
+        )
+        .unwrap();
+    for agent in owned.agent_store.get_session_agents(session.id()) {
+        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+        owned
+            .session_store
+            .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
+            .unwrap();
+    }
+    let session = owned.session_store.get_session(session.id()).unwrap();
+    // Restore a completed predecessor snapshot exactly as migration does,
+    // then pass through the normal durable terminal archive transition.
+    let mut value = serde_json::to_value(run).unwrap();
+    value["status"] = serde_json::json!("Completed");
+    for node in value["node_runs"].as_array_mut().unwrap() {
+        node["status"] = serde_json::json!("Completed");
+    }
+    value["completed_at_ms"] = serde_json::json!(crate::session::unix_epoch_ms());
+    let completed: crate::session::WorkflowRun = serde_json::from_value(value).unwrap();
+    let mut restored = serde_json::to_value(&session).unwrap();
+    assert!(restored.get("workflow_runs").is_some());
+    restored["workflow_runs"] = serde_json::json!([completed]);
+    let restored: crate::session::RuntimeSession = serde_json::from_value(restored).unwrap();
+    owned.session_store.write().restore_session(restored);
+    owned
+        .persist_workflow_runtime_session(session.id(), "completed_legacy_fixture")
+        .unwrap();
+    assert!(owned
+        .session_store
+        .get_session(session.id())
+        .unwrap()
+        .workflow_runs()
+        .is_empty());
+    assert_eq!(
+        owned
+            .agent_workflow_source(&session, &fixture.workflow_run_id)
+            .unwrap()
+            .map(|r| r.status()),
+        Some(crate::session::WorkflowRunStatus::Completed),
+        "archive lookup"
+    );
+    assert!(
+        !owned
+            .workflow_agent_tasks_unsettled(session.id(), &fixture.workflow_run_id)
+            .unwrap(),
+        "legacy tasks drained"
+    );
+    fixture.runtime.sweep_agent_lifecycle().await.unwrap();
+    let events = owned
+        .durable_state_store
+        .agent_inbox(session.id(), &fixture.target_agent_id, 0)
+        .unwrap();
+    assert!(events.iter().any(|e| e.source_id == fixture.workflow_run_id && e.kind == "source_completed"),
+        "MP-08 / MP-10 / MP-11: durable Completed must wake the adopted goal as success, not source_lost: {events:?}");
+    assert!(!events
+        .iter()
+        .any(|e| e.source_id == fixture.workflow_run_id && e.kind == "source_lost"));
+    let current = owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), None)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == goal.task_id)
+        .unwrap();
+    assert!(current.obligations.iter().all(|o| o.status == "settling"));
 }

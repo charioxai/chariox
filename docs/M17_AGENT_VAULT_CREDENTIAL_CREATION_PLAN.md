@@ -48,6 +48,9 @@ values remain stored in the configured platform vault through
 
 ### `chariox.create_generated_credential`
 
+Superseded by the sudo-only `chariox.vault.generate` (MP-08 / MP-10 / MP-11
+A06, see `KERNEL_SUDO.md`); ordinary agents can no longer generate credentials.
+
 The agent supplies credential metadata and optional generator settings. The
 kernel generates the secret value.
 

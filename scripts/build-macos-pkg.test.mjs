@@ -53,7 +53,7 @@ async function bundle(t) {
   await mkdir(join(dir, 'runtime/sdk'), { recursive: true });
   for (const name of ['chariox-kernel', 'chariox', 'chariox-app-package'])
     await writeFile(join(dir, 'bin', name), Buffer.concat([ARM64, Buffer.from(name === 'chariox-kernel' ? LOOKUP_KERNEL : name)]), { mode: 0o755 });
-  await writeFile(join(dir, 'libexec/chariox-app-runtime-install'), Buffer.concat([ARM64, Buffer.from('installer')]), { mode: 0o755 });
+  await writeFile(join(dir, 'libexec/chariox-app-runtime-install'), Buffer.concat([ARM64, Buffer.from('app_runtime_installer_requires_root')]), { mode: 0o755 });
   const inventory = '{"schema":"fixture","target":"darwin-arm64"}\n';
   await writeFile(join(dir, 'runtime/runtime-inventory.json'), inventory, { mode: 0o444 });
   await writeFile(join(dir, 'runtime/runtime-inventory.sig'), 'signature', { mode: 0o444 });
@@ -180,7 +180,7 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
     Object.fromEntries(Object.keys(CONTEXT_FILES).map(path => [path, path === PROVISIONER ? 0o755 : 0o644])));
   // Every Mach-O, the runtime worker included, must be Developer ID code of the team.
   assert.equal(plan.checks.filter(step => step.phase === 'code-describe').length, 5);
-  assert.deepEqual(plan.checks[0].command, [join(fixture.dir, 'libexec', INSTALLER_TOOL)]);
+  assert.equal(plan.checks.every(step => step.command[0] === '/usr/bin/codesign'), true);
   assert.deepEqual(plan.steps.map(step => step.phase), ['component', 'payload', 'product', 'expand', 'sign', 'signature',
     'notarize', 'notary-log', 'staple', 'staple-check', 'gatekeeper']);
   const command = phase => plan.steps.find(step => step.phase === phase).command.join(' ');
@@ -192,7 +192,7 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
   assert.match(plan.distribution, /<os-version min="13\.5"\/>/u);
   assert.match(plan.distribution, /enable_localSystem="true"/u);
   const unsigned = await packagePlan(parseArguments(args(fixture, ['--unsigned']), {}));
-  assert.deepEqual(unsigned.checks.map(step => step.phase), ['installer-probe']);
+  assert.deepEqual(unsigned.checks, []);
   assert.deepEqual(unsigned.steps.map(step => step.phase), ['component', 'payload', 'product', 'expand']);
   assert.equal(unsigned.paths.product, unsigned.output);
   assert.match(formatPlan(unsigned), /# unsigned: a test package/u);
@@ -558,10 +558,13 @@ test('a signed build requires a macOS-capable installer, Developer ID code and a
       + 'Signed with a trusted timestamp on: 2026-10-01\n1. Developer ID Installer: Example Owner (ABCDE12345)\n' };
     return real(command);
   };
-  // An installer built without macOS enrollment is refused before anything is written.
-  await assert.rejects(buildMacosPkg(signed(fixture), { run: fake({ installer: 'app_runtime_installer_platform_unsupported' }) }),
-    /cannot enroll on macOS \(it answered "app_runtime_installer_platform_unsupported"\)/u);
+  // Unsupported installer bytes fail static admission without executing any bundle input.
+  const installerPath = join(fixture.dir, 'libexec', INSTALLER_TOOL);
+  const installerBytes = await readFile(installerPath);
+  await writeFile(installerPath, Buffer.concat([ARM64, Buffer.from('app_runtime_installer_platform_unsupported')]));
+  await assert.rejects(buildMacosPkg(signed(fixture), { run: fake() }), /cannot enroll on macOS/u);
   assert.equal(existsSync(`${fixture.output}.build`), false);
+  await writeFile(installerPath, installerBytes);
   await assert.rejects(buildMacosPkg(signed(fixture), { run: fake({ authority: 'Apple Development: Someone (ZZZZZ99999)' }) }),
     /not Developer ID Application-signed by team ABCDE12345/u);
   assert.equal(existsSync(`${fixture.output}.build`), false);
@@ -648,4 +651,36 @@ test('uninstall unloads system daemon but leaves shared lock inodes, including d
   assert.equal(existsSync(program), false);
   assert.equal(existsSync(join(fake.R, `Library/LaunchDaemons/${ADMISSION_LABEL}.plist`)), false);
   assert.equal(statSync(lock).ino, inode);
+});
+
+// MP-11-RA-F20: bundle inputs must never execute in the package builder.
+test('MP-11 F20 rejects untrusted or replaced installer without executing bundle code', async t => {
+  for (const failure of ['signature', 'team', 'replacement']) {
+    const fixture = await bundle(t);
+    const commands = [];
+    const run = command => {
+      commands.push(command);
+      if (command[0].startsWith(fixture.dir + '/'))
+        return { status: 1, stdout: '', stderr: 'app_runtime_installer_requires_root\n' };
+      if (command[0].endsWith('codesign')) {
+        if (failure !== 'team') return { status: 1, stdout: '', stderr: 'invalid signature' };
+        return { status: 0, stdout: '', stderr: command[1] === '--verify' ? ''
+          : 'Authority=Developer ID Application: Other (ZZZZZ99999)\nTeamIdentifier=ZZZZZ99999\n' };
+      }
+      throw new Error('untrusted artifact reached package assembly');
+    };
+    if (failure === 'replacement')
+      await writeFile(join(fixture.dir, 'libexec', INSTALLER_TOOL), Buffer.concat([ARM64, Buffer.from('app_runtime_installer_requires_root replacement')]));
+    await assert.rejects(buildMacosPkg(signed(fixture), { run, platform: 'darwin' }));
+    assert.equal(commands.some(command => command[0].startsWith(fixture.dir + '/')), false, failure);
+    assert.equal(existsSync(`${fixture.output}.build`), false);
+  }
+});
+
+test('MP-11 F20 signed and unsigned plans only invoke system packaging tools', async t => {
+  const fixture = await bundle(t);
+  for (const options of [signed(fixture), parseArguments(args(fixture, ['--unsigned']), {})]) {
+    const plan = await packagePlan(options);
+    assert.equal([...plan.checks, ...plan.steps].some(step => step.command[0].startsWith(fixture.dir + '/')), false);
+  }
 });

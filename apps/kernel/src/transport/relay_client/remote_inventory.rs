@@ -2,7 +2,6 @@
 
 use std::future::Future;
 
-use crate::runtime::cloud_api_client::issue_cloud_relay_inventory_discovery_token;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
@@ -90,14 +89,12 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
-    let mut discovery_config = runtime_config.clone();
-    if let Some(profile) = runtime_config.cloud_relay.as_ref() {
-        let token =
-            issue_cloud_relay_inventory_discovery_token(profile, &runtime_config.daemon_id).await?;
-        discovery_config.relay_token = Some(token.token);
-    }
-
-    let live_machines = relay_discovery::list_live_machines(&discovery_config).await?;
+    let visible_kernel_ids = if let Some(profile) = runtime_config.cloud_relay.as_ref() {
+        relay_discovery::authorization::visible_targets(profile).await?
+    } else {
+        None
+    };
+    let live_machines = relay_discovery::list_live_machines(&runtime_config).await?;
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
         &runtime_config.host_machine_id,
@@ -113,8 +110,16 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .filter(|machine| machine.online && machine.kernel_count > 0)
     {
         let kernels =
-            relay_discovery::list_live_kernels_for_machine(&discovery_config, &machine.machine_id)
+            relay_discovery::list_live_kernels_for_machine(&runtime_config, &machine.machine_id)
                 .await?;
+        let kernels = kernels
+            .into_iter()
+            .filter(|k| {
+                visible_kernel_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&k.kernel_id))
+            })
+            .collect();
         remote_kernels
             .extend(validate_live_relay_kernels(&runtime_config, &known_kernel_ids, kernels).await);
     }
@@ -123,6 +128,9 @@ pub(crate) async fn refresh_remote_inventory_projection(
             .iter()
             .filter(|kernel| kernel.machine_id == machine.machine_id)
             .count();
+    }
+    if visible_kernel_ids.is_some() {
+        remote_machines.retain(|machine| machine.kernel_count > 0);
     }
     projection.update(remote_machines, remote_kernels);
     Ok(())
@@ -170,9 +178,8 @@ async fn validate_live_relay_kernels(
 }
 
 fn requires_peer_probe(is_known: bool, is_hosted: bool) -> bool {
-    // Hosted inventory is already freshness-filtered by the relay. A second
-    // lookup inside the temporary peer probe would incorrectly reuse the
-    // daemon token for client metadata discovery.
+    // Hosted inventory is already filtered by heartbeat freshness. Avoid a
+    // redundant temporary peer admission for the same inventory refresh.
     is_known && !is_hosted
 }
 

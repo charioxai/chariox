@@ -33,7 +33,10 @@ async fn denied_home_extension_invocation_is_audited() {
         .expect("agent should be remote-backed");
 
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
         "provider-run-1",
         "home-only",
@@ -202,7 +205,10 @@ async fn forwarded_home_mcp_rejects_forged_dispatch_name() {
         .clone();
 
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
         "provider-run-1",
         "home-mcp-b",
@@ -306,7 +312,10 @@ async fn forwarded_home_extension_runtime_rejects_mcp_tools() {
         .clone();
 
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
         "provider-run-1",
         "home-mcp-runtime-misroute",

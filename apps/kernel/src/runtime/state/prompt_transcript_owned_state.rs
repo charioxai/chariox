@@ -14,11 +14,20 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) agent_id: Option<String>,
     pub(super) kind: crate::terminal::TerminalOutputKind,
     pub(super) merge_key: Option<String>,
+    pub(super) sequence: Option<u64>,
     pub(super) bytes: Vec<u8>,
+}
+
+pub(super) struct PreparedHistoryEntry {
+    pub(super) position: usize,
+    pub(super) entry: SessionHistoryEntry,
+    pub(super) context: crate::history::HistoryEventTurnContext,
+    pub(super) sequence: u64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ActivePromptTranscriptMetadata {
+    pub(super) prompt_id: Option<String>,
     pub(super) prompt_origin: Option<crate::session::PromptOrigin>,
     pub(super) source_attachment_id: Option<String>,
 }
@@ -75,10 +84,12 @@ impl KernelRuntimeOwnedState {
                 session_id: dispatch.session_id.clone(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: Some(dispatch.agent_id.clone()),
+                prompt_id: Some(dispatch.prompt_id.clone()),
                 prompt_origin: Some(dispatch.prompt_origin),
                 source_attachment_id: Some(dispatch.source_attachment_id.clone()),
                 kind,
                 merge_key,
+                sequence: None,
                 recipient_attachment_ids: recipients.into(),
                 bytes,
             }]);
@@ -98,29 +109,61 @@ impl KernelRuntimeOwnedState {
         }
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
-        self.fan_out_terminal_outputs(
+        let history_entry = crate::history::SessionHistoryEntry::provider_output(
             session_id,
-            vec![TerminalOutputBatchAppend {
-                provider_run_id: provider_run_id.to_string(),
-                agent_id: Some(agent_id.to_string()),
-                kind: crate::terminal::TerminalOutputKind::ProviderError,
-                merge_key: None,
-                bytes: message.as_bytes().to_vec(),
-            }],
+            provider_run_id,
+            Some(agent_id),
+            crate::terminal::TerminalOutputKind::ProviderError,
+            None,
+            message.clone(),
+        )
+        .with_prompt_origin(prompt_metadata.prompt_origin)
+        .with_source_attachment_id(prompt_metadata.source_attachment_id);
+        self.append_history_and_fan_out(
+            session_id,
+            None,
+            vec![(
+                TerminalOutputBatchAppend {
+                    provider_run_id: provider_run_id.to_string(),
+                    agent_id: Some(agent_id.to_string()),
+                    kind: crate::terminal::TerminalOutputKind::ProviderError,
+                    merge_key: None,
+                    sequence: None,
+                    bytes: message.into_bytes(),
+                },
+                Some(history_entry),
+            )],
         );
-        self.append_history_entries(
-            session_id,
-            vec![crate::history::SessionHistoryEntry::provider_output(
+    }
+
+    /// Persists history rows before fan-out so every live record carries the
+    /// sequence of the row it was stored as; clients order live and hydrated
+    /// transcript entries by that one key.
+    pub(super) fn append_history_and_fan_out(
+        &self,
+        session_id: &str,
+        recipient_attachment_ids: Option<Vec<String>>,
+        outputs: Vec<(TerminalOutputBatchAppend, Option<SessionHistoryEntry>)>,
+    ) -> Vec<crate::terminal::TerminalOutputRecord> {
+        let (mut outputs, entries): (Vec<_>, Vec<_>) = outputs.into_iter().unzip();
+        let positions = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| entry.as_ref().map(|_| position))
+            .collect::<Vec<_>>();
+        let sequences =
+            self.append_history_entries(session_id, entries.into_iter().flatten().collect());
+        for (position, sequence) in positions.into_iter().zip(sequences) {
+            outputs[position].sequence = sequence;
+        }
+        match recipient_attachment_ids {
+            Some(recipient_attachment_ids) => self.fan_out_terminal_outputs_to_recipients(
                 session_id,
-                provider_run_id,
-                Some(agent_id),
-                crate::terminal::TerminalOutputKind::ProviderError,
-                None,
-                message,
-            )
-            .with_prompt_origin(prompt_metadata.prompt_origin)
-            .with_source_attachment_id(prompt_metadata.source_attachment_id)],
-        );
+                recipient_attachment_ids,
+                outputs,
+            ),
+            None => self.fan_out_terminal_outputs(session_id, outputs),
+        }
     }
 
     pub(super) fn other_attachment_ids(
@@ -196,6 +239,7 @@ impl KernelRuntimeOwnedState {
             std::collections::BTreeMap::<Option<String>, ActivePromptTranscriptMetadata>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
         for mut output in outputs {
+            self.collect_private_assessment(session_id, &output);
             output.bytes = self
                 .room_secret_observations
                 .protect_unframed_bytes(session_id, &output.bytes);
@@ -275,10 +319,12 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: output.provider_run_id,
                 agent_id,
+                prompt_id: prompt_metadata.prompt_id,
                 prompt_origin: prompt_metadata.prompt_origin,
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind: output.kind,
                 merge_key: output.merge_key,
+                sequence: output.sequence,
                 recipient_attachment_ids: scoped_recipient_attachment_ids,
                 bytes: bounded_bytes,
             });
@@ -330,11 +376,14 @@ impl KernelRuntimeOwnedState {
         if bounded_bytes.is_empty() {
             return crate::terminal::TerminalOutputRecord {
                 record_id: None,
+                sequence: None,
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: crate::session::unix_epoch_ms(),
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id,
-                prompt_id: None,
+                prompt_id: prompt_metadata.prompt_id,
                 prompt_origin: prompt_metadata.prompt_origin,
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind,
@@ -367,6 +416,7 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             kind.clone(),
             merge_key.clone(),
+            prompt_metadata.prompt_id,
             prompt_metadata.prompt_origin,
             prompt_metadata.source_attachment_id.clone(),
             recipient_attachment_ids,
@@ -460,6 +510,7 @@ impl KernelRuntimeOwnedState {
                     .active_prompt_for_agent(&session, agent_id)
             })
             .map(|prompt| ActivePromptTranscriptMetadata {
+                prompt_id: Some(prompt.id().to_string()),
                 prompt_origin: Some(prompt.prompt_origin()),
                 source_attachment_id: Some(prompt.source_attachment_id().to_string()),
             })
@@ -529,35 +580,64 @@ impl KernelRuntimeOwnedState {
         self.append_operational_history_entry(&entry, None, None, None);
     }
 
+    /// Reserve the live/history identity before the write is handed off.
+    /// Capture turn context now, while this batch still belongs to its turn.
+    pub(super) fn prepare_history_entries(
+        &self,
+        session_id: &str,
+        entries: Vec<SessionHistoryEntry>,
+    ) -> Vec<PreparedHistoryEntry> {
+        if self.session_store.get_session(session_id).is_err() {
+            return Vec::new();
+        }
+        let active_turns = self.active_turns.snapshot();
+        entries
+            .into_iter()
+            .enumerate()
+            .filter_map(|(position, entry)| {
+                let entry = bounded_history_entry(
+                    self.room_secret_observations
+                        .protect_transcript_entry(entry),
+                )?;
+                let active_turn = entry
+                    .provider_run_id
+                    .as_deref()
+                    .and_then(|id| active_turns.get(id));
+                let context = self.operational_history_context_with_active_turn(
+                    &entry,
+                    None,
+                    None,
+                    None,
+                    active_turn,
+                );
+                Some(PreparedHistoryEntry {
+                    position,
+                    entry,
+                    context,
+                    sequence: self.operational_history_store.reserve_sequence(),
+                })
+            })
+            .collect()
+    }
+
     pub(super) fn append_history_entries(
         &self,
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
-    ) {
-        let entries = entries
-            .into_iter()
-            .map(|entry| {
-                self.room_secret_observations
-                    .protect_transcript_entry(entry)
-            })
-            .filter_map(bounded_history_entry)
+    ) -> Vec<Option<u64>> {
+        let mut sequences = vec![None; entries.len()];
+        let prepared = self.prepare_history_entries(session_id, entries);
+        let positions = prepared
+            .iter()
+            .map(|item| item.position)
             .collect::<Vec<_>>();
-        if entries.is_empty() {
-            return;
+        for (position, sequence) in positions
+            .into_iter()
+            .zip(self.append_prepared_history_entries(prepared))
+        {
+            sequences[position] = Some(sequence);
         }
-        if let Err(error) = self.session_store.get_session(session_id) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "skipping provider-output history append because session lookup failed",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "entry_count": entries.len(),
-                    "error": error.to_string(),
-                }),
-            );
-            return;
-        }
-        self.append_operational_history_entries(&entries);
+        sequences
     }
 
     pub(super) fn append_operational_history_entry(
@@ -676,6 +756,8 @@ impl KernelRuntimeOwnedState {
             self.session_store.clone(),
             self.prompt_state_owner.clone(),
             self.active_turns.clone(),
+            self.agent_store.clone(),
+            self.provider_run_projection.clone(),
         )
         .resolve_with_overrides(
             entry,
@@ -714,39 +796,28 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    fn append_operational_history_entries(&self, entries: &[crate::history::SessionHistoryEntry]) {
-        if entries.is_empty() {
-            return;
+    pub(super) fn append_prepared_history_entries(
+        &self,
+        prepared: Vec<PreparedHistoryEntry>,
+    ) -> Vec<u64> {
+        if prepared.is_empty() {
+            return Vec::new();
         }
-        let scrubbed = entries
-            .iter()
-            .cloned()
-            .map(|entry| {
-                self.room_secret_observations
-                    .protect_transcript_entry(entry)
+        let (entries, events): (Vec<_>, Vec<_>) = prepared
+            .into_iter()
+            .map(|item| {
+                let entry = self
+                    .room_secret_observations
+                    .protect_transcript_entry(item.entry);
+                let event =
+                    crate::history::HistoryEvent::transcript(item.sequence, &entry, item.context);
+                (entry, event)
             })
-            .collect::<Vec<_>>();
-        let entries = scrubbed.as_slice();
-        let active_turns = self.active_turns.snapshot();
-        let mut prepared = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let active_turn = entry
-                .provider_run_id
-                .as_deref()
-                .and_then(|provider_run_id| active_turns.get(provider_run_id));
-            let context = self.operational_history_context_with_active_turn(
-                entry,
-                None,
-                None,
-                None,
-                active_turn,
-            );
-            prepared.push((entry, context));
-        }
-        let updates = {
+            .unzip();
+        let (updates, sequences) = {
             let _append_guard = self.transcript_history_append_guard();
-            match self.operational_history_store.append_transcripts(prepared) {
-                Ok(events) => {
+            match self.operational_history_store.append_many(&events) {
+                Ok(()) => {
                     let mut updates = Vec::new();
                     for (entry, event) in entries.iter().zip(events.iter()) {
                         if is_unread_output_history_entry(entry) {
@@ -775,7 +846,7 @@ impl KernelRuntimeOwnedState {
                             );
                         }
                     }
-                    updates
+                    (updates, events.iter().map(|event| event.sequence).collect())
                 }
                 Err(error) => {
                     crate::logging::warn_with_fields(
@@ -787,15 +858,20 @@ impl KernelRuntimeOwnedState {
                             "error": error.to_string(),
                         }),
                     );
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 }
             }
         };
         for update in updates {
             self.apply_agent_output_sequence_update(Some(update));
         }
+        sequences
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_user_prompt_history operation signature and explicit context arguments"
+    )]
     pub(super) fn append_user_prompt_history(
         &self,
         session_id: &str,
@@ -847,6 +923,38 @@ impl KernelRuntimeOwnedState {
         // turn start. Persist the activation time here so history hydration
         // cannot place a promoted prompt inside the preceding active turn.
         let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.append_started_user_prompt_history(
+            session_id,
+            source_attachment_id,
+            prompt,
+            prompt_sent_at_ms,
+        )?;
+        self.note_started_prompt_sent_at(session_id, prompt.target_agent_id(), prompt_sent_at_ms)?;
+        Ok(prompt_sent_at_ms)
+    }
+
+    /// Admission notes a turn start before mirroring its prompt state, so one
+    /// durable prompt-state commit carries both the started prompt and its time.
+    pub(super) fn note_started_prompt_sent_at(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_sent_at_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.agent_store
+            .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
+        self.session_store
+            .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
+        Ok(())
+    }
+
+    pub(super) fn append_started_user_prompt_history(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        prompt_sent_at_ms: u64,
+    ) -> Result<(), DaemonError> {
         let prompt_text = crate::prompt_transcript::workflow_prompt_history_text(prompt);
         self.append_user_prompt_history(
             session_id,
@@ -859,17 +967,13 @@ impl KernelRuntimeOwnedState {
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
             Some(prompt_sent_at_ms),
-        )?;
-        self.agent_store
-            .note_prompt_sent_at(prompt.target_agent_id(), prompt_sent_at_ms)?;
-        self.session_store.note_prompt_sent(
-            session_id,
-            prompt.target_agent_id(),
-            prompt_sent_at_ms,
-        )?;
-        Ok(prompt_sent_at_ms)
+        )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_steering_prompt_history operation signature and explicit context arguments"
+    )]
     pub(super) fn append_steering_prompt_history(
         &self,
         session_id: &str,
@@ -880,7 +984,13 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
-    ) -> Result<(), DaemonError> {
+    ) -> Result<u64, DaemonError> {
+        // Resolve canonical ownership before the transcript/projection locks.
+        let public_owner = self
+            .session_store
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_owned();
         let _append_guard = self.transcript_history_append_guard();
         let agent = self.agent_store.get_agent(agent_id)?;
         let (history_provider_run_id, provider_run) =
@@ -938,6 +1048,7 @@ impl KernelRuntimeOwnedState {
         }
         let active_turn = self.active_turns.get(&history_provider_run_id);
         let context = crate::history::HistoryEventTurnContext {
+            public_history_owner_user_id: Some(public_owner),
             session_id: Some(session_id.to_string()),
             agent_id: Some(agent_id.to_string()),
             provider: Some(
@@ -985,7 +1096,7 @@ impl KernelRuntimeOwnedState {
         if self.history_archive_enabled() {
             self.enqueue_history_archive_event(&event);
         }
-        Ok(())
+        Ok(event.sequence)
     }
 
     fn transcript_history_append_guard(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -1027,6 +1138,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             None,
             None,
+            None,
         );
     }
 
@@ -1053,6 +1165,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             None,
             None,
+            None,
         );
     }
 
@@ -1068,6 +1181,7 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
         prompt_origin: crate::session::PromptOrigin,
+        sequence: Option<u64>,
     ) {
         let recipient_attachment_ids = self
             .attachment_store
@@ -1086,6 +1200,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             Some(prompt_origin),
             Some(crate::history::steering_prompt_merge_key(prompt_id)),
+            sequence,
         );
     }
 
@@ -1102,6 +1217,7 @@ impl KernelRuntimeOwnedState {
         recipient_attachment_ids: Vec<String>,
         prompt_origin_override: Option<crate::session::PromptOrigin>,
         merge_key: Option<String>,
+        sequence: Option<u64>,
     ) {
         if recipient_attachment_ids.is_empty() {
             return;
@@ -1121,6 +1237,31 @@ impl KernelRuntimeOwnedState {
                 .get_run(provider_run_id)
                 .ok()
                 .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        // Leased worker runs are projections, not home provider-store entries.
+        // Resolve the echo's scope from its exact kernel-owned home prompt.
+        let agent_id = agent_id.or_else(|| {
+            let session = self.session_store.get_session(session_id).ok()?;
+            self.agent_store
+                .get_session_agents(session_id)
+                .iter()
+                .find_map(|agent| {
+                    self.prompt_state_owner
+                        .active_prompt_for_agent(&session, agent.id())
+                        .filter(|active| active.id() == prompt_id)
+                        .map(|_| agent.id().to_string())
+                })
+        });
+        // Ordinary and promoted prompts were stored before their echo; name
+        // that history row so clients place the echo by sequence.
+        let sequence = sequence.or_else(|| {
+            self.operational_history_store
+                .load_latest_user_prompt_events(session_id, agent_id.as_deref()?, None, 8)
+                .ok()?
+                .into_iter()
+                .rev()
+                .find(|event| event.prompt_id.as_deref() == Some(prompt_id))
+                .map(|event| event.sequence)
         });
         let prompt_origin = prompt_origin_override.or_else(|| {
             agent_id.as_deref().and_then(|agent_id| {
@@ -1153,6 +1294,7 @@ impl KernelRuntimeOwnedState {
             prompt_origin,
             source_attachment_id,
             merge_key,
+            sequence,
             recipient_attachment_ids,
             &bytes,
         );

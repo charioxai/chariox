@@ -8,9 +8,7 @@ use crate::pty::PtyOutputChunk;
 use crate::runtime::projection::AgentRuntimeProjectionStore;
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
 
-use super::provider_output_claude_native::{
-    claude_native_recent_terminal_failure, ProviderOutputClaudeNativeBridge,
-};
+use super::provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 use super::provider_output_fanout::ProviderOutputFanout;
 use super::provider_output_prompt_settlement::ProviderOutputPromptSettlement;
 use super::provider_output_trace::ProviderOutputTrace;
@@ -86,6 +84,10 @@ impl<'a> ProviderOutputPump<'a> {
         let mut provider_run = self
             .context
             .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
+        // Native hooks require the kernel handoff and settlement policy.
+        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+            return Ok(Vec::new());
+        }
         let uses_structured_prompt_io = self.context.run_uses_structured_prompt_io(&provider_run);
         if !request.initial_liveness_already_checked
             && uses_structured_prompt_io
@@ -135,25 +137,6 @@ impl<'a> ProviderOutputPump<'a> {
                 request.recipient_attachment_ids,
             );
         }
-        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
-            if let Some(message) = self.context.process_claude_native_tui_bridge(
-                request.session_id,
-                request.provider_run_id,
-                &provider_run,
-            )? {
-                let run = self
-                    .context
-                    .provider_store
-                    .record_terminal_diagnostic(request.provider_run_id, message.clone())?;
-                self.context.app.update_provider_run_projection(run);
-                self.context.fail_prompt_for_terminal_failure(
-                    request.session_id,
-                    request.provider_run_id,
-                    &message,
-                )?;
-                return Ok(Vec::new());
-            }
-        }
 
         let mut chunks = match self.context.drain_pty_output(request.provider_run_id) {
             Ok(chunks) => chunks,
@@ -170,82 +153,34 @@ impl<'a> ProviderOutputPump<'a> {
                 return Err(error);
             }
         };
-        if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
-            let rendered = chunks
-                .iter()
-                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
-                .collect::<String>();
-            self.context.process_claude_native_terminal_output_bridge(
-                request.session_id,
-                request.provider_run_id,
-                &provider_run,
-                &rendered,
-            )?;
-        }
         let terminal_failure = classify_provider_terminal_failure_output_text(
             provider_run.adapter_key(),
             &chunks
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
-        )
-        .or_else(|| {
-            if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
-                claude_native_recent_terminal_failure(&provider_run)
-            } else {
-                None
-            }
-        });
+        );
         let has_active_prompt = self
             .context
             .provider_run_has_active_prompt(request.session_id, &provider_run)?;
-        let uses_transient_native_terminal =
-            crate::provider::provider_run_uses_claude_native_bridge(&provider_run)
-                && !crate::provider::provider_run_is_claude_headless(&provider_run);
-        if !should_project_pty_output(
-            has_active_prompt,
-            terminal_failure.as_deref(),
-            uses_transient_native_terminal,
-        ) {
+        if !should_project_pty_output(has_active_prompt, terminal_failure.as_deref(), false) {
             chunks.clear();
         }
         if !chunks.is_empty() {
-            if crate::provider::provider_run_is_claude_headless(&provider_run)
-                || uses_transient_native_terminal
-            {
-                self.context.note_prompt_output(request.provider_run_id);
-            } else {
-                self.context
-                    .note_prompt_response_content(request.provider_run_id);
-            }
+            self.context
+                .note_prompt_response_content(request.provider_run_id);
         }
-
-        let records = if crate::provider::provider_run_is_claude_headless(&provider_run) {
-            Vec::new()
-        } else {
-            chunks
-                .into_iter()
-                .map(|chunk| {
-                    if uses_transient_native_terminal {
-                        self.context.fan_out_terminal_output(
-                            request.session_id,
-                            request.provider_run_id,
-                            TerminalOutputKind::ProviderTerminal,
-                            None,
-                            request.recipient_attachment_ids.clone(),
-                            &chunk.bytes,
-                        )
-                    } else {
-                        self.context.fan_out_provider_output(
-                            request.session_id,
-                            request.provider_run_id,
-                            request.recipient_attachment_ids.clone(),
-                            &chunk.bytes,
-                        )
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
+        let records = chunks
+            .into_iter()
+            .map(|chunk| {
+                self.context.fan_out_provider_output(
+                    request.session_id,
+                    request.provider_run_id,
+                    request.recipient_attachment_ids.clone(),
+                    &chunk.bytes,
+                )
+            })
+            .collect::<Vec<_>>();
         if let Some(message) = terminal_failure {
             let run = self
                 .context
@@ -504,15 +439,16 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     );
                 return Ok(records);
             }
-            match self
-                .provider_store
-                .enqueue_structured_output_poll(provider_run_id)?
-            {
-                true => {
-                    let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
-                    self.pending_structured_output_records
-                        .mark_poll_enqueued(provider_run_id, prompt_id);
-                }
+            let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+            match self.pending_structured_output_records.enqueue_poll(
+                provider_run_id,
+                prompt_id,
+                || {
+                    self.provider_store
+                        .enqueue_structured_output_poll(provider_run_id)
+                },
+            )? {
+                true => {}
                 false => self
                     .pending_structured_output_records
                     .schedule_after_empty_poll(
@@ -840,7 +776,11 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let projected_provider_run = self
             .provider_store
             .preview_structured_output_metadata(provider_run_id, &poll_result)?;
-        self.persist_resolved_resume_state(&projected_provider_run, &poll_result)?;
+        super::provider_output_resume::persist_resolved_resume_state(
+            self.app,
+            &projected_provider_run,
+            &poll_result,
+        )?;
         Ok(poll_result)
     }
 
@@ -1003,38 +943,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
         Ok(records)
     }
 
-    fn persist_resolved_resume_state(
-        &mut self,
-        provider_run: &RuntimeProviderRun,
-        poll_result: &ProviderPromptSignalBatch,
-    ) -> Result<(), DaemonError> {
-        let Some(resume_state) = poll_result.resolved_resume_state.as_ref() else {
-            return Ok(());
-        };
-        // A substitute run reruns one turn; it never becomes the agent's profile.
-        let Some(agent_id) = provider_run
-            .agent_instance_id()
-            .filter(|_| provider_run.turn_substitute().is_none())
-        else {
-            return Ok(());
-        };
-        let durable_state_store = self.app.durable_state_store();
-        self.app.agents.set_agent_runtime_profile_durably(
-            &durable_state_store,
-            agent_id,
-            provider_run.provider(),
-            Some(provider_run.model().to_string()),
-            provider_run.variant().map(str::to_string),
-            None,
-            resume_state.clone(),
-            Some(provider_run.id()),
-            None,
-        )?;
-        let _ = crate::app::KernelSessionReadService::new(self.app)
-            .session_snapshot(provider_run.session_id())?;
-        Ok(())
-    }
-
     fn mark_resolved_external_provider_session_attached(&self, provider_run: &RuntimeProviderRun) {
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return;
@@ -1092,40 +1000,6 @@ impl<'a> ProviderOutputPumpContext<'a> {
         provider_run_id: &str,
     ) -> Result<Vec<PtyOutputChunk>, DaemonError> {
         ProviderOutputPtyDrain::new(self.app).drain_output(provider_run_id)
-    }
-
-    fn process_claude_native_tui_bridge(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        provider_run: &RuntimeProviderRun,
-    ) -> Result<Option<String>, DaemonError> {
-        // The interactive TUI pump revisits transcripts on its own cadence, so
-        // the deferred-drain hint is not needed on this path.
-        ProviderOutputClaudeNativeBridge::new(self.app)
-            .process(
-                session_id,
-                provider_run_id,
-                provider_run,
-                self.provider_store.native_interaction_bridge(),
-            )
-            .map(|outcome| outcome.terminal_failure)
-    }
-
-    fn process_claude_native_terminal_output_bridge(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-        provider_run: &RuntimeProviderRun,
-        rendered: &str,
-    ) -> Result<(), DaemonError> {
-        ProviderOutputClaudeNativeBridge::new(self.app).process_terminal_output(
-            session_id,
-            provider_run_id,
-            provider_run,
-            self.provider_store.native_interaction_bridge(),
-            rendered,
-        )
     }
 
     fn recipient_attachment_ids_for_session(&self, session_id: &str) -> Vec<String> {
@@ -1254,19 +1128,22 @@ impl<'a> ProviderOutputPumpContext<'a> {
 }
 
 impl DaemonApp {
-    pub(crate) fn process_claude_native_bridge_for_runtime(
+    pub(crate) fn process_claude_native_bridge_with_handoff_for_runtime(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
+        policy: &dyn crate::app::NativePromptHandoffPolicy,
     ) -> Result<crate::app::ClaudeNativeProcessOutcome, DaemonError> {
-        let native_interaction_bridge = self.providers.native_interaction_bridge();
-        ProviderOutputClaudeNativeBridge::new(self).process(
-            session_id,
-            provider_run_id,
-            provider_run,
-            native_interaction_bridge,
-        )
+        let interaction_bridge = self.providers.native_interaction_bridge();
+        ProviderOutputClaudeNativeBridge::new(self)
+            .with_prompt_handoff(policy)
+            .process(
+                session_id,
+                provider_run_id,
+                provider_run,
+                interaction_bridge,
+            )
     }
 
     pub(crate) fn finish_deferred_claude_native_stop_for_runtime(
@@ -1282,18 +1159,28 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn refresh_claude_native_session_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        ProviderOutputClaudeNativeBridge::new(self).refresh_session_start(provider_run_id)?;
+        self.providers.get_run(provider_run_id)
+    }
+
     pub(crate) fn process_claude_native_prompt_dispatch_attempt_for_runtime(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
         dispatch: &crate::app::KernelPromptDispatch,
+        context_handoff: &dyn Fn(usize) -> String,
     ) -> Result<crate::app::ClaudeNativeDispatchAttempt, DaemonError> {
         ProviderOutputClaudeNativeBridge::new(self).process_prompt_dispatch_attempt(
             session_id,
             provider_run_id,
             provider_run,
             dispatch,
+            context_handoff,
         )
     }
 

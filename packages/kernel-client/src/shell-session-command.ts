@@ -122,7 +122,7 @@ export async function executeSessionCommand(
         worktree: session.worktree_id,
       }
       return resourceResult(
-        `created session ${session.alias ?? session.id} in ${session.worktree_id}\n${formatCreatedSessionWorkspaceLiveSync(session)}`,
+        `created session ${session.alias ?? session.id} in ${session.worktree_id}`,
         parsed.assignment,
         session.id,
         contextUpdates,

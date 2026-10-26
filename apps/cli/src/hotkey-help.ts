@@ -1,5 +1,6 @@
 import { approvalShortcutLabel } from "./approval-shortcuts.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
+import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 
 export type HotkeyItem = {
   keys: string
@@ -15,6 +16,8 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
   { keys: HOTKEY_TOGGLE_LABEL, description: "Show or hide this hotkey list." },
   { keys: "Ctrl+E", description: "Exit the CLI with the same behavior as /exit." },
   { keys: "Ctrl+C", description: "Stop the active agent; if idle, exit the CLI." },
+  { keys: "F6 / Meta+C", description: "Copy the selected text (drag release also copies); OSC 52 delivery is unconfirmed over SSH." },
+  { keys: "Drag + terminal Copy", description: "Drag-select, then Cmd-C (macOS) or your terminal Copy shortcut. CHARIOX_TUI_MOUSE=on enables app mouse controls; use keyboard navigation by default." },
 ]
 
 const SESSION_HOTKEYS: HotkeyItem[] = [
@@ -23,6 +26,7 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
   { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },
   { keys: "Ctrl+P", description: "Toggle between the agent screens and workflow outline." },
+  { keys: "Ctrl+O", description: "Expand or collapse every tool call and thought of the focused agent." },
   { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
   { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
   { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },
@@ -42,6 +46,8 @@ export function buildHotkeySections(attached: boolean): HotkeySection[] {
     { title: "Global", items: GLOBAL_HOTKEYS },
     attached
       ? { title: "Session", items: SESSION_HOTKEYS }
-      : { title: "Waiting room", items: WAITING_ROOM_HOTKEYS },
+      : { title: "Waiting room", items: userAppViewsPrototypeEnabled()
+        ? [...WAITING_ROOM_HOTKEYS, { keys: "/", description: "Enter a user-domain command, including /app views and /app view open INSTALLATION." }]
+        : WAITING_ROOM_HOTKEYS },
   ]
 }

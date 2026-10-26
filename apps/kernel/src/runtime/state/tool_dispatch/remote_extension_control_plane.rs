@@ -1,5 +1,3 @@
-use chariox_relay::protocol::ClientTarget;
-
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -128,6 +126,20 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let Some(remote_context) = self.leased_forward_context(provider_run).await? else {
+            return Ok(None);
+        };
+        self.forward_meta_runtime_tool(remote_context, tool_name, arguments, Default::default())
+            .await
+            .map(Some)
+    }
+
+    /// The home-bound context of a leased worker run, or `None` when local.
+    pub(crate) async fn leased_forward_context(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<Option<crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext>, DaemonError>
+    {
         let workspace_context = self
             .workspace_live_sync_workspace_for_provider_run(provider_run)
             .await?;
@@ -140,28 +152,36 @@ impl KernelRuntimeState {
                     )
             })
             .await;
-        let Some(remote_context) = remote_context else {
-            return Ok(None);
-        };
+        Ok(remote_context)
+    }
+
+    pub(crate) async fn forward_meta_runtime_tool(
+        &self,
+        remote_context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        min_response_timeout: std::time::Duration,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         // Home may call back into this worker while handling the forwarded
         // tool. Snapshot configuration under the app lock, then release it
         // before waiting for the relay round trip.
         let config = self.config_snapshot().await;
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &config,
-            ClientTarget {
-                daemon_id: Some(remote_context.home_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::ForwardMetaRuntimeTool {
-                context: remote_context,
-                tool_name: tool_name.to_string(),
-                arguments,
-            },
-        )
-        .await?;
+        let home_kernel_id = remote_context.home_kernel_id.clone();
+        let response = self
+            .send_worker_home_runtime_request(
+                &config,
+                &home_kernel_id,
+                RelayPeerRequest::ForwardMetaRuntimeTool {
+                    context: remote_context,
+                    tool_name: tool_name.to_string(),
+                    arguments,
+                },
+                std::time::Duration::from_millis(config.relay_request_timeout_ms)
+                    .max(min_response_timeout),
+            )
+            .await?;
         match response {
-            RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(Some(result)),
+            RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(result),
             other => Err(DaemonError::LocalTransport {
                 operation: "forward leased metaagent runtime tool",
                 message: format!("unexpected forwarded metaagent response: {other:?}"),
@@ -175,35 +195,32 @@ impl KernelRuntimeState {
         tool_name: String,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
-        let Some(remote) = agent.remote_execution() else {
-            return Err(DaemonError::LocalTransport {
-                operation: "dispatch forwarded metaagent runtime tool",
-                message: format!(
-                    "home agent `{}` is not remote-backed",
-                    context.home_agent_id
-                ),
-            });
-        };
-        if agent.session_id() != context.home_session_id
-            || remote.leased_agent_id != context.leased_agent_id
-            || remote.worker_kernel_id != context.worker_kernel_id
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "dispatch forwarded metaagent runtime tool",
-                message: "forwarded metaagent context does not match the home remote binding"
-                    .to_string(),
-            });
-        }
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
         #[cfg(test)]
         self.pause_forwarded_meta_request_before_dispatch_for_test();
-        self.dispatch_meta_runtime_tool_call_for_agent(
-            &context.home_session_id,
-            &context.home_agent_id,
-            &tool_name,
-            arguments,
-        )
-        .await
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
+        if let Some(name) =
+            crate::transport::runtime_tools::canonical_agent_event_tool_name(&tool_name)
+        {
+            return self
+                .dispatch_leased_agent_event_tool(&context, name, arguments)
+                .await;
+        }
+        // A10: room tools of a leased agent act with its lease-verified origin.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        self.with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+            .dispatch_meta_runtime_tool_call_for_agent(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &tool_name,
+                arguments,
+            )
+            .await
     }
 
     pub(super) async fn try_dispatch_remote_capability_runtime_tool_call(
@@ -269,12 +286,9 @@ impl KernelRuntimeState {
                 // Home may call back into this worker to install a grant. Do not
                 // hold the worker app mutex across that outbound request.
                 let response =
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    self.send_worker_home_runtime_request(
                         &config,
-                        ClientTarget {
-                            daemon_id: Some(remote_context.home_kernel_id.clone()),
-                            daemon_alias: None,
-                        },
+                        &remote_context.home_kernel_id,
                         RelayPeerRequest::ForwardCapabilityRuntimeTool {
                             context: remote_context.clone(),
                             tool_name: if attempt == 0 {
@@ -290,6 +304,7 @@ impl KernelRuntimeState {
                                 serde_json::json!({})
                             },
                         },
+                        std::time::Duration::from_millis(config.relay_request_timeout_ms),
                     )
                     .await?;
                 let RelayPeerResponse::CapabilityRuntimeToolHandled {
@@ -365,44 +380,29 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
-        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
-            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
-        {
-            let session = self
-                .owned
-                .session_store
-                .get_session(&context.home_session_id)?;
-            let sender = self.owned.agent_store.get_agent(&context.home_agent_id)?;
-            let origin_is_current = sender.session_id() == context.home_session_id
-                && self.owned.config_projection.snapshot().daemon_id == context.home_kernel_id
-                && sender.remote_execution().is_some_and(|binding| {
-                    binding.leased_agent_id == context.leased_agent_id
-                        && binding.worker_kernel_id == context.worker_kernel_id
-                        && binding.worker_machine_id == context.worker_machine_id
-                        && binding.active_worker_provider_run_id.as_deref()
-                            == Some(context.worker_provider_run_id.as_str())
-                })
-                && context
-                    .home_prompt_id
-                    .as_deref()
-                    .is_some_and(|home_prompt_id| {
-                        self.owned
-                            .prompt_state_owner
-                            .active_prompt_for_agent(&session, sender.id())
-                            .is_some_and(|prompt| {
-                                prompt.id() == home_prompt_id
-                                    && prompt.status() == crate::session::PromptStatus::Running
-                            })
-                    });
-            if !origin_is_current {
+        self.with_app_side_effect(|_| {
+            self.authorize_forwarded_workspace_context(&context)?;
+            // Agent messages retain the exact home-turn origin contract.
+            if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
+                == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+                && context.home_prompt_id.is_none()
+            {
                 return Err(DaemonError::LocalTransport {
                     operation: "dispatch forwarded agent message",
-                    message: "sender prompt or leased worker binding is no longer current"
-                        .to_string(),
+                    message: "sender prompt or leased worker binding is no longer current".into(),
                 });
             }
-        }
+            Ok(())
+        })
+        .await?;
+        // A10: a leased sender acts with its lease-verified origin, as a local
+        // provider turn does.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
         let (result, package) = self
+            .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
             .dispatch_capability_runtime_tool_call_for_agent(
                 &context.home_session_id,
                 &context.home_agent_id,
@@ -431,7 +431,11 @@ impl KernelRuntimeState {
             });
         };
         let session_id = provider_run.session_id().to_string();
-        let (result, _) = self
+        // MP-11 SB-03: retain the authenticated run across capability waits.
+        let state = self
+            .with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()));
+        state.authorize_current_external_command()?;
+        let (result, _) = state
             .dispatch_capability_runtime_tool_call_for_agent(
                 &session_id,
                 &agent_id,
@@ -459,6 +463,7 @@ impl KernelRuntimeState {
     > {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
+        // MD-4: inactive registrations must not reserve their large futures for a read/message.
         match tool_name {
             crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok((
                 self.handle_list_session_agents_runtime_tool(&session, &agent),
@@ -469,7 +474,7 @@ impl KernelRuntimeState {
                 None,
             )),
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => Ok((
-                self.handle_send_agent_message_runtime_tool(&session, &agent, arguments)
+                Box::pin(self.handle_send_agent_message_runtime_tool(&session, &agent, arguments))
                     .await?,
                 None,
             )),
@@ -477,44 +482,50 @@ impl KernelRuntimeState {
                 self.handle_list_extensions_runtime_tool(&session, &agent, arguments)
             }
             crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL => {
-                self.handle_request_extension_runtime_tool(
+                Box::pin(self.handle_request_extension_runtime_tool(
                     &session,
                     &agent,
                     session_id,
                     arguments,
                     include_skill_package,
-                )
+                ))
                 .await
             }
             crate::transport::runtime_tools::REGISTER_MCP_TOOL => Ok((
-                self.handle_register_mcp_runtime_tool(&session, &agent, arguments)
+                Box::pin(self.handle_register_mcp_runtime_tool(&session, &agent, arguments))
                     .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL => Ok((
-                self.handle_register_skill_path_runtime_tool(&session, &agent, arguments)
+                Box::pin(self.handle_register_skill_path_runtime_tool(&session, &agent, arguments))
                     .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => Ok((
-                self.handle_register_environment_runtime_tool(&session, &agent, arguments)
-                    .await?,
+                Box::pin(
+                    self.handle_register_environment_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => Ok((
-                self.handle_register_script_path_runtime_tool(&session, &agent, arguments)
-                    .await?,
+                Box::pin(
+                    self.handle_register_script_path_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => Ok((
-                self.handle_register_connector_path_runtime_tool(&session, &agent, arguments)
-                    .await?,
+                Box::pin(
+                    self.handle_register_connector_path_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
                 None,
             )),
             crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => Ok((
-                self.handle_register_connector_adapter_path_runtime_tool(
+                Box::pin(self.handle_register_connector_adapter_path_runtime_tool(
                     &session, &agent, arguments,
-                )
+                ))
                 .await?,
                 None,
             )),

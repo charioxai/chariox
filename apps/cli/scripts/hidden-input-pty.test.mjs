@@ -13,6 +13,9 @@ const python = String.raw`
 import errno, fcntl, json, os, pathlib, pty, select, signal, struct, subprocess, tempfile, termios, time
 
 root, fixture, bun, surface, command = __import__('sys').argv[1:]
+__import__('sys').path.insert(0, str(pathlib.Path(root) / 'apps/kernel/slice-linux-docker'))
+from owned_process_signals import OwnedProcesses
+owned_signals = OwnedProcesses()
 secret = 'hidden-synthetic-' + os.urandom(8).hex() + ('-pass' if os.environ.get('HIDDENINPUT_PLAIN') == '1' else '-päss')
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 100, 0, 0))
@@ -41,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix='hiddeninput-pty-', dir=state_root) as s
     try:
         proc = subprocess.Popen([bun if surface == 'tui' else 'node', fixture, surface, command],
              stdin=slave, stdout=slave, stderr=slave, env=env, start_new_session=True)
+        proc.owned_signal_handle = owned_signals.record(proc.pid, watch=True, fresh_launch=True)
         if surface == 'shell':
             read_until(b'@ ')
             if command == 'run':
@@ -73,7 +77,7 @@ with tempfile.TemporaryDirectory(prefix='hiddeninput-pty-', dir=state_root) as s
         print(json.dumps({'surface':surface, 'command':command, 'no_echo':True, 'echo_restored':True, 'exit':code}))
     finally:
         if proc is not None and proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGKILL)
+            owned_signals.group(proc.owned_signal_handle, signal.SIGKILL)
             proc.wait()
         os.close(master)
         os.close(slave)

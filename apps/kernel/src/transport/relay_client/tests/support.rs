@@ -187,17 +187,60 @@ pub(super) async fn send_client_envelope<S>(
         .expect("client envelope should send");
 }
 
+// These transport fixtures start after owner approval. The live pairing drill
+// exercises issued-link redemption over the wire, including unpaired denial.
+pub(super) fn approve_test_terminal(config: &DaemonConfig, public_key: &str) {
+    if !crate::runtime::self_host_terminal_grants::required(config) {
+        return;
+    }
+    let pin = crate::runtime::terminal_pairings::public_key_thumbprint(public_key);
+    let client_id = format!("fixture-terminal-{pin}");
+    let link = format!("fixture-issued-link-{pin}");
+    crate::runtime::self_host_terminal_grants::register(
+        config,
+        &link,
+        &client_id,
+        crate::session::unix_epoch_ms() + 60_000,
+        "cli",
+        None,
+    )
+    .expect("owner fixture should issue a pairing link");
+    crate::runtime::self_host_terminal_grants::redeem(
+        config,
+        &link,
+        crate::config::PersistedClientPairing {
+            client_id,
+            public_key_thumbprint: pin,
+            paired_at_ms: crate::session::unix_epoch_ms(),
+            ..Default::default()
+        },
+    )
+    .expect("approved fixture key should redeem its issued link");
+}
+
+fn paired_test_key(config: &DaemonConfig) -> String {
+    // A real terminal profile keeps one key across requests and reconnects.
+    static KEY: OnceLock<String> = OnceLock::new();
+    let key = KEY
+        .get_or_init(relay_crypto::generate_private_key_base64)
+        .clone();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&key)
+        .expect("terminal public key should derive");
+    approve_test_terminal(config, &public_key);
+    key
+}
+
 pub(super) async fn send_client_request<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
     request_id: &str,
-    daemon_id: &str,
+    config: &DaemonConfig,
     daemon_public_key: &str,
     request: LocalDaemonRequest,
 ) -> String
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let client_private_key = relay_crypto::generate_private_key_base64();
+    let client_private_key = paired_test_key(config);
     let plaintext = serde_json::to_vec(&request).expect("request should serialize");
     let encrypted_request =
         relay_crypto::encrypt_payload_for_peer(&client_private_key, daemon_public_key, &plaintext)
@@ -207,7 +250,7 @@ where
         &RelayEnvelope::ClientRequest {
             request_id: request_id.to_string(),
             target: ClientTarget {
-                daemon_id: Some(daemon_id.to_string()),
+                daemon_id: Some(config.daemon_id.clone()),
                 daemon_alias: None,
             },
             encrypted_request,
@@ -221,14 +264,14 @@ pub(super) async fn send_client_command_request<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
     request_id: &str,
     command_id: &str,
-    daemon_id: &str,
+    config: &DaemonConfig,
     daemon_public_key: &str,
     request: LocalDaemonRequest,
 ) -> String
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let client_private_key = relay_crypto::generate_private_key_base64();
+    let client_private_key = paired_test_key(config);
     let plaintext = serde_json::to_vec(&serde_json::json!({
         "command_id": command_id,
         "request": request,
@@ -242,7 +285,7 @@ where
         &RelayEnvelope::ClientRequest {
             request_id: request_id.to_string(),
             target: ClientTarget {
-                daemon_id: Some(daemon_id.to_string()),
+                daemon_id: Some(config.daemon_id.clone()),
                 daemon_alias: None,
             },
             encrypted_request,

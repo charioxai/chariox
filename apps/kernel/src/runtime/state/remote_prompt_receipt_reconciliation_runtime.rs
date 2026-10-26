@@ -64,6 +64,11 @@ pub(super) fn remote_prompt_receipt_action(
             Ok(RemotePromptReceiptAction::RejectUnadmitted)
         }
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
+            if receipt.target_home_prompt_id.is_none() =>
+        {
+            Err("worker admission of the exact prompt is still Dispatching with no accepted or rejected outcome")
+        }
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
         | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
         | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected => {
             Err("worker returned a queued-steer receipt while reconciling an active prompt")
@@ -282,6 +287,7 @@ impl KernelRuntimeState {
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &dispatch.source_attachment_id,
+                    Some(&dispatch.prompt_id),
                     None,
                 )
                 .await?;

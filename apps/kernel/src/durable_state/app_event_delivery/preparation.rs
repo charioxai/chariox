@@ -158,12 +158,12 @@ fn envelope(
         endpoint_id: candidate.configuration.target.endpoint_id.clone(),
         queue_ref: Some(candidate.configuration.target.queue_id.clone()),
         input: serde_json::json!({"event_type":candidate.configuration.event_name,"event_type_version":receipt.event_version,
-            "occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"schedule_revision":receipt.schedule_revision,
+            "occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"schedule_revision":receipt.schedule_revision,"deadline_ms":receipt.expires_at_ms,
             "payload":serde_json::from_str::<serde_json::Value>(receipt.payload.as_deref().ok_or(AppEventDeliveryError::Conflict)?).map_err(|_|OutboxError::Corrupt)?}),
         artifacts,
         mode: None,
         caller: serde_json::json!({"kind":"app_event","installation_id":candidate.catalog.installation_id(),
-            "owner_id":candidate.owner,"automation_id":receipt.automation_id,"automation_revision":receipt.automation_revision}),
+            "owner_id":candidate.owner,"automation_id":receipt.automation_id,"automation_revision":receipt.automation_revision,"delivery_mode":candidate.configuration.delivery_mode}),
     })
 }
 

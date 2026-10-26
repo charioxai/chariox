@@ -18,9 +18,14 @@
 #      cgroup of the systemd --user unit chariox-kernel.service
 #      (.../user@UID.service/app.slice/chariox-kernel.service/apps) and the kernel
 #      database ~/.chariox/state/kernel.db. Other owners are kept;
-#   4. loads chariox-app-bwrap when AppArmor exposes the userns restriction. It
-#      lets only an installed runtime's bundled bubblewrap create user namespaces,
-#      which Ubuntu 23.10 and later restrict;
+#   4. installs the pinned kernel Chromium from kernel-browser-chromium.lock.json
+#      (downloaded, or --browser-archive, and checked against the pinned SHA-256
+#      and size before any change) read-only under /usr/lib/chariox/browser/chromium,
+#      and the kernel browser's namespace launcher
+#      /usr/lib/chariox/browser/chariox-browser-unshare (a root-owned copy of
+#      util-linux unshare) and loads chariox-app-bwrap when AppArmor exposes the
+#      userns restriction. It lets only an installed runtime's bundled bubblewrap
+#      and that launcher create user namespaces, which Ubuntu 23.10 and later restrict;
 #   5. enables lingering, so the user's systemd manager, which delegates the
 #      kernel's cgroup, runs without a login session;
 #   6. starts the helper, or restarts it when its binary, unit or enrollment
@@ -50,6 +55,10 @@ RUNTIME_ENROLLMENT=$R/etc/chariox/apps/runtime-enrollment.json
 RUNTIMES=$R/usr/lib/chariox/app-runtimes
 STORAGE=$R/var/lib/chariox-app-storage
 PROFILE=$R/etc/apparmor.d/chariox-app-bwrap
+BROWSER_LAUNCHER=$R/usr/lib/chariox/browser/chariox-browser-unshare
+BROWSERS=$R/usr/lib/chariox/browser/chromium
+# Tests only: a lock naming a local fixture archive instead of the real download.
+BROWSER_LOCK=${CHARIOX_LOCAL_INSTALL_BROWSER_LOCK:-$here/kernel-browser-chromium.lock.json}
 APPARMOR_PROFILES=$R/sys/kernel/security/apparmor/profiles
 LINGER=$R/var/lib/systemd/linger
 # Lingering this script enabled, one file per uid, so uninstall reverts only that.
@@ -62,12 +71,13 @@ die() { printf '[chariox-install] error: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 usage: install-root.sh install --user NAME [--user NAME]... --bin DIR --runtime DIR
-                               --runtime-key HEX --runtime-digest HEX [--dry-run]
+                               --runtime-key HEX --runtime-digest HEX [--browser-archive FILE] [--dry-run]
        install-root.sh uninstall (--user NAME|UID [--user NAME|UID]... | --all) [--dry-run]
   --bin DIR             chariox-app-storage and chariox-app-runtime-install
   --runtime DIR         the signed App runtime release
   --runtime-key HEX     its trusted Ed25519 public key, from the release authority
   --runtime-digest HEX  the SHA-256 of its runtime-inventory.json, from the release authority
+  --browser-archive FILE  the pinned kernel Chromium archive, already downloaded (offline install)
 EOF
 }
 dry_run=0
@@ -87,7 +97,7 @@ case "$command" in
   -h|--help|help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
-users=() bin= runtime= key= digest= all=0
+users=() bin= runtime= key= digest= browser_archive= all=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --user) users+=("${2:?--user needs a name}"); shift 2 ;;
@@ -95,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --runtime) runtime=${2:?--runtime needs a directory}; shift 2 ;;
     --runtime-key) key=${2:?--runtime-key needs a value}; shift 2 ;;
     --runtime-digest) digest=${2:?--runtime-digest needs a value}; shift 2 ;;
+    --browser-archive) browser_archive=${2:?--browser-archive needs a file}; shift 2 ;;
     --all) all=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     *) usage >&2; die "unknown argument: $1" ;;
@@ -224,6 +235,67 @@ remove() { # PATH...: remove each that exists
   done
 }
 
+# browser_prepare STAGE: verify the pinned kernel Chromium (download or --browser-archive)
+# and unpack it into STAGE/tree. Exit 10 when the pinned version is already installed.
+browser_prepare() {
+  python3 - "$BROWSER_LOCK" "$BROWSERS" "$1" "$dry_run" "${R:+test}" "$browser_archive" <<'PY'
+import hashlib, json, os, shutil, stat, sys, urllib.request, zipfile
+lock_path, root, stage, dry_run, test_mode, archive = sys.argv[1:7]
+say = lambda text: print(f"[chariox-install] {text}", file=sys.stderr, flush=True)
+with open(lock_path) as source:
+    lock = json.load(source)
+if lock.get("schema") != "chariox.kernel-browser-chromium.v1":
+    sys.exit(f"{lock_path} has an unknown schema")
+version, pin = lock["version"], lock["linux64"]
+if not version or not all(c.isdigit() or c == "." for c in version):
+    sys.exit(f"{lock_path} names an invalid version")
+destination = os.path.join(root, version)
+marker = os.path.join(destination, ".chariox-pin")
+if os.path.isfile(marker) and open(marker).read().strip() == pin["sha256"]:
+    say(f"unchanged {destination}")
+    sys.exit(10)
+if dry_run == "1":
+    say(f"would install the pinned kernel Chromium {version} into {destination}")
+    sys.exit(0)
+url = pin["url"]
+if not archive:
+    if not (url.startswith("https://") or test_mode == "test" and url.startswith("file://")):
+        sys.exit(f"{lock_path}: the pinned Chromium URL must be https")
+    archive = os.path.join(stage, "chromium.zip")
+    say(f"download the pinned kernel Chromium {version} from {url}")
+    with urllib.request.urlopen(url, timeout=60) as response, open(archive, "wb") as out:
+        shutil.copyfileobj(response, out, 1 << 20)
+digest, size = hashlib.sha256(), 0
+with open(archive, "rb") as source:
+    for chunk in iter(lambda: source.read(1 << 20), b""):
+        digest.update(chunk); size += len(chunk)
+if digest.hexdigest() != pin["sha256"] or size != pin["size"]:
+    sys.exit(f"{archive} has SHA-256 {digest.hexdigest()} ({size} bytes), not the pinned {pin['sha256']} ({pin['size']} bytes)")
+tree = os.path.join(stage, "tree")
+with zipfile.ZipFile(archive) as bundle:
+    for entry in bundle.infolist():
+        mode = entry.external_attr >> 16
+        parts = entry.filename.split("/")
+        if entry.filename.startswith("/") or ".." in parts or stat.S_ISLNK(mode):
+            sys.exit(f"{archive} holds an unsafe entry {entry.filename!r}")
+        target = os.path.join(tree, entry.filename)
+        if entry.is_dir():
+            os.makedirs(target, 0o755, exist_ok=True); continue
+        os.makedirs(os.path.dirname(target), 0o755, exist_ok=True)
+        with bundle.open(entry) as source, open(target, "wb") as out:
+            shutil.copyfileobj(source, out, 1 << 20)
+        os.chmod(target, 0o755 if mode & 0o111 else 0o644)
+executable = os.path.join(tree, pin["executable"])
+if not (os.path.isfile(executable) and os.access(executable, os.X_OK)):
+    sys.exit(f"{archive} has no executable {pin['executable']}")
+with open(os.path.join(tree, ".chariox-pin"), "w") as out:
+    out.write(pin["sha256"] + "\n")
+for directory, _, _ in os.walk(tree):
+    os.chmod(directory, 0o755)
+print(version)
+PY
+}
+
 enrolled_runtime() {
   [[ -f "$RUNTIME_ENROLLMENT" ]] || { echo none; return; }
   python3 -c 'import json,sys; e=json.load(open(sys.argv[1])); print(e["inventorySha256"], "revision", e["revision"])' "$RUNTIME_ENROLLMENT"
@@ -231,9 +303,11 @@ enrolled_runtime() {
 
 profile_loaded() {
   grep -q '^chariox-app-bwrap ' "$APPARMOR_PROFILES" 2>/dev/null &&
-  grep -q '^chariox-app-domain-entry ' "$APPARMOR_PROFILES" 2>/dev/null
+  grep -q '^chariox-app-domain-entry ' "$APPARMOR_PROFILES" 2>/dev/null &&
+  grep -q '^chariox-browser-unshare ' "$APPARMOR_PROFILES" 2>/dev/null &&
+  grep -q '^chariox-browser-chromium ' "$APPARMOR_PROFILES" 2>/dev/null
 }
-profile_any_loaded() { grep -Eq '^chariox-app-(bwrap|domain-entry) ' "$APPARMOR_PROFILES" 2>/dev/null; }
+profile_any_loaded() { grep -Eq '^chariox-(app-bwrap|app-domain-entry|browser-unshare|browser-chromium) ' "$APPARMOR_PROFILES" 2>/dev/null; }
 
 install_all() {
   [[ ${#users[@]} -gt 0 ]] || die "name at least one --user"
@@ -272,9 +346,12 @@ install_all() {
 
   # Both binaries are used from a private root-owned copy from here on, so the
   # source directory cannot swap what is verified, compared or installed.
-  local before after status=0 restart=0
-  stage=$(mktemp -d)
+  local before after status=0 restart=0 browser_version= browser_status=0
+  stage=$(mktemp -d "${TMPDIR:-/var/tmp}/chariox-install.XXXXXX")
   trap 'rm -rf -- "$stage"' EXIT
+  # The pinned kernel Chromium is verified before the first change.
+  browser_version=$(browser_prepare "$stage") || browser_status=$?
+  case "$browser_status" in 0|10) ;; *) die "the pinned kernel Chromium could not be verified" ;; esac
   for name in chariox-app-storage chariox-app-runtime-install; do
     install -m 0700 -- "$bin/$name" "$stage/$name"
   done
@@ -288,6 +365,9 @@ install_all() {
     after=$(enrolled_runtime)
     if [[ "$after" == "$before" ]]; then say "unchanged runtime $after (re-verified)"; else say "enrolled runtime $after (was $before)"; fi
   fi
+
+  act "verify system Python browser dependencies" \
+    bash "$here/install-browser-dependencies.sh"
 
   # Preserve the host-wide admission inode shared with older root kernels.
   # These contain no data; ordinary kernels flock the read-only descriptor.
@@ -317,8 +397,17 @@ install_all() {
   enrollment install "${owner_specs[@]}" || status=$?
   case "$status" in 0) restart=1 ;; 10) ;; *) die "enrollment failed" ;; esac
 
-  # 4. Only kernels exposing the AppArmor userns restriction need the ABI 4
+  # 4. The kernel browser's policy namespace launcher (MP-11 lockdown). Only
+  # kernels exposing the AppArmor userns restriction need the ABI 4
   # exception. Bookworm has neither that restriction nor an ABI 4 parser.
+  if (( browser_status == 0 && ! dry_run )); then
+    act "install the pinned kernel Chromium $browser_version" install -d -m 0755 -- "$BROWSERS"
+    rm -rf -- "${BROWSERS:?}/$browser_version" && mv -- "$stage/tree" "$BROWSERS/$browser_version" || die "failed to install $BROWSERS/$browser_version"
+    for old in "$BROWSERS"/*; do
+      [[ "$old" == "$BROWSERS/$browser_version" ]] || act "remove the previous kernel Chromium $old" rm -rf -- "$old"
+    done
+  fi
+  put /usr/bin/unshare "$BROWSER_LAUNCHER" 0755 || true
   if (( needs_apparmor )); then
     if put "$here/chariox-app-bwrap.apparmor" "$PROFILE" 0644 || ! profile_loaded; then
       act "load AppArmor profile chariox-app-bwrap" apparmor_parser -r "$PROFILE"
@@ -444,9 +533,10 @@ uninstall_all() {
     ! profile_any_loaded || act "unload AppArmor profile chariox-app-bwrap" apparmor_parser -R "$PROFILE"
     remove "$PROFILE"
   fi
-  remove "$RUNTIME_ENROLLMENT" "$ENROLLMENT" "$HELPER" "$RUNTIME_INSTALLER"
+  remove "$RUNTIME_ENROLLMENT" "$ENROLLMENT" "$HELPER" "$RUNTIME_INSTALLER" "$BROWSER_LAUNCHER"
+  if [[ -d "$BROWSERS" ]]; then act "remove $BROWSERS" rm -rf -- "$BROWSERS"; fi
   if [[ -d "$RUNTIMES" ]]; then act "remove $RUNTIMES" rm -rf -- "$RUNTIMES"; fi
-  for dir in "$STORAGE"/u-* "$STORAGE" "$STATE" "$R/etc/chariox/apps" "$R/etc/chariox" "$R/usr/lib/chariox"; do
+  for dir in "$STORAGE"/u-* "$STORAGE" "$STATE" "$R/etc/chariox/apps" "$R/etc/chariox" "$R/usr/lib/chariox/browser" "$R/usr/lib/chariox"; do
     if [[ -d "$dir" && -z "$(ls -A -- "$dir")" ]]; then act "remove $dir" rmdir -- "$dir"; fi
   done
   say "done: no Chariox system component is left"

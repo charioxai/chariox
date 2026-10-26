@@ -120,12 +120,38 @@ export function operationList(details, target) {
   return operations
 }
 
-export function recordOperation(capture, operation) {
+export function recordOperation(capture, operation, capturedAt) {
   const current = capture.operations.findIndex((item) => item.operationId === operation.operationId)
   if (current < 0) capture.operations.push(operation)
   else capture.operations[current] = operation
   requireValue(capture.operations.length <= SHUTDOWN_TRIGGER_LIMITS.maximumOperations,
     "managed operation evidence exceeded the bound")
+  if (capturedAt === undefined) return
+  capture.operationObservations ??= []
+  const previous = capture.operationObservations.findLast(item => item.operation.operationId === operation.operationId)
+  if (previous && JSON.stringify(previous.operation) === JSON.stringify(operation)) return
+  requireValue(capture.operationObservations.length < SHUTDOWN_TRIGGER_LIMITS.maximumOperationObservations,
+    "managed operation observation limit reached")
+  capture.operationObservations.push({ capturedAt, operation })
+}
+
+// MP-09/MP-10: state deduplication must not erase the observer's sampling window.
+// These are successful projection reads, not kernel-heartbeat or admission-fence proof.
+export function recordSnapshotCoverage(capture, phase, capturedAt, requestStarted, completed) {
+  requireValue(Number.isFinite(requestStarted) && Number.isFinite(completed) && completed >= requestStarted,
+    "managed observer monotonic clock regressed")
+  capture.snapshotCoverage ??= {}
+  const coverage = capture.snapshotCoverage[phase] ??= {
+    samples: 0, firstCompletedAt: capturedAt, lastCompletedAt: capturedAt,
+    firstCompletedMonotonicMs: completed, lastCompletedMonotonicMs: completed,
+    maximumGapMs: 0, maximumRequestMs: 0,
+  }
+  requireValue(completed >= coverage.lastCompletedMonotonicMs, "managed observer monotonic clock regressed")
+  coverage.maximumGapMs = Math.max(coverage.maximumGapMs, completed - coverage.lastCompletedMonotonicMs)
+  coverage.maximumRequestMs = Math.max(coverage.maximumRequestMs, completed - requestStarted)
+  coverage.samples += 1
+  coverage.lastCompletedAt = capturedAt
+  coverage.lastCompletedMonotonicMs = completed
 }
 
 export function recordSummary(capture, summary, capturedAt, force = false) {

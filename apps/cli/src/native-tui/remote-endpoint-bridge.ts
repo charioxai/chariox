@@ -1,3 +1,4 @@
+import { signalNativeChild } from "./native-child-signals.js"
 import { spawn, type ChildProcess } from "node:child_process"
 import net from "node:net"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -119,13 +120,13 @@ async function portIsReachable(port: number): Promise<boolean> {
 
 async function terminateChild(child: ChildProcess): Promise<void> {
   if (child.exitCode != null || child.signalCode != null) return
-  child.kill("SIGTERM")
+  signalNativeChild(child, "SIGTERM")
   await Promise.race([
     new Promise((resolve) => child.once("exit", resolve)),
     sleep(3_000),
   ])
   if (child.exitCode == null && child.signalCode == null) {
-    child.kill("SIGKILL")
+    signalNativeChild(child, "SIGKILL")
   }
 }
 

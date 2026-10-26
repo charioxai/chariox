@@ -126,11 +126,53 @@ test("remote Claude readiness waits for its fragmented input surface", async () 
     provider_run_id: "provider-run-2",
     agent_id: "agent-home-b",
     kind: "provider_terminal",
-    bytes: [...Buffer.from("Code\u0007\u001b[?2004h")],
+    bytes: [...Buffer.from("Code\u0007\u001b[?2004hClaude\u001b[19GCode\r\n───\r\n❯ Try\"fix lint errors\"\r\n───")],
   }], "leased:agent-b:provider-run-2", "agent-home-b")
 
   await waiting
   assert.equal(resolved, true)
+})
+
+test("MP-08/MP-11 styled Claude onboarding is not a ready composer", async () => {
+  const readiness = createClaudeRemoteRenderedReadiness()
+  const observe = (data: string) => readiness.observe([{
+    provider_run_id: "run-1", agent_id: "agent-1", kind: "provider_terminal", bytes: [...Buffer.from(data)],
+  }], "run-1", "agent-1")
+  observe("\u001b[?2004hWelcome\u001b[9Gto\u001b[12GClaude\u001b[19GCode\r\nChoose the text style\r\n❯Dark mode")
+  await assert.rejects(readiness.wait(20), /timed out/)
+  observe("\r\nAccessing workspace:\r\n❯No, exit\r\nYes, I trust this folder\r\nEnter to confirm")
+  await assert.rejects(readiness.wait(20), /timed out/)
+  // The real 2.1.292 PTY draws the empty prompt after normal trust approval.
+  const painted = Buffer.from("\r\n────────────────────\r\n❯ \r\n────────────────────\r\n")
+  const glyph = painted.indexOf(Buffer.from("❯"))
+  for (const bytes of [painted.subarray(0, glyph + 1), painted.subarray(glyph + 1)]) {
+    readiness.observe([{ provider_run_id: "run-1", agent_id: "agent-1", kind: "provider_terminal", bytes: [...bytes] }], "run-1", "agent-1")
+  }
+  await readiness.wait(100)
+})
+
+test("MP-08/MP-11 initial prompt allows more than sixty seconds for native onboarding", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] })
+  const readiness = createClaudeRemoteRenderedReadiness()
+  let outcome = "pending"
+  const waiting = readiness.wait().then(() => { outcome = "ready" }, () => { outcome = "failed" })
+  context.mock.timers.tick(61_000)
+  await Promise.resolve()
+  assert.equal(outcome, "pending")
+  readiness.observe([{
+    provider_run_id: "run-1", agent_id: "agent-1", kind: "provider_terminal",
+    bytes: [...Buffer.from("\u001b[?2004hClaude Code\r\n❯ \r\n────────────────────\r\n")],
+  }], "run-1", "agent-1")
+  await waiting
+  assert.equal(outcome, "ready")
+})
+
+test("MP-08/MP-11 provider exit releases an initial prompt readiness wait immediately", async () => {
+  const readiness = createClaudeRemoteRenderedReadiness()
+  const waiting = readiness.wait(50)
+  const ended = new Error("Claude native TUI ended before its input composer was ready")
+  readiness.fail(ended)
+  await assert.rejects(waiting, (error) => error === ended)
 })
 
 test("remote Claude initial prompt waits for readiness then submits Enter separately", async () => {
@@ -146,7 +188,7 @@ test("remote Claude initial prompt waits for readiness then submits Enter separa
     provider_run_id: "provider-run-2",
     agent_id: "agent-home-b",
     kind: "provider_terminal",
-    bytes: [...Buffer.from("\u001b]0;Claude Code\u0007\u001b[?2004h")],
+    bytes: [...Buffer.from("\u001b]0;Claude Code\u0007\u001b[?2004hClaude Code\r\n───\r\n❯ \r\n───")],
   }], "leased:agent-b:provider-run-2", "agent-home-b")
 
   await submitClaudeRemoteRenderedInitialPrompt({

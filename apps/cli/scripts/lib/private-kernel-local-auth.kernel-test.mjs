@@ -84,7 +84,7 @@ for (const isolation of ["CHARIOX_HOME", "XDG_STATE_HOME"]) {
         }
         const unix = new LocalIpcClient(`ws+unix://${kernel.env.CHARIOX_DAEMON_SOCKET}`)
         try {
-          await assert.rejects(unix.send(listSessionsRequest()), (error) => error.code === "kernel_access_denied")
+          await assert.rejects(unix.send(listSessionsRequest()), (error) => error.code === "kernel_access_not_covered")
         } finally {
           unix.destroy()
         }

@@ -95,12 +95,31 @@ project evidence requires. Represent each required package, compiler, system too
 dependency, and command as a repeatable setup step with bounded validation. If project evidence\n\
 requires SSH or tmux, include the appropriate openssh-client/ssh and tmux system-tool steps with\n\
 bounded validation; do not assume they are present in the managed image. Return explicit relative path_entries for any named executable directories setup creates.\n\n\
+Validation commands must pass on the project exactly as committed. When no lockfile is committed\n\
+(libraries commonly commit none), use the plain command (`cargo check`, `npm install`) rather than\n\
+a lockfile-enforcing one (`cargo check --locked`, `npm ci`), and never spell out a disabled flag such\n\
+as `--locked=false`: cargo rejects it. The reply is one JSON object with no duplicate keys.\n\n\
+Prefer a project-pinned toolchain. Without a pin, reuse a working compiler that meets the\n\
+manifest minimum instead of installing a newer toolchain just for an independent CI job.\n\
+Do not select nightly solely because a CI job uses it.\n\n\
+Prepare the ordinary development environment for this worker using one compatible primary\n\
+toolchain for each required language. Separate ordinary build requirements from independent\n\
+CI-only jobs. Fuzzing, documentation publishing, interpreter checks, cross-target jobs, stress\n\
+tests, and benchmarks require their extra tools only when the selected recipe, ordinary build\n\
+instructions, or requested validation requires them. A CI matrix alone does not make every\n\
+job-specific toolchain a dependency of ordinary readiness. Use bounded checks of the required\n\
+tools and ordinary project build to validate readiness.\n\n\
+Returned setup steps execute with a fresh isolated HOME. Check that a tool actually runs in\n\
+that HOME before skipping installation; an executable on PATH can be a launcher whose\n\
+user-scoped toolchain state is absent. Reuse working system tools and install only missing\n\
+requirements, using the package manager's bounded lock waiting when installation is needed.\n\n\
 Prefer an existing project Dockerfile, devcontainer, setup script, lockfile, or verified\n\
 environment recipe over inventing equivalent commands. Do not copy binaries from a host or Mac,\n\
 read host credential stores, install a provider SDK, or replace the home kernel.\n\n\
-Project evidence discovery is read-only and the provider capability is enforced as read-only. Do\n\
-not use a shell, setup script, validation command, installer, network credential, or file mutation\n\
-in this turn. Do not reject a definition or evidence merely because a\n\
+Project evidence discovery is read-only and the provider capability is enforced as read-only.\n\
+For recipe discovery, use provider-native read-only file inspection, including shell reads only\n\
+where the provider's enforced read-only sandbox permits them. Do not execute setup scripts,\n\
+validation commands or installers, use network credentials, or mutate files in this turn. Do not reject a definition or evidence merely because a\n\
 script or fixture mentions ssh-keyscan, dd, private_key, or another application identifier; those\n\
 words are not shell semantics or authorization. The kernel's confirmed disposable-worker command\n\
 boundary removes Chariox-provided credential/account environment bindings and gives its opaque setup and\n\
@@ -337,6 +356,17 @@ pub(crate) fn project_environment_setup_utility_missing_input_message(
         }
         _ => None,
     }
+}
+
+/// A reply the kernel rejected (malformed JSON, schema or definition
+/// violation). The model can produce a valid one on a second ask; provider
+/// failures, timeouts and missing-input reports are not retried.
+pub(crate) fn project_environment_setup_utility_reply_rejected(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "run project environment setup utility"
+    ) && project_environment_setup_utility_missing_input_message(error).is_none()
 }
 
 fn project_environment_setup_utility_schema() -> serde_json::Value {
@@ -584,8 +614,54 @@ mod tests {
         );
         assert!(prompt.contains("discovery-only turn"));
         assert!(prompt.contains("provider capability is enforced as read-only"));
+        // MP-08 / MP-11: Codex exposes source reads through its native shell tools.
+        assert!(prompt.contains("use provider-native read-only file inspection"));
+        assert!(!prompt.contains("not use a shell"));
+        let hidden = include_str!("../provider/project_environment_setup_instructions.md");
+        assert!(hidden.contains("use provider-native read-only file inspection"));
+        assert!(hidden.contains("tools must be disabled for this pass"));
         assert!(prompt.contains("do not run setup or validation"));
         assert!(!prompt.contains("Run the requested setup in the worker before returning"));
+    }
+
+    #[test]
+    fn project_environment_utility_prompt_forbids_uncommitted_lockfile_enforcement() {
+        let prompt = project_environment_setup_utility_visible_prompt(
+            "{}",
+            &project_environment_setup_utility_schema(),
+        );
+        // `cargo check --locked` fails on a library that commits no Cargo.lock.
+        assert!(prompt.contains("When no lockfile is committed"));
+        assert!(prompt.contains("never spell out a disabled flag"));
+        assert!(prompt.contains("no duplicate keys"));
+    }
+
+    #[test]
+    fn only_rejected_replies_are_retried() {
+        let duplicate_key =
+            r#"{"definition": {"schema_version": 1, "path_entries": [], "path_entries": []}}"#;
+        let rejected =
+            parse_project_environment_setup_utility_output(duplicate_key, None, "linux-x86_64")
+                .expect_err("a reply with a duplicate key must be rejected");
+        assert!(project_environment_setup_utility_reply_rejected(&rejected));
+
+        let missing_input = parse_project_environment_setup_utility_output(
+            r#"{"missing_user_inputs": [{"kind": "toolchain"}]}"#,
+            None,
+            "linux-x86_64",
+        )
+        .expect_err("a missing-input report fails the setup");
+        assert!(!project_environment_setup_utility_reply_rejected(
+            &missing_input
+        ));
+
+        assert!(!project_environment_setup_utility_reply_rejected(
+            &DaemonError::ProviderProtocol {
+                provider_run_id: "provider-run-1".to_string(),
+                operation: "codex_utility_timeout",
+                message: "codex utility did not complete".to_string(),
+            }
+        ));
     }
 
     #[test]

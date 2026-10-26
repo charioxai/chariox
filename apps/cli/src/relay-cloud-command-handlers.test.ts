@@ -4,10 +4,11 @@ import test from "node:test"
 
 import type { RuntimeSession } from "./cli-types.js"
 import { handleRelayCloudCommand } from "./relay-cloud-command-handlers.js"
-import { issueKernelCloudRelayClientToken } from "./relay-api.js"
+import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
 import { parseArgs } from "./cli-options.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { RelayCloudProfile as PublicCloudProfile } from "./preferences.js"
+type RelayCloudProfile = PublicCloudProfile & { cloudSessionToken?: string; machineCredential?: string; cloudSessionExpiresAtMs?: number }
 
 test("relay cloud status reports missing cloud link", async () => {
   let notice = ""
@@ -52,7 +53,7 @@ test("relay cloud client-token lets kernel issuance pair the client and preserve
 
   assert.equal(savedClientId, "client-1")
   assert.equal(issuedSessionId, "session-1")
-  assert.match(notices[0] ?? "", /command=chariox --relay-url wss:\/\/relay\.example --relay-token relay-token --target-daemon-alias builder-kernel/)
+  assert.ok(notices.every(message => !message.includes("relay-token")))
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
 })
 
@@ -95,24 +96,58 @@ test("machine-only client-token uses shared kernel issuance and launches its can
     getCloudRelayProfile: () => machineOnly,
     saveCloudRelayProfile: async (next) => { if (next) saved.push(next) },
     pairCloudRelayClient: async () => { throw new Error("machine-only profile cannot account-pair a client") },
-    // This is the production composition's shared IPC adapter.
-    issueCloudClientRelayToken: (_profile, target, options) => issueKernelCloudRelayClientToken(
-      client, target, "cli-1", options?.sessionId, "fixture-thumbprint",
-    ),
+    issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, "cli-1",
+      () => ({ publicKeyThumbprint: "fixture-thumbprint" })),
   }, ["client-token", requestedAlias])
   assert.equal(requests.length, 1)
   assert.equal(saved.length, 1)
   assert.equal(saved[0]?.clientId, "machine-scoped-client-1")
   assert.equal(machineOnly.clientId, undefined)
-  const command = notices[0]?.split("\n").find((line) => line.startsWith("command="))
-  assert.ok(command)
-  assert.equal(command, `command=${fixture.generatedCommand}`)
-  const options = parseArgs(command.slice("command=chariox ".length).split(" "))
-  assert.equal(options.targetDaemonId, canonicalTarget)
-  assert.equal(options.targetDaemonAlias ?? null, fixture.parsedTarget.daemonAlias)
-  assert.equal(options.relayToken, token)
-  assert.deepEqual(claims.allowed_targets, [options.targetDaemonId])
+  assert.ok(notices.every(message => !message.includes(token)))
+  assert.ok(notices[0]?.includes("next=select the target kernel"))
   assert.equal(notices.at(-1), `cloud client token minted for ${requestedAlias}`)
+})
+
+test("restarted TUI client-token command issues for its saved paired login identity", async () => {
+  const linked = profile({ clientId: "paired-login-client" })
+  const restarted = parseArgs([])
+  assert.equal(restarted.clientId, `chariox-cli-${process.pid}`)
+  assert.notEqual(restarted.clientId, linked.clientId)
+  const requests: unknown[] = []
+  const claims = { sub: linked.clientId, client_id: linked.clientId, subject_kind: "CLIENT",
+    public_key_thumbprint: "restart-key", allowed_targets: ["kernel-1"] }
+  const token = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.synthetic`
+  const client = { socketPath: "ws://127.0.0.1:49911/kernel", send: async (request: { RelayStatus?: null; IssueCloudRelayClientToken?: { client_id: string } }) => {
+    requests.push(request)
+    if ("RelayStatus" in request) return { RelayStatus: {status: {daemon_id: "issuing-kernel"}} }
+    // Session-authenticated Cloud issuance refuses a different, unpaired subject.
+    assert.equal(request.IssueCloudRelayClientToken?.client_id, linked.clientId, "identity_revoked")
+    return { CloudRelayClientTokenIssued: {
+      profile: { api_url: linked.apiUrl, email: linked.email, account_id: linked.accountId,
+        user_id: linked.userId, account_slug: linked.accountSlug, realm_id: linked.realmId,
+        relay_url: linked.relayUrl, issuer_id: linked.issuerId, client_id: linked.clientId },
+      token: { relay_url: linked.relayUrl, relay_token: token, token_expires_at: "2030-01-01T00:00:00Z" },
+    } }
+  } } as unknown as LocalIpcClient
+  const notices: string[] = []
+  await handleRelayCloudCommand({
+    appendNotice: (notice) => { notices.push(notice) }, flashFooter: () => {},
+    formatError: String, clientId: restarted.clientId, sessionState: () => session(),
+    getCloudRelayProfile: () => linked, saveCloudRelayProfile: async () => {},
+    pairCloudRelayClient: async () => { throw new Error("must not re-pair the saved login") },
+    issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, restarted.clientId!,
+      () => ({ publicKeyThumbprint: "restart-key" })),
+  }, ["client-token", "builder-kernel"])
+  assert.deepEqual(requests, [{ IssueCloudRelayClientToken: {
+    target_daemon_alias: "builder-kernel", client_id: linked.clientId,
+    session_id: "session-1", public_key_thumbprint: "restart-key",
+  } }, {RelayStatus: null}])
+  assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
+  assert.match(notices[0]!, /target_daemon_id=kernel-1/)
+  assert.match(notices[0]!, /issuer_endpoint=/)
+  assert.ok(!notices[0]!.includes("relay-token"), "notices must not print credentials")
+  const commandOptions = parseArgs(["--relay-url", "wss://relay.example", "--relay-token", "synthetic", "--target-daemon-id", "kernel-1", "--relay-token-issuer", "ws://127.0.0.1:49911/kernel", "issuing-kernel"])
+  assert.deepEqual(commandOptions.relayTokenIssuer, {endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "issuing-kernel"})
 })
 
 test("explicit Cloud revocation preserves the link when acknowledgement fails", async () => {
@@ -251,3 +286,11 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     ...overrides,
   }
 }
+
+test("kernel logout preserves enrollment metadata until Cloud acknowledges unlink", async () => {
+  let cleared = false
+  const current = profile({kernelId: "kernel-a", kernelEnrolled: true})
+  const deps = {appendNotice: () => {}, flashFooter: () => {}, formatError: String, sessionState: () => session(), getCloudRelayProfile: async () => current, saveCloudRelayProfile: async () => {cleared = true}, logoutCloudRelay: async () => {throw new Error("Cloud unavailable")}}
+  await assert.rejects(handleRelayCloudCommand(deps, ["logout"]), /Cloud unavailable/)
+  assert.equal(cleared, false)
+})

@@ -53,8 +53,6 @@ pub const SEARCH_RECALL_TOOL: &str = "chariox.search_recall";
 pub const QUERY_RECALL_TOOL: &str = "chariox.query_recall";
 pub const LIST_CREDENTIAL_HANDLES_TOOL: &str = "chariox.list_credential_handles";
 pub const LIST_CREDENTIAL_HANDLES_TOOL_ALIAS: &str = "list_credential_handles";
-pub const CREATE_GENERATED_CREDENTIAL_TOOL: &str = "chariox.create_generated_credential";
-pub const CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS: &str = "create_generated_credential";
 pub const REQUEST_CREDENTIAL_SECRET_TOOL: &str = "chariox.request_credential_secret";
 pub const REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS: &str = "request_credential_secret";
 pub const HTTP_REQUEST_WITH_CREDENTIAL_TOOL: &str = "chariox.http_request_with_credential";
@@ -73,6 +71,8 @@ pub const PERMISSION_PROMPT_TOOL: &str = "chariox.permission_prompt";
 pub const LIST_SESSION_AGENTS_TOOL: &str = "chariox.list_session_agents";
 pub const GET_SESSION_AGENT_TOOL: &str = "chariox.get_session_agent";
 pub const SEND_AGENT_MESSAGE_TOOL: &str = "chariox.send_agent_message";
+pub const SLICE_ACCESSIBILITY_TOOL: &str = "chariox.slice_accessibility";
+pub const SLICE_TARGET_ACTION_TOOL: &str = "chariox.slice_target_action";
 pub const SLICE_SCREEN_STATUS_TOOL: &str = "chariox.slice_screen_status";
 pub const SLICE_SCREEN_STATUS_TOOL_ALIAS: &str = "slice_screen_status";
 pub const SLICE_SCREENSHOT_TOOL: &str = "chariox.slice_screenshot";
@@ -109,6 +109,8 @@ pub const SLICE_BROWSER_EVENTS_TOOL: &str = "chariox.slice_browser_events";
 pub const SLICE_BROWSER_EVENTS_TOOL_ALIAS: &str = "slice_browser_events";
 pub const SLICE_BROWSER_DOWNLOADS_TOOL: &str = "chariox.slice_browser_downloads";
 pub const SLICE_BROWSER_DOWNLOADS_TOOL_ALIAS: &str = "slice_browser_downloads";
+pub const SLICE_BROWSER_ARTIFACT_TOOL: &str = "chariox.slice_browser_artifact";
+pub const SLICE_BROWSER_ARTIFACT_TOOL_ALIAS: &str = "slice_browser_artifact";
 pub const SLICE_BROWSER_UPLOAD_TOOL: &str = "chariox.slice_browser_upload";
 pub const SLICE_BROWSER_UPLOAD_TOOL_ALIAS: &str = "slice_browser_upload";
 pub const SLICE_BROWSER_PERMISSION_TOOL: &str = "chariox.slice_browser_permission";
@@ -132,6 +134,7 @@ pub const META_RUN_COMMAND_TOOL: &str = "chariox.meta.run_command";
 pub const META_LIST_EVENTS_TOOL: &str = "chariox.meta.list_events";
 pub const META_READ_EVENT_TOOL: &str = "chariox.meta.read_event";
 pub const META_ACK_EVENT_TOOL: &str = "chariox.meta.ack_event";
+pub const META_HISTORY_SEARCH_TOOL: &str = "chariox.meta.history_search";
 pub const META_TURN_OVERVIEW_TOOL: &str = "chariox.meta.turn_overview";
 pub const META_TURN_BLOB_TOOL: &str = "chariox.meta.turn_blob";
 pub const META_SUBSCRIBE_TRACE_TOOL: &str = "chariox.meta.subscribe_trace";
@@ -141,7 +144,6 @@ pub const META_UNSUBSCRIBE_TRACE_TOOL: &str = "chariox.meta.unsubscribe_trace";
 pub const META_SUBSCRIBE_EVENTS_TOOL: &str = "chariox.meta.subscribe_events";
 pub const META_UNSUBSCRIBE_EVENTS_TOOL: &str = "chariox.meta.unsubscribe_events";
 pub const META_LIST_SUBSCRIPTIONS_TOOL: &str = "chariox.meta.list_subscriptions";
-pub const META_RESOLVE_RUNTIME_INTERACTION_TOOL: &str = "chariox.meta.resolve_runtime_interaction";
 pub const META_READ_TASK_TOOL: &str = "chariox.meta.read_task";
 pub const META_UPDATE_TASK_TOOL: &str = "chariox.meta.update_task";
 pub const META_READ_PLAN_TOOL: &str = "chariox.meta.read_plan";
@@ -233,3 +235,9 @@ pub struct RuntimeToolResult {
     pub ok: bool,
     pub payload: Value,
 }
+
+mod room_tool_names;
+pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runtime_tool_specs};
+
+mod agent_events;
+pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};

@@ -320,6 +320,10 @@ fn prune(root: &Path, new: &str) {
     }
 }
 
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "f_bavail is u32 on macOS and u64 on Linux"
+)]
 pub(crate) fn free_bytes(path: &Path) -> Option<u64> {
     let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
@@ -327,7 +331,7 @@ pub(crate) fn free_bytes(path: &Path) -> Option<u64> {
         return None;
     }
     let stat = unsafe { stat.assume_init() };
-    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
 }
 
 fn storage(_: std::io::Error) -> RemoteError {

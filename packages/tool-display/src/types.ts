@@ -44,10 +44,15 @@ export type ToolDisplayPatchFile = ApplyPatchFile & {
   previewLines: ToolDisplayPatchLine[]
 }
 
+export type ToolDisplayIcon =
+  | "terminal" | "read" | "edit" | "search" | "web" | "browser" | "mcp" | "agent" | "plan" | "tool"
+
 export type ToolDisplay = {
   version: 1
   tool: string
   status?: ToolDisplayStatus | undefined
+  /** Shown left of the title (per tool kind). */
+  icon: ToolDisplayIcon
   title: string
   summary: string
   collapsed: {

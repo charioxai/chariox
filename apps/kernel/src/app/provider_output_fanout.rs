@@ -18,6 +18,7 @@ use crate::terminal::{
 };
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
+    provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     prompt_state_owner: PromptStateOwner,
     active_turns: ActiveTurnStore,
     agent_store: AgentServiceStore,
@@ -31,6 +32,7 @@ pub(crate) struct ProviderOutputFanout {
 
 #[derive(Debug, Clone, Default)]
 struct ActivePromptTranscriptMetadata {
+    prompt_id: Option<String>,
     prompt_origin: Option<crate::session::PromptOrigin>,
     source_attachment_id: Option<String>,
 }
@@ -39,6 +41,7 @@ impl ProviderOutputFanout {
     pub(crate) fn new(app: &DaemonApp) -> Self {
         Self {
             provider_store: app.providers.clone(),
+            provider_run_projection: app.provider_run_projection.clone(),
             prompt_state_owner: app.prompt_state_owner(),
             active_turns: app.active_turn_store(),
             agent_store: app.agents.clone(),
@@ -75,6 +78,10 @@ impl ProviderOutputFanout {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing fan_out_for_agent operation signature and explicit context arguments"
+    )]
     pub(crate) fn fan_out_for_agent(
         &self,
         session_id: &str,
@@ -95,7 +102,7 @@ impl ProviderOutputFanout {
         );
         let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
         if bounded_bytes.len() < delta_bytes.len() {
-            let kind_label = format!("{:?}", kind);
+            let kind_label = format!("{kind:?}");
             if let Some(suppressed_logs) = should_log_provider_output_truncation(
                 session_id,
                 provider_run_id,
@@ -122,6 +129,9 @@ impl ProviderOutputFanout {
         if bounded_bytes.is_empty() {
             return TerminalOutputRecord {
                 record_id: None,
+                sequence: None,
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: crate::session::unix_epoch_ms(),
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
@@ -149,20 +159,8 @@ impl ProviderOutputFanout {
         };
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id);
-        let record = self.terminal.fan_out_output_with_prompt_metadata(
-            session_id,
-            provider_run_id,
-            agent_id,
-            kind.clone(),
-            merge_key.clone(),
-            prompt_metadata.prompt_origin,
-            prompt_metadata.source_attachment_id.clone(),
-            recipient_attachment_ids,
-            &bounded_bytes,
-        );
-        if kind != TerminalOutputKind::ProviderTerminal {
-            self.notify_metaagent_trace_activity(session_id, agent_id);
-        }
+        // History first, so the live record carries its history sequence.
+        let mut sequence = None;
         if kind != TerminalOutputKind::PromptEcho && kind != TerminalOutputKind::ProviderTerminal {
             let text = String::from_utf8_lossy(&bounded_bytes).into_owned();
             if kind == TerminalOutputKind::ProviderReasoning {
@@ -175,19 +173,40 @@ impl ProviderOutputFanout {
                     );
                 }
             }
-            self.append_history_entry(
+            sequence = self.append_history_entry(
                 session_id,
                 SessionHistoryEntry::provider_output(
                     session_id,
                     provider_run_id,
                     agent_id,
-                    kind,
-                    merge_key,
+                    kind.clone(),
+                    merge_key.clone(),
                     text,
                 )
                 .with_prompt_origin(prompt_metadata.prompt_origin)
-                .with_source_attachment_id(prompt_metadata.source_attachment_id),
+                .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
             );
+        }
+        let notify_trace = kind != TerminalOutputKind::ProviderTerminal;
+        let record = self
+            .terminal
+            .fan_out_outputs(vec![crate::terminal::TerminalOutputAppend {
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                agent_id: agent_id.map(str::to_string),
+                prompt_id: prompt_metadata.prompt_id,
+                prompt_origin: prompt_metadata.prompt_origin,
+                source_attachment_id: prompt_metadata.source_attachment_id,
+                kind,
+                merge_key,
+                sequence,
+                recipient_attachment_ids: recipient_attachment_ids.into(),
+                bytes: bounded_bytes,
+            }])
+            .pop()
+            .expect("one output yields one record");
+        if notify_trace {
+            self.notify_metaagent_trace_activity(session_id, agent_id);
         }
         record
     }
@@ -208,6 +227,7 @@ impl ProviderOutputFanout {
                     .active_prompt_for_agent(&session, agent_id)
             })
             .map(|prompt| ActivePromptTranscriptMetadata {
+                prompt_id: Some(prompt.id().to_string()),
                 prompt_origin: Some(prompt.prompt_origin()),
                 source_attachment_id: Some(prompt.source_attachment_id().to_string()),
             })
@@ -426,10 +446,9 @@ impl ProviderOutputFanout {
         }
     }
 
-    fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
-        let Some(entry) = bounded_history_entry(entry) else {
-            return;
-        };
+    /// Returns the history sequence of the stored row.
+    fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) -> Option<u64> {
+        let entry = bounded_history_entry(entry)?;
         if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -439,13 +458,15 @@ impl ProviderOutputFanout {
                     "error": error.to_string(),
                 }),
             );
-            return;
+            return None;
         }
         let context = crate::app::HistoryEventContextResolver::new(
             self.provider_store.clone(),
             self.session_store.clone(),
             self.prompt_state_owner.clone(),
             self.active_turns.clone(),
+            self.agent_store.clone(),
+            self.provider_run_projection.clone(),
         )
         .resolve(&entry);
         match self
@@ -477,6 +498,7 @@ impl ProviderOutputFanout {
                         );
                     }
                 }
+                Some(event.sequence)
             }
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -487,6 +509,7 @@ impl ProviderOutputFanout {
                         "error": error.to_string(),
                     }),
                 );
+                None
             }
         }
     }

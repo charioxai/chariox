@@ -1,3 +1,5 @@
+> MP-08 OWNER-20 (2026-10-16): Discontinued. UI controls, commands and user-facing help are retired; the runtime implementation and this engineering plan remain for maintenance.
+
 # M4.6 Workspace Live Sync Plan
 
 M4.6 is the dedicated milestone for kernel-owned artifact I/O coordination. It is intentionally separate from M4.5: M4.5 retires runtime/facade compatibility paths, while M4.6 defines and enforces safe concurrent writes for Chariox-managed agents.

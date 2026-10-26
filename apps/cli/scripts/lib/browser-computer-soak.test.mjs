@@ -59,6 +59,7 @@ test("MP-08 / MP-10 / MP-11 source identity follows the provisioner's runtime ro
     await mkdir(runtime, { recursive: true })
     await mkdir(path.join(fixture, "packages/app-sdk"), { recursive: true })
     await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/slice-command-guard.py"), path.join(runtime, "slice-command-guard.py"))
+    await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/owned_process_signals.py"), path.join(runtime, "owned_process_signals.py"))
     await copyFile(path.join(repoRoot, "apps/kernel/slice-linux-docker/home-archive-policy.json"), path.join(runtime, "home-archive-policy.json"))
     await writeFile(path.join(runtime, "runtime-source-roots.txt"), "apps/kernel\npackages/app-sdk\n")
     await writeFile(path.join(fixture, "packages/app-sdk/index.ts"), "export const revision = 1\n")
@@ -712,15 +713,14 @@ test("pre-signal PID reuse prevents every process-group signal and cannot claim 
 
   const identities = [expected, { ...expected, startedAtTicks: "101" }]
   const lateSignals = []
-  const late = await terminateOwnedProcessGroup("chromium", {
-    pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected,
-  }, {
+  const lateChild = { pid: 42, exitCode: null, signalCode: null, ownedIdentity: expected }
+  const late = await terminateOwnedProcessGroup("chromium", lateChild, {
     identity: async () => identities.shift(),
     signal: (...args) => lateSignals.push(args),
     wait: async () => false,
     waitForLog: async () => {},
   })
-  assert.deepEqual(lateSignals, [[-42, "SIGTERM"]], "reused PID must never receive SIGKILL")
+  assert.deepEqual(lateSignals, [[lateChild, "SIGTERM"]], "reused PID must never receive SIGKILL")
   assert.equal(late.pidReuseSafe, false)
 
   const capturedSignals = []
@@ -968,3 +968,72 @@ function verifiedRuntime(hex) {
   const image = verifiedImage(hex)
   return { containerId: "b".repeat(64), imageId: image.engineImageId, identity: image.identity, sourceRevision: "a".repeat(40), running: true }
 }
+
+async function retainedOutput(chunks, secretValues = []) {
+  const redactor = createRedactingTransform({ secretValues })
+  let output = ""
+  redactor.setEncoding("utf8")
+  redactor.on("data", chunk => { output += chunk })
+  const done = new Promise((resolve, reject) => { redactor.once("end", resolve); redactor.once("error", reject) })
+  for (const chunk of chunks) redactor.write(chunk)
+  redactor.end()
+  await done
+  return output
+}
+
+test("MP-11-RD-F6 retained output never splits a secret at an emission boundary", async () => {
+  const secret = "MP11_CANARY"
+  for (let position = 0; position < 530; position++) {
+    const input = "plain ".repeat(200) + "x".repeat(position) + secret + " z".repeat(253)
+    const output = await retainedOutput([input], [secret])
+    assert.equal(output.includes(secret), false, `emission position ${position}`)
+    assert.equal(output, input.replace(secret, "[REDACTED]"))
+  }
+})
+
+test("MP-11-RD-F6 retained output handles every incoming byte boundary and UTF-8", async () => {
+  const secret = "MP11_é_🔒_CANARY"
+  const input = Buffer.from("plain café 🌍 " + secret + " z".repeat(600))
+  for (let cut = 0; cut <= input.length; cut++) {
+    const output = await retainedOutput([input.subarray(0, cut), input.subarray(cut)], [secret])
+    assert.equal(output, input.toString().replace(secret, "[REDACTED]"), `incoming byte ${cut}`)
+  }
+})
+
+test("MP-11-RD-F6 sensitive patterns survive emission and incoming boundaries", async () => {
+  for (const sensitive of ["Bearer abcXYZ123", "password=abcXYZ123", "https://user:abcXYZ123@example.test"]) {
+    for (let position = 0; position < 540; position += 7) {
+      const input = "x ".repeat(position) + sensitive + " z".repeat(270)
+      for (const cut of [position * 2 + 4, position * 2 + sensitive.length - 2]) {
+        const output = await retainedOutput([input.slice(0, cut), input.slice(cut)])
+        assert.equal(output.includes("abcXYZ123"), false, `${sensitive} at ${position}/${cut}`)
+      }
+    }
+  }
+  const secret = "CANARY_" + "x".repeat(70_000) + "_END"
+  assert.equal((await retainedOutput(["before " + secret + " after"], [secret])).includes(secret), false)
+  const output = await retainedOutput(["password=" + "S".repeat(100_000), "S".repeat(100_000), "\nplain\n"])
+  assert.equal(output.includes("SSSS"), false)
+  assert.match(output, /plain/)
+})
+
+test("MP-11-RD-F6 redaction streams safe prefixes and caps retained error evidence", async () => {
+  const redactor = createRedactingTransform({ secretValues: ["MP11_CANARY"] })
+  let output = ""
+  redactor.setEncoding("utf8")
+  redactor.on("data", chunk => { output += chunk })
+  const done = new Promise((resolve, reject) => { redactor.once("end", resolve); redactor.once("error", reject) })
+  redactor.write("plain ".repeat(200))
+  assert.ok(output.length > 0, "safe output must stream before flush")
+  redactor.write("plain ".repeat(1_500_000))
+  redactor.end("MP11_CANARY")
+  await done
+  assert.ok(Buffer.byteLength(output) <= 8 * 1024 * 1024)
+  assert.match(output, /REDACTED LOG TRUNCATED/)
+  assert.equal(output.includes("MP11_CANARY"), false)
+})
+
+test("MP-11-RD-F6 original 520-character canary reproduction is redacted", async () => {
+  assert.equal(await retainedOutput(["xxxMP11_CANARY" + "z".repeat(506)], ["MP11_CANARY"]),
+    "xxx[REDACTED]" + "z".repeat(506))
+})

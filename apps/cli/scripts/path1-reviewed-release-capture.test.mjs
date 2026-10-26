@@ -25,6 +25,11 @@ const RELEASE_ARTIFACTS = [
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file", 0o644],
   ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", "file", 0o644],
 ]
+const APP_ARTIFACTS = [
+  ["chariox-app-package", "/usr/local/bin/chariox-app-package", "file", 0o755],
+  ["chariox-app-storage", "/usr/libexec/chariox-app-storage", "file", 0o755],
+  ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", "file", 0o644],
+]
 const DATA_VOLUME_ARTIFACTS = [
   ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", "file", 0o644],
   ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", "file", 0o644],
@@ -153,6 +158,11 @@ async function createFixture(options = {}) {
   await writeContextFile(contextRoot, "apps/kernel/managed-rootless-service.sh", Buffer.from("#!/bin/sh\n"), 0o755)
   await writeContextFile(contextRoot, "apps/kernel/README.md", Buffer.from("fixture source\n"), 0o644)
 
+  const currentApps = options.currentApps ?? options.manifestPatch?.schemaVersion === 3
+  const appArtifacts = currentApps ? APP_ARTIFACTS : []
+  for (const [name, path, , mode] of appArtifacts) {
+    await writeInstalledFile(draftRoot, path, Buffer.from(name + "\n"), mode)
+  }
   const attestedSourceCommit = options.attestedSourceCommit ?? sourceCommit
   const attestedSourceTree = options.attestedSourceTree ?? sourceTree
   const attestationBytes = Buffer.from(
@@ -165,6 +175,9 @@ async function createFixture(options = {}) {
         { name: "chariox-kernel", sha256: sha256(kernel) },
         { name: "chariox-managed-bootstrap", sha256: sha256(bootstrap) },
         { name: "chariox-relay", sha256: sha256(relay) },
+        ...appArtifacts.filter(([name]) => !name.endsWith(".service") && name !== options.omitAttestedApp).map(([name]) => ({
+          name, sha256: options.wrongAttestedApp === name ? sha256(Buffer.from("wrong")) : sha256(Buffer.from(name + "\n")),
+        })),
       ],
     }),
   )
@@ -191,7 +204,7 @@ async function createFixture(options = {}) {
     const [name, path, , mode] = DATA_VOLUME_ARTIFACTS[0]
     await writeInstalledFile(draftRoot, path, Buffer.from(name + "\n"), mode)
   }
-  const releaseArtifacts = [...RELEASE_ARTIFACTS.slice(0, 6), ...dataVolumeArtifacts, ...RELEASE_ARTIFACTS.slice(6)]
+  const releaseArtifacts = [...RELEASE_ARTIFACTS.slice(0, 2), ...appArtifacts, ...RELEASE_ARTIFACTS.slice(2, 6), ...dataVolumeArtifacts, ...RELEASE_ARTIFACTS.slice(6)]
   const artifactDigests = new Map()
   for (const [name, path, kind] of releaseArtifacts) {
     if (kind === "tree") {
@@ -435,14 +448,14 @@ test("rejects symlinked artifacts, duplicate manifest entries, and unknown execu
   })
 })
 
-test("captures schema-3 releases with the current 14-artifact Path-1 inventory", async () => {
+test("captures schema-3 releases with the current 17-artifact Path-1 inventory (MP-11-RD-F5)", async () => {
   await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async (fixture) => {
     const evidence = await capturePath1ReviewedRelease(fixture.options)
-    assert.equal(evidence.artifactBindings.length, 14)
+    assert.equal(evidence.artifactBindings.length, 17)
     const manifest = JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64"))
     assert.equal(manifest.schemaVersion, 3)
     assert.equal(manifest.managedUpdateEvidenceVersion, 1)
-    assert.deepEqual(evidence.artifactBindings.slice(6, 9).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
+    assert.deepEqual(evidence.artifactBindings.slice(9, 12).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
     for (const artifact of evidence.artifactBindings) assert.equal(artifact.sha256, artifact.actualSha256)
   })
 })
@@ -495,5 +508,41 @@ test("verifies signed data-volume drop-in bytes before capturing schema-3 releas
     const path = join(fixture.releaseRoot, DATA_VOLUME_ARTIFACTS[1][1].slice(1))
     await writeFile(path, "tampered drop-in", { mode: 0o644 })
     await assert.rejects(capturePath1ReviewedRelease(fixture.options), /artifact digest does not match/)
+  })
+})
+
+test("MP-11-RD-F5 binds every App helper and service digest and executable mode", async () => {
+  for (const [name, path, , mode] of APP_ARTIFACTS) {
+    await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async fixture => {
+      const artifact = join(fixture.releaseRoot, path.slice(1))
+      await writeFile(artifact, "tampered")
+      await assert.rejects(verifyPath1ReviewedRelease(fixture.options), new RegExp(name + " artifact digest"))
+    })
+    await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async fixture => {
+      await chmod(join(fixture.releaseRoot, path.slice(1)), mode === 0o755 ? 0o644 : 0o755)
+      await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /mode/)
+    })
+  }
+})
+
+test("MP-11-RD-F5 rejects signed builder attestations omitting or substituting App helpers", async () => {
+  for (const name of ["chariox-app-package", "chariox-app-storage"]) {
+    for (const mutation of [{ omitAttestedApp: name }, { wrongAttestedApp: name }]) {
+      await withFixture({ ...mutation, dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async fixture => {
+        await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /builder attestation/)
+      })
+    }
+  }
+})
+
+test("MP-11-RD-F5 schema-3 inventory agrees with the current packager artifact order", async () => {
+  const source = await readFile(new URL("../../../scripts/package-managed-kernel-release.mjs", import.meta.url), "utf8")
+  const manifestSource = source.slice(source.indexOf('schemaVersion: 3,'))
+  const packaged = [...manifestSource.matchAll(/name: "([^"]+)",\s+path: (?:"([^"]+)"|(SLICE_BUILD_CONTEXT_PATH))/g)]
+    .map(([, name, path, context]) => [name, context ? "/usr/lib/chariox/slice-build-context" : path])
+  await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async fixture => {
+    const evidence = await verifyPath1ReviewedRelease(fixture.options)
+    assert.deepEqual(evidence.artifactBindings.map(({ name, path }) => [name, path]), packaged)
+    assert.equal(JSON.parse(Buffer.from(evidence.builderAttestationBase64, "base64")).artifacts.length, 5)
   })
 })

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { chmod, chown, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -20,6 +21,8 @@ const PROBE_FIXTURE_PATHS = Object.freeze([
   "apps/cli/scripts/lib/managed-ordinary-provider-turn-binding.mjs",
   "apps/cli/scripts/lib/managed-ordinary-project-setup-observer.mjs",
   "apps/cli/scripts/lib/managed-ordinary-kernel-endpoint.mjs",
+  "apps/cli/scripts/lib/managed-ordinary-ancestry-observer.mjs",
+  "apps/cli/scripts/lib/managed-ordinary-proc-metadata.mjs",
 ])
 
 async function copyProbeRuntimeSources(root) {
@@ -36,6 +39,9 @@ async function copyProbeRuntimeSources(root) {
   const observerPath = join(root, PROBE_FIXTURE_PATHS[3])
   await writeFile(observerPath, await readFile(projectSetupObserverSource))
   await writeFile(join(root, PROBE_FIXTURE_PATHS[4]), await readFile(kernelEndpointSource))
+  for (const path of PROBE_FIXTURE_PATHS.slice(5)) {
+    await writeFile(join(root, path), await readFile(new URL(path.replace("apps/cli/scripts/", "./"), import.meta.url)))
+  }
   return probePath
 }
 
@@ -127,12 +133,8 @@ test("control-file protection requires its parent to remain writable as a worksp
   await git(root, ["init", "--quiet"])
   await git(root, ["config", "user.name", "parity-probe-test"])
   await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
-  await git(root, [
-    "add",
-    ...PROBE_FIXTURE_PATHS,
-    "workspace/managed-control.json",
-    "workspace/sibling-workspace-file",
-  ])
+  await writeFile(join(root, ".git/info/exclude"), "workspace/\n")
+  await git(root, ["add", ...PROBE_FIXTURE_PATHS])
   await git(root, ["commit", "--quiet", "-m", "probe fixture"])
   const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
   // MP-03: root bypasses directory permissions, so restrict this fixture's child.
@@ -148,7 +150,7 @@ test("control-file protection requires its parent to remain writable as a worksp
     }
     await transferFixtureOwnership(root)
   }
-  await chmod(controlFile, 0o400)
+  await chmod(controlFile, 0o000)
   await chmod(controlParent, 0o555)
   context.after(async () => {
     await chmod(controlParent, 0o755)
@@ -191,6 +193,14 @@ test("control-file protection requires its parent to remain writable as a worksp
   assert.equal(payload.ok, false)
   assert.match(payload.error, /parent workspace/)
   await chmod(controlParent, 0o755)
+  await chmod(controlFile, 0o400)
+  const readable = await execFileAsync(process.execPath, probeArguments, {
+    ...restrictedIdentity, cwd: root, encoding: "utf8", env: {
+      ...process.env, CHARIOX_PARITY_CONTROL_FILE: controlFile, CHARIOX_PARITY_CONTROL_SIBLING: sibling,
+    },
+  }).catch((error) => error)
+  assert.equal(JSON.parse(readable.stdout).ok, false, "MP-03 a readable control file is not protected")
+  await chmod(controlFile, 0o000)
   const actual = await execFileAsync(process.execPath, probeArguments, {
     ...restrictedIdentity, cwd: root, encoding: "utf8", env: {
       ...process.env,
@@ -376,4 +386,112 @@ test("MP-03 rejects a forged denial for an accessible exact control file", async
   } }).then(result => ({ code: 0, ...result })).catch(error => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }))
   assert.equal(output.code, 1, output.stdout)
   assert.match(JSON.parse(output.stdout).error, /exact control file protection was not observed/)
+})
+
+async function probeFixture(t) {
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-parity-local-proof-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await chmod(root, 0o755)
+  const destination = await copyProbeRuntimeSources(root)
+  await git(root, ["init", "--quiet"])
+  await git(root, ["config", "user.name", "parity-probe-test"])
+  await git(root, ["config", "user.email", "parity-probe-test@example.invalid"])
+  await git(root, ["add", ...PROBE_FIXTURE_PATHS])
+  await git(root, ["commit", "--quiet", "-m", "MP-02/MP-04/MP-05 synthetic source fixture"])
+  const reviewedCommit = await git(root, ["rev-parse", "HEAD"])
+  return async (row, check, values = {}, options = {}) => {
+    const argumentsByName = {
+      "source-root": root, "reviewed-commit": reviewedCommit, "parity-row": row,
+      "parity-check": check, topology: "ordinary", "home-path": "/home", "tmp-path": "/tmp",
+      "nested-path": join(root, "nested"), "new-directory": join(root, "new"), ...values,
+    }
+    const args = [destination, "--json", ...Object.entries(argumentsByName).flatMap(([name, value]) => [`--${name}`, value])]
+    const result = await execFileAsync(process.execPath, args, {cwd: root, encoding: "utf8", ...options, env: {...(options.env ?? process.env), GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: root}}).catch(error => error)
+    return JSON.parse(result.stdout)
+  }
+}
+
+test("MP-02 exact discovery and cwd accept a searchable directory with denied enumeration", async (t) => {
+  const probe = await probeFixture(t)
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-parity-unlistable-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await chmod(root, 0o755)
+  const workspace = join(root, "workspace")
+  await mkdir(workspace, { mode: 0o311 })
+  const identity = process.getuid() === 0 ? { uid: 65534, gid: 65534 } : {}
+  const discovery = await probe("MP-02", "directory_discovery", {"home-path": workspace}, identity)
+  assert.equal(discovery.ok, true, discovery.error)
+  assert.equal(discovery.result.child_enumeration_denied, true)
+  const entry = await probe("MP-02", "exact_path_entry", {"expected-cwd": workspace}, {...identity, cwd: workspace})
+  assert.equal(entry.ok, true, entry.error)
+  assert.equal(entry.result.cwd_matches_requested, true)
+})
+
+for (const [row, check, selector] of [
+  ["MP-02", "directory_creation", "new-directory"],
+  ["MP-05", "empty_workspace", "nested-path"],
+  ["MP-05", "basename_collision", "new-directory"],
+]) {
+  test(`${row}/${check} refuses an existing scratch directory without removing its contents`, async (t) => {
+    const probe = await probeFixture(t)
+    const root = await mkdtemp(join(os.tmpdir(), "chariox-parity-existing-"))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const marker = join(root, "existing-user-work")
+    await writeFile(marker, "must survive")
+    const result = await probe(row, check, {[selector]: root})
+    assert.equal(result.ok, false, "existing fixture must not be adopted")
+    assert.equal(await readFile(marker, "utf8"), "must survive")
+  })
+}
+
+test("MP-04 selected provider cwd can differ from the reviewed source checkout", async (t) => {
+  const probe = await probeFixture(t)
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-parity-home-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const state = join(root, ".chariox")
+  await mkdir(state)
+  const hash = value => `sha256:${createHash('sha256').update(value).digest('hex')}`
+  const result = await probe("MP-04", "provider_environment", {"expected-cwd": root}, {
+    cwd: root, env: {...process.env, HOME: root, CHARIOX_HOME: state,
+      CHARIOX_PARITY_ORDINARY_ENVIRONMENT_JSON: JSON.stringify({
+        home_fingerprint: hash(root), chariox_home_fingerprint: hash(state), cwd_fingerprint: hash(root),
+        uid: process.getuid(), gid: process.getgid(),
+      }),
+    },
+  })
+  assert.equal(result.ok, true, result.error)
+  assert.equal(result.result.cwd_matches_requested, true)
+})
+
+test("MP-01 caller ancestry booleans cannot manufacture an official provider descendant", async (t) => {
+  const probe = await probeFixture(t)
+  const result = await probe("MP-01", "provider_ancestry", {provider: "codex"}, {env: {
+    ...process.env, CHARIOX_PARITY_PROVIDER_PROCESS_OBSERVED: "true",
+    CHARIOX_PARITY_WORKER_EVIDENCE_JSON: JSON.stringify({observed: true, fresh_worker: true}),
+    CHARIOX_PARITY_ANCESTRY_EVIDENCE_JSON: JSON.stringify({
+      observed: true, provider_observed: true, bwrap_ancestor: false, fresh_worker: true, ancestry_complete: true,
+    }),
+  }})
+  assert.equal(result.ok, false, "MP-01 forged context must not qualify a shell-only launch")
+})
+
+test("MP-04 rejects a HOME or mutable state owned by another user", async (t) => {
+  const probe = await probeFixture(t)
+  const root = await mkdtemp(join(os.tmpdir(), "chariox-parity-ownership-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await chmod(root, 0o755)
+  const state = join(root, ".chariox")
+  await mkdir(state, {mode: 0o755})
+  // Root remains the fixture custodian; only the child drops privilege.
+  if (process.getuid() !== 0) { t.skip("MP-04 requires a separate file owner"); return }
+  const hash = value => `sha256:${createHash('sha256').update(value).digest('hex')}`
+  const result = await probe("MP-04", "provider_environment", {"expected-cwd": root}, {
+    uid: 65534, gid: 65534, cwd: root, env: {...process.env, HOME: root, CHARIOX_HOME: state,
+      CHARIOX_PARITY_ORDINARY_ENVIRONMENT_JSON: JSON.stringify({
+        home_fingerprint: hash(root), chariox_home_fingerprint: hash(state), cwd_fingerprint: hash(root), uid: 65534, gid: 65534,
+      }),
+    },
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /ownership/)
 })

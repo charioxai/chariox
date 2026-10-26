@@ -24,27 +24,6 @@ pub struct RuntimeCredentialConfigInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateGeneratedCredentialArgs {
-    pub credential: RuntimeCredentialConfigInput,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generator: Option<GeneratedCredentialSecretGeneratorArgs>,
-    #[serde(default)]
-    pub overwrite: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GeneratedCredentialSecretGeneratorArgs {
-    #[serde(default = "default_generated_secret_kind")]
-    pub kind: String,
-    #[serde(default = "default_generated_secret_length")]
-    pub length: usize,
-    #[serde(default = "default_generated_secret_symbols")]
-    pub symbols: bool,
-    #[serde(default)]
-    pub avoid_ambiguous: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestCredentialSecretArgs {
     pub credential: RuntimeCredentialConfigInput,
     pub prompt: RequestCredentialSecretPromptArgs,
@@ -176,6 +155,8 @@ pub struct SliceFindTextArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceMouseArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<i64>,
@@ -195,6 +176,8 @@ pub struct SliceMouseArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceKeyboardArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -294,6 +277,13 @@ pub struct SliceBrowserDialogArgs {
     pub prompt_text: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserStatusArgs {
+    #[serde(default)]
+    pub cursor: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SliceBrowserEventsArgs {
@@ -322,7 +312,10 @@ pub struct SliceBrowserDownloadCancelArgs {
 #[serde(deny_unknown_fields)]
 pub struct SliceBrowserUploadArgs {
     pub field_id: String,
+    #[serde(default)]
     pub files: Vec<std::path::PathBuf>,
+    #[serde(default)]
+    pub artifact_ids: Vec<String>,
 }
 
 impl std::fmt::Debug for SliceBrowserUploadArgs {
@@ -366,18 +359,6 @@ fn default_append_newline() -> bool {
     true
 }
 
-fn default_generated_secret_kind() -> String {
-    "password".to_string()
-}
-
-fn default_generated_secret_length() -> usize {
-    32
-}
-
-fn default_generated_secret_symbols() -> bool {
-    true
-}
-
 fn default_browser_event_limit() -> u16 {
     100
 }
@@ -402,29 +383,6 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
-                "additionalProperties": false
-            }),
-        },
-        RuntimeToolSpec {
-            name: CREATE_GENERATED_CREDENTIAL_TOOL.to_string(),
-            description: "Create or update a vault-backed Chariox credential handle with a kernel-generated random password. The generated secret is stored in the vault and is never returned to the model.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["credential"],
-                "properties": {
-                    "credential": credential_creation_schema(),
-                    "generator": {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"type": "string", "enum": ["password"]},
-                            "length": {"type": "integer", "minimum": 12, "maximum": 256},
-                            "symbols": {"type": "boolean"},
-                            "avoid_ambiguous": {"type": "boolean"}
-                        },
-                        "additionalProperties": false
-                    },
-                    "overwrite": {"type": "boolean"}
-                },
                 "additionalProperties": false
             }),
         },
@@ -519,7 +477,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_COMPUTER_TOOL.to_string(),
-            description: "After explicit user approval, type a computer credential into the already-focused desktop control without exposing the value to the model or clipboard. Approval binds the exact focused window and control; input aborts if focus changes. Prefer a masked control. An explicitly approved unmasked control can expose the credential on screen or to the application. Agent capture is withheld during insertion; do not capture an unmasked value afterward.".to_string(),
+            description: "After explicit user approval, type a computer credential into the already-focused desktop control without exposing the value to the model or clipboard. Establish physical desktop focus with slice_mouse action=click before requesting the credential; browser DOM focus alone does not establish native keyboard focus. Do this before any credential insertion, since active credential observations fence later agent pointer input. Approval binds the exact focused window and control; input aborts if focus changes. Prefer a masked control. An explicitly approved unmasked control can expose the credential on screen or to the application. Agent capture is withheld during insertion; do not capture an unmasked value afterward.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],
@@ -654,7 +612,6 @@ fn credential_creation_schema() -> Value {
 fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     let alias = match spec.name.as_str() {
         LIST_CREDENTIAL_HANDLES_TOOL => LIST_CREDENTIAL_HANDLES_TOOL_ALIAS,
-        CREATE_GENERATED_CREDENTIAL_TOOL => CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS,
         REQUEST_CREDENTIAL_SECRET_TOOL => REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS,
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
@@ -677,13 +634,6 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_list_credential_handles"
         | "mcp__chariox__list_credential_handles"
         | "mcp__chariox__chariox_list_credential_handles" => Some(LIST_CREDENTIAL_HANDLES_TOOL),
-        CREATE_GENERATED_CREDENTIAL_TOOL
-        | CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS
-        | "chariox_create_generated_credential"
-        | "mcp__chariox__create_generated_credential"
-        | "mcp__chariox__chariox_create_generated_credential" => {
-            Some(CREATE_GENERATED_CREDENTIAL_TOOL)
-        }
         REQUEST_CREDENTIAL_SECRET_TOOL
         | REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS
         | "chariox_request_credential_secret"
@@ -723,4 +673,27 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "mcp__chariox__chariox_request_popup" => Some(REQUEST_POPUP_TOOL),
         _ => None,
     }
+}
+
+// MP-08/MP-10/MP-11: common provider and client attachment operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SliceBrowserArtifactArgs {
+    Capture {
+        kind: crate::runtime::browser_artifact::BrowserArtifactKind,
+        browser_generation: u64,
+        #[serde(default)]
+        guid: Option<String>,
+        #[serde(default)]
+        return_image_base64: bool,
+    },
+    Read {
+        artifact_id: String,
+        #[serde(default)]
+        offset: u64,
+        max_bytes: u32,
+    },
+    Inspect {
+        artifact_id: String,
+    },
 }

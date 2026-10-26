@@ -65,3 +65,9 @@ test("waiting-room prompt bootstrap handles start failures without throwing", as
   assert.deepEqual(flashes, ["create failed"])
   assert.deepEqual(warnings, [{ error: "create failed" }])
 })
+
+// MP-08 OWNER-19: editing a project name must never become a provider prompt.
+test("project-name entry is handled without bootstrapping a session", async () => {
+  const controller = createWaitingRoomPromptBootstrapController({ isAttached: () => false, startSessionFromWaitingRoomDefaults: async () => false, flashFooter: () => {} })
+  assert.equal(await controller.bootstrap(), "handled")
+})

@@ -38,10 +38,12 @@ export function deriveWorkspaceShellContextForSession(
 type WorkspaceShellSubmitDeps = {
   client: LocalIpcClient
   clientId?: string | undefined
+  cloudAccountClient?: ShellExecutorDeps["cloudAccountClient"]
   executeShellLine?: typeof executeShellLine
   openRoomViewer?: ShellExecutorDeps["openRoomViewer"]
   readSecret?: ShellExecutorDeps["readSecret"]
   workspaceShellContext: () => ShellContext
+  attachmentId?: () => string | null
   setWorkspaceShellContext: (context: ShellContext) => void
   nextEntryId: () => number
   setWorkspaceShellEntries: (updater: (entries: WorkspaceShellEntry[]) => WorkspaceShellEntry[]) => void
@@ -77,17 +79,24 @@ export async function submitWorkspaceShellCommand(
     deps.flashFooter("usage: @ <chariox-shell command>", "error")
     return { ok: false, output: "usage: @ <chariox-shell command>", context: deps.workspaceShellContext() }
   }
-  const context = deps.workspaceShellContext()
+  // MP-08 / MP-09 / MP-10 / MP-11 G03: bind at dispatch, after recovery.
+  const savedContext = deps.workspaceShellContext()
+  const context = deps.attachmentId
+    ? deriveWorkspaceShellContextForSession(savedContext, deps.sessionState(), deps.attachmentId())
+    : savedContext
   const output: string[] = []
   const runShellLine = deps.executeShellLine ?? executeShellLine
   const result = await runShellLine(command, context, {
     client: deps.client,
     clientId: deps.clientId,
+    cloudAccountClient: deps.cloudAccountClient,
     ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
     ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
   }, (text) => output.push(text))
   const rendered = output.join("").trimEnd()
-  const nextContext = result.context
+  const nextContext = deps.attachmentId && result.context.sessionId === deps.sessionState().id
+    ? deriveWorkspaceShellContextForSession(result.context, deps.sessionState(), deps.attachmentId())
+    : result.context
   deps.setWorkspaceShellContext(nextContext)
   deps.setWorkspaceShellEntries((entries) => appendWorkspaceShellEntry(entries, {
     id: deps.nextEntryId(),

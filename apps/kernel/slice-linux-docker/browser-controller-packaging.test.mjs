@@ -19,16 +19,15 @@ test("slice packaging installs every browser controller runtime module", async (
   assert.ok(modules.size > 1, "fixture should discover browser controller dependencies")
   for (const modulePath of modules) {
     const name = path.basename(modulePath)
-    assert.match(
-      dockerfile,
-      new RegExp(`docker/${escapeRegExp(name)}\\s+/opt/chariox-slice/${escapeRegExp(name)}`),
-      `Dockerfile should install ${name}`,
-    )
-    assert.match(
-      provisioner,
-      new RegExp(`docker/${escapeRegExp(name)}["']?\\s+[^\\n]*/opt/chariox-slice/${escapeRegExp(name)}`),
-      `live slice refresh should install ${name}`,
-    )
+    const installed = [...dockerfile.replace(/\\\r?\n\s*/g, " ").matchAll(/^COPY(?: --(?:chown|chmod)=\S+)* (?!-)(.+?) (\/opt\/chariox-slice\/\S*)$/gm)]
+      .some(([, sources, destination]) => sources.split(/\s+/).some(source =>
+        path.basename(source) === name && (destination === `/opt/chariox-slice/${name}` || destination === "/opt/chariox-slice/")))
+    assert.ok(installed, `Dockerfile should install ${name}`)
+    const namedRefresh = new RegExp(`docker/${escapeRegExp(name)}["']?\\s+[^\\n]*/opt/chariox-slice/${escapeRegExp(name)}`).test(provisioner)
+    const sharedRefresh = (name.startsWith("kernel-") || name === "room-shared-display.mjs")
+      && /for shared_display_asset in [^\n]*kernel-\*\.mjs[^\n]*room-shared-display\.mjs; do/.test(provisioner)
+      && provisioner.includes('copy_required_slice_overlay "$shared_display_asset" "$SLICE_NAME:/opt/chariox-slice/$(basename "$shared_display_asset")"')
+    assert.ok(namedRefresh || sharedRefresh, `live slice refresh should install ${name}`)
   }
 })
 
@@ -103,4 +102,14 @@ test("slice packaging installs the physical keyboard and Computer secret target 
   ])
   assert.match(dockerfile, /docker\/slice-keyboard\.py\s+\/opt\/chariox-slice\/slice-keyboard\.py/)
   assert.match(provisioner, /copy_required_slice_overlay[^\n]*docker\/slice-keyboard\.py[^\n]*\/opt\/chariox-slice\/slice-keyboard\.py/)
+})
+
+// MP-08 / MP-10 / MP-11: recovery must install the same native closure as fresh images.
+test("preserved slices refresh the native Python dependency closure and distro bindings", async () => {
+  const provisioner = await readFile(provisionerPath, "utf8")
+  const refresh = provisioner.slice(provisioner.indexOf("refresh_slice_support_files() {"), provisioner.indexOf("\nwait_for_container_running()"))
+  for (const name of ["native-x11.py", "native-computer.py", "native-accessibility.py", "native-fill-targets.py", "native-clipboard.py", "room-native-protection.py", "browser-desktop-protection.py", "x11-text-keyboard.py", "x11-keymap-fence.py", "slice-observation-mask.py", "linux-desktop-session.py"]) {
+    assert.ok(refresh.includes(name), `preserved slice refresh omits ${name}`)
+  }
+  for (const packageName of ["python3-xlib", "python3-gi", "python3-pyatspi", "python3-pil"]) assert.ok(refresh.includes(packageName), `preserved slice misses ${packageName}`)
 })

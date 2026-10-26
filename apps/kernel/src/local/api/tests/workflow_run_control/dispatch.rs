@@ -317,10 +317,10 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
     };
 
     let entry_agent = harness.spawn_workflow_test_agent(session.id(), "entry");
-    let branch_one_worktree = std::env::temp_dir()
+    let branch_one_worktree = crate::test_support::test_workspace_root()
         .join("chariox-workflow-join-branch-one")
         .join(session.id());
-    let branch_two_worktree = std::env::temp_dir()
+    let branch_two_worktree = crate::test_support::test_workspace_root()
         .join("chariox-workflow-join-branch-two")
         .join(session.id());
     std::fs::create_dir_all(&branch_one_worktree)
@@ -847,6 +847,18 @@ fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
         LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
         _ => panic!("unexpected local response"),
     };
+    // The invoke response only waits a bounded time for the stub start; a loaded
+    // builder may return the run still Created, so wait for it to hold the claim.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let first_run = loop {
+        let workflow_run = harness.get_workflow_test_run(first_session.id(), first_run.id());
+        if workflow_run.status() == crate::session::WorkflowRunStatus::Running
+            || Instant::now() >= deadline
+        {
+            break workflow_run;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
     assert_eq!(
         first_run.status(),
         crate::session::WorkflowRunStatus::Running
@@ -930,7 +942,7 @@ fn workflow_run_cancel_retries_other_runs_blocked_on_released_claim() {
         _ => panic!("unexpected local response"),
     }
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(20);
     let retried_run = loop {
         let workflow_run = harness.get_workflow_test_run(blocked_session.id(), blocked_run.id());
         if workflow_run.status() == crate::session::WorkflowRunStatus::Running

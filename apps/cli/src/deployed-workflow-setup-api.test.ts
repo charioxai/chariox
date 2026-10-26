@@ -10,7 +10,7 @@ import {
   type DeploymentSetupCheckpoint,
   type DeploymentSetupConfiguration,
 } from "./deployed-workflow-setup-api.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 test("deployment setup API scopes, authenticates, encodes, and preserves replay responses", async () => {
   const originalFetch = globalThis.fetch

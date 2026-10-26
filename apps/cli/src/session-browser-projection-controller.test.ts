@@ -38,6 +38,27 @@ test("session browser projection switches hotkey sections by attachment state", 
   assert.deepEqual(controller.hotkeySections().map((section) => section.title), ["Global", "Waiting room"])
 })
 
+test("live session insertion keeps the selected session and subsequent arrows move normally", () => {
+  let rows = [session("recent", "Created", 30), session("old", "Created", 20)]
+  let selectedIndex = 1
+  const controller = createSessionBrowserProjectionController({
+    isAttached: () => false,
+    availableSessions: () => rows,
+    selectedIndex: () => selectedIndex,
+    setSelectedIndex: index => { selectedIndex = index },
+  })
+  assert.equal(controller.normalizeIndex(), 1)
+  rows = [session("new", "Created", 40), ...rows]
+  assert.equal(controller.normalizeIndex(), 2)
+  assert.equal(controller.sessions()[selectedIndex]?.id, "old")
+  selectedIndex -= 1
+  assert.equal(controller.normalizeIndex(), 1)
+  assert.equal(controller.sessions()[selectedIndex]?.id, "recent")
+  rows = rows.filter(row => row.id !== "recent")
+  assert.equal(controller.normalizeIndex(), 1)
+  assert.equal(controller.sessions()[selectedIndex]?.id, "old")
+})
+
 test("session browser projection scopes sessions to the selected project", () => {
   const controller = createSessionBrowserProjectionController({
     isAttached: () => false,

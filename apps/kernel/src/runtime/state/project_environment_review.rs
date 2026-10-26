@@ -22,9 +22,28 @@ impl KernelRuntimeState {
         target: &str,
         code: String,
         vault: &dyn crate::secret::CredentialVaultStore,
+        owner_context_id: Option<&str>,
+        vault_transfer: bool,
     ) -> Result<ProjectPrivateFileAdditions, DaemonError> {
-        let id = format!("project-environment:{}", rand::random::<u64>());
+        // MP-11: credential-free owner copies use the same human-only guard as kernel-only copies.
+        let id = owner_context_id.map_or_else(
+            || format!("project-environment:{}", rand::random::<u64>()),
+            |context| format!("owner-context:{context}"),
+        );
+        // MP-08 / MP-11: only context transfers move history through Vault and admit it.
+        let vault_items = if vault_transfer {
+            let scan_roots = roots.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::managed_context::development::vault_artifacts::review_items(&scan_roots)
+            })
+            .await
+            .map_err(|_| environment_failure("Vault review task failed"))??
+        } else {
+            Vec::new()
+        };
         let mut expanded = false;
+        let mut files_view = UnreviewedFilesView::default();
+        let mut finding = false;
         let mut revise = false;
         let mut supply: Option<String> = None;
         loop {
@@ -41,14 +60,29 @@ impl KernelRuntimeState {
                         missing.status
                     });
             }
-            let review = ProjectEnvironmentReview::build(
+            // Flipped files leave the list, so keep the page inside what is still there.
+            let last_page = files_view.matching(&state.manifest).saturating_sub(1)
+                / LISTED_UNREVIEWED_FILES
+                * LISTED_UNREVIEWED_FILES;
+            files_view.offset = files_view.offset.min(last_page);
+            let mut review = ProjectEnvironmentReview::build_with_view(
                 state,
                 project,
                 target,
                 code.clone(),
                 expanded,
                 false,
+                &files_view,
             );
+            if !vault_items.is_empty() {
+                review.rows.push(ProjectEnvironmentReviewRow { label: "Vault".into(), summary: "Secret-bearing files and history will travel through your Chariox Vault. Unlock the source and target Vaults before copying.".into() });
+                for item in &vault_items {
+                    review.rows.push(ProjectEnvironmentReviewRow {
+                        label: "Vault".into(),
+                        summary: format!("{} · {}", item.path, item.kind),
+                    });
+                }
+            }
             let mut choices = vec![
                 RuntimeInteractionChoice::new(
                     "continue",
@@ -69,7 +103,61 @@ impl KernelRuntimeState {
                     Some(RuntimeInteractionChoiceStyle::Secondary),
                 ),
             ];
+            let (unreviewed_left, unreviewed_brought) =
+                unreviewed_project_private_files(&state.manifest);
+            if unreviewed_left > 0 {
+                choices.push(RuntimeInteractionChoice::new(
+                    "bring-unreviewed",
+                    format!("Bring all {unreviewed_left} not-reviewed ignored files"),
+                    "bring-unreviewed",
+                    None,
+                ));
+            }
+            if unreviewed_brought > 0 {
+                choices.push(RuntimeInteractionChoice::new(
+                    "leave-unreviewed",
+                    format!("Leave the {unreviewed_brought} not-reviewed ignored files behind"),
+                    "leave-unreviewed",
+                    None,
+                ));
+            }
             if expanded {
+                let matching = files_view.matching(&state.manifest);
+                if files_view.offset + LISTED_UNREVIEWED_FILES < matching {
+                    choices.push(RuntimeInteractionChoice::new(
+                        "files-next",
+                        "Show the next not-reviewed ignored files",
+                        "files-next",
+                        None,
+                    ));
+                }
+                if files_view.offset > 0 {
+                    choices.push(RuntimeInteractionChoice::new(
+                        "files-previous",
+                        "Show the previous not-reviewed ignored files",
+                        "files-previous",
+                        None,
+                    ));
+                }
+                if matching > 0 || !files_view.query.is_empty() {
+                    choices.push(RuntimeInteractionChoice::new(
+                        "files-find",
+                        "Search not-reviewed ignored files...",
+                        "files-find",
+                        None,
+                    ));
+                }
+                if !files_view.query.is_empty() {
+                    choices.push(RuntimeInteractionChoice::new(
+                        "files-all",
+                        format!(
+                            "Show all not-reviewed ignored files (searching \"{}\")",
+                            files_view.query
+                        ),
+                        "files-all",
+                        None,
+                    ));
+                }
                 for file in review
                     .files
                     .iter()
@@ -108,7 +196,15 @@ impl KernelRuntimeState {
                     None,
                 ));
             }
-            let custom = if revise {
+            let custom = if finding {
+                Some(RuntimeInteractionCustomChoice::new(
+                    "find",
+                    "Search not-reviewed ignored files...",
+                    Some("Part of the file path".into()),
+                    Some(1),
+                    Some(256),
+                ))
+            } else if revise {
                 Some(RuntimeInteractionCustomChoice::new(
                     "revise",
                     "Change something...",
@@ -146,22 +242,32 @@ impl KernelRuntimeState {
                 "cancel",
                 Some(RuntimeInteractionChoiceStyle::Danger),
             ));
+            let message = if owner_context_id.is_some() {
+                "Review your Project files and any selected kernel extensions and personal instructions before continuing: automatic credential checks cannot identify every secret in free-form files."
+            } else {
+                "Review your Project setup"
+            };
             let interaction = RuntimeInteraction::new(
                 &id,
                 agent_id,
                 RuntimeInteractionKind::Choice,
                 RuntimeInteractionLevel::Info,
                 Some(format!("Ready to move {project} to {target}")),
-                "Review your Project setup",
+                message,
                 choices,
                 custom,
                 Some(900),
                 Some("cancel".into()),
             )
             .with_project_environment_review(review.clone());
-            let receiver = self
-                .create_runtime_interaction(session_id, interaction)
-                .await?;
+            // MP-11: keep Project editing controls on the existing terminal UI,
+            // bind its human owner and never dispatch this review to a Meta agent.
+            let receiver = if owner_context_id.is_some() {
+                self.create_terminal_credential_interaction(session_id, interaction)?
+            } else {
+                self.create_runtime_interaction(session_id, interaction)
+                    .await?
+            };
             let resolution = match tokio::time::timeout(Duration::from_secs(900), receiver).await {
                 Ok(Ok(resolution)) => resolution,
                 _ => {
@@ -177,12 +283,34 @@ impl KernelRuntimeState {
                     accept_project_environment_review(state, review);
                     return Ok(additions);
                 }
+                "bring-unreviewed" | "leave-unreviewed" => {
+                    set_unreviewed_project_private_files(state, action == "bring-unreviewed");
+                    supply = None;
+                }
                 "details" => {
                     expanded = !expanded;
                     revise = false;
+                    finding = false;
                     supply = None;
                 }
+                "files-next" => files_view.offset += LISTED_UNREVIEWED_FILES,
+                "files-previous" => {
+                    files_view.offset = files_view.offset.saturating_sub(LISTED_UNREVIEWED_FILES)
+                }
+                "files-find" => finding = true,
+                "files-all" => files_view = UnreviewedFilesView::default(),
+                "find" => {
+                    let query = resolution
+                        .reply
+                        .ok_or_else(|| environment_failure("Project file search is missing"))?;
+                    if query.len() > 256 || query.contains('\0') {
+                        return Err(environment_failure("Project file search exceeds bounds"));
+                    }
+                    files_view = UnreviewedFilesView { offset: 0, query };
+                    finding = false;
+                }
                 "change" => {
+                    finding = false;
                     revise = true;
                     supply = None;
                     expanded = true;
@@ -246,6 +374,7 @@ impl KernelRuntimeState {
                 }
                 _ if action.starts_with("paste-") => {
                     supply = Some(action[6..].into());
+                    finding = false;
                     revise = false;
                 }
                 _ => return Err(environment_failure("Project export cancelled")),

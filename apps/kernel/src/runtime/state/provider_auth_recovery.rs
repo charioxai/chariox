@@ -3,8 +3,7 @@ use super::*;
 use crate::local::{LocalDaemonResponse, ProviderLoginProcessState};
 use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionCustomChoice, RuntimeInteractionKind, RuntimeInteractionLevel,
-    RuntimeProviderLogin,
+    RuntimeInteractionKind, RuntimeInteractionLevel,
 };
 
 struct RecoveryClaim {
@@ -21,7 +20,7 @@ impl Drop for RecoveryClaim {
 }
 
 impl KernelRuntimeState {
-    pub(super) fn publish_credential_copy_notices(&self, session_id: &str) {
+    pub(super) async fn publish_credential_copy_notices(&self, session_id: &str) {
         let config = self.owned.config_projection.snapshot();
         for agent in self
             .owned
@@ -30,7 +29,31 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|agent| agent.session_id() == session_id && agent.remote_execution().is_none())
         {
-            let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+            // Notices can wait for the next pump; ready provider output cannot.
+            let Some(owner) = self.try_with_app_side_effect(|app| {
+                app.provider_account_owner_for_execution(session_id, Some(agent.id()))
+            }) else {
+                return;
+            };
+            let Ok(owner) = owner.and_then(|owner| {
+                if owner
+                    != crate::account_profile::provider_account_authority_owner_user_id(
+                        &config,
+                        agent.owner_user_id(),
+                    )
+                {
+                    return Ok(owner);
+                }
+                crate::account_profile::provider_account_authority_owner_for_profile(
+                    &config,
+                    &self.owned.provider_account_profiles,
+                    agent.owner_user_id(),
+                    agent.provider(),
+                    agent.provider_account_profile(),
+                )
+            }) else {
+                continue;
+            };
             if let Ok(Some(message)) = self
                 .owned
                 .provider_account_profiles
@@ -52,6 +75,27 @@ impl KernelRuntimeState {
                 );
             }
         }
+    }
+
+    pub(super) async fn resolved_provider_account_owner_for_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<String, DaemonError> {
+        let owner = self.provider_account_owner_for_run(run).await?;
+        let config = self.owned.config_projection.snapshot();
+        if owner
+            != crate::account_profile::provider_account_authority_owner_user_id(
+                &config,
+                run.owner_user_id(),
+            )
+        {
+            return Ok(owner);
+        }
+        crate::account_profile::provider_account_authority_for_run(
+            &config,
+            &self.owned.provider_account_profiles,
+            run,
+        )
     }
 
     pub(super) fn try_provider_auth_recovery<'a>(
@@ -88,8 +132,15 @@ impl KernelRuntimeState {
             let Some(agent_id) = run.agent_instance_id() else {
                 return Ok(false);
             };
-            let owner = self.provider_account_authority_owner_user_id(run.owner_user_id());
-            if !crate::provider::renewal_failure::oauth_renewal_evidence(message)
+            let owner = self.resolved_provider_account_owner_for_run(run).await?;
+            let setup_token = run.adapter_key() == "claude"
+                && crate::provider::provider_account_credential_registered(
+                    &owner,
+                    "claude",
+                    run.account_profile(),
+                )?;
+            if !setup_token
+                && !crate::provider::renewal_failure::oauth_renewal_evidence(message)
                 && !self
                     .owned
                     .provider_account_profiles
@@ -134,20 +185,44 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
             let provider = provider_label(run.adapter_key());
-            let receiver = self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
-            &id, agent_id, RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
-            Some(format!("Log in to {provider} on this machine")),
-            "The provider could not renew its login. Credentials will stay on this machine.",
-            vec![choice("login", "Log in", RuntimeInteractionChoiceStyle::Primary),
-                choice("cancel", "Cancel", RuntimeInteractionChoiceStyle::Secondary)],
-            None, Some(600), None,
-        )).await?;
+            let sudo_entry = self
+                .sudo_for_provider_run(run.id())
+                .ok()
+                .map(|turn| turn.entry_id);
+            let receiver = if setup_token || sudo_entry.is_some() {
+                // An official authentication refusal is already enough to
+                // start OAuth. The shared popup shows its link directly.
+                if setup_token {
+                    let _ = self.owned.provider_account_profiles.update_observation(
+                        &owner,
+                        "claude",
+                        run.account_profile(),
+                        crate::account_profile::ProviderAccountAuthState::Expired,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                }
+                None
+            } else {
+                Some(self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
+                    &id, agent_id, RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
+                    Some(format!("Log in to {provider} on this machine")),
+                    "The provider could not renew its login. Credentials will stay on this machine.",
+                    vec![choice("login", "Log in", RuntimeInteractionChoiceStyle::Primary),
+                        choice("cancel", "Cancel", RuntimeInteractionChoiceStyle::Secondary)],
+                    None, Some(600), None,
+                )).await?)
+            };
             self.owned.clear_prompt_activity(run.id());
             let state = self.clone();
             let run = run.clone();
             tokio::spawn(async move {
                 let _claim = claim;
-                let outcome = state.recover_provider_login(&run, &id, receiver).await;
+                let outcome = state
+                    .recover_provider_login(&run, &id, receiver, sudo_entry)
+                    .await;
                 if outcome.is_ok_and(|succeeded| succeeded) {
                     let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
                     let current = state
@@ -162,7 +237,7 @@ impl KernelRuntimeState {
                     }
                     // Reload the official harness so its in-memory auth cannot retain the invalidated copy.
                     if state
-                        .restart_provider_after_login(&run, prompt.as_ref())
+                        .restart_provider_after_login(&run, prompt.as_ref(), _claim)
                         .await
                         .is_ok()
                     {
@@ -232,12 +307,17 @@ impl KernelRuntimeState {
         };
         self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &self.owned)
             .await
+            .map(|acceptance| {
+                acceptance
+                    != super::local_prompt_dispatch_runtime::PromptDispatchAcceptance::Dropped
+            })
     }
 
     async fn restart_provider_after_login(
         &self,
         run: &crate::provider::RuntimeProviderRun,
         prompt: Option<&crate::session::PromptQueueItem>,
+        claim: RecoveryClaim,
     ) -> Result<(), DaemonError> {
         let agent_id = agent_id_for(run);
         let config = self.owned.config_projection.snapshot();
@@ -262,6 +342,8 @@ impl KernelRuntimeState {
         let request = self
             .prepare_provider_launch_request_with_vault(request, "resume after provider login")
             .await?;
+        // Capture the still-live grant before retiring the official harness.
+        let sudo = self.sudo_for_provider_run(run.id()).ok();
         self.retire_owned_provider_run_after_terminal_failure(run.session_id(), run.id())
             .await;
         self.spawn_provider_relaunch(
@@ -276,6 +358,8 @@ impl KernelRuntimeState {
             let agent_id = agent_id.to_string();
             let previous_run = run.id().to_string();
             tokio::spawn(async move {
+                // Keep recovery's bounded hold until the replacement is bound.
+                let _claim = claim;
                 // Relaunch retains the admitted prompt; dispatch only when the replacement is ready.
                 let outcome = tokio::time::timeout(Duration::from_secs(60), async {
                     loop {
@@ -288,6 +372,13 @@ impl KernelRuntimeState {
                                 && run.state() == crate::provider::ProviderRunState::Running
                             {
                                 let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
+                                if let Some(original) = sudo.as_ref() {
+                                    if !state
+                                        .rebind_sudo_after_provider_login(original, &run, &prompt)?
+                                    {
+                                        return Ok(false);
+                                    }
+                                }
                                 return state.redispatch_after_provider_login(&run, &prompt).await;
                             }
                         }
@@ -369,16 +460,28 @@ impl KernelRuntimeState {
         &self,
         run: &crate::provider::RuntimeProviderRun,
         id: &str,
-        receiver: tokio::sync::oneshot::Receiver<PendingInteractionResolution>,
+        receiver: Option<tokio::sync::oneshot::Receiver<PendingInteractionResolution>>,
+        sudo_entry: Option<String>,
     ) -> Result<bool, DaemonError> {
-        let resolution = tokio::time::timeout(Duration::from_secs(600), receiver).await;
-        let _ = self.timeout_runtime_interaction(run.session_id(), id).await;
-        if !resolution
-            .is_ok_and(|reply| reply.is_ok_and(|reply| reply.choice_id.as_deref() == Some("login")))
-        {
+        let automatic = receiver.is_none();
+        if let Some(receiver) = receiver {
+            let resolution = tokio::time::timeout(Duration::from_secs(600), receiver).await;
+            let _ = self.timeout_runtime_interaction(run.session_id(), id).await;
+            if !resolution.is_ok_and(|reply| {
+                reply.is_ok_and(|reply| reply.choice_id.as_deref() == Some("login"))
+            }) {
+                return Ok(false);
+            }
+        }
+        // A queued recovery must not outlive the work that authorized it.
+        if sudo_entry.as_deref().is_some_and(|entry| {
+            self.sudo_for_provider_run(run.id())
+                .ok()
+                .is_none_or(|turn| turn.entry_id != entry)
+        }) {
             return Ok(false);
         }
-        let owner = self.provider_account_authority_owner_user_id(run.owner_user_id());
+        let owner = self.resolved_provider_account_owner_for_run(run).await?;
         let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
             self,
             &owner,
@@ -392,84 +495,64 @@ impl KernelRuntimeState {
         let LocalDaemonResponse::ProviderLoginStarted { login } = response else {
             return Ok(false);
         };
-        let Some(login_id) = login.login_id.clone() else {
+        if login.login_id.is_none() {
             return Ok(false);
+        }
+        let progress_id = if automatic {
+            id.to_string()
+        } else {
+            format!("{id}:login")
         };
-        let progress_id = format!("{id}:login");
         let result = self
-            .wait_for_provider_login(run, &owner, &progress_id, &login)
-            .await;
-        let _ = self
-            .update_provider_login_interaction(
+            .wait_for_account_login_state(
                 run.session_id(),
                 agent_id_for(run),
-                &progress_id,
-                None,
-            )
-            .await;
-        if !result.as_ref().is_ok_and(|succeeded| *succeeded) {
-            let _ = crate::runtime::provider_auth_control::execute_cancel_provider_login_request(
-                self,
                 &owner,
-                crate::local::CancelProviderLoginRequest { login_id },
+                &progress_id,
+                &login,
             )
             .await;
-        }
-        result
-    }
-
-    async fn wait_for_provider_login(
-        &self,
-        run: &crate::provider::RuntimeProviderRun,
-        owner: &str,
-        id: &str,
-        login: &crate::provider::ProviderLoginStart,
-    ) -> Result<bool, DaemonError> {
-        let projection = RuntimeProviderLogin {
-            kernel_id: self.owned.config_projection.snapshot().daemon_id,
-            login: login.clone(),
-            terminal_output_base64: String::new(),
-        };
-        let mut receiver = self
-            .create_runtime_interaction(
+        // MP-08/MP-11: only the execution kernel can read this login store.
+        // Public outcome notices use the existing leased-runtime projection,
+        // reaching home-attached Web/TUI clients without forwarding challenges
+        // or polling worker login IDs against the home's provider state.
+        let state = result
+            .as_ref()
+            .copied()
+            .unwrap_or(ProviderLoginProcessState::Failed);
+        if let Some(message) = provider_login_outcome_notice(
+            &self.owned.config_projection.snapshot().daemon_id,
+            &login,
+            state,
+        ) {
+            self.owned.record_notice_for_agent(
                 run.session_id(),
-                login_interaction(run, id, projection.clone()),
-            )
-            .await?;
-        loop {
-            tokio::select! {
-                reply = &mut receiver => {
-                    let Ok(reply) = reply else { return Ok(false); };
-                    if reply.choice_id.as_deref() != Some("provider-response") { return Ok(false); }
-                    let Some(mut input) = reply.reply else { return Ok(false); };
-                    input.push('\r');
-                    let data_base64 = base64::engine::general_purpose::STANDARD.encode(input.as_bytes());
-                    use zeroize::Zeroize;
-                    input.zeroize();
-                    crate::runtime::provider_auth_control::execute_send_provider_login_input_request(
-                        self, owner, crate::local::SendProviderLoginInputRequest {
-                            login_id: login.login_id.clone().unwrap(), data_base64,
-                        },
-                    ).await?;
-                    receiver = self.create_runtime_interaction(run.session_id(), login_interaction(run, id, projection.clone())).await?;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(1500)) => {
-                    let response = crate::runtime::provider_auth_control::execute_get_provider_login_status_request(
-                        self, owner, crate::local::GetProviderLoginStatusRequest { login_id: login.login_id.clone().unwrap() },
-                    ).await?;
-                    let LocalDaemonResponse::ProviderLoginStatus { login: status } = response else { return Ok(false); };
-                    match status.state {
-                        ProviderLoginProcessState::Succeeded => return Ok(true),
-                        ProviderLoginProcessState::Failed | ProviderLoginProcessState::Cancelled => return Ok(false),
-                        ProviderLoginProcessState::Running => {}
-                    }
-                    self.update_provider_login_interaction(run.session_id(), agent_id_for(run), id, Some(RuntimeProviderLogin {
-                        terminal_output_base64: status.terminal_output_base64, ..projection.clone()
-                    })).await?;
-                }
-            }
+                Some(run.id()),
+                Some(agent_id_for(run)),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(run.session_id()),
+                message,
+            );
         }
+        result.map(|state| state == ProviderLoginProcessState::Succeeded)
     }
+}
+
+fn provider_login_outcome_notice(
+    kernel_id: &str,
+    login: &crate::provider::ProviderLoginStart,
+    state: ProviderLoginProcessState,
+) -> Option<String> {
+    let provider = provider_label(&login.provider);
+    let account = &login.account_profile;
+    let outcome = match state {
+        ProviderLoginProcessState::Succeeded => format!("Signed in to {provider} on {kernel_id} · saved to {account}"),
+        ProviderLoginProcessState::Failed => format!("{provider} · {account} on {kernel_id}: sign-in failed. Check provider status and retry login on this machine."),
+        ProviderLoginProcessState::Cancelled => format!("{provider} · {account} on {kernel_id}: sign-in cancelled"),
+        ProviderLoginProcessState::Running => return None,
+    };
+    Some(outcome)
 }
 
 fn agent_id_for(run: &crate::provider::RuntimeProviderRun) -> &str {
@@ -486,37 +569,44 @@ fn provider_label(provider: &str) -> &str {
 fn choice(id: &str, label: &str, style: RuntimeInteractionChoiceStyle) -> RuntimeInteractionChoice {
     RuntimeInteractionChoice::new(id, label, id, Some(style))
 }
-fn login_interaction(
-    run: &crate::provider::RuntimeProviderRun,
-    id: &str,
-    login: RuntimeProviderLogin,
-) -> RuntimeInteraction {
-    RuntimeInteraction::new(
-        id,
-        agent_id_for(run),
-        RuntimeInteractionKind::Choice,
-        RuntimeInteractionLevel::Warning,
-        Some(format!(
-            "Log in to {} on this machine",
-            provider_label(run.adapter_key())
-        )),
-        "Complete the provider's official login. The agent will resume when login succeeds.",
-        vec![choice(
-            "cancel",
-            "Cancel login",
-            RuntimeInteractionChoiceStyle::Secondary,
-        )],
-        (login.login.login_kind == "terminal").then(|| {
-            RuntimeInteractionCustomChoice::secret(
-                "provider-response",
-                "Send response",
-                Some("Provider login response".into()),
-                Some(1),
-                Some(8192),
-            )
-        }),
-        Some(600),
-        None,
-    )
-    .with_provider_login(login)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_notices_expose_public_outcomes_without_login_challenges() {
+        let login = crate::provider::ProviderLoginStart {
+            provider: "codex".into(),
+            account_profile: "worker-profile".into(),
+            login_kind: "chatgptDeviceCode".into(),
+            login_id: Some("private-login-id".into()),
+            auth_url: Some("https://provider.test/authorize".into()),
+            verification_url: Some("https://provider.test/verify".into()),
+            user_code: Some("private-device-code".into()),
+        };
+        for (state, outcome) in [
+            (ProviderLoginProcessState::Succeeded, "Signed in to Codex"),
+            (ProviderLoginProcessState::Failed, "sign-in failed"),
+            (ProviderLoginProcessState::Cancelled, "sign-in cancelled"),
+        ] {
+            let notice = provider_login_outcome_notice("worker-kernel", &login, state).unwrap();
+            assert!(notice.contains(outcome));
+            assert!(notice.contains("worker-profile"));
+            assert!(notice.contains("worker-kernel"));
+            for challenge in [
+                "private-login-id",
+                "https://provider.test/authorize",
+                "https://provider.test/verify",
+                "private-device-code",
+            ] {
+                assert!(!notice.contains(challenge));
+            }
+        }
+        assert!(provider_login_outcome_notice(
+            "worker-kernel",
+            &login,
+            ProviderLoginProcessState::Running
+        )
+        .is_none());
+    }
 }

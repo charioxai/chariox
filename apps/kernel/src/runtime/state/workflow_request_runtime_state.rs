@@ -1,9 +1,44 @@
-use super::workflow_publication_owned_state::ExportAppPlan;
 use super::*;
+
+// MP-08 / MP-10 / MP-11: keep workflow construction off its caller's poll frame.
+type WorkflowRequestOutcome = (
+    Result<LocalDaemonResponse, DaemonError>,
+    Option<crate::session::RuntimeSession>,
+);
+type AdmittedWorkflowRequestFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = WorkflowRequestOutcome> + Send>>;
 
 impl KernelRuntimeState {
     pub(crate) async fn execute_workflow_request(
         &self,
+        request: LocalDaemonRequest,
+        caller_user_id: String,
+        caller_metaagent_id: Option<String>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        self.with_room_request_origin(caller_metaagent_id.as_deref(), &request)
+            .boxed_admitted_workflow_request(request, caller_user_id, caller_metaagent_id)
+            .await
+    }
+
+    #[inline(never)]
+    fn boxed_admitted_workflow_request(
+        self,
+        request: LocalDaemonRequest,
+        caller_user_id: String,
+        caller_metaagent_id: Option<String>,
+    ) -> AdmittedWorkflowRequestFuture {
+        Box::pin(self.execute_admitted_workflow_request(
+            request,
+            caller_user_id,
+            caller_metaagent_id,
+        ))
+    }
+
+    async fn execute_admitted_workflow_request(
+        self,
         request: LocalDaemonRequest,
         caller_user_id: String,
         caller_metaagent_id: Option<String>,
@@ -17,6 +52,9 @@ impl KernelRuntimeState {
         let owned = &self.owned;
 
         if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
+            if let Err(error) = self.authorize_room_agent_request(metaagent_id, &request) {
+                return (Err(error), None);
+            }
             if let Err(error) =
                 owned.ensure_workflow_request_controlled_by_metaagent(&request, metaagent_id)
             {
@@ -25,6 +63,14 @@ impl KernelRuntimeState {
         }
 
         let outcome = match request {
+            request @ (LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
+            | LocalDaemonRequest::AttachWorkflowNotification(_)
+            | LocalDaemonRequest::DetachWorkflowNotification(_)
+            | LocalDaemonRequest::ListWorkflowNotifications(_)) => (
+                self.execute_workflow_notification_command(request, &caller_user_id)
+                    .await,
+                None,
+            ),
             LocalDaemonRequest::CreateWorkflow(request) => {
                 let result =
                     owned.workflow_create_workflow(request, caller_metaagent_id.as_deref());
@@ -85,12 +131,16 @@ impl KernelRuntimeState {
                 None,
             ),
             LocalDaemonRequest::AddWorkflowRegistryEntry(request) => (
-                self.execute_workflow_registry_add_request(request).await,
+                self.execute_workflow_registry_add_request(request, caller_metaagent_id.as_deref())
+                    .await,
                 None,
             ),
             LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(request) => (
-                self.execute_workflow_registry_add_from_workflow_request(request)
-                    .await,
+                self.execute_workflow_registry_add_from_workflow_request(
+                    request,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
                 None,
             ),
             LocalDaemonRequest::DeleteWorkflowRegistryEntry(request) => (
@@ -480,11 +530,23 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
-                self.execute_workflow_invoke_endpoint_request(request, &caller_user_id)
-                    .await
+                self.execute_workflow_invoke_endpoint_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
             }
             LocalDaemonRequest::CancelWorkflowRun(request) => {
-                self.execute_workflow_cancel_run_request(request).await
+                self.execute_workflow_cancel_run_request_for_user(
+                    request,
+                    self.terminal_stop_user(&caller_user_id),
+                )
+                .await
+            }
+            LocalDaemonRequest::ControlRoomWorkflowRuns(request) => {
+                self.execute_room_workflow_control_request(request, &caller_user_id)
+                    .await
             }
             LocalDaemonRequest::PauseWorkflowRun(request) => {
                 self.execute_workflow_pause_run_request(request).await

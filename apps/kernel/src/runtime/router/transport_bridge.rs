@@ -144,6 +144,13 @@ impl CommandRouter {
         self.runtime_state.passkey_prompts_for(user_id)
     }
 
+    pub(crate) fn passkey_prompt_closure_reason(
+        &self,
+        prompt: &crate::local::PasskeyPrompt,
+    ) -> crate::local::PasskeyPromptClosureReason {
+        self.runtime_state.passkey_prompt_closure_reason(prompt)
+    }
+
     pub(crate) fn passkey_prompt_change_sequence(&self) -> u64 {
         self.runtime_state.passkey_prompt_change_sequence()
     }
@@ -223,9 +230,39 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) fn relay_owner_directory_allowed(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> bool {
+        let config = self.config_projection.snapshot();
+        config.cloud_relay.is_none()
+            || crate::runtime::cloud_relay_authorization::cloud_relay_caller_owner(&config, caller)
+    }
+
+    pub(crate) fn relay_remote_machines_snapshot(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Vec<RemoteMachineRecord> {
+        if self.relay_owner_directory_allowed(caller) {
+            self.transport_remote_machines_snapshot()
+        } else {
+            Vec::new()
+        }
+    }
+
     pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
         let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         machines
+    }
+
+    pub(crate) fn client_catalog_change_sequence(&self) -> u64 {
+        self.provider_catalog_projection.change_sequence()
+    }
+
+    pub(crate) async fn wait_for_client_catalog_change_after(&self, sequence: u64) {
+        self.provider_catalog_projection
+            .wait_for_change_after(sequence)
+            .await;
     }
 
     pub(crate) fn transport_provider_catalog_snapshot(&self) -> Option<OpenCodeProviderCatalog> {
@@ -243,12 +280,28 @@ impl CommandRouter {
     pub(crate) async fn refresh_remote_relay_inventory_projection(
         &self,
     ) -> Result<(), DaemonError> {
+        let (_, previous) = self.remote_relay_inventory_projection.snapshot();
         crate::transport::relay_client::refresh_remote_inventory_projection(
             self.config_projection.clone(),
             self.remote_relay_inventory_projection.clone(),
         )
         .await?;
         let (_, workers) = self.remote_relay_inventory_projection.snapshot();
+        if previous
+            .iter()
+            .map(|p| (&p.kernel_id, &p.public_key))
+            .collect::<std::collections::BTreeMap<_, _>>()
+            != workers
+                .iter()
+                .map(|p| (&p.kernel_id, &p.public_key))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        {
+            if let Some(profile) = self.config_projection.snapshot().cloud_relay {
+                self.runtime_state
+                    .refresh_notification_sources_from_inventory(&profile.user_id, true)
+                    .await?;
+            }
+        }
         let authenticated_workers = {
             let relay_state = self.relay_state.read().await;
             workers

@@ -21,6 +21,13 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        // MP-08 / MP-11 A09: do not let legacy raw/semantic recall bypass the
+        // protected projection. Legacy sessions retain their pre-transition path.
+        if self.room_agent_tools_enabled() {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "Use chariox.history.search and chariox.history.read for protected public history",
+            ));
+        }
         match tool_name {
             SEARCH_RECALL_TOOL => {
                 let args =
@@ -169,20 +176,31 @@ impl KernelRuntimeState {
     }
 }
 
+/// MP-08/MP-11 G08: legacy recall stays in the caller room, even under /sudo.
+/// Another room needs `chariox_kernel_request` and its owner scope approval.
 fn scoped_session_id(
     provider_run: &crate::provider::RuntimeProviderRun,
     scope: Option<&str>,
     requested_session_id: Option<String>,
 ) -> Result<Option<String>, DaemonError> {
+    let current = provider_run.session_id();
     match scope.unwrap_or("current_session") {
-        "current_session" => Ok(Some(
-            requested_session_id.unwrap_or_else(|| provider_run.session_id().to_string()),
-        )),
-        "all" => Ok(requested_session_id),
-        other => Err(DaemonError::LocalTransport {
-            operation: "runtime_tool_recall_scope",
-            message: format!("scope must be one of: current_session, all; got `{other}`"),
-        }),
+        "current_session" | "all" => match requested_session_id {
+            Some(requested) if requested != current => Err(recall_scope_error(
+                "recall tools are limited to the caller room; read another room with chariox_kernel_request under /sudo",
+            )),
+            _ => Ok(Some(current.to_string())),
+        },
+        other => Err(recall_scope_error(&format!(
+            "scope must be one of: current_session, all; got `{other}`"
+        ))),
+    }
+}
+
+fn recall_scope_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "runtime_tool_recall_scope",
+        message: message.into(),
     }
 }
 

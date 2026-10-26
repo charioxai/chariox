@@ -122,16 +122,18 @@ impl KernelRuntimeState {
                 } else {
                     Some(self.owned.session_store.get_project(session.project_id())?)
                 };
-                if let Some(project) = project
-                    .as_ref()
-                    .filter(|project| !existing_project_ids.contains(project.id()))
-                {
+                if let Some(project) = project.as_ref() {
                     self.owned.durable_state_store.append_event(
-                        "project.created",
+                        if existing_project_ids.contains(project.id()) {
+                            "project.updated"
+                        } else {
+                            "project.created"
+                        },
                         Some(project.id().to_string()),
                         serde_json::json!({ "project": project }),
                     )?;
-                    publication_progress.project_created = true;
+                    publication_progress.project_created =
+                        !existing_project_ids.contains(project.id());
                 }
                 if let Some(slice_ref) = slice_ref {
                     let session_id = session.id().to_string();
@@ -416,8 +418,17 @@ impl KernelRuntimeState {
     pub(crate) async fn attach(
         &self,
         request: crate::attachment::AttachRequest,
+        terminal_caller: bool,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
         let attachment = self.owned.attach(request)?;
+        if terminal_caller {
+            if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
+                self.owned.kernel_browser_host.set_focus(
+                    &self.provider_account_authority_owner_user_id(attachment.owner_user_id()),
+                    session.focused_agent_id(),
+                );
+            }
+        }
         let runtime_state = self.clone();
         let app = Arc::clone(&self.app);
         let session_id = attachment.session_id().to_string();
@@ -454,10 +465,19 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
+        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self
             .owned
             .focus_agent(session_id, agent_id, caller_user_id)?;
+        // MP-11: session orchestration focus carries no human authorization.
+        // Only admission-authenticated terminals may create/refresh user-domain focus.
+        if terminal_caller {
+            self.owned.kernel_browser_host.set_focus(
+                &self.provider_account_authority_owner_user_id(caller_user_id),
+                Some(agent.id()),
+            );
+        }
         // The focus agent gets the App of the Room's focused App Tab.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
@@ -523,8 +543,17 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         caller_user_id: &str,
+        terminal_caller: bool,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
         let agent = self.owned.cycle_agent_focus(session_id, caller_user_id)?;
+        // MP-11: session orchestration focus carries no human authorization.
+        // Only admission-authenticated terminals may create/refresh user-domain focus.
+        if terminal_caller {
+            self.owned.kernel_browser_host.set_focus(
+                &self.provider_account_authority_owner_user_id(caller_user_id),
+                agent.as_ref().map(|agent| agent.id()),
+            );
+        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
         Ok(agent)
@@ -700,6 +729,11 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
+        // MP-08/MP-10/MP-11 D1: Apps remain home-owned across placement
+        // changes; their existing grant generation and expiry still apply.
+        self.owned
+            .kernel_browser_host
+            .revoke_agent(local_agent.id());
         let terminated_run_ids = self
             .owned
             .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
@@ -829,6 +863,8 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
+        self.revoke_agent_app_capability_grants(&agent).await?;
+        self.authorize_current_external_command()?;
         // Relay projection ingestion also owns the app lock. Keep the worker
         // acknowledgement and home deletion in one critical section so an
         // already-admitted snapshot cannot revive the run after it is ended.
@@ -867,6 +903,10 @@ impl KernelRuntimeState {
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
+        // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a removed delegate is a
+        // terminal source now; wake its waiting parent through the shared
+        // reconciliation path rather than the next 30-second periodic sweep.
+        self.schedule_agent_lifecycle_sweep();
         Ok(destroyed)
     }
 
@@ -942,6 +982,9 @@ impl KernelRuntimeState {
             .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
+        for agent in owned.agent_store.get_session_agents(session_id) {
+            self.revoke_agent_app_capability_grants(&agent).await?;
+        }
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);

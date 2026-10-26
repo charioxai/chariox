@@ -2,6 +2,7 @@ export function createInteractionChoiceStoreController() {
   const selectedChoices = new Map<string, number>()
   const customReplies = new Map<string, string>()
   const customEditing = new Set<string>()
+  const autoFocused = new Set<string>()
 
   return {
     selectedChoiceIndex(interactionId: string) {
@@ -12,6 +13,15 @@ export function createInteractionChoiceStoreController() {
     },
     setSelectedIndex(interactionId: string, index: number) {
       selectedChoices.set(interactionId, index)
+    },
+    /** Selects and edits a custom choice the first time each request of
+     * the interaction (`requestedAtMs`) is offered. */
+    focusCustomChoiceOnce(interactionId: string, index: number, requestedAtMs: number) {
+      const request = `${interactionId}@${requestedAtMs}`
+      if (autoFocused.has(request)) return
+      autoFocused.add(request)
+      selectedChoices.set(interactionId, index)
+      customEditing.add(interactionId)
     },
     customReply(interactionId: string) {
       return customReplies.get(interactionId) ?? ""

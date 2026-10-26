@@ -7,6 +7,8 @@ import type { SessionStatusBadgePart } from "@chariox/kernel-client/session-runt
 import type { StatusBadgeTone } from "./split-pane-footer.js"
 import { theme } from "./theme.js"
 
+const applied = new WeakMap<TextRenderable, { character: string; fg: unknown; attributes: number }>()
+
 export function renderStatusBadgeLabel(
   texts: TextRenderable[],
   label: string,
@@ -40,9 +42,21 @@ export function renderStatusBadgeParts(
     if (!text) {
       continue
     }
+    const attributes = tone === "working" && character.trim() ? TextAttributes.BOLD : TextAttributes.NONE
+    // Every assignment rebuilds the native text buffer and startup repaints the
+    // same badge many times, so write a cell only when something changed. A
+    // blank cell shows nothing whatever its colour: only its content matters.
+    if (!character.trim()) {
+      if (applied.get(text)?.character !== character) text.content = character
+      applied.set(text, { character, fg: undefined, attributes: -1 })
+      continue
+    }
+    const last = applied.get(text)
+    if (last && last.character === character && last.fg === fg && last.attributes === attributes) continue
+    applied.set(text, { character, fg, attributes })
     text.content = character
     text.fg = fg
-    text.attributes = tone === "working" && character.trim() ? TextAttributes.BOLD : TextAttributes.NONE
+    text.attributes = attributes
   }
 }
 

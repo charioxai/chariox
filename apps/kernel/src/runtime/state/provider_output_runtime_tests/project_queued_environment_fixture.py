@@ -82,7 +82,11 @@ class Handler(socketserver.StreamRequestHandler):
                         turns = state['threads'][params['threadId']]
                         turns.append({'input': params['input'], 'project_label': os.environ.get('APP_LABEL'), 'previous': list(turns)})
                         result = {'turn': {'id': 'turn-' + str(len(turns))}}
-                    state_path.write_text(json.dumps(state))
+                    # MP-08/MP-10/MP-11: selection RPCs may finish after the
+                    # acknowledged turn. Readers must see a complete snapshot.
+                    pending = state_path.with_suffix(f'.{os.getpid()}.pending')
+                    pending.write_text(json.dumps(state))
+                    pending.replace(state_path)
                 self.send({'id': request['id'], 'result': result})
         except (EOFError, BrokenPipeError, ConnectionResetError):
             return

@@ -106,7 +106,6 @@ test("kernel remote-runtime command opens health projection with remote footer",
   assert.match(notices.at(-1) ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(notices.at(-1) ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(notices.at(-1) ?? "", /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only; audit=durable-transitions-required/)
-  assert.match(notices.at(-1) ?? "", /workspace live sync:/)
   assert.deepEqual(flashes.at(-1), { message: "remote runtime: ok", tone: "info" })
 })
 
@@ -134,7 +133,6 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.equal(kernelHealthIssueCount(unhealthy), 1)
   assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 1)
   assert.match(rendered, /^remote runtime/)
-  assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
   assert.match(rendered, /provider runs: projected=2 active=2 chariox=2 native_tui=0/)
   assert.match(rendered, /provider run invariants: duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0/)
   assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
@@ -374,4 +372,26 @@ test("kernel debug-bundle rejects detached and invalid usage", async () => {
     { message: "attach to a session before exporting a debug bundle", tone: "error" },
     { message: "usage: /kernel debug-bundle [label]", tone: "error" },
   ])
+})
+
+test("MP-08/MP-11 BY-05 TUI copy status shows the authoritative refusal and action", async () => {
+  for (const [code, message] of [
+    ["owner_context_authorization_revoked", "This copy approval was revoked by the owner. Ask for a new approval."],
+    ["owner_context_authorization_expired", "This copy approval expired. Start a new copy to request approval."],
+    ["owner_context_authorization_already_used", "This copy approval was already used. Start a new copy to request approval."],
+  ] as const) {
+    const notices: string[] = [], flashes: Array<{message: string; tone: string}> = []
+    await handleKernelSlashCommand({
+      isAttached: () => true, sessionState: () => makeSession(),
+      appendNotice: text => { notices.push(text) },
+      flashFooter: (message, tone) => { flashes.push({ message, tone }) },
+      transitionToNoSession: () => {},
+      getContextTransferStatus: async id => ({ contextId: id, phase: "failed",
+        failureCode: code, failureMessage: message, retryable: false,
+        planDigest: "sha256:plan", environmentId: "", acceptedBytes: 0, packageSizeBytes: 0,
+        createdAtMs: 1, updatedAtMs: 1, receipt: null }),
+    }, { kind: "kernel", raw: "/kernel copy-status context-1", args: ["copy-status", "context-1"] })
+    assert.equal(notices.at(-1), message)
+    assert.deepEqual(flashes.at(-1), { message, tone: "error" })
+  }
 })

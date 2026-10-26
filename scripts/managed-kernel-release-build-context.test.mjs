@@ -9,7 +9,8 @@ import test from "node:test"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const packager = join(repositoryRoot, "scripts/package-managed-kernel-release.mjs")
-const packageTimeoutMs = 30_000
+// Full source exports share CI workers with signing and archive fixtures.
+const packageTimeoutMs = 120_000
 
 test("managed release stages every local Dockerfile COPY source", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-context-"))

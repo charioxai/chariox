@@ -4,6 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
+import {
+  scanSyntheticCredentialSurfaces,
+  SYNTHETIC_LEAK_SURFACES,
+} from "./lib/managed-parity-credential-evidence.mjs"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 import {
   combineBrowserComputerAbortSignals,
@@ -197,6 +201,19 @@ function transport({ persistenceMode = "docker" } = {}) {
         syntheticValueInserted: true,
         valueObservedOnlyAtTarget: true,
         leakScan: { arguments: 0, logs: 0, evidence: 0, prompts: 0, fixtures: 0 },
+        vaultValidation: {
+          status: "measured",
+          runId: input.runId,
+          storagePath: "kernel-vault",
+          inputPath: "credential-backed-target-input",
+        },
+        // Synthetic transport only: measure its supplied surfaces with the same
+        // scanner as the harness fixture; this is not live Vault execution.
+        leakValidation: scanSyntheticCredentialSurfaces({
+          marker: input.fixture,
+          runId: input.runId,
+          surfaces: Object.fromEntries(SYNTHETIC_LEAK_SURFACES.map((name) => [name, []])),
+        }),
       }
       if (step.endsWith(".git")) return { ...binding, available: true, source: "product-managed" }
       if (step.endsWith(".reconnect")) return { ...binding, faultInjected: true, reconnected: true, duplicateActions: 0, duplicateBrowsers: 0 }
@@ -208,6 +225,38 @@ function transport({ persistenceMode = "docker" } = {}) {
     },
   }
 }
+
+test("MP-08/MP-10/MP-11 live M0 rejects unmeasured Vault evidence and measured marker leaks", async () => {
+  for (const [mutation, expectedCode] of [
+    [(result) => { delete result.vaultValidation }, "synthetic_vault_evidence_not_measured"],
+    [(result) => { delete result.leakValidation }, "synthetic_vault_evidence_not_measured"],
+    [(result, input) => {
+      result.leakValidation = scanSyntheticCredentialSurfaces({
+        marker: input.fixture,
+        runId: input.runId,
+        surfaces: Object.fromEntries(SYNTHETIC_LEAK_SURFACES.map((name) => [name, name === "observations" ? [input.fixture] : []])),
+      })
+    }, "synthetic_vault_leak_detected"],
+  ]) {
+    const injected = transport()
+    const originalRun = injected.run
+    injected.run = async (step, input, options) => {
+      const result = await originalRun(step, input, options)
+      if (step === "selkies.vault") mutation(result, input)
+      return result
+    }
+    const report = await runManagedBrowserComputerParityLive({
+      config: config(),
+      transport: injected,
+      evidenceRoot: EVIDENCE_ROOT,
+      collectResourceSnapshot: ({ phase }) => sample(phase),
+    })
+    assert.equal(report.status, "failed")
+    assert.equal(report.failure.code, expectedCode)
+    assert.equal(injected.calls.filter(({ step }) => step === "cleanup.perform").length, 1)
+    assert.equal(injected.calls.filter(({ step }) => step === "cleanup.inspect").length, 1)
+  }
+})
 
 test("live M0 runs compatibility preflight before the first telemetry sample or harness action", async () => {
   const injected = transport()

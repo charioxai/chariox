@@ -1,3 +1,4 @@
+import { sessionHistoryOutlineBlobDisplay } from "./session-history-outline.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 
@@ -242,3 +243,8 @@ function blob(
     timestamp_ms: sequenceStart,
   }
 }
+
+// MP-08 / MP-10, #987: previews match loaded thought headings.
+test("unloaded thought previews omit bold delimiters", () => {
+  assert.deepEqual(sessionHistoryOutlineBlobDisplay({ kind: "provider_reasoning", title: "reasoning", summary: "", preview: "**Planning**" }), { title: "Thought", summary: "Planning" })
+})

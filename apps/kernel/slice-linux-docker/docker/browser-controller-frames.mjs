@@ -1,4 +1,42 @@
+import {BrowserActionError} from './browser-controller-actions.mjs';
 import { BrowserSnapshotError, captureBrowserSnapshot } from "./browser-controller-snapshot.mjs";
+
+// MP-08/MP-10/MP-11: an asynchronous inspection may populate a cold cache,
+// but it cannot replace a newer navigation/session event with an old result.
+export function pageObservationFence(browser, connection, sessionId, targetId, frame) {
+  const entry = browser.pageFramesByTarget.get(targetId), document = browser.documentIdsByTarget.get(targetId);
+  const owner = browser.currentPageFrame(targetId);
+  const stale = () => new BrowserSnapshotError('stale_document_reference', 'browser document observation retired');
+  if (owner && (owner.frame.loaderId !== frame.loaderId || owner.frame.id !== frame.id)) throw stale();
+  const assertCurrent = () => {
+    if (browser.connection !== connection || browser.sessionsByTarget.get(targetId) !== sessionId ||
+        browser.pageFramesByTarget.get(targetId) !== entry || browser.documentIdsByTarget.get(targetId) !== document) throw stale();
+  };
+  assertCurrent();return { owner, assertCurrent };
+}
+
+export function captureDocumentOwner(browser, tab, expectedConnection, expectedSession) {
+  const target=tab?.target_id, document=tab?.document_id, frame=target&&browser?.currentPageFrame?.(target);
+  if (!frame) return null;
+  const {connection,sessionId}=frame;
+  const current=()=>browser.connection===connection && frame.connection===connection && frame.sessionId===sessionId &&
+    browser.currentPageFrame(target)===frame && frame.frame.loaderId===document &&
+    (expectedConnection===undefined||expectedConnection===connection) && (expectedSession===undefined||expectedSession===sessionId);
+  const assertCurrent=()=>{if(!current())throw new BrowserActionError('stale_document_reference','browser capture owner retired');};
+  assertCurrent();return {connection,sessionId,assertCurrent};
+}
+
+// Native state is metadata only. A pending page keeps its last committed id;
+// this never populates the frame-owner cache or admits pixels/input.
+export function nativeStatePage(browser, connection, sessionId, target, visibleTargetId, configured) {
+  if (!configured || typeof visibleTargetId !== 'string' || browser.connection !== connection ||
+      browser.sessionsByTarget.get(target.targetId) !== sessionId) return null;
+  const document = browser.currentPageFrame(target.targetId)?.frame.loaderId ?? browser.documentIdsByTarget.get(target.targetId);
+  if (typeof document !== 'string' || !document) return null;
+  return { target_id: target.targetId, ...(typeof target.openerId === 'string' ? {opener_target_id:target.openerId} : {}),
+    document_id: document, url: typeof target.url === 'string' ? target.url : '',
+    title: typeof target.title === 'string' ? target.title : '', focused: target.targetId === visibleTargetId };
+}
 
 const MAX_FRAMES = 64;
 const MAX_NODES = 5_000;
@@ -67,6 +105,11 @@ export class BrowserFrameSessions {
     this.pending = new Set();
   }
   clear() { this.sessions.clear(); }
+  // MP-11: the flat session that renders an isolated frame (its target id).
+  sessionFor(frameId, connection) {
+    for (const [id, entry] of this.sessions) if (entry.frameId === frameId && entry.connection === connection) return id;
+    return null;
+  }
   removeTarget(targetId) {
     return this.removeWhere((entry) => entry.targetId === targetId);
   }
@@ -107,7 +150,7 @@ export class BrowserFrameSessions {
         void this.release(connection, childSession, true);
         return true;
       }
-      const entry = { targetId, parentSessionId: message.sessionId, connection };
+      const entry = { targetId, frameId: params.targetInfo.targetId, parentSessionId: message.sessionId, connection };
       if (this.pending.size >= MAX_FRAMES || [...this.sessions.values()].filter((current) => current.targetId === targetId).length >= MAX_FRAMES) {
         void this.release(connection, childSession, true);
         return true;
@@ -150,9 +193,17 @@ export class BrowserFrameSessions {
 }
 
 export async function registerBrowserFrameTargets(connection, sessionId, targetId, documentId, registry) {
-  return withBrowserFrames(connection, sessionId, targetId, documentId, (frames) => {
-    registry.replace(targetId, frames.map((entry) => entry.tree));
-  });
+  // MP-08/MP-10/MP-11: ordinary state/input preflight is not a structured
+  // snapshot. Global advertising iframe counts must not disable a live tab.
+  // Page/isolated-session lifecycle listeners own removal and nested frames;
+  // merge this page tree without dropping their live isolated descendants.
+  // The registry still caps attribution at MAX_FRAMES (unknown downloads fail
+  // closed), and explicit snapshots/actions retain withBrowserFrames bounds.
+  const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
+  if (frameTree?.frame?.loaderId !== documentId) {
+    throw new BrowserSnapshotError("stale_document_reference", "browser top document changed");
+  }
+  registry.merge(targetId, [frameTree]);
 }
 
 // A renderer's backend node IDs are not browser-wide IDs. Keep the owning
@@ -222,14 +273,20 @@ export async function captureBrowserFrames(options) {
       result.dom_documents.push(...snapshot.dom_documents.map((document) => ({ ...document, document_index: document.document_index + offset, owner_node_ref: document.owner_node_ref ? ref(document.owner_node_ref) : `${entry.parent.prefix}backend:${owner.backendNodeId}` })));
       result.shadow_roots.push(...snapshot.shadow_roots.map((node) => ({ ...node, node_ref: ref(node.node_ref) })));
     }
-    for (const entry of frames) {
-      const current = await connection.send("Page.getFrameTree", {}, entry.sessionId);
-      if (frameIdentity(current.frameTree) !== frameIdentity(entry.tree)) {
-        throw new BrowserSnapshotError("stale_document_reference", "browser frame tree changed during snapshot capture");
-      }
-    }
+    await assertBrowserFramesUnchanged(connection, frames);
     return result;
   });
+}
+
+// MP-08/MP-10/MP-11: composited images and semantic snapshots share the same
+// document fence, including local descendants and isolated renderer parents.
+export async function assertBrowserFramesUnchanged(connection, frames) {
+  for (const entry of frames) {
+    const current = await connection.send("Page.getFrameTree", {}, entry.sessionId);
+    if (frameIdentity(current.frameTree) !== frameIdentity(entry.tree)) {
+      throw new BrowserSnapshotError("stale_document_reference", "browser frame tree changed during capture");
+    }
+  }
 }
 
 export async function withBrowserActionFrame(options, run) {

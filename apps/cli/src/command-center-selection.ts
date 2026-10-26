@@ -41,7 +41,7 @@ export function commandCenterExecutionCommand(item: CommandCenterItem): string |
  * description mentions the typed words.
  */
 export function promptAddsArgumentsToCommandCenterItem(item: CommandCenterItem, prompt: string): boolean {
-  if (item.kind !== "command") {
+  if (item.kind !== "command" && item.kind !== "group") {
     return false
   }
   const command = item.value.endsWith(" ") ? item.value : `${item.value} `
@@ -49,11 +49,11 @@ export function promptAddsArgumentsToCommandCenterItem(item: CommandCenterItem, 
 }
 
 export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {
-  if (item.kind !== "command") {
-    return false
-  }
   if (promptAddsArgumentsToCommandCenterItem(item, currentPrompt)) {
     return true
+  }
+  if (item.kind !== "command") {
+    return false
   }
   if (!item.value.endsWith(" ")) {
     return currentPrompt.trim() === item.value
@@ -76,12 +76,20 @@ export function nextCommandCenterIndex(
     if (normalized === "/" || input.startsWith("@")) {
       return 0
     }
+    // A group named exactly as typed keeps Tab expansion (e.g. "/workflow");
+    // a typed command with its arguments wins over stale highlights (#888).
     const exactGroupIndex = items.findIndex((item) => (
       item.kind === "group"
       && (normalized === item.value.trim() || input === item.value)
     ))
     if (exactGroupIndex >= 0) {
       return exactGroupIndex
+    }
+    const exactCommandIndex = items.findIndex((item) => (
+      item.kind === "command" && shouldSubmitExactCommandCenterMatch(item, input)
+    ))
+    if (exactCommandIndex >= 0) {
+      return exactCommandIndex
     }
   }
 
@@ -90,6 +98,10 @@ export function nextCommandCenterIndex(
 
 export function shouldBypassCommandCenterSubmitSelection(prompt: string): boolean {
   const command = parseSlashCommand(prompt)
+  if (command?.kind === "agent") {
+    return command.args.length >= 3
+      && ["provider", "account", "model", "variant"].includes(command.args[0] ?? "")
+  }
   if (!command || command.kind !== "session" || command.action === null) {
     return false
   }

@@ -10,9 +10,9 @@ impl SessionService {
                     .iter()
                     .filter(|watchdog| {
                         watchdog.enabled()
-                            && !watchdog
+                            && watchdog
                                 .max_wakeups()
-                                .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
+                                .is_none_or(|limit| watchdog.wakeups_executed() < limit)
                     })
                     .map(|watchdog| watchdog.next_run_at_ms());
                 let agent_prompts = session

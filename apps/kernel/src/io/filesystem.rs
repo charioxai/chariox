@@ -27,6 +27,10 @@ pub struct WorkspaceLiveSyncFileWriteRequest {
 pub struct WorkspaceLiveSyncFileIo;
 
 impl WorkspaceLiveSyncFileIo {
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing read_artifact typed error contract"
+    )]
     pub fn read_artifact(
         coordinator: &mut ArtifactEditCoordinator,
         request: WorkspaceLiveSyncFileReadRequest,
@@ -51,6 +55,10 @@ impl WorkspaceLiveSyncFileIo {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing apply_edit_inner typed error contract"
+    )]
     fn apply_edit_inner(
         coordinator: &mut ArtifactEditCoordinator,
         request: WorkspaceLiveSyncFileWriteRequest,
@@ -90,6 +98,10 @@ impl WorkspaceLiveSyncFileIo {
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve the existing read_content_or_empty typed error contract"
+)]
 fn read_content_or_empty(
     path: &Path,
     domain: ArtifactDomainKind,
@@ -104,6 +116,10 @@ fn read_content_or_empty(
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve the existing read_content typed error contract"
+)]
 fn read_content(
     path: &Path,
     domain: ArtifactDomainKind,
@@ -115,6 +131,10 @@ fn read_content(
     content_from_bytes(path, domain, bytes)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve the existing content_from_bytes typed error contract"
+)]
 fn content_from_bytes(
     _path: &Path,
     domain: ArtifactDomainKind,
@@ -141,6 +161,10 @@ fn empty_content(domain: ArtifactDomainKind) -> ArtifactContent {
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve the existing write_content typed error contract"
+)]
 fn write_content(path: &Path, content: &ArtifactContent) -> Result<(), ArtifactEditError> {
     let bytes = match content {
         ArtifactContent::Text(text) => text.as_bytes().to_vec(),
@@ -158,10 +182,18 @@ fn write_content(path: &Path, content: &ArtifactContent) -> Result<(), ArtifactE
     })
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve the existing resolve_workspace_path typed error contract"
+)]
 fn resolve_workspace_path(root: &Path, path: &Path) -> Result<PathBuf, ArtifactEditError> {
     Ok(root.join(normalize_workspace_relative_path(path)?))
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve the existing normalize_workspace_relative_path typed error contract"
+)]
 fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf, ArtifactEditError> {
     if path.is_absolute() {
         return Err(ArtifactEditError::InvalidOperation {
@@ -183,6 +215,10 @@ fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf, ArtifactEdi
     Ok(relative)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve the existing reject_chariox_owned_write_path typed error contract"
+)]
 fn reject_chariox_owned_write_path(root: &Path, path: &Path) -> Result<(), ArtifactEditError> {
     let relative = normalize_workspace_relative_path(path)?;
     if relative == Path::new(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)

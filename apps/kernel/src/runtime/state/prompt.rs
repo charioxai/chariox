@@ -173,21 +173,16 @@ impl KernelRuntimeOwnedState {
         } else {
             false
         };
-        let cancelled = self.cancel_active_prompt_only(session_id, agent_id)?;
+        // MP-08 / MP-10 / MP-11: cancellation owns completion fan-out even
+        // before dispatch creates prompt activity. Preserve this dispatch's
+        // run identity if the failed provider was already retired.
+        self.cancel_active_prompt_only_for_provider_run(
+            session_id,
+            agent_id,
+            Some(provider_run_id),
+        )?;
         self.agent_store
             .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
-        let completed_at_ms = crate::session::unix_epoch_ms();
-        if !self.prompt_completion_recorded(provider_run_id) {
-            self.record_assistant_message_completion(
-                session_id,
-                provider_run_id,
-                self.attachment_store
-                    .list_session_attachment_ids(session_id),
-                &format!("prompt-cancelled:{}", cancelled.id()),
-                completed_at_ms,
-            );
-            self.mark_prompt_completion_recorded(provider_run_id);
-        }
         let released_claim = self.clear_prompt_activity(provider_run_id);
         let _ = self.session_snapshot(session_id)?;
         // Workflow failure settlement releases the claim by run/node identity before
@@ -471,11 +466,10 @@ impl KernelRuntimeOwnedState {
             };
         let Some(started_next) = self
             .prompt_state_owner
-            .activate_next_queued_prompt_with_prompt_id(
+            .activate_next_queued_prompt_for_dispatch(
                 &session,
                 agent_id,
                 Some(next_queued_prompt.id()),
-                self.session_store.reserve_prompt_id(),
             )?
         else {
             drop(activity_mutation);
@@ -548,10 +542,11 @@ impl KernelRuntimeOwnedState {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
                 agent_id,
-                &source_attachment_id,
                 &provider_run,
+                started_next.id(),
                 started_next.prompt(),
-            );
+                false,
+            )?;
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
             let hidden_system_context = join_hidden_context(
@@ -586,7 +581,15 @@ impl KernelRuntimeOwnedState {
                 &prompt_with_handoff,
                 &hidden_system_context,
                 started_next.attachments(),
-                mode,
+                mode.with_prompt_origin(started_next.prompt_origin()),
+                self.private_evidence_for_dispatch(
+                    session_id,
+                    agent_id,
+                    started_next.id(),
+                    &provider_run_id,
+                    started_next.prompt_origin(),
+                    false,
+                ),
                 false,
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
@@ -658,6 +661,10 @@ impl KernelRuntimeOwnedState {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing record_completed_prompt_settlement operation signature and explicit context arguments"
+    )]
     fn record_completed_prompt_settlement(
         &self,
         session_id: &str,
@@ -668,6 +675,12 @@ impl KernelRuntimeOwnedState {
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) {
+        if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
+            crate::app::clear_claude_context_delivery_for_settled_prompt(
+                &run,
+                completed_prompt.id(),
+            );
+        }
         let started_at_ms = provider_run_id
             .and_then(|provider_run_id| {
                 self.active_turns

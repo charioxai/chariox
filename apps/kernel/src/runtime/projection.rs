@@ -7,8 +7,10 @@ mod daemon_health_model;
 mod provider_projection;
 mod queued_prompt_controls;
 mod remote_relay_inventory_projection;
+mod room_workflow_inventory;
 mod session_active_run_projection;
 mod session_snapshot_projection;
+pub use room_workflow_inventory::*;
 mod session_state_projection;
 #[cfg(test)]
 mod test_support;

@@ -1,10 +1,11 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join, posix, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
-import { spawn, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { test } from "node:test"
 
@@ -154,9 +155,9 @@ function processGroupId(pid) {
   return pgid
 }
 
-function killProcessGroup(pgid) {
-  if (!pgid) return
-  try { process.kill(-pgid, "SIGKILL") } catch {}
+function killProcessGroup(child) {
+  if (!child) return
+  try { signalOwnedProcessGroup(child, "SIGKILL") } catch {}
 }
 
 function processGroupSnapshot(pgid) {
@@ -331,7 +332,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
     ["apps/kernel/Cargo.toml", "[package]\nname = \"kernel-fixture\"\n"],
     ["apps/kernel/slice-linux-docker/docker/Dockerfile", dockerfileContents ?? "FROM fixture@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"],
     ...await Promise.all(brokerRuntimeAssets.map(async (path) => [path, await readFile(join(repositoryRoot, path))])),
-    ...await Promise.all(["slice-command-guard.py", "managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-cpu-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
+    ...await Promise.all(["owned-process-anchor.mjs", "owned-process-signals.mjs", "owned_process_signals.py", "slice-command-guard.py", "managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-cpu-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"].map(async (name) => {
       const path = `apps/kernel/slice-linux-docker/${name}`
       return [path, await readFile(join(repositoryRoot, path))]
     })),
@@ -576,7 +577,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     )
   }
 
-  for (const name of ["slice-command-guard.py", "managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"]) {
+  for (const name of ["owned-process-anchor.mjs", "owned-process-signals.mjs", "owned_process_signals.py", "slice-command-guard.py", "managed-extension-build.py", "managed-home-archive-stream.mjs", "managed-home-archive-digest.mjs", "home-archive-policy.json", "docker-image-reference.mjs", "docker-image-reference.json"]) {
     const path = `apps/kernel/slice-linux-docker/${name}`
     assert.deepEqual(await readFile(join(brokerContextRoot, path)), await readFile(join(repositoryRoot, path)))
   }
@@ -2531,7 +2532,7 @@ test("managed image installer resumes interrupted home migration by identity", a
   }
 
   const rootRenameCase = await createLegacyCase("after-root-rename")
-  const rootRenameProcess = spawn(installer, rootRenameCase.args, {
+  const rootRenameProcess = spawnOwned(installer, rootRenameCase.args, {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: {
@@ -2546,15 +2547,15 @@ test("managed image installer resumes interrupted home migration by identity", a
   rootRenameProcess.stderr.on("data", (chunk) => { rootRenameStderr += chunk.toString() })
   const rootRenameExit = once(rootRenameProcess, "exit")
   const rootRenamePgid = processGroupId(rootRenameProcess.pid)
-  context.after(() => killProcessGroup(rootRenamePgid))
+  context.after(() => killProcessGroup(rootRenameProcess))
   try {
     await waitForPath(rootRenameCase.faultMarker)
   } catch (error) {
-    killProcessGroup(rootRenamePgid)
+    killProcessGroup(rootRenameProcess)
     throw new Error(`${error.message}: ${rootRenameStderr}`)
   }
   assert.equal(await readFile(rootRenameCase.faultMarker, "utf8"), "root-renamed\n")
-  killProcessGroup(rootRenamePgid)
+  killProcessGroup(rootRenameProcess)
   let rootRenameResult
   try {
     rootRenameResult = await withTimeout(
@@ -2562,7 +2563,7 @@ test("managed image installer resumes interrupted home migration by identity", a
       "root-rename migration interruption timed out",
     )
   } catch (error) {
-    killProcessGroup(rootRenamePgid)
+    killProcessGroup(rootRenameProcess)
     const state = await Promise.all([
       lstat(rootRenameCase.managedHome).then(() => "managed", () => "no-managed"),
       lstat(rootRenameCase.legacyHome).then(() => "legacy", () => "no-legacy"),
@@ -2586,7 +2587,7 @@ test("managed image installer resumes interrupted home migration by identity", a
   await assertMigrated(rootRenameCase)
 
   const controlMoveCase = await createLegacyCase("after-control-move")
-  const controlMoveProcess = spawn(installer, controlMoveCase.args, {
+  const controlMoveProcess = spawnOwned(installer, controlMoveCase.args, {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: {
@@ -2599,15 +2600,15 @@ test("managed image installer resumes interrupted home migration by identity", a
   controlMoveProcess.stderr.on("data", (chunk) => { controlMoveStderr += chunk.toString() })
   const controlMoveExit = once(controlMoveProcess, "exit")
   const controlMovePgid = processGroupId(controlMoveProcess.pid)
-  context.after(() => killProcessGroup(controlMovePgid))
+  context.after(() => killProcessGroup(controlMoveProcess))
   try {
     await waitForPath(controlMoveCase.faultMarker)
   } catch (error) {
-    killProcessGroup(controlMovePgid)
+    killProcessGroup(controlMoveProcess)
     throw new Error(`${error.message}: ${controlMoveStderr}`)
   }
   assert.equal(await readFile(controlMoveCase.faultMarker, "utf8"), "control-moved\n")
-  killProcessGroup(controlMovePgid)
+  killProcessGroup(controlMoveProcess)
   let controlMoveResult
   try {
     controlMoveResult = await withTimeout(
@@ -2615,7 +2616,7 @@ test("managed image installer resumes interrupted home migration by identity", a
       "control-state migration interruption timed out",
     )
   } catch (error) {
-    killProcessGroup(controlMovePgid)
+    killProcessGroup(controlMoveProcess)
     const state = await Promise.all([
       lstat(controlMoveCase.managedHome).then(() => "managed", () => "no-managed"),
       lstat(controlMoveCase.legacyHome).then(() => "legacy", () => "no-legacy"),
@@ -2810,13 +2811,13 @@ test("a terminated managed image install releases the lock for a concurrent inst
     CHARIOX_IMAGE_INSTALL_LOCK: join(harness.state, "install.lock"),
   }
   const args = installerArguments(join(output, "rootfs"), packaged.stdout.trim(), fixture)
-  const first = spawn(installer, args, { env: { ...env, HARNESS_FLOCK_ID: "first" } })
+  const first = spawnOwned(installer, args, { env: { ...env, HARNESS_FLOCK_ID: "first" } })
   context.after(() => {
     first.kill("SIGKILL")
   })
   const firstExit = once(first, "exit")
   await waitForPath(join(harness.state, "flock-acquired-first"))
-  const second = spawn(installer, args, { env: { ...env, HARNESS_FLOCK_ID: "second" } })
+  const second = spawnOwned(installer, args, { env: { ...env, HARNESS_FLOCK_ID: "second" } })
   context.after(() => {
     second.kill("SIGKILL")
   })
@@ -2834,7 +2835,9 @@ test("a terminated managed image install releases the lock for a concurrent inst
   assert.equal(firstSignal, "SIGTERM")
   await waitForPath(join(harness.state, "flock-acquired-second"))
   await writeFile(join(harness.state, "flock-release-second"), "release\n")
-  assert.equal((await withTimeout(secondExit, "second installer timed out"))[0], 0)
+  // MP-03/MP-07/MP-10: the five-second acquired-lock fence above remains
+  // separate from full installation, including protected storage admission.
+  assert.equal((await withTimeout(secondExit, "second installer timed out", 45_000))[0], 0)
 })
 
 test("managed image installer has no runtime start or network path", async () => {
@@ -2897,3 +2900,36 @@ test("App storage helper and unit remain bound to signed release provenance", as
   assert.equal(tampered.status, 1)
   assert.match(tampered.stderr, /chariox-app-storage.service is corrupted/)
 })
+
+for (const fault of ["home-validation", "migration-ancestor", "activation"]) {
+  test(`MP-11 F14 failed shared-host to Path-1 ${fault} preserves access policy`, async context => {
+    if (process.platform !== "linux" || process.getuid?.() !== 0) { context.skip("Linux ownership semantics"); return }
+    const root = await mkdtemp(join(tmpdir(), "mp11-policy-")); context.after(() => rm(root,{recursive:true,force:true}))
+    const fixture = await makeFixture(root); const output = join(root,"release")
+    const packaged = runPackager({...fixture,output}); assert.equal(packaged.status,0,packaged.stderr)
+    const harness = await createInstallerHarness(root)
+    const env = {...process.env,PATH:`${harness.bin}:${process.env.PATH}`,HARNESS_STATE:harness.state,
+      CHARIOX_IMAGE_INSTALL_ROOT:harness.installRoot,CHARIOX_IMAGE_INSTALL_LOCK:join(harness.state,"install.lock"),
+      CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY:fixture.trustedBuilderPublicKey}
+    const selectedInstaller = process.env.MP11_TEST_INSTALLER ?? installer
+    const prior = spawnSync(selectedInstaller,installerArguments(join(output,"rootfs"),packaged.stdout.trim(),fixture),{encoding:"utf8",env})
+    assert.equal(prior.status,0,prior.stderr)
+    const current = await readlink(join(harness.installRoot,"usr/lib/chariox/current"))
+    const policy = join(harness.installRoot,"etc/sudoers.d/90-chariox-path1")
+    await mkdir(join(harness.installRoot,"etc/sudoers.d"),{recursive:true})
+    await writeFile(policy,"chariox ALL=(ALL) /synthetic/restricted-command\n",{mode:0o440})
+    if(fault==="home-validation") await writeFile(join(harness.state,"user-chariox-home"),"/incompatible")
+    if(fault==="migration-ancestor") {
+      await rename(join(harness.installRoot,"home/chariox"),join(harness.installRoot,"home/original"))
+      await symlink("original",join(harness.installRoot,"home/chariox"))
+    }
+    const failed = spawnSync(selectedInstaller,installerArguments(join(output,"rootfs"),packaged.stdout.trim(),fixture,"path1"),
+      {encoding:"utf8",env:{...env,...(fault==="activation"?{HARNESS_LOGINCTL_FAIL:"1"}:{})}})
+    assert.equal(failed.status,1)
+    const shell = await readFile(join(harness.state,"user-chariox-shell"),"utf8").catch(()=>"/usr/sbin/nologin")
+    assert.equal(shell,"/usr/sbin/nologin")
+    assert.equal(await readFile(policy,"utf8"),"chariox ALL=(ALL) /synthetic/restricted-command\n")
+    assert.equal((await stat(policy)).mode&0o777,0o440)
+    assert.equal(await readlink(join(harness.installRoot,"usr/lib/chariox/current")),current)
+  })
+}

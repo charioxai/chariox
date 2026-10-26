@@ -7,6 +7,7 @@ use crate::session::{
 };
 
 impl SessionService {
+    #[cfg(test)]
     pub(crate) fn create_room_environment(
         &mut self,
         session_id: &str,
@@ -168,8 +169,9 @@ impl SessionService {
                 session_id: session_id.to_string(),
             });
         }
-        self.room_environments
-            .set_browser_bar_visible_as_actor(session_id, actor, visible)
+        self.mutate_room_environment(session_id, |environments| {
+            environments.set_browser_bar_visible_as_actor(session_id, actor, visible)
+        })
     }
 
     pub(crate) fn preview_update_room_environment_viewport_as_actor(

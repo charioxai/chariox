@@ -3,10 +3,34 @@ use std::collections::BTreeMap;
 use chariox_relay::{RelayAuthVerifier, RelayConfig, RelayServer};
 use serde_json::json;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    match (args.first().and_then(|arg| arg.to_str()), args.len()) {
+        (None, 0) => {}
+        (Some("--help" | "-h"), 1) => {
+            println!("usage: chariox-relay [--help | --version]\n\nWith no arguments, run the relay. Configure it through CHARIOX_RELAY_HOST,\nCHARIOX_RELAY_PORT and the relay authentication environment settings.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
+            return Ok(());
+        }
+        (Some("--version"), 1) => {
+            println!("chariox-relay {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {
+            eprintln!(
+                "error: unknown or additional relay argument\nRun chariox-relay --help for usage."
+            );
+            std::process::exit(2);
+        }
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RelayConfig::load_from_env()?;
-    let scoped_verifier = scoped_verifier_from_env();
+    let scoped_verifier = scoped_verifier_from_env()?;
     if let Some(message) = open_access_startup_error(
         &config.host,
         config.shared_token.is_some(),
@@ -56,42 +80,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // Optional: pull account/identity revocations from the hosted control
     // plane into this relay's registry so revoked tokens are rejected.
-    let _revocation_shutdown_tx = if let Some((cloud_url, realm)) = revocation_sync_from_env() {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        eprintln!(
-            "{}",
-            json!({
-                "component": "chariox-relay",
-                "level": "info",
-                "event": "revocation_sync_enabled",
-                "fields": { "realm_id": realm },
-            })
-        );
-        tokio::spawn(chariox_relay::revocation_sync::run_revocation_sync(
-            cloud_url,
-            realm,
-            server.revocations(),
-            revocation_sync_interval_from_env(),
-            shutdown_rx,
-        ));
-        Some(shutdown_tx)
-    } else {
-        None
-    };
+    let _revocation_shutdown_tx =
+        if let Some((cloud_url, realm, secret)) = revocation_sync_from_env()? {
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            eprintln!(
+                "{}",
+                json!({
+                    "component": "chariox-relay",
+                    "level": "info",
+                    "event": "revocation_sync_enabled",
+                    "fields": { "realm_id": realm },
+                })
+            );
+            tokio::spawn(chariox_relay::revocation_sync::run_revocation_sync(
+                cloud_url,
+                realm,
+                secret,
+                server.revocations(),
+                revocation_sync_interval_from_env(),
+                shutdown_rx,
+            ));
+            Some(shutdown_tx)
+        } else {
+            None
+        };
     server.run().await?;
     Ok(())
 }
 
-fn revocation_sync_from_env() -> Option<(String, String)> {
-    let cloud_url = std::env::var("CHARIOX_RELAY_REVOCATION_URL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let realm = std::env::var("CHARIOX_RELAY_REVOCATION_REALM")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    Some((cloud_url, realm))
+fn revocation_sync_from_env() -> Result<Option<(String, String, String)>, String> {
+    let read = |name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let cloud_url = read("CHARIOX_RELAY_REVOCATION_URL");
+    let realm = read("CHARIOX_RELAY_REVOCATION_REALM");
+    if cloud_url.is_none() && realm.is_none() {
+        return Ok(None);
+    }
+    let cloud_url = cloud_url.ok_or("revocation sync requires CHARIOX_RELAY_REVOCATION_URL")?;
+    let realm = realm.ok_or("revocation sync requires CHARIOX_RELAY_REVOCATION_REALM")?;
+    let secret = read("CHARIOX_RELAY_SCOPED_HMAC_SECRET")
+        .ok_or("authenticated Cloud revocation sync requires CHARIOX_RELAY_SCOPED_HMAC_SECRET")?;
+    Ok(Some((cloud_url, realm, secret)))
 }
 
 fn revocation_sync_interval_from_env() -> std::time::Duration {
@@ -148,19 +181,32 @@ fn host_is_loopback(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn scoped_verifier_from_env() -> Option<RelayAuthVerifier> {
-    let issuer = std::env::var("CHARIOX_RELAY_SCOPED_ISSUER")
-        .ok()
+fn scoped_verifier_from_env() -> Result<Option<RelayAuthVerifier>, String> {
+    scoped_verifier_from_settings(
+        std::env::var("CHARIOX_RELAY_SCOPED_ISSUER").ok(),
+        std::env::var("CHARIOX_RELAY_SCOPED_HMAC_SECRET").ok(),
+    )
+}
+
+fn scoped_verifier_from_settings(
+    issuer: Option<String>,
+    secret: Option<String>,
+) -> Result<Option<RelayAuthVerifier>, String> {
+    if issuer.is_none() && secret.is_none() {
+        return Ok(None);
+    }
+    let issuer = issuer
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let secret = std::env::var("CHARIOX_RELAY_SCOPED_HMAC_SECRET")
-        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "scoped relay configuration requires a nonblank issuer".to_string())?;
+    let secret = secret
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    Some(RelayAuthVerifier::scoped_hmac(
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "scoped relay configuration requires a nonblank HMAC secret".to_string())?;
+    Ok(Some(RelayAuthVerifier::scoped_hmac(
         BTreeMap::from([(issuer, secret)]),
         None,
-    ))
+    )))
 }
 
 #[cfg(test)]
@@ -195,5 +241,29 @@ mod tests {
         assert!(open_access_startup_error("127.0.0.1", false, false, false).is_none());
         assert!(open_access_startup_error("::1", false, false, false).is_none());
         assert!(open_access_startup_error("localhost", false, false, false).is_none());
+    }
+    #[test]
+    fn partial_or_blank_scoped_configuration_fails_closed() {
+        assert!(scoped_verifier_from_settings(None, None).unwrap().is_none());
+        assert!(scoped_verifier_from_settings(
+            Some("issuer".into()),
+            Some("synthetic-secret".into())
+        )
+        .unwrap()
+        .is_some());
+        for (issuer, secret) in [
+            (Some("issuer"), None),
+            (None, Some("synthetic-secret")),
+            (Some(""), None),
+            (None, Some(" ")),
+            (Some("issuer"), Some(" ")),
+            (Some(" "), Some("synthetic-secret")),
+        ] {
+            assert!(scoped_verifier_from_settings(
+                issuer.map(str::to_string),
+                secret.map(str::to_string)
+            )
+            .is_err());
+        }
     }
 }

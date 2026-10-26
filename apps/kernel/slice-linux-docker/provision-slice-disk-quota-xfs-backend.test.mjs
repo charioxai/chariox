@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink } from "node:fs/promises"
+import {execFile} from "node:child_process"
+import {promisify} from "node:util"
+import { chmod, chown, copyFile, mkdtemp, mkdir, readFile, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -20,6 +22,21 @@ test("trusted Docker paths walk normal nested filesystem components", async () =
 
 test("trusted-path production helper can walk the owner-only Docker tree without DAC bypass", async () => {
   const uid = process.getuid()
+  if (uid === 0) {
+    const root = await mkdtemp(join(tmpdir(), "mp11-unprivileged-quota-test-"))
+    try {
+      // Execute the unchanged production path checker and this exact test as
+      // an unprivileged UID, without modifying host users or checkout access.
+      const files = ["provision-slice-disk-quota-xfs-backend.test.mjs", "slice-disk-quota-xfs-backend.mjs",
+        "slice-disk-quota-contract.mjs", "slice-disk-quota-xfs-readback.mjs", "chariox-slice-disk-quota-allocator.service"]
+      for (const name of files) await copyFile(new URL(name, import.meta.url), join(root, name))
+      await chown(root, 65534, 65534)
+      await promisify(execFile)(process.execPath, ["--test", "--test-name-pattern=trusted-path production helper", join(root, files[0])], {
+        uid: 65534, gid: 65534, cwd: root, env: {PATH:process.env.PATH,HOME:root}, timeout:30_000, maxBuffer:1024*1024,
+      })
+    } finally { await rm(root, {recursive:true,force:true}) }
+    return
+  }
   assert.notEqual(uid, 0, "run this filesystem regression as an unprivileged test user")
   const status = await readFile("/proc/self/status", "utf8")
   const effectiveCaps = status.match(/^CapEff:\s+([0-9a-f]+)$/m)?.[1]

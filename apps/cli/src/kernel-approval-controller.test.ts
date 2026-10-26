@@ -26,6 +26,7 @@ function harness(initial = session(), popupHas = true) {
   const popups: string[][] = []
   const focus: string[] = []
   const controller = createKernelApprovalController({
+    respondHandoff: async () => { throw new Error("unexpected hand-off") }, notify() {},
     getSession: () => current, connected: () => connected, onView() {},
     onOpen: () => focus.push("blur"), onClose: () => focus.push("restore"), scroll() {},
     respond: (...args) => { requests.push(args); return new Promise((yes, no) => { resolve = yes; reject = no }) },
@@ -126,7 +127,8 @@ test("global dialog keys and duplicate raw bytes cannot reach agent or prompt sh
   let rawKey = "return"
   let rawCtrl = false
   const raw = createCliStdinKeyController({
-    parseKeypress: () => key(rawKey, { ctrl: rawCtrl }), kernelApprovalOwnsInput: h.controller.ownsInput,
+    createStdinParser: () => ({ push: () => {}, drain: (onEvent: (event: { type: string; key: unknown }) => void) => onEvent({ type: "key", key: key(rawKey, { ctrl: rawCtrl }) }) }),
+    kernelApprovalOwnsInput: h.controller.ownsInput,
     dialogOverlayOpen: () => false, handleSessionBrowserKey: forbidden,
   } as unknown as CliStdinKeyControllerDeps)
   rawKey = "g"; rawCtrl = true
@@ -154,7 +156,7 @@ test("a stale rendered choice cannot authorize the next pending interaction", as
   assert.equal(h.requests.length, 0)
 })
 
-const critical = (id: string): RuntimeInteraction => ({
+const critical = (id: string): Extract<RuntimeInteraction, { kernel_operation_id: string }> => ({
   id, kernel_operation_id: `validation:${id}`, kind: "permission", level: "warning",
   title: "Approve App action", message: "An App asks to perform a protected action.",
   choices: [{ id: "deny", label: "Deny", reply: "deny" },
@@ -167,22 +169,48 @@ const selectApprove = (h: ReturnType<typeof harness>) => {
   h.controller.handleKey(key("return"))
 }
 
-test("a critical approval is approved only in the passkey popup", () => {
+test("a cold terminal checks kernel presence before opening the passkey popup", async () => {
   const h = harness(session("session-1", [critical("c1")]))
   h.controller.handleKey(key("f8"))
   selectApprove(h)
-  assert.deepEqual(h.popups, [["session-1", "c1"]])
-  assert.equal(h.requests.length, 0)
+  assert.deepEqual(h.popups, [])
+  assert.deepEqual(h.requests, [["session-1", "c1", "approve"]])
+  h.resolve(session("session-1", []))
+  await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(h.controller.view().error, null)
-  assert.equal(h.controller.view().open, true)
+  assert.equal(h.controller.view().open, false)
 })
 
-test("another user's critical approval says where it is answered and sends nothing", () => {
+test("only a kernel proof-required response opens passkey entry", async () => {
+  const h = harness(session("session-1", [critical("c1")]))
+  h.controller.show()
+  const attempt = h.controller.choose("c1", "approve")
+  assert.deepEqual(h.popups, [])
+  h.reject("PASSKEY_REQUIRED: enter your passkey")
+  await attempt
+  assert.deepEqual(h.popups, [["session-1", "c1"]])
+  assert.equal(h.controller.view().error, null)
+})
+
+test("a proof-required response for another user's approval says where it is answered", async () => {
   const h = harness(session("session-1", [critical("c1")]), false)
   h.controller.handleKey(key("f8"))
   selectApprove(h)
-  assert.equal(h.requests.length, 0)
+  h.reject("PASSKEY_REQUIRED: enter your passkey")
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(h.requests.length, 1)
   assert.match(h.controller.view().error ?? "", /passkey popup/)
+})
+
+test("new sudo and access authority always open trusted passkey entry", async () => {
+  for (const prefix of ["sudo:", "access-grant:", "access-extension:"]) {
+    const interaction = { ...critical("fresh"), kernel_operation_id: `${prefix}fresh` }
+    const h = harness(session("session-1", [interaction]))
+    h.controller.show()
+    await h.controller.choose("fresh", "approve")
+    assert.deepEqual(h.requests, [])
+    assert.deepEqual(h.popups, [["session-1", "fresh"]])
+  }
 })
 
 test("deny and routine approvals are answered from the panel without the passkey", async () => {
@@ -267,4 +295,10 @@ test("critical approvals anywhere in the queue are visible without stealing focu
   assert.equal(h.controller.view().criticalCount, 1)
   assert.equal(h.controller.view().interaction?.id, "approval-1")
   assert.deepEqual(h.focus, [])
+})
+
+test("MP-08/MP-11 sudo delegates to the one passkey popup without hiding routine approvals", () => {
+  const sudo = {...approvalFixture,id:"sudo:one",kernel_operation_id:"sudo:one",choices:[{id:"deny",label:"Refuse",reply:"deny"},{id:"allow",label:"Approve",reply:"allow",requires_passkey:true}]}
+  assert.deepEqual(kernelApprovals(session("session-1",[sudo,approvalFixture]),true).map(i=>i.id),[approvalFixture.id])
+  assert.equal(kernelApprovals(session("session-1",[sudo])).length,1,"fallback stays available")
 })

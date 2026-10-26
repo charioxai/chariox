@@ -407,7 +407,7 @@ fn queued_prompt_router_fixture_with_options(
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
-            &format!("client-queued-{label}"),
+            format!("client-queued-{label}"),
             ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
@@ -524,6 +524,7 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
     let history_request =
         LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
             session_id: session_id.clone(),
+            include_prefetched_content: false,
             agent_ids: Some(vec![agent_id.clone()]),
             latest_prompt_count: Some(4),
             cursor: None,
@@ -701,6 +702,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
         session_id: session_id.clone(),
         attachment_id: attachment.id().to_string(),
         target_agent_id: None,
+        expected_prompt_id: None,
     });
     let cancel_command =
         KernelCommand::from_local_request("cmd-cancel-during-catalog", None, None, &cancel_request);

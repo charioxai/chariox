@@ -696,7 +696,7 @@ done
             id: "unmasked-field-login".to_string(),
             description: None,
             source: crate::config::UserCredentialSourceConfig::Env {
-                name: "CHARIOX_CONTROLLER_MCP_UNMASKED_SECRET_MISSING".to_string(),
+                name: "CHARIOX_CONTROLLER_MCP_TEST_SECRET".to_string(),
             },
             allowed_hosts: vec!["frame.test".to_string()],
             allowed_uses: vec![crate::config::UserCredentialUse::Browser],
@@ -834,11 +834,10 @@ done
         value["result"]["structuredContent"]["browser"]["focusedElement"]["label"],
         "Email"
     );
-    assert_eq!(
+    assert!(
         value["result"]["structuredContent"]["browser"]["fields"][0]["field_id"]
             .as_str()
-            .is_some_and(|field_id| field_id.starts_with("element-")),
-        true
+            .is_some_and(|field_id| field_id.starts_with("element-"))
     );
     assert_eq!(
         value["result"]["structuredContent"]["browser"]["buttons"][0]["text"],
@@ -1436,20 +1435,25 @@ done
         .to_bytes();
     let unmasked_secret_value: Value =
         serde_json::from_slice(&unmasked_secret_body).expect("unmasked secret body json");
+    // A plaintext Vault target is filled like any other field: the agent chose the
+    // credential, and only the value stays out of the model-visible result.
     assert_eq!(
-        unmasked_secret_value["error"]["code"], -32000,
+        unmasked_secret_value["result"]["isError"], false,
         "{unmasked_secret_value:#}"
     );
-    assert!(unmasked_secret_value["error"]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("editable password field")));
+    assert!(
+        !unmasked_secret_value
+            .to_string()
+            .contains("controller-mcp-secret-value"),
+        "secret material must not escape through MCP"
+    );
     assert_eq!(
         std::fs::read_to_string(&controller_log)
-            .expect("controller log should be readable after unmasked secret rejection")
+            .expect("controller log should be readable after the plaintext-target paste")
             .matches("secret-frame-target")
             .count(),
-        secret_actions_before_denial,
-        "unmasked target rejection must happen before vault resolution and browser action"
+        secret_actions_before_denial + 1,
+        "the plaintext target is filled by the browser action"
     );
     let denied_secret_response = handle_json_rpc_value(
         router.clone(),
@@ -1492,7 +1496,7 @@ done
             .expect("controller log should be readable after denied secret insertion")
             .matches("secret-frame-target")
             .count(),
-        secret_actions_before_denial,
+        secret_actions_before_denial + 1,
         "credential host rejection must happen before the secret action reaches the controller"
     );
 
@@ -1752,6 +1756,7 @@ done
             "secret_input",
             "browser_status",
             "fill",
+            "fill",
             "dialog",
             "download_configure",
             "upload",
@@ -1765,7 +1770,9 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        // MP-08 / MP-11: each snapshot first reconciles native address-bar
+        // navigation through the bound worker before minting references.
+        "reconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nreconcile\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\nreconcile\nsnapshot\nreconcile\nreconcile\nsnapshot\nsecret-frame-target\nfill\nreconcile\ndialog-dismiss\nreconcile\ndownloads\nreconcile\nupload\nreconcile\npermission-denied\nreconcile\nevents\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

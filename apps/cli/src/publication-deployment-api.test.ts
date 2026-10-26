@@ -9,7 +9,7 @@ import {
   readPublicationPackageMetadata,
   reuploadPublicationDeploymentPackage,
 } from "./publication-deployment-api.js"
-import type { RelayCloudProfile } from "./preferences.js"
+import type { CloudControlProfile as RelayCloudProfile } from "./cloud-control-auth.js"
 
 test("publication deployment API reads package metadata", async () => {
   const root = await publicationPackageFixture()

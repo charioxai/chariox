@@ -14,7 +14,7 @@
 // `slice-context` exports, from the source commit, the slice build context a
 // release kernel runs its slice provisioner from: the provisioner's
 // runtime-source-roots.txt roots (which it fingerprints and builds the slice
-// image from) and the one Dockerfile input outside them, in the repository layout.
+// image from) and every local Dockerfile input, in the repository layout.
 // `assemble` copies already built (and, on macOS, already codesigned and
 // notarized) artifacts into the bundle layout and writes manifest.json: the
 // version, platform, source commit, the signed App runtime's inventory digest
@@ -30,6 +30,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { relativeFile, sha256, stableJson } from './app-runtime-bundle-files.mjs';
+import { SLICE_DOCKERFILE, sliceDockerfileInputs, sliceInputRoot, validateSliceBuildContext } from './slice-build-context.mjs';
 
 export const SCHEMA = 'chariox.release-bundle.v1';
 const MACOS_RECEIPT_SCHEMA = 'chariox.macos-release-signing.v1';
@@ -39,8 +40,8 @@ const RUNTIME_CONTROL = ['runtime-inventory.json', 'runtime-inventory.sig', '.ru
 export const SLICE_CONTEXT = 'share/chariox/slice-build-context';
 const SLICE_ROOTS = 'apps/kernel/slice-linux-docker/runtime-source-roots.txt';
 export const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
-// The slice Dockerfile's only input outside the runtime source roots.
-const SLICE_EXTRA_INPUTS = ['apps/browser-session-import'];
+// Preserve the complete browser-import helper tree shipped by earlier releases.
+const SLICE_SUPPORT_ROOTS = ['apps/browser-session-import'];
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const rustBinaries = ['chariox-kernel', 'chariox-relay', 'chariox-app-package'];
@@ -135,14 +136,23 @@ export async function exportSliceBuildContext(sourceRoot, commit, output) {
   const roots = git(resolve(sourceRoot), ['show', `${commit}:${SLICE_ROOTS}`]).toString('utf8').split('\n').filter(Boolean);
   if (!roots.length || roots.some(root => !/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/.test(root) || root.split('/').includes('..')))
     fail(`${SLICE_ROOTS} lists an invalid root`);
-  const archive = git(resolve(sourceRoot), ['archive', '--format=tar', commit, '--', SLICE_ROOTS, ...roots, ...SLICE_EXTRA_INPUTS], 512 << 20);
+  const dockerfile = git(resolve(sourceRoot), ['show', `${commit}:${SLICE_DOCKERFILE}`]).toString('utf8');
+  const sources = [...new Set([SLICE_ROOTS, SLICE_DOCKERFILE, ...roots, ...SLICE_SUPPORT_ROOTS,
+    ...sliceDockerfileInputs(dockerfile).map(sliceInputRoot)])];
+  const archive = git(resolve(sourceRoot), ['archive', '--format=tar', commit, '--', ...sources], 512 << 20);
   await mkdir(target, { mode: 0o755 });
   const unpacked = spawnSync('tar', ['-x', '-f', '-', '-C', target], { input: archive, maxBuffer: 1 << 20 });
   if (unpacked.status !== 0) {
     await rm(target, { recursive: true, force: true });
     fail(`the slice build context did not unpack: ${unpacked.stderr?.toString().trim()}`);
   }
-  return { output: target, sourceCommit: commit, files: (await files(target)).length };
+  try {
+    await validateSliceBuildContext(target);
+    return { output: target, sourceCommit: commit, files: (await files(target)).length };
+  } catch (error) {
+    await rm(target, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Checks #678's signing receipt covers every executable with the bytes being bundled. */
@@ -196,7 +206,8 @@ export async function assemble(options) {
   // --executables has the bundle's bin/ and libexec/ layout, the layout the macOS
   // signing tool keeps, so its receipt names the same paths.
   const executables = resolve(options.executables ?? fail('--executables is required'));
-  const inputs = [...platform.bin.map(name => `bin/${name}`), ...platform.libexec.map(name => `libexec/${name}`)]
+  const setup = await lstat(join(executables, "bin/chariox-setup")).then(() => ["bin/chariox-setup"], error => error.code === "ENOENT" ? [] : Promise.reject(error));
+  const inputs = [...platform.bin.map(name => `bin/${name}`), ...setup, ...platform.libexec.map(name => `libexec/${name}`)]
     .map(path => [join(executables, path), path]);
   for (const [source, path] of inputs) {
     if (!((await regularFile(source, path)).mode & 0o100)) fail(`${path} is not executable: ${source}`);
@@ -215,7 +226,7 @@ export async function assemble(options) {
   const installer = [];
   if (platform.linuxInstaller) {
     const local = join(sourceRoot, 'deploy/local-linux');
-    for (const name of ['install-root.sh', 'install-user.sh', 'start-kernel.sh', 'chariox-kernel.service', 'chariox-app-bwrap.apparmor'])
+    for (const name of ['install-browser-dependencies.sh', 'install-root.sh', 'install-user.sh', 'start-kernel.sh', 'chariox-kernel.service', 'chariox-app-bwrap.apparmor'])
       await regularFile(join(local, name), `deploy/local-linux/${name}`);
     for (const path of await files(local)) installer.push([join(local, path), `deploy/local-linux/${path}`]);
     // install-root.sh installs these units from ../managed-kernel.
@@ -239,6 +250,7 @@ export async function assemble(options) {
     }
     for (const path of await files(resolve(options.runtime))) await place(join(resolve(options.runtime), path), output, `runtime/${path}`);
     for (const path of await files(sliceContext)) await place(join(sliceContext, path), output, `${SLICE_CONTEXT}/${path}`);
+    await validateSliceBuildContext(join(output, SLICE_CONTEXT));
     const manifest = await writeManifest(output, {
       name: 'chariox', version: options.version, platform: options.platform, sourceCommit: options.sourceCommit,
       runtime, macosSigning,
@@ -276,6 +288,7 @@ async function checkContents(directory, manifestBytes, signed) {
   await verifyRuntime(join(directory, 'runtime'), manifest.runtime.publicKeyHex, manifest.platform, manifest.sourceCommit);
   if (manifest.runtime.inventorySha256 !== sha256(await readFile(join(directory, 'runtime/runtime-inventory.json'))))
     fail('the runtime inventory digest does not match the manifest');
+  await validateSliceBuildContext(join(directory, SLICE_CONTEXT));
   return { version: manifest.version, platform: manifest.platform, sourceCommit: manifest.sourceCommit,
     files: manifest.files.length, manifestSha256: sha256(manifestBytes), runtime: manifest.runtime };
 }
@@ -317,7 +330,7 @@ export function parseArgs(argv) {
   return { command, options };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (typeof Bun === "undefined" && process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const { command, options } = parseArgs(process.argv.slice(2));
     const result = command === 'slice-context' ? await exportSliceBuildContext(options.sourceRoot ?? repositoryRoot, options.sourceCommit, options.output)

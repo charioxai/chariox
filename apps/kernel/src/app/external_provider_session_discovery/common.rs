@@ -59,6 +59,10 @@ pub(super) fn bounded_observed_string_value(value: &str) -> Value {
     ))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing record_from_parts operation signature and explicit context arguments"
+)]
 pub(super) fn record_from_parts(
     provider: &str,
     provider_session_id: String,

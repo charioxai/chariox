@@ -101,6 +101,7 @@ pub struct MetaAckEventArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct MetaTurnOverviewArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_ref: Option<String>,
@@ -113,8 +114,12 @@ pub struct MetaTurnOverviewArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetaTurnBlobArgs {
+    #[serde(alias = "event_ref")]
     pub blob_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,15 +160,6 @@ pub struct MetaSubscribeEventsArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaUnsubscribeEventsArgs {
     pub subscription_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetaResolveRuntimeInteractionArgs {
-    pub interaction_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub choice_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -376,4 +372,19 @@ pub struct MetaWorkflowRegistryRunArgs {
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+}
+
+// MP-08 / MP-10 / MP-11 A09: caller identity is NEVER accepted as an argument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistorySearchArgs {
+    pub query: String,
+    #[serde(default)]
+    pub agent_ref: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
 }

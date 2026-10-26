@@ -20,7 +20,7 @@ export function codexNativePermissionChoice(message: CodexJsonRpcMessage): strin
   const decision = typeof result?.decision === "string" ? result.decision.toLowerCase() : ""
   const action = typeof result?.action === "string" ? result.action.toLowerCase() : ""
   const combined = `${decision} ${action}`
-  if (combined.includes("decline") || combined.includes("deny") || combined.includes("reject")) {
+  if (combined.includes("decline") || combined.includes("deny") || combined.includes("reject") || combined.includes("cancel")) {
     return "deny"
   }
   if (combined.includes("session") || combined.includes("always")) {

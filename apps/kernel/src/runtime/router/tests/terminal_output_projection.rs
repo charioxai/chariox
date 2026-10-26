@@ -357,20 +357,25 @@ async fn background_output_pump_enters_provider_runtime_lane() {
         .provider_runtime_lanes
         .acquire(&provider_run_id)
         .await;
-    let pump_router = router.clone();
-    let pump_task = tokio::spawn(async move { pump_router.pump_transport_runtime().await });
-
-    tokio::task::yield_now().await;
-    assert!(
-        !pump_task.is_finished(),
-        "background output pumping must wait behind the provider-run runtime lane"
-    );
-
-    drop(permit);
-    timeout(Duration::from_secs(1), pump_task)
+    let probe = router
+        .provider_runtime_lanes
+        .notify_on_next_acquire_for_tests(&provider_run_id);
+    let runtime = router.runtime_state().clone();
+    let pump_task = tokio::spawn(async move { runtime.run_provider_output_pump().await });
+    timeout(Duration::from_secs(1), probe.notified())
         .await
-        .expect("background output pump should resume after the lane is released")
-        .expect("background output pump task should join");
+        .expect("independent scheduler should enter the provider lane");
+    assert!(!pump_task.is_finished());
+    drop(permit);
+    let drained = timeout(
+        Duration::from_secs(1),
+        router.provider_runtime_lanes.acquire(&provider_run_id),
+    )
+    .await
+    .expect("output pump should release the lane after draining");
+    drop(drained);
+    pump_task.abort();
+    let _ = pump_task.await;
 }
 
 #[tokio::test]
@@ -526,4 +531,96 @@ async fn terminal_output_with_projected_inactive_run_drains_without_app_lock() {
         }
         _ => panic!("unexpected pump response"),
     }
+}
+
+// MP-08/MP-10/MP-11: the idle shortcut must consult the run and prompt projections.
+#[tokio::test]
+async fn projected_idle_terminal_shortcut_preserves_live_native_pump() {
+    assert_projected_idle_shortcut_tracks_live_run(true).await;
+}
+
+#[tokio::test]
+async fn projected_idle_terminal_shortcut_preserves_stale_mirror_prompt_pump() {
+    assert_projected_idle_shortcut_tracks_live_run(false).await;
+}
+
+async fn assert_projected_idle_shortcut_tracks_live_run(native: bool) {
+    let worktree = crate::test_support::TestWorktree::new("projected-idle-live-run");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "native-idle-check",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+    router
+        .dispatch(
+            KernelCommand::from_local_request("warm-native-idle-check", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let projected = router.session_projection.get(session.id()).unwrap();
+    assert!(!projected.has_any_prompt_work());
+    assert!(projected.active_provider_run_id().is_none());
+    let mut launch = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-test",
+    )
+    .with_agent_id(agent.id());
+    if native {
+        launch = launch.with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    }
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "run-idle-live-check",
+        &launch,
+        crate::provider::ProviderLaunchResult {
+            process_label: "codex:test".into(),
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("codex:test".into()),
+        },
+    );
+    run.mark_running();
+    router.provider_run_projection.update(run);
+    if !native {
+        router.agent_runtime_projection.update_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            Some(crate::session::PromptQueueItem::external_observed_running(
+                "codex",
+                "thread",
+                "turn",
+                agent.id(),
+                "running prompt",
+            )),
+            None,
+            0,
+        );
+    }
+    let request = PumpTerminalOutputRequest {
+        session_id: session.id().into(),
+        attachment_id: attachment.id().into(),
+    };
+    assert!(
+        router
+            .terminal_output_executor
+            .projected_response(&request)
+            .is_none(),
+        "idle session mirror must not bypass its authoritative live provider output pump"
+    );
 }

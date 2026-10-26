@@ -28,6 +28,7 @@ impl KernelRuntimeState {
         &self,
         key: &str,
     ) -> Result<(), DaemonError> {
+        self.revoke_kernel_browser_observation_values(key).await?;
         let rooms = self.owned.session_store.list_all_sessions();
         for session in rooms {
             if self
@@ -58,6 +59,24 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        self.scoped_secret_input_service(&self.owned.room_secret_observations, room, credential)
+            .await
+    }
+
+    // MD-5: Room and user-domain input share the Vault lifecycle lock and
+    // authoritative metadata reload; only their observation scope differs.
+    pub(in crate::runtime::state) async fn scoped_secret_input_service(
+        &self,
+        protection: &RoomSecretObservations,
+        scope: &str,
+        credential: &str,
+    ) -> Result<
+        (
+            crate::secret::RuntimeSecretService,
+            tokio::sync::OwnedRwLockReadGuard<()>,
+        ),
+        DaemonError,
+    > {
         let guard = self
             .owned
             .room_secret_observations
@@ -68,9 +87,7 @@ impl KernelRuntimeState {
         // Metadata and Vault configuration must be authoritative after every
         // unlock, approval and lifecycle wait. Keep this guard through insertion.
         let service = self.home_runtime_secret_service()?;
-        self.owned
-            .room_secret_observations
-            .register_credential_source(room, service.credential_vault_key(credential)?)?;
+        protection.register_credential_source(scope, service.credential_vault_key(credential)?)?;
         Ok((service, guard))
     }
 
@@ -141,6 +158,39 @@ impl KernelRuntimeState {
                 }
             }
         }
-        service.upsert_vault_backed_credential_with_secret(registry, credential, secret, overwrite)
+        // MP-08 / MP-10 / MP-11: runtime creation stamps its authoritative
+        // Room into metadata. A value becomes private (scrub-only) when stored,
+        // before any later browser insertion; prior public echoes are retired now.
+        let room = credential
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_id.clone());
+        let key = match &credential.source {
+            crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
+            _ => None,
+        };
+        self.with_authorized_app_side_effect(|_| {
+            self.with_forwarded_binding_operation(|| {
+                let _history = self.owned.operational_history_store.lock_public_history()?;
+                let result = service.upsert_vault_backed_credential_with_secret(
+                    registry, credential, secret, overwrite,
+                )?;
+                if let Some(room) = room {
+                    let source = self
+                        .owned
+                        .room_secret_observations
+                        .register_credential_source(&room, key.as_deref());
+                    // Protect the value even if persisting its provenance fails.
+                    let protection = self
+                        .owned
+                        .room_secret_observations
+                        .register_stored_with_locked_public_history(&room, secret);
+                    source?;
+                    protection?;
+                }
+                Ok(result)
+            })
+        })
+        .await
     }
 }

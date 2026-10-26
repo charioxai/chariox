@@ -65,6 +65,10 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing workflow_turn_prompt_text operation signature and explicit context arguments"
+    )]
     pub(super) fn workflow_turn_prompt_text(
         &self,
         session_id: &str,

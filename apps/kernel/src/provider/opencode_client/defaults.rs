@@ -52,7 +52,7 @@ impl OpenCodeClient {
         let config: OpenCodeConfig = match self.send_json_request("GET", "/config", None) {
             Ok(config) => config,
             Err(DaemonError::ProviderProtocol {
-                operation: "opencode_http",
+                operation: "configured_defaults",
                 message,
                 ..
             }) if message == "OpenCode returned HTTP 404" => {

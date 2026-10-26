@@ -28,16 +28,6 @@ function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`
 }
 
-function stableJson(value) {
-  if (Array.isArray(value)) return value.map(stableJson)
-  if (!value || typeof value !== "object") return value
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJson(value[key])]))
-}
-
-function fingerprintJson(value) {
-  return sha256(Buffer.from(JSON.stringify(stableJson(value)), "utf8"))
-}
-
 function parseCaptureLocator(environment) {
   const raw = environment?.CHARIOX_PARITY_CAPTURE_EVIDENCE_JSON
   if (typeof raw !== "string" || !raw.trim()) return null
@@ -147,16 +137,12 @@ function requiredId(value, label) {
 }
 
 function processLaunchFingerprint(run, processInfo, processIdentity, ancestryDepth) {
-  const program = run.pty_program
-  const args = run.pty_args
   const workingDirectory = run.working_directory
-  if (typeof program !== "string" || !program.trim() || !Array.isArray(args)
-    || args.some((arg) => typeof arg !== "string")
-    || (workingDirectory != null && typeof workingDirectory !== "string")) {
+  if (workingDirectory != null && typeof workingDirectory !== "string") {
     throw bindingError("provider_launch_context_invalid", "kernel provider run has invalid launch context")
   }
-  if (processInfo.process_label !== run.process_label || processInfo.provider !== run.provider) {
-    throw bindingError("provider_process_run_mismatch", "kernel provider process label or provider does not match its run")
+  if (processInfo.provider !== run.provider) {
+    throw bindingError("provider_process_run_mismatch", "kernel provider process provider does not match its run")
   }
 
   return {
@@ -169,9 +155,11 @@ function processLaunchFingerprint(run, processInfo, processIdentity, ancestryDep
     executable_sha256: processIdentity.executableDigest,
     command_line_sha256: processIdentity.commandLineDigest,
     current_working_directory_sha256: processIdentity.cwdDigest,
-    launch_program_basename: basename(program),
-    launch_program_sha256: sha256(Buffer.from(program, "utf8")),
-    launch_arguments_sha256: fingerprintJson(args),
+    // Private launch inputs are not public protocol evidence. Procfs hashes above
+    // independently cover the actual executable and command line.
+    launch_program_basename: null,
+    launch_program_sha256: null,
+    launch_arguments_sha256: null,
     launch_working_directory_sha256: workingDirectory == null
       ? null
       : sha256(Buffer.from(workingDirectory, "utf8")),
@@ -363,7 +351,6 @@ async function observeBinding({ filesystem, processApi, expectedProvider, client
       if (!run || run.id !== providerRunId || run.provider !== expectedProvider || run.state !== "Running") continue
       if (typeof run.session_id !== "string" || typeof run.agent_instance_id !== "string") continue
       if (!processInfo.owner_session_ids.includes(run.session_id)) continue
-      if (!Array.isArray(run.pty_args) || typeof run.pty_program !== "string" || !run.pty_program.trim()) continue
 
       const sessionEnvelope = await client.send(requestBuilders.getSessionStateRequest(run.session_id))
       const sessionResult = responseVariant(sessionEnvelope, "SessionState", "GetSessionState")

@@ -110,6 +110,50 @@ mod tests {
     }
 
     #[test]
+    fn private_runtime_mcp_fixture_keeps_binding_inside_provider_process() {
+        use crate::provider::RuntimeMcpBinding;
+        let request = LaunchProviderRequest::new(
+            "session",
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "runtime-mcp-fixture",
+        )
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            "http://127.0.0.1:43119/mcp",
+            "synthetic-fixture-binding",
+        ));
+        let launch = DEV_STUB_ADAPTER.connect(&request).unwrap();
+        assert_eq!(
+            launch
+                .pty_env
+                .get("CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN")
+                .map(String::as_str),
+            Some("synthetic-fixture-binding")
+        );
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg.contains("MP11_MCP_REQUEST")));
+        assert!(launch
+            .pty_args
+            .iter()
+            .all(|arg| !arg.contains("synthetic-fixture-binding")));
+        let ordinary = DEV_STUB_ADAPTER
+            .connect(&LaunchProviderRequest::new(
+                "session",
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            ))
+            .unwrap();
+        assert!(!ordinary
+            .pty_env
+            .contains_key("CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN"));
+    }
+
+    #[test]
     fn distributed_scale_stub_runs_share_the_scale_pty() {
         for agent_id in ["agent-1", "agent-2"] {
             let launch = DEV_STUB_ADAPTER

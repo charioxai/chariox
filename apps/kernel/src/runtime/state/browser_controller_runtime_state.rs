@@ -17,6 +17,15 @@ use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult,
 };
 
+// MP-08 / MP-10: Foreground observations supersede background health probes,
+// even if they leave the controller and Room generations unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ControllerGenerationObservation {
+    pub(super) generation: u64,
+    pub(super) recovery_pending: bool,
+    pub(super) revision: u64,
+}
+
 impl KernelRuntimeState {
     #[cfg(test)]
     pub(crate) fn set_browser_controller_process_store_for_test(
@@ -392,12 +401,10 @@ impl KernelRuntimeState {
         let RoomBrowserControllerResult::Reconciled {
             reconciliation: Some(reconciliation),
         } = self
-            .room_browser_controller_command(
+            .room_browser_controller_health_probe(
                 session_id,
-                RoomBrowserControllerCommand::Reconcile {
-                    viewport: environment.viewport.clone(),
-                    browser_bar_visible: environment.browser_bar_visible,
-                },
+                environment.viewport.clone(),
+                environment.browser_bar_visible,
             )
             .await?
         else {
@@ -433,63 +440,6 @@ impl KernelRuntimeState {
             browser_ids: resource_inventory.browser_ids,
             profile_ids: resource_inventory.profile_ids,
         })
-    }
-
-    pub(crate) async fn capture_browser_environment_snapshot(
-        &self,
-        session_id: &str,
-        tab_id: &str,
-    ) -> Result<
-        crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot,
-        DaemonError,
-    > {
-        let environment = self
-            .room_environment_snapshot(session_id)
-            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
-        let binding = self
-            .room_environment_controller_tab_binding(session_id, tab_id)
-            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
-        let RoomBrowserControllerResult::Snapshot {
-            snapshot: Some(controller_snapshot),
-        } = self
-            .room_browser_controller_command(
-                session_id,
-                RoomBrowserControllerCommand::Snapshot {
-                    target_id: binding.runtime_target_id.clone(),
-                    document_id: binding.document_id.clone(),
-                },
-            )
-            .await?
-        else {
-            return Err(controller_route_error(
-                "browser controller did not return a snapshot",
-            ));
-        };
-        controller_snapshot
-            .validate(&binding.runtime_target_id, &binding.document_id)
-            .map_err(|message| controller_route_error(&message))?;
-        let references = self
-            .register_room_environment_element_references(
-                session_id,
-                tab_id,
-                environment.runtime_generation,
-                binding.document_revision,
-                controller_snapshot.controller_node_refs(),
-            )
-            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
-        controller_snapshot
-            .into_room_snapshot(
-                session_id.to_string(),
-                environment.environment_id,
-                environment.runtime_generation,
-                tab_id.to_string(),
-                binding.document_revision,
-                &references,
-            )
-            .map_err(|message| DaemonError::LocalTransport {
-                operation: "browser_controller.snapshot",
-                message,
-            })
     }
 
     pub(crate) async fn manage_browser_environment_tab(
@@ -1024,17 +974,11 @@ impl KernelRuntimeState {
         session_id: &str,
         execution_id: &str,
         element_ref: &str,
-        paths: Vec<std::path::PathBuf>,
+        files: crate::runtime::browser_controller_file_transfer::BrowserUploadFiles,
     ) -> Result<
         crate::runtime::browser_controller_file_transfer::RoomBrowserUploadResult,
         DaemonError,
     > {
-        let files =
-            crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(paths)
-                .map_err(|message| DaemonError::LocalTransport {
-                    operation: "browser_controller.upload",
-                    message,
-                })?;
         let environment = self
             .room_environment_snapshot(session_id)
             .map_err(|error| environment_runtime_error("browser_controller.upload", error))?;
@@ -1322,15 +1266,24 @@ impl KernelRuntimeState {
             .map_err(|_| controller_generation_error("generation lock poisoned"))?;
         let mut began_recovery = false;
         let recovery_pending = match generations.get_mut(session_id) {
-            Some((previous, pending)) if *previous != generation => {
-                *previous = generation;
-                *pending = true;
-                began_recovery = true;
-                true
+            Some(observation) => {
+                observation.revision += 1;
+                if observation.generation != generation {
+                    observation.generation = generation;
+                    observation.recovery_pending = true;
+                    began_recovery = true;
+                }
+                observation.recovery_pending
             }
-            Some((_, pending)) => *pending,
             None => {
-                generations.insert(session_id.to_string(), (generation, false));
+                generations.insert(
+                    session_id.to_string(),
+                    ControllerGenerationObservation {
+                        generation,
+                        recovery_pending: false,
+                        revision: 1,
+                    },
+                );
                 false
             }
         };
@@ -1370,8 +1323,9 @@ impl KernelRuntimeState {
             .browser_controller_generations
             .lock()
             .map_err(|_| controller_generation_error("generation lock poisoned"))?;
-        if let Some((_, pending)) = generations.get_mut(session_id) {
-            *pending = false;
+        if let Some(observation) = generations.get_mut(session_id) {
+            observation.recovery_pending = false;
+            observation.revision += 1;
         }
         Ok(())
     }
@@ -1405,7 +1359,10 @@ fn controller_generation_error(message: &str) -> DaemonError {
     }
 }
 
-fn environment_runtime_error(operation: &'static str, error: EnvironmentError) -> DaemonError {
+pub(super) fn environment_runtime_error(
+    operation: &'static str,
+    error: EnvironmentError,
+) -> DaemonError {
     match error {
         EnvironmentError::RoomNotFound { session_id } => {
             DaemonError::SessionNotFound { session_id }

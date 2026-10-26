@@ -5,7 +5,7 @@
 // executes no input artifact, installs no root authority, and certifies no drill.
 // macOS code is codesigned first (sign-macos-release.mjs); this tool then checks
 // that only the signature changed and signs the inventory over the signed bytes.
-import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { createPrivateKey, createPublicKey, KeyObject, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { chmod, lstat, open, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -79,10 +79,16 @@ export async function signRuntimeRelease({ inputDirectory, builderAttestation, b
     if (!equal(await inventory(codesigned, 40), releasePaths(bundle).map(sourcePath).sort()))
       throw new Error('codesigned input contains missing or undeclared files');
   }
-  const keyMetadata = await lstat(resolve(signingKey));
-  if (!keyMetadata.isFile() || keyMetadata.uid !== process.getuid() || keyMetadata.mode & 0o077)
-    throw new Error('release signing key must be private and owned');
-  const key = createPrivateKey(await keyBytes(signingKey));
+  // The local developer path supplies the already pinned in-memory signer so
+  // a file replacement during packaging cannot change the approved identity.
+  let key;
+  if (developerRuntime && signingKey instanceof KeyObject && signingKey.type === 'private') key = signingKey;
+  else {
+    const keyMetadata = await lstat(resolve(signingKey));
+    if (!keyMetadata.isFile() || keyMetadata.uid !== process.getuid() || keyMetadata.mode & 0o077)
+      throw new Error('release signing key must be private and owned');
+    key = createPrivateKey(await keyBytes(signingKey));
+  }
   if (key.asymmetricKeyType !== 'ed25519') throw new Error('Ed25519 release key required');
   if (codesigned && (output === codesigned || output.startsWith(`${codesigned}/`) || codesigned.startsWith(`${output}/`)))
     throw new Error('bundle output must be separate from codesigned input');

@@ -11,10 +11,34 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
+        self.cancel_remote_agent_prompt_if_matches(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            expected_prompt_id,
+            authority,
+        )
+        .await
+    }
+
+    pub(super) async fn cancel_remote_agent_prompt_if_matches(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         self.authorize_prompt_command(authority)?;
         let owned = &self.owned;
+        if expected_prompt_id.is_none()
+            && !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id)
+        {
+            let _ = owned.ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         if owned
             .agent_store
             .get_agent(target_agent_id)?
@@ -30,6 +54,11 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        if expected_prompt_id.is_some_and(|id| {
+            active_prompt.id() != id && active_prompt.pending_prompt_id() != Some(id)
+        }) {
+            return Ok(None);
+        }
         if matches!(
             active_prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)
@@ -37,11 +66,15 @@ impl KernelRuntimeState {
         ) {
             // Persist the user's intent immediately. The dispatch remains held as this same
             // prompt until its normal ACK or a restart receipt proves the worker run.
-            let intent = owned.begin_remote_prompt_cancellation(
+            let Some(intent) = owned.begin_remote_prompt_cancellation_if_matches(
                 session_id,
                 target_agent_id,
                 attachment_id,
-            )?;
+                Some(active_prompt.id()),
+            )?
+            else {
+                return Ok(None);
+            };
             let current_session = owned.session_store.get_session(session_id)?;
             let current_prompt = owned
                 .prompt_state_owner
@@ -88,8 +121,15 @@ impl KernelRuntimeState {
                     .to_string(),
             });
         }
-        let cancellation_intent =
-            owned.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        let Some(cancellation_intent) = owned.begin_remote_prompt_cancellation_if_matches(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            Some(active_prompt.id()),
+        )?
+        else {
+            return Ok(None);
+        };
         let Some(mut cancellation_claim) =
             self.try_claim_remote_prompt_cancellation_send(session_id, target_agent_id)
         else {
@@ -169,11 +209,16 @@ impl KernelRuntimeState {
             }
             Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
                 let attachment_id = active_prompt.source_attachment_id().to_string();
-                let cancellation_intent = self.owned.begin_remote_prompt_cancellation(
-                    session_id,
-                    target_agent_id,
-                    &attachment_id,
-                )?;
+                let Some(cancellation_intent) =
+                    self.owned.begin_remote_prompt_cancellation_if_matches(
+                        session_id,
+                        target_agent_id,
+                        &attachment_id,
+                        Some(active_prompt.id()),
+                    )?
+                else {
+                    return Ok(false);
+                };
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(
                         session_id,
@@ -332,7 +377,7 @@ impl KernelRuntimeState {
                 operation: "cancel remote prompt",
                 message: format!("unexpected remote prompt cancellation response: {other:?}"),
             }),
-            Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
+            Err(error) if remote_prompt_cancellation_should_treat_as_settled(&error) => {
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt cancellation already settled on worker",
@@ -376,7 +421,7 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         if let Err(error) = self
-            .finish_owned_prompt_submission_workflow_start(&mut submission)
+            .finish_owned_prompt_submission(&mut submission, false)
             .await
         {
             // The prompt is already active; settle it as a failed dispatch so
@@ -424,7 +469,45 @@ impl KernelRuntimeState {
             }
             cancellation.session = submission.session;
         }
+        self.schedule_agent_lifecycle_sweep();
         Ok(cancellation)
+    }
+
+    /// A10: a leased turn's completion settles its home task through the same
+    /// settlement as a local turn, so delegators and reply waiters wake.
+    pub(super) async fn settle_leased_agent_task(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        completed: &crate::session::PromptQueueItem,
+        leased_agent_id: &str,
+        worker_provider_run_id: &str,
+    ) {
+        let run = crate::provider::projected_leased_provider_run_id(
+            leased_agent_id,
+            worker_provider_run_id,
+        );
+        let cancelled = completed.status() == crate::session::PromptStatus::Cancelled;
+        let settled = match self.owned.settle_agent_task_answered_by(
+            session_id,
+            agent_id,
+            completed,
+            &run,
+            worker_provider_run_id,
+            cancelled,
+        ) {
+            Ok(settlement) => {
+                Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = settled {
+            crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "MP-08/MP-09/MP-10/MP-11 A10: leased task settlement retained for sweep",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
+        }
     }
 
     fn verify_remote_prompt_cancellation_run(
@@ -484,9 +567,36 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        let session = owned.session_store.get_session(session_id)?;
+        let completion_prompt = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, target_agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.into(),
+            })?;
+        let revalidate_receipt = || {
+            let agent = owned.agent_store.get_agent(target_agent_id)?;
+            let session = owned.session_store.get_session(session_id)?;
+            if agent.session_id() != session_id
+                || agent.remote_execution() != Some(&remote_execution)
+                || owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, target_agent_id)
+                    .as_ref()
+                    .map(|prompt| prompt.id())
+                    != Some(completion_prompt.id())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "complete remote prompt",
+                    message: "completion receipt was superseded".into(),
+                });
+            }
+            Ok(())
+        };
         let completion_response = self
             .with_app_side_effect(|app| {
                 self.authorize_prompt_command(authority)?;
+                revalidate_receipt()?;
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                 app.block_on_relay_future(
                     crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
@@ -514,6 +624,15 @@ impl KernelRuntimeState {
                     workspace_live_sync_change,
                     ..
                 }) => {
+                    revalidate_receipt()?;
+                    if provider_run_id.as_deref()
+                        != remote_execution.active_worker_provider_run_id.as_deref()
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "complete remote prompt",
+                            message: "completion receipt names another provider run".into(),
+                        });
+                    }
                     if let Err(error) = crate::git_observer::append_observations(
                         &owned.operational_history_store,
                         git_observations,
@@ -536,6 +655,7 @@ impl KernelRuntimeState {
                         )
                         .await;
                     }
+                    revalidate_receipt()?;
                     (
                         provider_run_id
                             .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
@@ -556,8 +676,10 @@ impl KernelRuntimeState {
                         }),
                     );
                     (
-                        owned_provider_run_id
+                        remote_execution
+                            .active_worker_provider_run_id
                             .clone()
+                            .or_else(|| owned_provider_run_id.clone())
                             .unwrap_or_else(|| "remote-provider-run-completed".to_string()),
                         None,
                         None,
@@ -599,13 +721,23 @@ impl KernelRuntimeState {
                 }
             };
         // The worker completion is committed; settle its home receipt even after revocation.
-        let completion = owned.complete_remote_prompt_owner_with_termination(
+        let completion = owned.complete_remote_prompt_owner_for_receipt(
             session_id,
             target_agent_id,
             &remote_provider_run_id,
             next_queued_prompt,
             provider_termination.clone(),
+            Some((completion_prompt.id(), &remote_execution)),
         )?;
+        // A10: home alone commits the leased task outcome.
+        self.settle_leased_agent_task(
+            session_id,
+            target_agent_id,
+            &completion.completed,
+            &remote_execution.leased_agent_id,
+            &remote_provider_run_id,
+        )
+        .await;
         if completion.completed.workflow_run_id().is_some() {
             if let Some(diagnostic) = provider_termination
                 .as_ref()
@@ -722,6 +854,22 @@ impl KernelRuntimeState {
         }
         Ok(Some(completion))
     }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: this worker has lost the
+// exact lease whose cancellation we verified. Release cancelled work only;
+// a missing lease remains insufficient evidence for successful completion.
+fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bool {
+    remote_prompt_completion_should_treat_as_settled(error)
+        || matches!(
+            error,
+            DaemonError::RelayTransport {
+                operation: "read relay peer response" | "read temporary relay peer response",
+                code,
+                retryable: false,
+                ..
+            } if code == "leased_agent_not_found"
+        )
 }
 
 fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
@@ -861,6 +1009,36 @@ mod tests {
             Some(&attempted),
             &attempted,
         ));
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 A10/G03: a cancelled lost lease
+    // cannot release a success receipt, but its exact worker denial settles
+    // cancellation. A disconnected target never proves that.
+    #[test]
+    fn remote_cancellation_settles_exact_missing_lease_without_completing_it() {
+        let missing = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "leased_agent_not_found".to_string(),
+            message: "leased agent `lost-lease` was not found".to_string(),
+            retryable: false,
+        };
+        assert!(remote_prompt_cancellation_should_treat_as_settled(&missing));
+        assert!(!remote_prompt_completion_should_treat_as_settled(&missing));
+        for (operation, code, retryable) in [
+            ("write relay peer request", "leased_agent_not_found", false),
+            ("read relay peer response", "leased_agent_not_found", true),
+            ("read relay peer response", "target_not_connected", true),
+            ("read relay peer response", "unauthorized", false),
+        ] {
+            assert!(!remote_prompt_cancellation_should_treat_as_settled(
+                &DaemonError::RelayTransport {
+                    operation,
+                    code: code.to_string(),
+                    message: "leased agent `lost-lease` was not found".to_string(),
+                    retryable,
+                }
+            ));
+        }
     }
 
     #[test]

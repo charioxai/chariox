@@ -1,10 +1,8 @@
 import path from "node:path"
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises"
-import { setTimeout as sleep } from "node:timers/promises"
 
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
-  getProviderRunRequest,
   installMcpServerRequest,
   installSkillRequest,
 } from "../../dist/ipc-requests.js"
@@ -84,21 +82,7 @@ export async function cleanupNativeDrillCapabilities(workspace, nativeCapabiliti
   await rm(nativeCapabilities.mcpServerPath, { force: true }).catch(() => {})
 }
 
-export async function waitForProviderRunMcpGrant(client, providerRunId, mcpName, timeoutMs = 90_000) {
-  const deadline = Date.now() + timeoutMs
-  let lastRun = null
-  while (Date.now() < deadline) {
-    const run = unwrapVariant(
-      await client.send(getProviderRunRequest(providerRunId)),
-      "ProviderRun",
-    ).provider_run
-    lastRun = run
-    const mcps = run?.mcp_servers ?? []
-    if (mcps.some((mcp) => mcp.name === mcpName)) return run
-    await sleep(500)
-  }
-  throw new Error(`timed out waiting for provider run ${providerRunId} MCP grant ${mcpName}; last=${JSON.stringify(lastRun)}`)
-}
+export { waitForProviderRunMcpAdmission } from './provider-run-mcp-admission.mjs'
 
 async function createNativeDrillMcpServer(workspace, name) {
   const scriptDir = path.join(workspace, ".chariox", "mcps", name)

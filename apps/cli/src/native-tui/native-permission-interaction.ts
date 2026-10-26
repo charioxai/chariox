@@ -10,6 +10,7 @@ export async function resolveActiveNativePermissionInteraction(
   sessionId: string,
   agentId: string,
   choiceId: string,
+  expectedInteractionId?: string,
 ): Promise<boolean> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
   const session = normalizeRuntimeSessionWithAgentActivity(
@@ -20,7 +21,8 @@ export async function resolveActiveNativePermissionInteraction(
     }>(response, "SessionState"),
   )
   const interaction = session.active_interactions?.find((entry) =>
-    entry.agent_id === agentId && entry.kind === "permission")
+    entry.agent_id === agentId && entry.kind === "permission"
+      && (expectedInteractionId === undefined || entry.id === expectedInteractionId))
   if (!interaction) return false
   await client.send<Record<string, unknown>>(
     respondToInteractionRequest(sessionId, interaction.id, choiceId),

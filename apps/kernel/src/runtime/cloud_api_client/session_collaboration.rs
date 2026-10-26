@@ -290,6 +290,9 @@ mod tests {
 
     fn cloud_profile() -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: "https://cloud.test".to_string(),
             email: "user@example.test".to_string(),
             account_id: "account/1".to_string(),

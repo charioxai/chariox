@@ -3,8 +3,8 @@
 use super::*;
 
 pub(in crate::runtime::state) fn workspace_live_sync_patch_state(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
     before_states: &mut BTreeMap<PathBuf, Option<String>>,
     final_states: &mut BTreeMap<PathBuf, Option<String>>,
 ) -> Result<Option<String>, DaemonError> {
@@ -13,15 +13,15 @@ pub(in crate::runtime::state) fn workspace_live_sync_patch_state(
     }
     let current = workspace_live_sync_read_optional_text(workspace_root, path)?;
     before_states
-        .entry(path.clone())
+        .entry(path.to_path_buf())
         .or_insert_with(|| current.clone());
-    final_states.insert(path.clone(), current.clone());
+    final_states.insert(path.to_path_buf(), current.clone());
     Ok(current)
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_whole_file_state(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
     domain: crate::io::ArtifactDomainKind,
     before_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
     final_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
@@ -31,15 +31,15 @@ pub(in crate::runtime::state) fn workspace_live_sync_whole_file_state(
     }
     let current = workspace_live_sync_read_optional_content(workspace_root, path, domain)?;
     before_states
-        .entry(path.clone())
+        .entry(path.to_path_buf())
         .or_insert_with(|| current.clone());
-    final_states.insert(path.clone(), current.clone());
+    final_states.insert(path.to_path_buf(), current.clone());
     Ok(current)
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_validate_patch_path(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
 ) -> Result<(), DaemonError> {
     let _ = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| DaemonError::LocalTransport {
         operation: "runtime_tool_apply_patch",
@@ -61,8 +61,8 @@ pub(in crate::runtime::state) fn workspace_live_sync_validate_patch_path(
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_read_optional_text(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
 ) -> Result<Option<String>, DaemonError> {
     let full_path = workspace_live_sync_diff_workspace_path(workspace_root, path).ok_or_else(|| {
         DaemonError::LocalTransport {
@@ -81,8 +81,8 @@ pub(in crate::runtime::state) fn workspace_live_sync_read_optional_text(
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_read_optional_content(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
     domain: crate::io::ArtifactDomainKind,
 ) -> Result<Option<crate::io::ArtifactContent>, DaemonError> {
     let full_path =
@@ -126,7 +126,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_read_optional_content(
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_write_final_states(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     states: &BTreeMap<PathBuf, Option<String>>,
 ) -> Result<(), DaemonError> {
     for (path, text) in states {
@@ -171,7 +171,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_states(
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_write_final_content_states(
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
     states: &BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
 ) -> Result<(), DaemonError> {
     for (path, content) in states {
@@ -240,8 +240,8 @@ pub(in crate::runtime::state) fn workspace_live_sync_write_final_content_states(
 }
 
 pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
-    workspace_root: &PathBuf,
-    path: &PathBuf,
+    workspace_root: &Path,
+    path: &Path,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
     let normalized = workspace_live_sync_normalized_relative_path(path)?;
@@ -262,13 +262,11 @@ pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
     Ok(())
 }
 
-fn workspace_live_sync_ignore_patterns(
-    workspace_root: &PathBuf,
-) -> Result<Vec<String>, DaemonError> {
+fn workspace_live_sync_ignore_patterns(workspace_root: &Path) -> Result<Vec<String>, DaemonError> {
     Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(workspace_root))
 }
 
-fn workspace_live_sync_normalized_relative_path(path: &PathBuf) -> Result<String, DaemonError> {
+fn workspace_live_sync_normalized_relative_path(path: &Path) -> Result<String, DaemonError> {
     let mut parts = Vec::new();
     for component in path.components() {
         match component {

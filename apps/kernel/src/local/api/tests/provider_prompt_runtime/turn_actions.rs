@@ -1,5 +1,138 @@
 use super::*;
 
+// MP-08 / MP-10: Native display IDs must be translated to a home prompt
+// before this single admission. A stale control must never become a new turn.
+#[test]
+fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("active-steering-admission");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness.launch_workflow_test_provider(session.id(), agent.id());
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().into(),
+                client_id: "steering".into(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let active = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            target_agent_id: Some(agent.id().into()),
+            prompt: "original work".into(),
+            attachments: vec![],
+        }))
+        .unwrap()
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let request = |expected: &str| {
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "SteerActivePrompt": {
+                "session_id": session.id(), "attachment_id": attachment.id(),
+                "target_agent_id": agent.id(), "expected_active_prompt_id": expected,
+                "prompt": "change direction", "attachments": []
+            }
+        }))
+        .expect("protocol must support atomic active-turn steering")
+    };
+    let error = harness.dispatch(request("old-home-prompt")).unwrap_err();
+    assert!(
+        error.to_string().contains("active prompt changed"),
+        "{error}"
+    );
+    let response = harness.dispatch(request(active.id())).unwrap();
+    assert!(serde_json::to_value(response)
+        .unwrap()
+        .get("ActivePromptSteered")
+        .is_some());
+    // Notes steer like any prompt: malformed ones are refused and a note-only message gets
+    // the request line instead of an empty prompt.
+    let note = |contents: &str| {
+        serde_json::json!({
+            "url": "chariox-terminal://note/1", "mime": crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+            "contents_base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, contents), "filename": "Note",
+        })
+    };
+    let steer_note = |contents: &str| {
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "SteerActivePrompt": {
+                "session_id": session.id(), "attachment_id": attachment.id(),
+                "target_agent_id": agent.id(), "expected_active_prompt_id": active.id(),
+                "prompt": " ", "attachments": [note(contents)]
+            }
+        }))
+        .expect("a steering request may carry a note attachment")
+    };
+    let error = harness.dispatch(steer_note("not json")).unwrap_err();
+    assert!(
+        error.to_string().contains("validate prompt note"),
+        "{error}"
+    );
+    match harness
+        .dispatch(steer_note(r#"{"quote":"x","source":{"kind":"panel"}}"#))
+        .unwrap()
+    {
+        LocalDaemonResponse::ActivePromptSteered { prompt } => {
+            assert_eq!(prompt.prompt(), "Please read the attached notes.");
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+    harness.with_app_mut(|app| {
+        let current = app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.id(), active.id());
+        assert!(
+            app.prompt_owner_peek_next_queued_prompt(session.id(), agent.id())
+                .unwrap()
+                .is_none(),
+            "active steering must not enter the user backlog"
+        );
+    });
+    harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().into(),
+        }))
+        .unwrap();
+    assert!(
+        harness.dispatch(request(active.id())).is_err(),
+        "settled steering must fail instead of starting work"
+    );
+    harness.with_app_mut(|app| {
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .unwrap()
+            .is_none());
+        assert!(app
+            .prompt_owner_peek_next_queued_prompt(session.id(), agent.id())
+            .unwrap()
+            .is_none());
+    });
+}
+
 #[test]
 fn public_session_state_preserves_failed_settlement_termination_after_late_completion() {
     let worktree = crate::test_support::TestWorktree::new("turn-actions-settlement");
@@ -308,7 +441,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
                 .is_some_and(|active| {
                     active.prompt() == prompt.prompt()
                         && active.pending_prompt_id().is_none()
-                        && active.id() != prompt.id()
+                        && active.id() == prompt.id()
                         && active.durable_delivery_phase()
                             == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
                 })
@@ -982,4 +1115,76 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
     assert_eq!(forked_run.variant(), source_run.variant());
 
     let _ = fs::remove_dir_all(root);
+}
+
+// Clearing the typed text of a queued prompt that carries a note keeps the note request line.
+#[test]
+fn editing_a_queued_note_prompt_to_empty_text_keeps_the_note_request() {
+    let worktree = crate::test_support::TestWorktree::new("queued-note-edit");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness.launch_workflow_test_provider(session.id(), agent.id());
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().into(),
+                client_id: "queued-note".into(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let submit = |prompt: &str, attachments: serde_json::Value| {
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "SubmitPrompt": {
+                "session_id": session.id(), "attachment_id": attachment.id(),
+                "target_agent_id": agent.id(), "prompt": prompt, "attachments": attachments
+            }
+        }))
+        .unwrap()
+    };
+    harness
+        .dispatch(submit("original work", serde_json::json!([])))
+        .unwrap();
+    let note = serde_json::json!([{
+        "url": "chariox-terminal://note/1", "mime": crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+        "contents_base64": base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            r#"{"quote":"x","source":{"kind":"panel"}}"#,
+        ),
+        "filename": "Note",
+    }]);
+    let queued = match harness.dispatch(submit("with note", note)).unwrap() {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Queued { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let update = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+        "UpdateQueuedPrompt": {
+            "session_id": session.id(), "attachment_id": attachment.id(),
+            "target_agent_id": agent.id(), "prompt_id": queued.id(), "prompt": "  "
+        }
+    }))
+    .unwrap();
+    match harness.dispatch(update).unwrap() {
+        LocalDaemonResponse::QueuedPromptUpdated { prompt, .. } => {
+            assert_eq!(prompt.prompt(), "Please read the attached notes.");
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
 }

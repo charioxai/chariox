@@ -851,3 +851,6 @@ mod tests {
         assert!(invalid_test.validate().unwrap_err().contains("event_type"));
     }
 }
+
+mod filter;
+pub use filter::metadata_matches_filter;

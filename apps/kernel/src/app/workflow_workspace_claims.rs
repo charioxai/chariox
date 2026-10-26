@@ -21,7 +21,7 @@ impl DaemonApp {
             workspace_id,
             worktree_id,
             session_id,
-            Some(format!("{}:{}", workflow_run_id, workflow_node_run_id)),
+            Some(format!("{workflow_run_id}:{workflow_node_run_id}")),
             "workflow_node_dispatch",
         )?;
         self.prompt_workspace_claims

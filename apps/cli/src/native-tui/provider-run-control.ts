@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises"
 import type { RuntimeProviderRun } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
@@ -50,6 +51,39 @@ export async function getNativeProviderRun(
 ): Promise<RuntimeProviderRun> {
   const response = await client.send<Record<string, unknown>>(getProviderRunRequest(providerRunId))
   return expectVariant<{ provider_run: RuntimeProviderRun }>(response, "ProviderRun").provider_run
+}
+
+// MP-08 / MP-10: LaunchAccepted contains planned metadata. Running is
+// published only after the kernel finishes initializing the provider runtime.
+export async function waitForNativeProviderRunReady(
+  client: LocalIpcClient,
+  providerRunId: string,
+  options: { timeoutMs?: number, pollIntervalMs?: number, allowParkedEndpoint?: boolean } = {},
+): Promise<RuntimeProviderRun> {
+  const deadline = Date.now() + (options.timeoutMs ?? 60_000)
+  let latest: RuntimeProviderRun | null = null
+  const timeoutError = () => new Error(`timed out waiting for Codex provider run to become ready: ${providerRunId} (${latest?.state ?? "unknown"})`)
+  while (Date.now() < deadline) {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      latest = await Promise.race([
+        getNativeProviderRun(client, providerRunId),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(timeoutError()), Math.max(0, deadline - Date.now()))
+        }),
+      ])
+    } finally {
+      clearTimeout(timeout)
+    }
+    if (Date.now() >= deadline) throw timeoutError()
+    if (options.allowParkedEndpoint && latest.state === "Parked" && latest.structured_endpoint) return latest
+    if (latest.state === "Ended" || latest.state === "Parked") {
+      throw new Error(`Codex provider run ${latest.state.toLowerCase()} before attach was ready: ${providerRunId}`)
+    }
+    if (latest.state === "Running") return latest
+    await sleep(Math.min(options.pollIntervalMs ?? 250, Math.max(0, deadline - Date.now())))
+  }
+  throw timeoutError()
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

@@ -12,24 +12,24 @@ import {
 } from "./prompt-meta.js"
 
 test("formatPromptMetaLine renders provider, model, and effort values", () => {
-  assert.equal(formatPromptMetaLine("opencode", "gpt-5.4", "high"), "OpenCode • GPT-5.4 • High")
+  assert.equal(formatPromptMetaLine("opencode", "gpt-5.4", "high"), "OpenCode • gpt-5.4 • High")
 })
 
 test("formatPromptMetaLine handles defaults and provider-qualified models", () => {
-  assert.equal(formatPromptMetaLine("opencode", "opencode/gpt-5.4", ""), "OpenCode • OpenCode GPT-5.4")
-  assert.equal(formatPromptMetaLine("opencode", "github-copilot/gpt-5.4", ""), "OpenCode • GitHub-Copilot GPT-5.4")
+  assert.equal(formatPromptMetaLine("opencode", "opencode/gpt-5.4", ""), "OpenCode • opencode/gpt-5.4")
+  assert.equal(formatPromptMetaLine("opencode", "github-copilot/gpt-5.4", ""), "OpenCode • github-copilot/gpt-5.4")
   assert.equal(formatPromptMetaLine("opencode", "default", "default"), "OpenCode • Default")
 })
 
 test("formatPromptMetaParts assigns bright tones per value", () => {
   assert.deepEqual(formatPromptMetaParts("opencode", "opencode/gpt-5.4", "high"), [
     { kind: "provider", text: "OpenCode", tone: "primary" },
-    { kind: "model", text: "OpenCode GPT-5.4", tone: "secondary" },
+    { kind: "model", text: "opencode/gpt-5.4", tone: "secondary" },
     { kind: "variant", text: "High", tone: "primary" },
   ])
   assert.deepEqual(formatPromptMetaParts("anthropic", "claude-3.7-sonnet", "low"), [
     { kind: "provider", text: "Anthropic", tone: "warning" },
-    { kind: "model", text: "Claude-3.7-Sonnet", tone: "warning" },
+    { kind: "model", text: "claude-3.7-sonnet", tone: "warning" },
     { kind: "variant", text: "Low", tone: "success" },
   ])
 })
@@ -82,7 +82,7 @@ test("derivePromptMetaState formats provider, model, and effort from the current
 
   assert.deepEqual(
     parts.map((part) => part.text),
-    ["OpenCode", "OpenCode GPT-5.4", "High"],
+    ["OpenCode", "opencode/gpt-5.4", "High"],
   )
 })
 
@@ -179,3 +179,9 @@ function catalog(): ProviderModelContextCatalog {
     ],
   }
 }
+
+test("MP-08 / MP-11: status lines preserve native model ids and case", () => {
+  assert.equal(formatPromptMetaLine("claude-p", "claude/claude-haiku-5-5", "low"), "Claude-P • claude-haiku-5-5 • Low")
+  assert.equal(formatPromptMetaLine("codex", "codex/gpt-6-luna", "low"), "Codex • gpt-6-luna • Low")
+  assert.equal(formatPromptMetaLine("opencode", "opencode-go/glm-5.3-flash", "low"), "OpenCode • opencode-go/glm-5.3-flash • Low")
+})

@@ -324,6 +324,21 @@ Normative rules:
 - Chariox-native or third-party agent runtimes should eventually target a canonical daemon-facing agent protocol directly
 - transport unification should happen at the kernel protocol/event model level, not by forcing every provider to mimic the same wire transport internally
 
+### 3.6.1 Regular Room Admission (MP-08 / MP-10 / MP-11, A01)
+
+The kernel authenticates provider-run actors and owns ordinary room-tool
+admission. Immutable spawn lineage permits destructive control of direct
+children only. Workflow definitions and runs retain separate immutable
+creators; observing or running a peer definition grants no edit authority.
+The same typed fence covers local, relayed and provider-native requests and
+rechecks authority after asynchronous waits. The relay remains transport.
+
+The transitional room-tool flag keeps legacy Meta compatibility while PR1
+registers durable dispatch intent before effects. Receipt failures preserve
+already admitted work and identify it to callers; known rejections are
+recorded separately. Obligation settlement, waits and recovery remain the
+following lifecycle PR's responsibility.
+
 ### 3.7 Workspace Coordination
 
 If Chariox is to orchestrate multiple top-level agents without relying on a human to manually clean up merge conflicts, workspace coordination must be kernel-owned.
@@ -810,6 +825,11 @@ event projection. Hosted `Service` identities are denied every other kernel
 request. Cloud and relay remain outside the encrypted provider URL and
 callback payload. This is an official Claude CLI callback bridge, not a Chariox
 OAuth or PKCE implementation.
+MP-08 / MP-10: Codex native TUI always uses the normal kernel-managed provider
+adapter to start its app-server, including local placement. This applies the
+agent-scoped MCP grants and managed account configuration before the native
+TUI connects; a bare shell-launched server cannot substitute for that path.
+Kernel output is projected into the native TUI for local and leased execution.
 Codex/OpenCode use provider protocol proxies where available. Claude Code uses
 a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.
@@ -1079,3 +1099,68 @@ Result:
 
 - consistent remote terminal behavior across platforms
 - freedom to use standard language/tooling per target platform
+
+### MP-08 / MP-10 / MP-11: Room Computer access (local 461, peer 92)
+
+Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission.
+
+Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
+
+### MP-08 / MP-10 / MP-11: protected desktop display (local 474, peer 96)
+
+A human terminal subscribes with `KernelBrowser` Computer `display_subscribe`,
+its current native `surface_id` and generation, video codecs, bounded bitrate,
+and DPR 1 or 2. The kernel returns the native source identity and physical
+geometry alongside the existing numeric controller generation and viewer lease.
+Only this new desktop viewer requires protocol 474. Agent MCP retains bounded,
+on-demand protected observations and cannot subscribe to continuous video.
+
+The owned user-domain desktop uses the shared XDamage/XShm source, video encoder,
+credit window and encrypted CXD1 relay transport. It has no separate streaming
+service. Kernels built with `native-display` read the owned desktop root with the
+kernel's own native worker (`--display-native-worker`, desktop mode: XShm, x264,
+private raster slots and packet files, as for the browser display); others use
+the Python XShm helper. Before any encode, export or client sees a readback it is
+masked against native accessibility snapshots: the helper takes one before and
+one after its read; the native path binds a readback between the last snapshot
+that ended before it began and one requested after it arrived, all agreeing,
+with at most 200 ms unobserved (otherwise it is masked whole or read again).
+Unknown ownership, uncovered or unproved windows, incomplete trees, changed
+trees and registered private state fail closed. Protection changes retire
+capture and encoder state before acknowledgement. This does not assert that the
+live protection matrix has passed.
+
+Audience: the home kernel compares the authenticated caller with the Room's
+owner (owning an attachment is not Room ownership), and carries that decision
+in the authenticated worker request. Audience-aware opens use a distinct wire
+tag so older workers reject them instead of ignoring the audience. Only the
+Room owner's own lease gets
+`audience: owner`; invited members retain the masked default. That owner lease
+reads the desktop as it is (the person may reveal a password to
+themselves), needs no protection proof, and keeps painting while protection is
+uncertain. Every other viewer reads the masked source, and so does everything
+the model receives: agent captures are separate protected observations, and the
+video stream has no agent consumer. A lost oracle or ownership read is rebuilt
+in place from a fresh scope; masked frames are withheld meanwhile, never
+published unmasked, and the source is not closed.
+
+A human actor's Desktop ownership (takeover or human Computer input) lasts while
+one of its desktop video leases is live. Relay clients have no gone event: a
+lease lapses 60 s after the last display request on it, or ends on unsubscribe,
+and the kernel then retires that actor's Desktop ownership before admitting
+other input. Viewers release ownership before closing; a reopen awaits that
+acknowledged release.
+
+Multiple admitted viewers share one protected capture source. Each lease remains
+bound to its authenticated terminal, native generation and controller generation;
+disconnect, expiry and last-viewer close release its resources. Per-credit
+cancellation does not own the encoder lifetime. The existing display attach,
+next and unsubscribe operations address these leases. No relay frame changes
+are introduced; peer 97 remains unused.
+
+The shared presenter accepts desktop pixels only at the exact admitted physical
+geometry, with CSS dimensions divided by the selected DPR. It converts viewer
+coordinates to native coordinates and routes input, takeover and release through
+the existing kernel Computer admission and actor ledger. Browser viewports retain
+their existing path. A Cloud client must expose the native source and use this
+shared presenter before the desktop feature is user-visible.

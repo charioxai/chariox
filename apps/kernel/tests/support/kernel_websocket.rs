@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 pub const UX_RESPONSE_BUDGET: Duration = Duration::from_millis(250);
@@ -43,6 +43,37 @@ pub async fn connect_with_retry(url: &str) -> WebSocketStream<MaybeTlsStream<Tcp
         .await
         .expect("kernel websocket should accept connections");
     socket
+}
+
+// MP-08 / MP-10 / MP-11: shell fixtures enter as real local terminals.
+pub async fn connect_terminal_with_retry(url: &str) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
+    let port = url::Url::parse(url)
+        .expect("terminal fixture URL should parse")
+        .port()
+        .expect("terminal fixture URL should have a port");
+    let path = chariox_kernel::DaemonConfig::default_kernel_local_auth_token_path(port);
+    for _ in 0..40 {
+        match std::fs::read_to_string(&path) {
+            Ok(token) => {
+                let mut request = url
+                    .into_client_request()
+                    .expect("terminal request should build");
+                request.headers_mut().insert(
+                    "authorization",
+                    format!("Bearer {}", token.trim())
+                        .parse()
+                        .expect("product local credential should be a header"),
+                );
+                if let Ok((socket, _)) = connect_async(request).await {
+                    return socket;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => panic!("product local credential should be readable"),
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    panic!("kernel websocket should admit the local terminal");
 }
 
 pub async fn send_request(
@@ -253,23 +284,6 @@ pub async fn wait_for_error_code(
     })
     .await
     .expect("timed out waiting for kernel websocket error code")
-}
-
-pub async fn wait_for_request_completion(
-    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    request_id: &str,
-) -> Value {
-    let deadline = Duration::from_secs(5);
-    timeout(deadline, async {
-        loop {
-            let frame = next_json_frame(socket).await;
-            if frame["type"] == "response" && frame["request_id"] == request_id {
-                return frame;
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for kernel websocket request completion")
 }
 
 pub fn provider_run_id_from_launch_response(frame: &Value) -> String {

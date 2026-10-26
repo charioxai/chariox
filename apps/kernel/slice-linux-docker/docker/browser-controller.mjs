@@ -18,6 +18,11 @@ import {
 import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 
+import {hostErrorLabel} from './kernel-browser-error-label.mjs';
+import {RoomSharedDisplay} from './room-shared-display.mjs';
+import {roomDisplayTiming} from './kernel-browser-timing.mjs';
+import {RoomNativeAccessibility} from "./room-native-accessibility.mjs";
+import {UserDomainRefusal} from "./kernel-browser-refusal.mjs";
 let browserImportModule;
 
 export async function handleBrowserControllerRequest(request, options = {}) {
@@ -27,6 +32,9 @@ export async function handleBrowserControllerRequest(request, options = {}) {
     if (typeof value === "string" && value) browser.protectedValues?.add(value);
   }
   const result = await handleBrowserControllerRequestInner(request, { ...options, browser });
+  // MP-08/MP-11: this adapter returns only shared protected frame packets and
+  // opaque identities. Treating compressed bytes as text corrupts their codec.
+  if(request.method==='room.display'&&result.ok)return result;
   return redactObservation(result, browser.protectedValues ?? []);
 }
 
@@ -46,6 +54,17 @@ async function handleBrowserControllerRequestInner(
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
   try {
+    if (request.method === "room.display") {
+      browser.roomComputer ??= new RoomNativeAccessibility();
+      browser.roomDisplay ??= new RoomSharedDisplay({binding:viewport=>browser.roomComputer.displayBinding(viewport,browser)},
+        {timing:roomDisplayTiming()});
+      try{return successResponse(request.id,await browser.roomDisplay.request(request.params,{signal}));}
+      catch(error){if(error instanceof UserDomainRefusal)throw error;return errorResponse(request.id,'room_display_unavailable',hostErrorLabel(error));}
+    }
+    if (["computer.snapshot", "computer.target_action"].includes(request.method)) {
+      browser.roomComputer ??= new RoomNativeAccessibility();
+      return successResponse(request.id, await browser.roomComputer.request({...request.params,op:request.method.slice(9)},{signal}));
+    }
     if (request.method === "health") {
       return successResponse(request.id, {
         state: "ready",
@@ -68,6 +87,7 @@ async function handleBrowserControllerRequestInner(
         },
       );
     }
+    if (request.method === "browser.notes.observe") return successResponse(request.id, await browser.observeNote(request.params));
     if (request.method === "browser.snapshot") {
       return successResponse(
         request.id,
@@ -119,6 +139,9 @@ async function handleBrowserControllerRequestInner(
     if (request.method === "browser.downloads.cancel") {
       return successResponse(request.id, await browser.cancelDownload(request.params));
     }
+    if (request.method === "browser.artifact") {
+      return successResponse(request.id, await browser.captureArtifact(request.params));
+    }
     if (request.method === "browser.upload") {
       return successResponse(
         request.id,
@@ -134,7 +157,8 @@ async function handleBrowserControllerRequestInner(
     if (request.method.startsWith?.("browser.app.")) {
       const apps = browser.appTabs;
       if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
-      if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls());
+      if (request.method === "browser.app.close") return successResponse(request.id, await apps.close(request.params));
+      if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls(request.params));
       if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
       if (request.method === "browser.app.reload") return successResponse(request.id, await apps.reload(request.params));
       if (request.method === "browser.app.layout") return successResponse(request.id, await apps.layout(request.params));
@@ -162,6 +186,7 @@ async function handleBrowserControllerRequestInner(
       return successResponse(request.id,await recoverProductionBrowserImport({controller:browser,params:request.params}));
     }
     if (request.method === "shutdown") {
+      await browser.roomDisplay?.close();
       await browser.close();
       return successResponse(request.id, {
         state: "stopped",
@@ -175,6 +200,7 @@ async function handleBrowserControllerRequestInner(
       `unknown browser controller method ${JSON.stringify(request.method)}`,
     );
   } catch (error) {
+    if(error instanceof UserDomainRefusal)return errorResponse(request.id,error.code,error.message);
     const code =
       error instanceof BrowserControllerError
         || error instanceof BrowserActionError
@@ -196,7 +222,11 @@ export class BrowserControllerStdioServer {
     processId = process.pid,
     browser = new BrowserCdpClient(),
     resourceInventory = observeBrowserResources,
+    handleRequest = handleBrowserControllerRequest,
+    scheduleRequest = classifyScheduling,
   } = {}) {
+    this.handleRequest = handleRequest;
+    this.scheduleRequest = scheduleRequest;
     this.input = input;
     this.output = output;
     this.processId = processId;
@@ -276,13 +306,13 @@ export class BrowserControllerStdioServer {
         continue;
       }
       let stopAction;
-      const controller = ["browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import"].includes(request.method) ? new AbortController() : null;
+      const controller = ["computer.target_action", "browser.action", "browser.upload", "browser.downloads.configure", "browser.permission", "browser.tab", "browser.navigate", "browser.history", "browser.dialog", "browser.cookies.import", "host.browser", "host.computer", "host.secret"].includes(request.method) ? new AbortController() : null;
       const action = controller ? {controller,method:request.method,response:null,
         stopped:new Promise(resolve => { stopAction = resolve; })} : null;
       if (action) actions.set(request.id, action);
       pendingRequestIds.add(request.id);
       queued += 1;
-      waiting.push({ request, action, stopAction, scheduling: classifyScheduling(request, server.browser) });
+      waiting.push({ request, action, stopAction, scheduling: server.scheduleRequest(request, server.browser) });
       pump();
       if (request.method === "shutdown") {
         lines.close();
@@ -369,7 +399,7 @@ export class BrowserControllerStdioServer {
         // Queued cancellation must terminalize before physical browser dispatch.
         const response = action?.controller.signal.aborted
           ? errorResponse(request.id, "browser_action_cancelled", "browser action was cancelled")
-          : await handleBrowserControllerRequest(request, {
+          : await server.handleRequest(request, {
               processId: server.processId,
               browser: server.browser,
               resourceInventory: server.resourceInventory,
@@ -415,6 +445,7 @@ export class BrowserControllerStdioServer {
 
 function classifyScheduling(request, browser) {
   const method = request?.method;
+  if (method === "room.display") return {kind:"read",targetId:"room-shared-display"};
   if (["browser.app.calls", "browser.app.respond"].includes(method)) return { kind: "bridge" };
   if (method === "browser.reconcile" && browser?.canReconcileConcurrently?.(request.params?.viewport, {
     browserBarVisible: request.params?.browser_bar_visible,
@@ -425,7 +456,7 @@ function classifyScheduling(request, browser) {
   if (["health", "browser.reconcile", "browser.tab", "browser.downloads.configure",
     "browser.downloads.cancel", "browser.permission", "browser.cookies.import",
     "browser.cookies.recover", "shutdown"].includes(method)) return { kind: "barrier" };
-  if (["browser.snapshot", "browser.wait"].includes(method)) return targetScheduling(request, "read");
+  if (["computer.snapshot", "browser.snapshot", "browser.wait", "browser.artifact"].includes(method)) return targetScheduling(request, "read");
   if (["browser.action", "browser.navigate", "browser.history", "browser.dialog", "browser.upload"].includes(method)) {
     return targetScheduling(request, "mutation");
   }

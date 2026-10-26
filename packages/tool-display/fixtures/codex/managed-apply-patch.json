@@ -13,8 +13,14 @@
   "expect": {
     "summary": "Patched patch-target.txt",
     "previewLines": [
-      { "kind": "meta", "text": "@@ -1,1 +1,1 @@" },
-      { "kind": "added", "text": "after" }
+      {
+        "kind": "meta",
+        "text": "@@"
+      },
+      {
+        "kind": "added",
+        "text": "after"
+      }
     ]
   }
 }

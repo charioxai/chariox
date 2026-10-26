@@ -40,6 +40,9 @@ export function createKernelSessionSnapshotController(
     nextProviderRun: RuntimeProviderRun | null,
   ) => {
     const previousSession = deps.getSession()
+    // MP-08 / MP-10 / MP-11 G03: refreshes never select a room. A replay
+    // from the retired subscription can arrive after an explicit selection.
+    if (previousSession.id !== nextSession.id) return
     const projectedSession = deps.projectSession(nextSession, nextProviderRun ?? deps.getProviderRun())
     const mergedSession = {
       ...projectedSession,

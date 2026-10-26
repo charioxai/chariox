@@ -59,3 +59,18 @@ function waitingRoomRow(overrides: Partial<WaitingRoomRow> = {}): WaitingRoomRow
     ...overrides,
   }
 }
+
+test("MP-08/MP-10 long terminal identifiers cannot push cold loading or ready values off screen", () => {
+  for (const width of [80, 140]) {
+    for (const value of ["loading...", "wrflash ready"]) {
+      const rendered = formatWaitingRoomMenuRow(waitingRoomRow({
+        title: "Kernel", titleWidth: 180, value,
+      }), width)
+      assert.match(rendered, new RegExp(value.replaceAll(".", "\\.")))
+    }
+    const terminal = formatWaitingRoomMenuRow(waitingRoomRow({
+      title: "kernel-client:" + "a".repeat(128), titleWidth: 180, value: "CLI",
+    }), width)
+    assert.match(terminal, /\.\.\. +CLI/)
+  }
+})

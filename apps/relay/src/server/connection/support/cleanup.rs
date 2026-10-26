@@ -58,6 +58,7 @@ pub(in crate::server::connection) async fn remove_peer(
         let PendingRequestKind::Subscribe {
             subscription_id,
             client_public_key,
+            ..
         } = &pending.kind
         else {
             return None;

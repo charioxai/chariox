@@ -94,6 +94,12 @@ export function createProviderNamespaceSubmitController(
 
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
+        if (!deps.getAttachment()) {
+          deps.flashFooter("No session attached.", "error")
+          deps.clearPromptText()
+          return true
+        }
+        submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
         await deps.waitForPendingAgentFocusTransition()
         const focusedAgentId = deps.getFocusedAgentId()
         const targetAgentId = resolvePromptSubmissionTargetAgentId({
@@ -106,14 +112,14 @@ export function createProviderNamespaceSubmitController(
         const attachment = deps.getAttachment()
         if (!attachment) {
           deps.flashFooter("No session attached.", "error")
-          deps.clearPromptText()
+          deps.restoreFailedPromptUi(submissionUi)
           return true
         }
         if (!targetAgentId && !focusedAgentId) {
           deps.flashFooter(NO_FOCUS_AGENT_MESSAGE, "error")
+          deps.restoreFailedPromptUi(submissionUi)
           return true
         }
-        submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
         const submission = await deps.submitProviderNamespacePrompt(
           attachment.id,
           targetAgentId,

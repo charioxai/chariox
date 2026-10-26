@@ -11,7 +11,7 @@ import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
 
-test("native TUI runtime banner shows ownership, placement, worktree, and live sync", () => {
+test("native TUI runtime banner shows ownership, placement, and worktree", () => {
   const banner = formatNativeTuiRuntimeBanner({
     surface: "codex native-tui",
     session: session({
@@ -51,7 +51,6 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /slice auth:     ready codex/)
   assert.match(banner, /slice accounts: codex=work \(work@example.com\)/)
   assert.doesNotMatch(banner, /slice next:/)
-  assert.match(banner, /live sync:      tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
   assert.match(banner, /ext runtime:    home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
   assert.match(banner, /ext boundary:   home validates every call; credentials never leave home/)
@@ -216,7 +215,6 @@ test("native TUI runtime banner renders local defaults without inventing state",
   assert.doesNotMatch(banner, /session owner:/)
   assert.match(banner, /worktree:       \/repo/)
   assert.match(banner, /placement:      worker-local/)
-  assert.match(banner, /live sync:      config default/)
   assert.match(banner, /extensions:     none/)
   assert.match(banner, /ext runtime:    worker-local: definition and execution stay on the selected kernel/)
   assert.match(banner, /ext boundary:   definition and execution stay on the selected kernel/)
@@ -428,3 +426,10 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+
+test("MP-08 native TUI projects a local-only carrier indicator outside provider output", () => {
+  const input = { surface: "codex native-tui", session: session({}), agent: agent({}), worktree: "/repo", connectionLabel: "Local connection" }
+  assert.match(formatNativeTuiRuntimeBanner(input), /connection:     Local connection/)
+  assert.doesNotMatch(formatNativeTuiRuntimeBanner({ ...input, connectionLabel: null }), /connection:/)
+})

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
+#[cfg(test)]
 use crate::error::DaemonError;
 use crate::local::{RelayStatus, RemoteMachineRecord};
 use crate::runtime::event_log::{LoggedEvent, ReplayGap, ReplayOutcome};
@@ -15,11 +16,9 @@ use crate::terminal::{
     AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, event_session_id,
-    event_stream_id_for_event, kernel_event_trace_payload, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
-    KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
+    event_is_relevant_to_attachment, event_session_id, event_stream_id_for_event,
+    kernel_event_trace_payload, subscription_event_stream_id, KernelEvent, KernelOutgoingFrame,
+    KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
@@ -54,6 +53,7 @@ pub(super) async fn run_subscription_loop(
         .await;
         return;
     }
+    let mut previous_catalog_revision = None;
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
@@ -70,6 +70,26 @@ pub(super) async fn run_subscription_loop(
                 &close_tx,
                 &close_requested,
                 event,
+                Some(&event_stream_id),
+                Some(&subscription.session_id),
+                Some(&subscription.attachment_id),
+            )
+            .await
+            {
+                break;
+            }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
                 Some(&event_stream_id),
                 Some(&subscription.session_id),
                 Some(&subscription.attachment_id),
@@ -141,6 +161,35 @@ pub(super) async fn run_subscription_loop(
                 workflow_run_updates,
                 snapshot,
             } => {
+                // The same wake can contain an accepted prompt and a large output
+                // backlog. Publish its authoritative projection before that backlog.
+                let projection_events = (*snapshot)
+                    .map(|snapshot| {
+                        let events = crate::runtime_transport::session_projection_events(
+                            &snapshot,
+                            previous_snapshot.as_ref(),
+                            !workflow_run_updates.is_empty(),
+                        );
+                        previous_snapshot = Some(snapshot);
+                        events
+                    })
+                    .unwrap_or_default();
+                for event in projection_events {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        event,
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
                 if !records.is_empty()
                     && !emit_kernel_event(
                         &runtime,
@@ -214,7 +263,6 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
-                let emitted_terminal_workflow_run_update = !workflow_run_updates.is_empty();
                 for workflow_run in workflow_run_updates {
                     if !emit_kernel_event(
                         &runtime,
@@ -234,88 +282,7 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
-                if let Some(snapshot) = *snapshot {
-                    let previous_snapshot_ref = previous_snapshot.as_ref();
-                    // A terminal run update is the authoritative replacement for the
-                    // archived run. Treat it as a projection delta so the fallback full
-                    // hot-session snapshot cannot immediately erase it in the client.
-                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
-                    let mut emit_failed = false;
-                    for event in [
-                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
-                        provider_run_changed_event(&snapshot, previous_snapshot_ref),
-                        session_metadata_changed_event(&snapshot, previous_snapshot_ref),
-                        runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
-                        emitted_projection_delta = true;
-                        if !emit_kernel_event(
-                            &runtime,
-                            &outgoing_tx,
-                            &close_tx,
-                            &close_requested,
-                            event,
-                            Some(&event_stream_id),
-                            Some(&subscription.session_id),
-                            Some(&subscription.attachment_id),
-                        )
-                        .await
-                        {
-                            emit_failed = true;
-                            break;
-                        }
-                    }
-                    if emit_failed {
-                        break;
-                    }
-                    let workflow_run_events =
-                        workflow_run_updated_events(&snapshot, previous_snapshot_ref);
-                    let workflow_run_only =
-                        workflow_run_only_changed(&snapshot, previous_snapshot_ref)
-                            && !workflow_run_events.is_empty();
-                    for event in workflow_run_events {
-                        emitted_projection_delta = true;
-                        if !emit_kernel_event(
-                            &runtime,
-                            &outgoing_tx,
-                            &close_tx,
-                            &close_requested,
-                            event,
-                            Some(&event_stream_id),
-                            Some(&subscription.session_id),
-                            Some(&subscription.attachment_id),
-                        )
-                        .await
-                        {
-                            return;
-                        }
-                    }
-                    previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
-                        continue;
-                    }
-                    if !emit_kernel_event(
-                        &runtime,
-                        &outgoing_tx,
-                        &close_tx,
-                        &close_requested,
-                        KernelEvent::SessionSnapshot {
-                            session: Box::new(snapshot.session),
-                            provider_run: Box::new(snapshot.provider_run),
-                            agent_activity: Box::new(snapshot.agent_activity),
-                            agent_activity_revision: snapshot.metadata.last_event_id,
-                        },
-                        Some(&event_stream_id),
-                        Some(&subscription.session_id),
-                        Some(&subscription.attachment_id),
-                    )
-                    .await
-                    {
-                        break;
-                    }
-                }
+
                 if Instant::now() >= next_heartbeat_at {
                     if !emit_kernel_event(
                         &runtime,
@@ -378,6 +345,7 @@ pub(super) async fn run_subscription_loop(
                     _ = router.wait_for_workflow_design_change_after(
                         workflow_design_change_sequence
                     ) => {}
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                 }
             },
@@ -451,41 +419,22 @@ where
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_run_updates;
 
+#[cfg(test)]
 fn build_session_snapshot(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
     attachment_owner_user_id: &str,
 ) -> Result<SessionSnapshotProjection, DaemonError> {
-    let mut snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
+    let snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
         app,
         session_id,
         0,
         Some(attachment_owner_user_id),
     )?;
-    snapshot.session = snapshot.session.redacted_for_user(attachment_owner_user_id);
-    snapshot.agent_activity.retain(|agent_id, _| {
-        snapshot
-            .session
-            .agents()
-            .iter()
-            .any(|agent| agent.id() == agent_id)
-    });
-    if snapshot
-        .provider_run
-        .as_ref()
-        .and_then(|run| run.agent_instance_id())
-        .is_some_and(|agent_id| {
-            !snapshot
-                .session
-                .agents()
-                .iter()
-                .any(|agent| agent.id() == agent_id)
-        })
-    {
-        snapshot.provider_run = None;
-    }
-    Ok(snapshot)
+    snapshot.redacted_for_user(attachment_owner_user_id, &app.durable_state_store())
 }
 
 pub(crate) enum WatchResult {
@@ -500,6 +449,7 @@ pub(crate) enum WatchResult {
     Unavailable(String),
 }
 
+#[cfg(test)]
 pub(crate) fn watch_subscription_state(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
@@ -549,9 +499,19 @@ pub(crate) fn watch_subscription_state(
     let completions = app
         .terminal_mut()
         .drain_completion_records(session_id, attachment_id);
-    let workflow_run_updates = app
-        .terminal()
-        .drain_workflow_run_updates(session_id, attachment_id);
+    let workflow_run_updates = match workflow_run_updates::drain_visible_workflow_run_updates(
+        app,
+        session_id,
+        attachment_id,
+        &attachment_owner_user_id,
+    ) {
+        Ok(updates) => updates,
+        Err(_) => {
+            return WatchResult::Unavailable(
+                "Workflow history is currently unavailable.".to_string(),
+            );
+        }
+    };
     let workflow_design_events = app.workflow_design_event_store().events_since(
         session_id,
         last_workflow_design_sequence,
@@ -598,6 +558,10 @@ pub(crate) fn watch_subscription_state(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing emit_kernel_event operation signature and explicit context arguments"
+)]
 async fn emit_kernel_event(
     runtime: &Arc<KernelTransportRuntime>,
     outgoing_tx: &KernelOutgoingSender,
@@ -822,8 +786,13 @@ pub(super) async fn emit_replay_gap_snapshot(
                 close_tx,
                 close_requested,
                 KernelEvent::SessionSnapshot {
+                    room_workflows: projection.room_workflows,
                     session: Box::new(projection.session),
-                    provider_run: Box::new(projection.provider_run),
+                    provider_run: Box::new(
+                        projection
+                            .provider_run
+                            .map(crate::provider::PublicProviderRun::from),
+                    ),
                     agent_activity: Box::new(projection.agent_activity),
                     agent_activity_revision: projection.metadata.last_event_id,
                 },
@@ -855,6 +824,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     close_requested: Arc<AtomicBool>,
     mut passkey_prompts: PasskeyPromptFeed,
 ) {
+    let mut previous_catalog_revision = None;
     let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
@@ -881,11 +851,31 @@ async fn run_waiting_room_inventory_subscription_loop(
                 break;
             }
         }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
+        }
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
             let Some(snapshot_result) = await_subscription_work_with_heartbeats(
-                router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID),
+                router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
                 &mut next_heartbeat_at,
                 subscription_heartbeat_interval(),
                 || {
@@ -1057,6 +1047,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                         ),
                     ) => true,
                     // Popups are sent at once, without the inventory coalescing.
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => false,
                     _ = passkey_prompts.changed(&router) => false,
                 }
             },

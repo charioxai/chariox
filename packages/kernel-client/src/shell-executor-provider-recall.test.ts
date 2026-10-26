@@ -101,7 +101,7 @@ test("executeShellCommand stores Claude setup tokens through hidden input", asyn
     agentId: "agent-1",
   })
   const result = await executeShellCommand(
-    parseShellCommand("provider setup-token claude work --replace"),
+    parseShellCommand("provider setup-token claude work --paste --replace"),
     context,
     {
       client: {
@@ -122,7 +122,7 @@ test("executeShellCommand stores Claude setup tokens through hidden input", asyn
   )
 
   assert.equal(result.ok, true)
-  assert.equal(result.message, "claude/work setup token replaced in Chariox Vault")
+  assert.equal(result.message, "claude/work setup token verified and replaced in Chariox Vault")
   assert.deepEqual(result.data, {
     provider: "claude",
     account_profile: "work",
@@ -325,5 +325,36 @@ test("MP-08/MP-11 setup-token run starts kernel capture without asking for the t
   assert.equal(result.ok, true)
   assert.equal(requests.length, 1)
   assert.deepEqual(requests[0], { SetProviderAccountCredential: { provider: "claude", account_profile: "work", value: "", run: true, overwrite: true, session_id: "session-1", agent_id: "agent-1" } })
-  assert.match(result.message ?? "", /login-status capture-1/)
+  assert.match(result.message ?? "", /authorization link/)
+})
+
+test("MP-08/MP-10/MP-11 Claude login starts scoped OAuth without logout or a terminal command", async () => {
+  const requests: Record<string, unknown>[] = []
+  const context = createDefaultShellContext({sessionId: "session-1", agentId: "agent-1"})
+  const result = await executeShellCommand(parseShellCommand("provider login claude"), context, {
+    client: { send: async request => {
+      requests.push(request)
+      return { ProviderLoginStarted: { login: {provider: "claude", account_profile: "default", login_kind: "terminal_setup_token", login_id: "official-login", auth_url: null, verification_url: null, user_code: null} } }
+    } },
+  })
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: "", overwrite: true, session_id: context.sessionId, agent_id: context.agentId, run: true } }])
+  assert.match(result.message ?? "", /authorization link/)
+  assert.doesNotMatch(result.message ?? "", /login-status|login-input/)
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: peer focus must reach kernel cancellation.
+test("stop targets the focused peer instead of the default session agent", async () => {
+  const requests: Record<string, unknown>[] = []
+  const result = await executeShellCommand(parseShellCommand("stop"),
+    createDefaultShellContext({ sessionId: "room", attachmentId: "terminal", agentId: "peer" }), {
+      client: { send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return { PromptCancelled: { cancellation: { prompt: { id: "peer-turn" } } } }
+      } },
+    })
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{ CancelActivePrompt: {
+    session_id: "room", attachment_id: "terminal", target_agent_id: "peer",
+  } }])
 })

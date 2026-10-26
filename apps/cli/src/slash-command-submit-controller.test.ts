@@ -1,12 +1,33 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { createPromptAttachmentController } from "./prompt-attachment-controller.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { sharedShellCommandForSlashCommand } from "./commands.js"
 import {
   createSlashCommandSubmitController,
   type SlashCommandSubmitControllerDeps,
 } from "./slash-command-submit-controller.js"
+
+test("MP-08/MP-10/MP-11 a delayed slice command preserves the next agent spawn draft", async () => {
+  let draft = "/slice start own-slice"
+  let finish!: () => void
+  const pending = new Promise<void>(resolve => { finish = resolve })
+  const harness = createHarness({ attached: true, clearPromptText: () => { draft = "" } })
+  Object.assign(harness.deps, { getPromptText: () => draft })
+  harness.deps.handleSliceCommand = () => pending
+  const controller = createSlashCommandSubmitController(harness.deps)
+  const submitted = controller.submit(draft, { allowSlashCommandSubmission: true })
+  await Promise.resolve()
+  draft = "/agent spawn leased-editor opencode-go/gpt-5.6-luna --slice own-slice"
+  finish()
+  assert.equal((await submitted)?.kind, "slice")
+  assert.equal(draft, "/agent spawn leased-editor opencode-go/gpt-5.6-luna --slice own-slice")
+  // The submitted command is consumed before awaiting its handler; the new draft survives.
+  assert.equal(harness.clearPromptCount(), 1)
+  assert.equal(harness.commandCenterClearCount(), 1)
+  assert.deepEqual(harness.promptHistoryIndexes(), [null])
+})
 
 test("slash command submit records attached history and clears selector-backed command UI", async () => {
   const harness = createHarness({ attached: true })
@@ -202,6 +223,55 @@ test("slash command submit logs attachment command failures", async () => {
   assert.equal(harness.clearPromptCount(), 1)
 })
 
+for (const outcome of ["success", "error", "shared shell"] as const) {
+  test(`a delayed ${outcome} command preserves the next prompt draft and selector`, async () => {
+    const submitted = "/agent account ctx kaissandra.ai"
+    let text = submitted
+    let complete!: () => void
+    let started!: () => void
+    const pending = new Promise<void>(resolve => { complete = resolve })
+    const entered = new Promise<void>(resolve => { started = resolve })
+    const harness = createHarness({ clearPromptText: () => { text = "" } })
+    const handler = async () => {
+      started()
+      await pending
+      if (outcome === "error") throw new Error("account failed")
+    }
+    if (outcome === "shared shell") {
+      harness.deps.handleSharedShellCommand = async () => { await handler(); return true }
+    } else {
+      harness.deps.handleAgentCommand = handler
+    }
+    const controller = createSlashCommandSubmitController(harness.deps)
+    const result = controller.submit(submitted, { allowSlashCommandSubmission: true })
+    await entered
+    // MP-08 / MP-10 / MP-11: main consumes the submitted command before
+    // awaiting the handler. Completion must not clear the later draft again.
+    assert.equal(harness.clearPromptCount(), 1)
+    assert.equal(harness.commandCenterClearCount(), 1)
+    text = "/agent model ctx gpt-6-luna"
+    complete()
+    assert.equal((await result)?.kind, "agent")
+    assert.equal(text, "/agent model ctx gpt-6-luna")
+    assert.equal(harness.clearPromptCount(), 1)
+    assert.equal(harness.commandCenterClearCount(), 1)
+    assert.deepEqual(harness.promptHistoryIndexes(), [null])
+    assert.deepEqual(harness.promptHistoryDrafts(), [null])
+    if (outcome === "error") assert.equal(harness.footerMessages().at(-1)?.message, "account failed")
+  })
+}
+
+test("a completed command clears its unchanged submitted draft", async () => {
+  let text = "/agent account ctx kaissandra.ai"
+  const harness = createHarness({ clearPromptText: () => { text = "" } })
+  await createSlashCommandSubmitController(harness.deps).submit(text, { allowSlashCommandSubmission: true })
+  assert.equal(text, "")
+  assert.equal(harness.clearPromptCount(), 1)
+  assert.equal(harness.commandCenterClearCount(), 1)
+  assert.deepEqual(harness.promptHistoryIndexes(), [null])
+  assert.deepEqual(harness.promptHistoryDrafts(), [null])
+})
+
 function createHarness(options: {
   attached?: boolean
   clearPromptText?: () => void
@@ -317,3 +387,75 @@ test("/approvals clears command UI before opening and bypasses shared shell exec
   assert.equal((await controller.submit("/approvals", { allowSlashCommandSubmission: true }))?.kind, "approvals")
   assert.equal(opened, 1)
 })
+
+// MP-08/MP-10/MP-11: routing must reach the real shared executor, not alias handling.
+test("slash command submit sends workflow notification settings to shared shell", async () => {
+  const harness = createHarness({
+    attached: true,
+    handleSharedShellCommand: async (command) => {
+      harness.sharedCommands().push(command)
+      return true
+    },
+  })
+  const controller = createSlashCommandSubmitController(harness.deps)
+  await controller.submit("/workflow notifications on retained-source", {
+    allowSlashCommandSubmission: true,
+  })
+  assert.deepEqual(harness.sharedCommands(), ["/workflow notifications on retained-source"])
+  assert.deepEqual(harness.calls(), [])
+  assert.equal(harness.clearPromptCount(), 1)
+})
+
+test("attachment commands clear their command text before intake inserts image tokens",async()=>{
+  const events:string[]=[]
+  const harness=createHarness({clearPromptText:()=>events.push("clear"),handleAttachmentCommand:()=>{events.push("image-token")}})
+  await createSlashCommandSubmitController(harness.deps).submit("/attach region tab t 0 0 1 1",{allowSlashCommandSubmission:true})
+  assert.deepEqual(events,["clear","image-token"])
+})
+
+test("MP-08 / MP-11 attachment command preserves its newly inserted file token", async () => {
+  const h = createHarness({ attached: true })
+  let text = "/attach README.md"
+  let pending: import("./prompt-attachment-state.js").PendingPromptAttachment[] = []
+  const attachments = createPromptAttachmentController({
+    getPromptInput: () => null,
+    getPromptText: () => text,
+    setPromptText: value => { text = value },
+    pendingAttachments: () => pending,
+    setPendingAttachments: value => { pending = value },
+    updatePendingAttachments: update => { pending = update(pending) },
+    refreshHighlights() {}, updateSessionChrome() {}, requestRender() {},
+  })
+  const controller = createSlashCommandSubmitController({
+    ...h.deps,
+    clearPromptText: () => { text = ""; attachments.syncFromText(text) },
+    handleAttachmentCommand: async () => {
+      await Promise.resolve()
+      attachments.addStoredFiles([{ id: "readme", url: "file:///public/README.md", mime: "text/markdown", filename: "README.md", kind: "text" }], 0)
+    },
+  })
+  assert.equal((await controller.submit("/attach README.md", { allowSlashCommandSubmission: true }))?.kind, "attachment")
+  assert.equal(text, "[file 1]")
+  assert.equal(pending[0]?.filename, "README.md")
+})
+
+for (const rejects of [false, true]) {
+  test(`MP-08 / MP-10 / MP-11 pending focus preserves the next draft (${rejects ? "error" : "success"})`, async () => {
+    let prompt = "/agent focus reviewer"
+    let settle!: () => void
+    const pending = new Promise<void>(resolve => { settle = resolve })
+    const h = createHarness({ attached: true, clearPromptText: () => { prompt = "" } })
+    h.deps.handleAgentCommand = async () => {
+      await pending
+      if (rejects) throw new Error("focus unavailable")
+    }
+    const controller = createSlashCommandSubmitController(h.deps)
+    const submission = controller.submit(prompt, { allowSlashCommandSubmission: true })
+    prompt = "Read the public README next."
+    settle()
+    await submission
+    assert.equal(prompt, "Read the public README next.")
+    assert.equal(h.clearPromptCount(), 1)
+    assert.equal(h.commandCenterClearCount(), 1)
+  })
+}

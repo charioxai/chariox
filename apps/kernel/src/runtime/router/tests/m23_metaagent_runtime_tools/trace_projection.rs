@@ -450,26 +450,48 @@ async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
+    app.lock()
+        .await
+        .agents()
+        .bind_remote_execution(
+            worker.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-1".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "projection-lease".into(),
+                leased_agent_id: worker.id().into(),
+                active_worker_provider_run_id: Some("remote:worker:provider-run-1".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
     router
         .runtime_state
         .project_relay_remote_runtime_projection(
-            session.id(),
-            worker.id(),
-            "remote:worker:provider-run-1",
-            None,
-            Vec::new(),
-            vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
-                kind: crate::terminal::TerminalOutputKind::ProviderOutput,
-                merge_key: Some("assistant-1".to_string()),
-                bytes: b"remote output".to_vec(),
-            }],
-            Vec::new(),
-            vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                message_id: "assistant-msg-1".to_string(),
-                completed_at_ms: 1234,
-                home_prompt_id: None,
-                provider_termination: None,
-            }],
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session.id().to_string(),
+                home_agent_id: worker.id().to_string(),
+                provider_run_id: "remote:worker:provider-run-1".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-1".to_string()),
+                    bytes: b"remote output".to_vec(),
+                }],
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "assistant-msg-1".to_string(),
+                    completed_at_ms: 1234,
+                    home_prompt_id: None,
+                    provider_termination: None,
+                }],
+            },
         )
         .await
         .expect("runtime projection should succeed");

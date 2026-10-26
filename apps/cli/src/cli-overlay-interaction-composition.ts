@@ -1,4 +1,6 @@
+import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
 import { MouseButton } from "@opentui/core"
+import { createEffect, on } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -90,13 +92,21 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   })
   const hotkeyDebug = hotkeyDebugReporter.report
 
+  const environmentController = createProjectEnvironmentReadController({
+    send: request => deps.client.send(request),
+    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
+    textWidth: () => projectEnvironmentTextWidth(deps.dimensions().width),
+    render: () => dialogOverlayController.render(),
+  })
   const dialogOverlayController = createCliDialogOverlayController<any, any>({
     getOpenState: () => ({
+      environmentOpen: environmentController.isOpen(),
       hotkeysOpen: deps.hotkeysOpen(),
       terminalPairingOpen: deps.terminalPairingOpen(),
       sessionBrowserOpen: deps.sessionBrowserOpen(),
       managedMachineOpen: deps.managedMachineDialogOpen(),
     }),
+    closeEnvironment: environmentController.close,
     getCurrentFocus: deps.currentFocusedRenderable,
     getPromptFocus: () => deps.promptInputRefController.current() as any,
     describeFocus: deps.describeRenderableDebug,
@@ -126,6 +136,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         dimensions: deps.dimensions(),
         mode,
         onDismiss,
+        environmentLines: environmentController.visibleLines(),
         sessions: sessionBrowserSessions(),
         normalizeSessionBrowserIndex,
         sessionBrowserProject: sessionBrowserProjectionController.selectedProject(),
@@ -150,6 +161,11 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
 
   const renderHotkeysOverlay = dialogOverlayController.render
   const closeSessionBrowserDialog = dialogOverlayController.closeSessionBrowser
+
+  createEffect(on(
+    () => deps.sessionBrowserOpen() ? [sessionBrowserSessions(), deps.sessionBrowserIndex()] : null,
+    state => { if (state) renderHotkeysOverlay() },
+  ))
 
   const sessionBrowserController = createSessionBrowserController({
     isOpen: deps.sessionBrowserOpen,
@@ -216,12 +232,14 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: clipboardController.copyPromptSelection,
+    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,
     handleSessionBrowserKey: sessionBrowserController.handleKey,
     handleManagedMachineDialogKey: managedMachineDialogController.handleKey,
+    openProjectEnvironment: environmentController.open,
+    handleProjectEnvironmentKey: environmentController.handleKey,
     openHotkeys: dialogOverlayController.openHotkeys,
     openSessionBrowserDialog: dialogOverlayController.openSessionBrowser,
     openManagedMachineDialog: managedMachineDialogController.open,

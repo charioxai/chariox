@@ -7,7 +7,7 @@ use crate::local::{
 };
 use crate::runtime::workspace_git_changes::workspace_git_file_changes;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, git_command_output, git_reference_resolves, resolve_repo_root,
+    detect_git_branch, find_repo_root, git_command_output, git_reference_resolves,
     workspace_default_compare_ref, workspace_display_label,
 };
 
@@ -23,9 +23,27 @@ pub(crate) fn inspect_workspace_git_overview(
             message: "worktree_id is required".to_string(),
         });
     }
-    let repo_root = resolve_repo_root(worktree_path)?;
+    let Some(repo_root) = find_repo_root(worktree_path)? else {
+        return Ok(WorkspaceGitOverview {
+            workspace_id: workspace_id.to_string(),
+            worktree_id: worktree_id.to_string(),
+            repo_root: None,
+            repo_label: None,
+            branch: None,
+            compare_ref: String::new(),
+            compare_refs: Vec::new(),
+            totals: workspace_git_change_totals(&[]),
+            files: Vec::new(),
+            generated_at_ms: current_unix_ms(),
+        });
+    };
     let repo_root_string = repo_root.display().to_string();
-    let branch = detect_git_branch(worktree_path).ok();
+    let branch = detect_git_branch(worktree_path).ok().or_else(|| {
+        git_command_output(
+            worktree_path,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )
+    });
     let compare_refs = workspace_git_compare_refs(&repo_root_string, branch.as_deref());
     let compare_ref = requested_compare_ref
         .map(str::trim)
@@ -87,7 +105,7 @@ fn workspace_git_compare_refs(
         ("origin/main".to_string(), Some("remote".to_string())),
         ("HEAD".to_string(), Some("uncommitted".to_string())),
     ] {
-        if name != "HEAD" && !git_reference_resolves(repo_root, &name) {
+        if !git_reference_resolves(repo_root, &name) {
             continue;
         }
         push_workspace_git_compare_ref(&mut refs, &mut seen, name, detail, &default_ref);
@@ -117,15 +135,6 @@ fn workspace_git_compare_refs(
             &mut seen,
             name.to_string(),
             detail,
-            &default_ref,
-        );
-    }
-    if refs.is_empty() {
-        push_workspace_git_compare_ref(
-            &mut refs,
-            &mut seen,
-            "HEAD".to_string(),
-            Some("uncommitted".to_string()),
             &default_ref,
         );
     }
@@ -162,6 +171,48 @@ mod tests {
 
     use super::{push_workspace_git_compare_ref, workspace_git_change_totals};
     use crate::local::{WorkspaceGitCompareRef, WorkspaceGitFileChange};
+
+    #[test]
+    fn workspace_git_overview_reports_non_git_missing_and_unborn_workspaces() {
+        let root = std::env::temp_dir().join(format!("chariox-overview-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.to_str().unwrap();
+        let overview = super::inspect_workspace_git_overview(path, path, None).unwrap();
+        assert!(overview.repo_root.is_none());
+        assert!(overview.compare_refs.is_empty());
+        assert!(overview.files.is_empty());
+        let missing = root.join("missing");
+        let missing = missing.to_str().unwrap();
+        assert!(
+            super::inspect_workspace_git_overview(missing, missing, None)
+                .unwrap()
+                .repo_root
+                .is_none()
+        );
+        let output = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        std::fs::write(root.join("README.md"), "new file\n").unwrap();
+        let overview = super::inspect_workspace_git_overview(path, path, None).unwrap();
+        assert!(overview.repo_root.is_some());
+        assert_eq!(overview.branch.as_deref(), Some("main"));
+        assert!(overview.compare_refs.is_empty());
+        assert_eq!(overview.files.len(), 1);
+        assert!(
+            crate::runtime::workspace_worktrees::list_workspace_worktrees(path, None)
+                .unwrap()
+                .is_empty()
+        );
+        let error = crate::runtime::workspace_worktrees::create_waiting_room_worktree(
+            path, None, None, None, None, None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no commits"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn workspace_git_change_totals_sum_saturating_counts() {

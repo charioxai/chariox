@@ -9,7 +9,7 @@ use crate::session::{
 
 use super::controller_browser_projection::*;
 use super::slice_browser::{
-    browser_status_url, ensure_browser_fill_target, ensure_browser_secret_target_is_masked,
+    browser_status_url, ensure_browser_fill_target, ensure_browser_secret_target_is_editable,
     ensure_browser_target_matches_expectations,
 };
 
@@ -57,7 +57,7 @@ impl KernelRuntimeState {
             Err(error) => return Err(error),
         };
         ensure_browser_fill_target(browser, Some(&element_ref))?;
-        ensure_browser_secret_target_is_masked(browser, Some(&element_ref))?;
+        ensure_browser_secret_target_is_editable(browser, Some(&element_ref))?;
         let target_document_url = status
             .structured_snapshot
             .as_ref()
@@ -123,8 +123,15 @@ impl KernelRuntimeState {
         session_id: &str,
         slice_id: &str,
         agent_id: &str,
+        cursor: u64,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        run_controller_browser_status_tool(self, session_id, slice_id, agent_id).await
+        let mut result =
+            run_controller_browser_status_tool(self, session_id, slice_id, agent_id).await?;
+        result.payload = bound_controller_browser_status(
+            result.payload,
+            usize::try_from(cursor).unwrap_or(usize::MAX),
+        );
+        Ok(result)
     }
 
     pub(super) async fn controller_browser_tab_tool_result(
@@ -454,13 +461,23 @@ impl KernelRuntimeState {
             "runtime_tool_slice_browser_upload",
         )
         .await?;
+        let files = if args.artifact_ids.is_empty() {
+            crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(args.files)
+                .map_err(|message| DaemonError::LocalTransport {
+                    operation: "browser_upload",
+                    message,
+                })?
+        } else {
+            if !args.files.is_empty() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "browser_upload",
+                    message: "use files or artifact_ids, not both".into(),
+                });
+            }
+            self.browser_upload_artifacts(session_id, &args.artifact_ids)?
+        };
         let result = self
-            .upload_browser_environment_files_as_agent(
-                session_id,
-                agent_id,
-                &args.field_id,
-                args.files,
-            )
+            .upload_browser_environment_files_as_agent(session_id, agent_id, &args.field_id, files)
             .await?;
         Ok(controller_browser_upload_tool_result(
             slice_id,

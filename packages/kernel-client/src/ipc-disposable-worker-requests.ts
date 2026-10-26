@@ -28,7 +28,8 @@ export async function requireKernelControlCapability(
   const envelope = record(request)
   if (!envelope) return
   const names = Object.keys(envelope)
-  const name = names.find(value => disposableControlRequests.has(value) || value === "KeepManagedEnvironmentRunning")
+  const name = names.find(value => disposableControlRequests.has(value) || value === "KeepManagedEnvironmentRunning"
+    || (value === "CancelActivePrompt" && record(envelope[value])?.expected_prompt_id != null))
   if (!name) return
   if (names.length !== 1) throw new Error("Invalid kernel control request")
   const payload = record(envelope[name])
@@ -49,8 +50,8 @@ export async function requireKernelControlCapability(
   if (expected?.machineId !== undefined && status.machine_id !== expected.machineId) {
     throw new Error("Kernel control capability status belongs to another machine")
   }
-  const capability = name === "KeepManagedEnvironmentRunning"
-    ? "managed_environment_keep_running_v1" : "disposable_worker_control_v1"
+  const capability = name === "CancelActivePrompt" ? "exact_prompt_cancellation_v499"
+    : name === "KeepManagedEnvironmentRunning" ? "managed_environment_keep_running_v1" : "disposable_worker_control_v1"
   if (!Array.isArray(status.capabilities)
     || !status.capabilities.every(value => typeof value === "string")
     || !status.capabilities.includes(capability)) {

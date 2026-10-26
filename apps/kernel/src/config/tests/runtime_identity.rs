@@ -551,7 +551,8 @@ fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
     config
         .persist_cloud_relay_profile(None)
         .expect("explicit Cloud sign-out should persist");
-    assert!(load_persisted_daemon_config().cloud_relay.is_none());
+    assert!(load_persisted_daemon_config().cloud_relay.is_some());
+    assert!(DaemonConfig::load_from_env().cloud_relay.is_none());
 
     unsafe {
         restore_env_var("HOME", old_home);
@@ -572,6 +573,9 @@ fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
 fn relay_url_uses_cloud_profile_tolerates_spacing_and_trailing_slashes() {
     let mut config = DaemonConfig::for_tests();
     config.cloud_relay = Some(PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: "https://cloud.example.test".to_string(),
         email: "user@example.test".to_string(),
         account_id: "account-1".to_string(),
@@ -702,7 +706,7 @@ fn managed_slice_owner_public_key_loads_from_runtime_environment() {
 }
 
 #[test]
-fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
+fn load_from_env_never_imports_cli_cloud_credentials() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     std::env::remove_var("CHARIOX_HOME");
@@ -763,16 +767,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
     }
     let _ = fs::remove_dir_all(temp_home);
 
-    let profile = config
-        .cloud_relay
-        .expect("CLI cloud profile should seed kernel cloud relay");
-    assert_eq!(profile.account_id, "account-1");
-    assert_eq!(profile.machine_id.as_deref(), Some("machine-1"));
-    assert_eq!(
-        profile.machine_credential.as_deref(),
-        Some("machine-credential")
-    );
-    assert_eq!(profile.relay_url, HOSTED_STAGING_RELAY_URL);
+    assert!(config.cloud_relay.is_none());
     assert_eq!(config.relay_url, None);
     assert_eq!(config.relay_token, None);
 }

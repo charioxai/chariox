@@ -1,7 +1,7 @@
 //! OS admission and grant checks for the Unix websocket transport.
 use super::*;
 use crate::runtime::command::KernelCaller;
-use crate::runtime::kernel_access::process::ProcessIdentity;
+use crate::runtime::kernel_access::{process::ProcessIdentity, Refusal};
 
 pub(super) async fn admit_frame(
     connection: &IncomingConnection<'_>,
@@ -31,47 +31,67 @@ pub(super) async fn admit_frame(
         None
     };
     if let Some(turn) = sudo {
-        let allowed = match frame {
+        let verdict = match frame {
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_sudo_request(&turn.entry_id, request)
-                .is_ok(),
+                .map(|_| ())
+                .map_err(|error| Refusal::of(&error)),
             KernelIncomingFrame::Subscribe {
                 session_id,
                 attachment_id,
                 subscription_scope,
                 ..
-            } => {
-                kernel_subscription_scope(subscription_scope.as_deref())
+            } => (session_id == &turn.session_id
+                && runtime_state
+                    .attachment_owner_user_id(attachment_id)
+                    .await
+                    .is_ok_and(|owner| owner == turn.owner_user_id)
+                && kernel_subscription_scope(subscription_scope.as_deref())
                     != KernelSubscriptionScope::WaitingRoomInventory
-                    && router
-                        .session_id_for_attachment_access(attachment_id)
-                        .as_deref()
-                        == Some(session_id.as_str())
-            }
-            KernelIncomingFrame::Unsubscribe { .. } => true,
+                && router
+                    .session_id_for_attachment_access(attachment_id)
+                    .as_deref()
+                    == Some(session_id.as_str()))
+            .then_some(())
+            .ok_or(Refusal::NotCovered),
+            KernelIncomingFrame::Unsubscribe { .. } => Ok(()),
         };
-        if allowed {
-            bound_grant
-                .lock()
-                .expect("bound grant poisoned")
-                .get_or_insert_with(|| turn.entry_id.clone());
-            let mut caller = router
-                .local_command_caller(
-                    KernelCommandSource::LocalIpc,
-                    KernelConnectionClass::KernelAgent,
-                )
-                .await;
-            caller.caller_id = turn.entry_id;
-            caller.user_id = Some(turn.owner_user_id);
-            return Ok(caller);
+        if let Err(refusal) = verdict {
+            // Refused sudo operations must not fall back to an external grant or
+            // raise an access popup through the unauthenticated admission path.
+            deny_frame(
+                runtime,
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                frame,
+                refusal,
+            );
+            return Err(());
         }
-        // Refused sudo operations must not fall back to an external grant or
-        // raise an access popup through the unauthenticated admission path.
-        deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
-        return Err(());
+        bound_grant
+            .lock()
+            .expect("bound grant poisoned")
+            .get_or_insert_with(|| turn.entry_id.clone());
+        let mut caller = router
+            .local_command_caller(
+                KernelCommandSource::LocalIpc,
+                KernelConnectionClass::KernelAgent,
+            )
+            .await;
+        caller.caller_id = turn.entry_id;
+        caller.user_id = Some(turn.owner_user_id);
+        return Ok(caller);
     }
     if bound.as_deref().is_some_and(|id| id.starts_with("sudo:")) {
-        deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
+        deny_frame(
+            runtime,
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            frame,
+            Refusal::Ended,
+        );
         return Err(());
     }
     if let KernelIncomingFrame::Request {
@@ -80,6 +100,23 @@ pub(super) async fn admit_frame(
         ..
     } = frame
     {
+        let covered = !runtime_state.access_grants_for(peer).is_empty();
+        if bound.is_some() || covered {
+            let refusal = if covered {
+                Refusal::AlreadyGranted
+            } else {
+                Refusal::Ended
+            };
+            deny_frame(
+                runtime,
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                frame,
+                refusal,
+            );
+            return Err(());
+        }
         let runtime_state = runtime_state.clone();
         let request_id = request_id.clone();
         let request = request.clone();
@@ -137,7 +174,13 @@ pub(super) async fn admit_frame(
                         None,
                     )
                 }
-                Err(e) => (None, Some(map_kernel_error(&e))),
+                Err(e) => (
+                    None,
+                    Some(match Refusal::exact(&e) {
+                        Some(refusal) => refusal.transport_error(),
+                        None => map_kernel_error(&e),
+                    }),
+                ),
             };
             let _ = try_send_outgoing_frame(
                 &outgoing_tx,
@@ -155,62 +198,54 @@ pub(super) async fn admit_frame(
         });
         return Err(());
     }
-    let (grant, allowed) = {
+    let (grant, verdict) = {
         let mut binding = bound_grant.lock().expect("bound grant poisoned");
         let mut candidates = runtime_state.access_grants_for(peer);
-        let in_session = |session: &str| match frame {
-            KernelIncomingFrame::Request { request, .. } => {
-                runtime_state.external_request_in_session(session, request)
-            }
-            KernelIncomingFrame::Subscribe { session_id, .. } => session_id == session,
-            KernelIncomingFrame::Unsubscribe { .. } => true,
-        };
         candidates.retain(|grant| {
             binding
                 .as_ref()
                 .is_none_or(|id| id == &grant.summary.grant_id)
         });
-        let grant = candidates
-            .iter()
-            .find(|grant| in_session(&grant.summary.session_id))
-            // Keep a matching identity for policy refusal and its sampled audit,
-            // even when the request names no authorized session.
-            .or_else(|| candidates.first())
-            .cloned();
-        let allowed = grant.as_ref().is_some_and(|grant| match frame {
-            KernelIncomingFrame::Request { request, .. } => runtime_state
-                .authorize_external_request(&grant.summary.grant_id, request)
-                .is_ok(),
-            KernelIncomingFrame::Subscribe {
-                session_id,
-                attachment_id,
-                subscription_scope,
-                ..
-            } => {
-                session_id == &grant.summary.session_id
-                    && kernel_subscription_scope(subscription_scope.as_deref())
-                        != KernelSubscriptionScope::WaitingRoomInventory
-                    && router
+        let grant = candidates.first().cloned();
+        let verdict = match &grant {
+            // A socket stays bound to its first grant: once that is gone, so is access.
+            None if binding.is_some() => Err(Refusal::Ended),
+            None if runtime_state.access_ended_for(peer) => Err(Refusal::Ended),
+            None => Err(Refusal::NotCovered),
+            Some(grant) => match frame {
+                KernelIncomingFrame::Request { request, .. } => runtime_state
+                    .authorize_external_request(&grant.summary.grant_id, request)
+                    .map_err(|error| Refusal::of(&error)),
+                KernelIncomingFrame::Subscribe {
+                    session_id,
+                    attachment_id,
+                    subscription_scope,
+                    ..
+                } => (kernel_subscription_scope(subscription_scope.as_deref())
+                    == KernelSubscriptionScope::WaitingRoomInventory
+                    || router
                         .session_id_for_attachment_access(attachment_id)
                         .as_deref()
-                        == Some(session_id.as_str())
-            }
-            KernelIncomingFrame::Unsubscribe { .. } => true,
-        });
-        if allowed {
-            binding.get_or_insert_with(|| {
-                grant
-                    .as_ref()
-                    .expect("allowed grant")
-                    .summary
-                    .grant_id
-                    .clone()
-            });
+                        == Some(session_id.as_str()))
+                .then_some(())
+                .ok_or(Refusal::NotCovered),
+                KernelIncomingFrame::Unsubscribe { .. } => Ok(()),
+            },
+        };
+        if let (Some(grant), Ok(())) = (&grant, &verdict) {
+            binding.get_or_insert_with(|| grant.summary.grant_id.clone());
         }
-        (grant, allowed)
+        (grant, verdict)
     };
-    if !allowed {
-        deny_frame(runtime, outgoing_tx, close_tx, close_requested, frame);
+    if let Err(refusal) = verdict {
+        deny_frame(
+            runtime,
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            frame,
+            refusal,
+        );
         return Err(());
     }
     let grant = grant.expect("allowed grant");
@@ -231,6 +266,7 @@ fn deny_frame(
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
     frame: &KernelIncomingFrame,
+    refusal: Refusal,
 ) {
     let request_id = match frame {
         KernelIncomingFrame::Request { request_id, .. }
@@ -246,8 +282,8 @@ fn deny_frame(
             request_id,
             response: Box::new(None),
             error: Some(KernelTransportError {
-                code: "kernel_access_denied".into(),
-                message: "Unix peer has no live authority for this request".into(),
+                code: refusal.code().into(),
+                message: refusal.message().into(),
                 retryable: false,
             }),
         },

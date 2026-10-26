@@ -507,7 +507,9 @@ async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
     let target_attachment_id = attachment.id().to_string();
     let machine_id = app.config_projection_store().snapshot().host_machine_id;
     let app = Arc::new(Mutex::new(app));
-    let runtime = owned_runtime_state(&app).await;
+    let runtime = owned_runtime_state(&app).await.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority("source-kernel"),
+    );
 
     let (_, link) = runtime
         .create_workspace_link(
@@ -521,7 +523,7 @@ async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
             &target_session_id,
             link.link_id(),
             "target-user".to_string(),
-            machine_id,
+            machine_id.clone(),
             "target-kernel".to_string(),
             target.to_string_lossy().to_string(),
             crate::git_observer::workspace_live_sync_git_branch(&target),
@@ -529,6 +531,18 @@ async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
         )
         .expect("target worktree should attach");
 
+    runtime
+        .attach_workspace_link(
+            &target_session_id,
+            link.link_id(),
+            "source-user".into(),
+            "source-machine".into(),
+            "source-kernel".into(),
+            "/tmp/source-worktree".into(),
+            None,
+            None,
+        )
+        .unwrap();
     let change = workspace_live_sync_text_change(
         "home-session",
         "source-agent",
@@ -546,7 +560,7 @@ async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
             source_agent_id: "source-agent".to_string(),
             source_worktree_path: "/tmp/source-worktree".to_string(),
             target_user_id: "target-user".to_string(),
-            target_machine_id: "target-machine".to_string(),
+            target_machine_id: machine_id,
             target_kernel_id: "target-kernel".to_string(),
             target_repo_root: target.to_string_lossy().to_string(),
         },
@@ -583,6 +597,17 @@ async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
 
 #[tokio::test]
 async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider_completion() {
+    assert_pending_git_snapshot_finalizes_canonical_turn(false).await;
+}
+
+// MP-08/MP-10/MP-11: steering is input to the existing turn. A separate
+// observation must not replace that turn's exact completion identity.
+#[tokio::test]
+async fn steering_git_observation_preserves_canonical_completed_prompt() {
+    assert_pending_git_snapshot_finalizes_canonical_turn(true).await;
+}
+
+async fn assert_pending_git_snapshot_finalizes_canonical_turn(steering: bool) {
     let root = std::env::temp_dir().join(format!(
         "chariox-git-turn-finalizer-{}-{}",
         std::process::id(),
@@ -640,7 +665,48 @@ async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider
     .expect("pre-turn snapshot should be captured");
     runtime.owned.git_turn_snapshots.insert(before);
 
+    if steering {
+        runtime
+            .observe_git_before_prompt_dispatch(
+                &crate::app::KernelPromptDispatch {
+                    session_id: session.id().to_string(),
+                    provider_run_id: provider_run.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    prompt_id: "steering-input".to_string(),
+                    target_active_prompt_id: Some("prompt-1".to_string()),
+                    source_attachment_id: "attachment-1".to_string(),
+                    prompt: "refine the existing change".to_string(),
+                    hidden_system_context: String::new(),
+                    attachments: Vec::new(),
+                    prompt_origin: crate::session::PromptOrigin::Chariox,
+                    external_provider: None,
+                    external_provider_session_id: None,
+                    external_provider_turn_id: None,
+                    steering: true,
+                },
+                &provider_run,
+            )
+            .await;
+    }
+
     std::fs::write(root.join("src/lib.rs"), "seed\nagent change\n").expect("source should change");
+
+    if steering {
+        let completed = crate::session::PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            agent.id(),
+            "edit src/lib.rs",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .observe_git_after_completed_prompt(
+                Some(session.id()),
+                Some(provider_run.id()),
+                &completed,
+            )
+            .await;
+    }
 
     runtime
         .observe_git_after_provider_activity_if_pending(provider_run.id())
@@ -900,4 +966,116 @@ fn run_git(cwd: &std::path::Path, args: &[&str]) {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[tokio::test]
+async fn mp11_foreign_peer_workspace_apply_has_no_side_effects() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-forwarded-workspace-live-sync-notice-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let target = root.join("target");
+    init_repo_with_file(&target, "src/lib.rs", "seed\n");
+
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.daemon_id = "target-kernel".to_string();
+    let mut app = crate::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            target.to_string_lossy(),
+            target.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "target-terminal-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("terminal attachment should attach");
+    let target_session_id = session.id().to_string();
+    let target_attachment_id = attachment.id().to_string();
+    let machine_id = app.config_projection_store().snapshot().host_machine_id;
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority("foreign-kernel"),
+    );
+
+    let (_, link) = runtime
+        .create_workspace_link(
+            &target_session_id,
+            "shared-remote".to_string(),
+            "target-user".to_string(),
+        )
+        .expect("workspace link should be created");
+    runtime
+        .attach_workspace_link(
+            &target_session_id,
+            link.link_id(),
+            "target-user".to_string(),
+            machine_id.clone(),
+            "target-kernel".to_string(),
+            target.to_string_lossy().to_string(),
+            crate::git_observer::workspace_live_sync_git_branch(&target),
+            crate::git_observer::workspace_live_sync_repo_fingerprint(&target),
+        )
+        .expect("target worktree should attach");
+
+    runtime
+        .attach_workspace_link(
+            &target_session_id,
+            link.link_id(),
+            "source-user".into(),
+            "source-machine".into(),
+            "source-kernel".into(),
+            "/tmp/source-worktree".into(),
+            None,
+            None,
+        )
+        .unwrap();
+    let change = workspace_live_sync_text_change(
+        "home-session",
+        "source-agent",
+        "source-provider-run",
+        "source-prompt",
+        std::path::Path::new("/tmp/source-worktree"),
+        "seed\n",
+        "seed\nfrom source\n",
+    );
+    let result = runtime.apply_forwarded_workspace_live_sync_change(
+        crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
+            home_session_id: "home-session".to_string(),
+            link_id: link.link_id().to_string(),
+            link_name: link.name().to_string(),
+            source_agent_id: "source-agent".to_string(),
+            source_worktree_path: "/tmp/source-worktree".to_string(),
+            target_user_id: "target-user".to_string(),
+            target_machine_id: machine_id,
+            target_kernel_id: "target-kernel".to_string(),
+            target_repo_root: target.to_string_lossy().to_string(),
+        },
+        change,
+    );
+
+    assert_ne!(
+        result.path_results[0].status,
+        crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("src/lib.rs")).expect("target file should be readable"),
+        "seed\n"
+    );
+    let notices = runtime
+        .drain_notice_records(&target_session_id, &target_attachment_id)
+        .await;
+    assert!(notices.is_empty(), "foreign peer produced notices");
+    assert!(
+        runtime
+            .workspace_live_sync_target_results("home-session")
+            .is_empty(),
+        "foreign peer mutated the journal"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
 }

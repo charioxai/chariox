@@ -169,9 +169,11 @@ test("mergeRelayCloudProfile stores and clears the cloud relay profile", () => {
 })
 
 test("saveSessionPromptState preserves prompt history across queued draft-only writes", async () => {
+  const previousExplicitHome = process.env.CHARIOX_HOME
   const previousConfigHome = process.env.XDG_CONFIG_HOME
   const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "chariox-preferences-"))
   process.env.XDG_CONFIG_HOME = tempConfigHome
+  process.env.CHARIOX_HOME = tempConfigHome
 
   try {
     await Promise.all([
@@ -185,10 +187,12 @@ test("saveSessionPromptState preserves prompt history across queued draft-only w
     ])
 
     const current = await loadPreferences()
-    assert.equal(preferencesPath(), path.join(tempConfigHome, "chariox", "config.json"))
+    assert.equal(preferencesPath(), path.join(tempConfigHome, "config.json"))
     assert.deepEqual(sessionPromptHistoryEntries(current, "session-1"), ["prompt 1", "prompt 2"])
     assert.equal(sessionPromptDraftEntry(current, "session-1"), "draft prompt")
   } finally {
+    if (previousExplicitHome === undefined) delete process.env.CHARIOX_HOME
+    else process.env.CHARIOX_HOME = previousExplicitHome
     if (previousConfigHome === undefined) {
       delete process.env.XDG_CONFIG_HOME
     } else {
@@ -199,9 +203,11 @@ test("saveSessionPromptState preserves prompt history across queued draft-only w
 })
 
 test("saveRelayCloudProfile persists the configured cloud relay profile", async () => {
+  const previousExplicitHome = process.env.CHARIOX_HOME
   const previousConfigHome = process.env.XDG_CONFIG_HOME
   const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "chariox-preferences-"))
   process.env.XDG_CONFIG_HOME = tempConfigHome
+  process.env.CHARIOX_HOME = tempConfigHome
 
   try {
     await saveRelayCloudProfile({
@@ -219,11 +225,40 @@ test("saveRelayCloudProfile persists the configured cloud relay profile", async 
     const current = await loadPreferences()
     assert.equal(relayCloudProfile(current)?.relayUrl, "wss://relay.example")
   } finally {
+    if (previousExplicitHome === undefined) delete process.env.CHARIOX_HOME
+    else process.env.CHARIOX_HOME = previousExplicitHome
     if (previousConfigHome === undefined) {
       delete process.env.XDG_CONFIG_HOME
     } else {
       process.env.XDG_CONFIG_HOME = previousConfigHome
     }
     await rm(tempConfigHome, { recursive: true, force: true })
+  }
+})
+
+test("explicit CLI profiles isolate keys/preferences and scrub predecessor secrets at 0600", async () => {
+  const { readFile, writeFile, stat } = await import("node:fs/promises")
+  const { defaultCliRelayIdentityPath } = await import("./cli-relay-identity-store.js")
+  const previous = process.env.CHARIOX_HOME
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-profile-boundary-"))
+  try {
+    process.env.CHARIOX_HOME = root
+    assert.equal(preferencesPath(), path.join(root, "config.json"))
+    assert.equal(defaultCliRelayIdentityPath(), path.join(root, "relay", "cli-identity-v1.json"))
+    const privatePredecessor = { apiUrl: "https://cloud.example.test", email: "fixture@example.test", accountId: "account-a", userId: "owner-a", accountSlug: "a", realmId: "realm-a", issuerId: "issuer-a", relayUrl: "wss://relay.example.test", machineCredential: "synthetic-predecessor-machine", cloudSessionToken: "synthetic-predecessor-human", kernelCredential: "synthetic-kernel-grant", relayToken: "synthetic-kernel-token" }
+    await writeFile(preferencesPath(), JSON.stringify({relay: {cloud: privatePredecessor}}), {mode: 0o644})
+    const loaded = await loadPreferences()
+    assert.equal(loaded.relay?.cloud?.accountId, "account-a")
+    const stored = await readFile(preferencesPath(), "utf8")
+    assert.ok(!stored.includes("synthetic"))
+    assert.equal((await stat(preferencesPath())).mode & 0o777, 0o600)
+    await saveRelayCloudProfile(privatePredecessor)
+    assert.ok(!(await readFile(preferencesPath(), "utf8")).includes("synthetic"))
+    process.env.CHARIOX_HOME = path.join(root, "second-profile")
+    assert.equal((await loadPreferences()).relay, undefined)
+  } finally {
+    if (previous === undefined) delete process.env.CHARIOX_HOME
+    else process.env.CHARIOX_HOME = previous
+    await rm(root, {recursive: true, force: true})
   }
 })

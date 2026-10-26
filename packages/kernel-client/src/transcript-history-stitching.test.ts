@@ -370,7 +370,7 @@ test("stitchPrependedTranscriptHistory rebuilds structured tool fragments", () =
 
   assert.equal(stitched.length, 1)
   assert.equal(stitched[0]?.mergeKey, "tool-1")
-  assert.match(stitched[0]?.text ?? "", /\*\*bash\*\*/)
+  assert.match(stitched[0]?.text ?? "", /\*\*(Ran|Running) pnpm test\*\*/)
   assert.match(stitched[0]?.text ?? "", /pnpm test/)
   assert.equal(stitched[0]?.sourceText, toolPayload)
 })

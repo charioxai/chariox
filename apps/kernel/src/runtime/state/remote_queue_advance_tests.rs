@@ -22,9 +22,20 @@ struct QueueFixture {
 }
 
 async fn queue_fixture(remote: bool, local_provider_run: bool) -> QueueFixture {
-    let mut app =
-        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
-            .expect("authenticated daemon fixture should bootstrap");
+    queue_fixture_with_provider(remote, local_provider_run, None).await
+}
+
+async fn queue_fixture_with_provider(
+    remote: bool,
+    local_provider_run: bool,
+    provider: Option<&str>,
+) -> QueueFixture {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    if provider.is_some() {
+        config.room_agent_tools = true;
+    }
+    let mut app = crate::test_support::bootstrap_authenticated_app(config)
+        .expect("authenticated daemon fixture should bootstrap");
     let worktree = crate::test_support::TestWorktree::new("quiescence-queue-advance");
     let (session, agent) = KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -62,23 +73,46 @@ async fn queue_fixture(remote: bool, local_provider_run: bool) -> QueueFixture {
 
     let provider_run_id = if local_provider_run {
         // The dev-stub adapter creates an in-memory run record and starts no provider process.
+        let request = LaunchProviderRequest::new(
+            &session_id,
+            "dev-stub",
+            provider.unwrap_or(agent.provider()),
+            "default",
+            "queue-advance-test-model",
+        )
+        .with_agent_id(&agent_id);
         let started = app
             .providers()
-            .start_run_provider_only(
-                LaunchProviderRequest::new(
-                    &session_id,
-                    "dev-stub",
-                    agent.provider(),
-                    "default",
-                    "queue-advance-test-model",
-                )
-                .with_agent_id(&agent_id),
-            )
+            .start_run_provider_only(request.clone())
             .expect("test provider run should be created");
-        let run = app
+        let mut run = app
             .providers()
             .mark_run_running(started.run().id())
             .expect("test provider run should become running");
+        if provider.is_some() {
+            // The App dispatcher performs real liveness reconciliation. An in-memory
+            // managed run without a PTY is correctly retired before submission.
+            // Match provider_output's external-endpoint/manual-poll fixture instead.
+            run = crate::provider::RuntimeProviderRun::new(
+                run.id(),
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::External,
+                    process_label: "app-evidence-fixture".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: vec![],
+                    pty_env: Default::default(),
+                    pty_env_remove: vec![],
+                    working_directory: None,
+                    structured_endpoint: Some("test-app-evidence".into()),
+                },
+            );
+            run.mark_running();
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.providers_mut().use_manual_output_polls_for_tests();
+            app.update_provider_run_projection(run.clone());
+        }
         app.sessions_mut()
             .set_active_provider_run(&session_id, Some(run.id().to_string()))
             .expect("session should reference the test provider run");
@@ -349,4 +383,114 @@ async fn local_queue_activation_and_dispatch_transfer_the_activity_guard_once() 
     );
     assert_active_prompt(&fixture, &dispatched_id);
     assert_busy_activity_is_durable(&fixture.runtime);
+}
+
+// MP-08/MP-09/MP-10/MP-11 review1016 P3: production App queue activation + dispatcher.
+// Skip provider-activation policy: the dev-stub run deliberately has no real Project launch.
+async fn assert_app_dispatch_private_collector(prebind_like_runtime: bool) {
+    let fixture = queue_fixture_with_provider(false, true, Some("slow-structured")).await;
+    submit_prompt(&fixture, "old work");
+    submit_prompt(&fixture, "queued work");
+    cancel_active(&fixture);
+    let run = fixture.provider_run_id.as_deref().unwrap();
+    let next = {
+        let mut app = fixture.runtime.app.lock().await;
+        let next = app
+            .prompt_owner_activate_next_queued_prompt_for_dispatch(
+                &fixture.session_id,
+                &fixture.agent_id,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        if prebind_like_runtime {
+            fixture
+                .runtime
+                .owned
+                .durable_state_store
+                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                    owner: app
+                        .sessions()
+                        .get_session(&fixture.session_id)
+                        .unwrap()
+                        .owner_user_id()
+                        .into(),
+                    room: fixture.session_id.clone(),
+                    agent: fixture.agent_id.clone(),
+                    prompt: next.id().into(),
+                    run: Some(run.into()),
+                    now: crate::session::unix_epoch_ms(),
+                })
+                .unwrap();
+        }
+        crate::app::ProviderPromptDispatcher::new(&mut app)
+            .dispatch_prompt_to_provider(
+                &fixture.session_id,
+                run,
+                next.id(),
+                &fixture.attachment_id,
+                next.prompt(),
+                next.hidden_system_context(),
+                next.attachments(),
+            )
+            .expect("fixture must reach production App provider dispatch");
+        assert_eq!(
+            app.providers().get_run(run).unwrap().state(),
+            crate::provider::ProviderRunState::Running,
+            "fixture liveness must remain valid through the dispatcher"
+        );
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(&fixture.session_id, &fixture.agent_id)
+                .unwrap()
+                .as_ref()
+                .map(|prompt| prompt.id()),
+            Some(next.id()),
+            "fixture must preserve the active prompt through provider submission"
+        );
+        next
+    };
+    let second_runtime =
+        CommandRouter::with_interactive_capacity(Arc::clone(&fixture.runtime.app), 1)
+            .runtime_state();
+    let cache = &second_runtime.owned.private_work_results;
+    let tasks = second_runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
+        .unwrap();
+    assert!(tasks.iter().any(|task| task.prompt_id == next.id()
+        && task.provider_run_id.as_deref() == Some(run)),
+        "MP-11: App queued task must bind provider before private output collection");
+    second_runtime.owned.collect_private_assessment(
+        &fixture.session_id,
+        &super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+            sequence: None,
+            provider_run_id: run.into(),
+            agent_id: Some(fixture.agent_id.clone()),
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: None,
+            bytes: b"complete result".to_vec(),
+        },
+    );
+    cache.seal_work(&fixture.session_id, &fixture.agent_id, next.id(), run);
+    assert_eq!(
+        fixture
+            .runtime
+            .owned
+            .private_work_results
+            .take(&fixture.session_id, &fixture.agent_id, next.id(), run)
+            .expect(
+                "MP-11: App dispatch must begin the same private evidence cell as runtime dispatch"
+            )
+            .as_slice(),
+        b"complete result"
+    );
+}
+#[tokio::test]
+async fn review1016_app_dispatch_arms_private_collector() {
+    assert_app_dispatch_private_collector(true).await;
+}
+#[tokio::test]
+async fn review1016_app_dispatch_binds_queued_task() {
+    assert_app_dispatch_private_collector(false).await;
 }

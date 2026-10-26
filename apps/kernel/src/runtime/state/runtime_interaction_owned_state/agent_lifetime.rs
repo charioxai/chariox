@@ -1,4 +1,4 @@
-//! Agent decisions belong to the turn that raised them, without a wall-clock cutoff.
+//! Agent decisions belong to their emitting turn or live provider run.
 use super::*;
 
 impl KernelRuntimeOwnedState {
@@ -65,6 +65,37 @@ impl KernelRuntimeOwnedState {
             || remote.execution_lease_id != worker.execution_lease_id
         {
             return false;
+        }
+        // MP-08 / MP-10 / MP-11: An idle run remains projected after the
+        // dispatch binding clears. Its current projection is authoritative;
+        // a replacement run must never inherit the old review.
+        if remote.active_worker_provider_run_id.is_none() && lifetime.prompt_id.is_none() {
+            if let Some(run) = self
+                .provider_store
+                .get_run_for_agent(session.id(), &lifetime.agent_id)
+                .or_else(|| {
+                    self.provider_store
+                        .get_latest_run_for_agent(session.id(), &lifetime.agent_id)
+                })
+            {
+                let expected = crate::provider::projected_leased_provider_run_id(
+                    &worker.leased_agent_id,
+                    &worker.provider_run_id,
+                );
+                // MP-08 / MP-10 / MP-11: An unobserved provider startup
+                // approval may arrive before its launch ACK. History from a
+                // different run is not evidence that this launch has ended.
+                if run.id() == expected || !worker.unobserved_startup_permission() {
+                    let live = run.id() == expected
+                        && run.state() == crate::provider::ProviderRunState::Running;
+                    if live {
+                        worker
+                            .binding_observed
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    return live;
+                }
+            }
         }
         match remote.active_worker_provider_run_id.as_deref() {
             Some(id) if id == worker.provider_run_id => {
@@ -163,6 +194,24 @@ impl KernelRuntimeOwnedState {
                 &worker.leased_agent_id,
                 &worker.provider_run_id,
             );
+            // MP-08 / MP-10 / MP-11: An idle review cannot outlive replacement
+            // even if the separate active-dispatch binding still names the old run.
+            if lifetime.prompt_id.is_none()
+                && !worker.unobserved_startup_permission()
+                && self
+                    .provider_store
+                    .get_run_for_agent(session.id(), &lifetime.agent_id)
+                    .or_else(|| {
+                        self.provider_store
+                            .get_latest_run_for_agent(session.id(), &lifetime.agent_id)
+                    })
+                    .is_some_and(|run| {
+                        run.id() != projected_id
+                            || run.state() != crate::provider::ProviderRunState::Running
+                    })
+            {
+                return false;
+            }
             // No local worker run exists on the home kernel. If a projection is
             // present, it is authoritative for provider exit even before a sweep.
             if self
@@ -293,5 +342,14 @@ impl KernelRuntimeState {
     ) -> Option<crate::session::NativeInteractionOrigin> {
         self.owned
             .capture_native_interaction_origin(session_id, agent_id, run_id)
+    }
+}
+
+impl super::super::pending_runtime_state::PendingWorkerInteractionLifetime {
+    fn unobserved_startup_permission(&self) -> bool {
+        self.startup_permission
+            && !self
+                .binding_observed
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 }

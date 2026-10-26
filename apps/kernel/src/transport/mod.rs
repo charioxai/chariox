@@ -1,5 +1,6 @@
 pub(crate) mod event_delivery_client;
 pub(crate) mod flow_control;
+pub(crate) mod kernel_browser_display;
 pub(crate) mod kernel_protocol;
 pub(crate) mod listener_admission;
 pub(crate) mod mcp_server;
@@ -8,6 +9,7 @@ pub(crate) mod relay_client;
 pub(crate) mod relay_crypto;
 pub(crate) mod relay_discovery;
 pub(crate) mod relay_peer;
+mod relay_socket_connect;
 pub(crate) mod request_decode_error;
 pub(crate) mod room_browser_controller;
 pub(crate) mod runtime_tools;
@@ -92,3 +94,5 @@ impl TransportService {
         })
     }
 }
+
+pub(crate) mod room_shared_display;

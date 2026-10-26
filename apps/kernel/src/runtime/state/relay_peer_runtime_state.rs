@@ -2,17 +2,19 @@ use crate::app::RemoteLeaseRuntime;
 use crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptPhase;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
-use crate::runtime::projection::SessionSnapshotProjection;
-use crate::runtime_transport::WatchResult;
 use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayProjectedCompletion,
-    RelayProjectedOutputChunk, RelayProjectedPrompt, RelayPromptAttachment, RemoteGitObservation,
-    RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext, RemoteSkillMaterialization,
-    RemoteSkillSyncContext, RequiredRemoteMcp, REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayPromptAttachment,
+    RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext,
+    RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
+    REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
 };
 
 use super::*;
+
+#[cfg(test)]
+#[path = "relay_peer_runtime_state/provider_account_tests.rs"]
+mod remote_provider_account_tests;
 
 impl KernelRuntimeState {
     async fn update_relay_leased_prompt_admission_receipt(
@@ -25,7 +27,9 @@ impl KernelRuntimeState {
         let leased_agent_id = leased_agent_id.to_string();
         let home_prompt_id = home_prompt_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).update_leased_prompt_receipt(
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.begin_leased_prompt_receipt(&leased_agent_id, &home_prompt_id)?;
+            runtime.update_leased_prompt_receipt(
                 &leased_agent_id,
                 &home_prompt_id,
                 phase,
@@ -104,73 +108,6 @@ impl KernelRuntimeState {
             )
         })
         .await
-    }
-
-    pub(crate) async fn watch_relay_subscription_state(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        should_check_snapshot: bool,
-        previous_snapshot: Option<SessionSnapshotProjection>,
-        last_workflow_design_sequence: u64,
-    ) -> WatchResult {
-        let session_id = session_id.to_string();
-        let attachment_id = attachment_id.to_string();
-        let previous_snapshot_for_compare = previous_snapshot.clone();
-        let mut result = self
-            .with_app_side_effect({
-                let session_id = session_id.clone();
-                let attachment_id = attachment_id.clone();
-                move |app| {
-                    crate::runtime_transport::watch_subscription_state(
-                        app,
-                        &session_id,
-                        &attachment_id,
-                        false,
-                        None,
-                        last_workflow_design_sequence,
-                    )
-                }
-            })
-            .await;
-        if !should_check_snapshot {
-            return result;
-        }
-        let projected_snapshot = match self.session_snapshot_projection_for_attachment(
-            &session_id,
-            &attachment_id,
-            self.session_projection_change_sequence(),
-        ) {
-            Ok(mut snapshot) => {
-                snapshot.metadata.last_event_id = self.session_projection_change_sequence();
-                Box::new(
-                    (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
-                )
-            }
-            Err(DaemonError::SessionNotFound { .. })
-            | Err(DaemonError::AttachmentNotFound { .. })
-            | Err(DaemonError::AttachmentNotInSession { .. }) => {
-                return WatchResult::Unavailable(
-                    "Current session is no longer available.".to_string(),
-                );
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.runtime_transport",
-                    "kernel event loop failed to build owned session snapshot",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "attachment_id": attachment_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                Box::new(None)
-            }
-        };
-        if let WatchResult::Ok { snapshot, .. } = &mut result {
-            *snapshot = projected_snapshot;
-        }
-        result
     }
 
     pub(crate) async fn create_relay_execution_lease(
@@ -333,18 +270,20 @@ impl KernelRuntimeState {
         effort: Option<String>,
     ) -> Result<LeasedAgent, DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
-        let leased_agent_id = leased_agent_id.to_string();
+        let id = leased_agent_id.to_string();
         self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.update_leased_agent_profile(
-                &leased_agent_id,
+            RemoteLeaseRuntime::new(app).consume_leased_agent_authorization(&id)
+        })
+        .await?;
+        self.apply_leased_profile_transition(
+            leased_agent_id,
+            crate::transport::relay_peer::RelayAgentExecutionProfile {
                 provider,
                 account_profile,
                 model,
                 effort,
-            )
-        })
+            },
+        )
         .await
     }
 
@@ -608,13 +547,17 @@ impl KernelRuntimeState {
                 // catalog rejects before admission. Check it before a receipt
                 // exists, so the home's bounded retry can resubmit this same
                 // prompt after the refresh instead of meeting a rejection fence.
-                if !runtime.leased_prompt_receipt_recorded(&begin_leased_agent_id, home_prompt_id) {
-                    runtime.ensure_leased_native_runtime_catalog_loaded(
-                        &begin_leased_agent_id,
-                        &begin_manifest,
-                    )?;
+                if runtime.leased_prompt_receipt_recorded(&begin_leased_agent_id, home_prompt_id) {
+                    return runtime
+                        .begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id);
                 }
-                runtime.begin_leased_prompt_receipt(&begin_leased_agent_id, home_prompt_id)
+                runtime.ensure_leased_native_runtime_catalog_loaded(
+                    &begin_leased_agent_id,
+                    &begin_manifest,
+                )?;
+                // MP-08 / MP-10 / MP-11: no prompt was admitted yet. A cold
+                // credential preflight must leave this exact home id retryable.
+                Ok(None)
             })
             .await;
         let existing_receipt = match existing_receipt {
@@ -656,7 +599,9 @@ impl KernelRuntimeState {
             }
         }
 
-        let profile = expected_profile.clone();
+        let profile_update = self
+            .apply_leased_profile_transition(&leased_agent_id, expected_profile.clone())
+            .await;
         let replay_leased_agent_id = leased_agent_id.clone();
         let replay_git_context = git_context.clone();
         let profile_home_prompt_id = home_prompt_id.clone();
@@ -666,17 +611,14 @@ impl KernelRuntimeState {
                 let mut runtime = RemoteLeaseRuntime::new(app);
                 // A prior profile acknowledgement may have been lost. Home remains
                 // authoritative, including when this is a retry of an active prompt.
-                if let Err(error) = runtime.update_leased_agent_profile(
-                    &replay_leased_agent_id,
-                    profile.provider,
-                    profile.account_profile,
-                    profile.model,
-                    profile.effort,
-                ) {
+                if let Err(error) = profile_update {
                     if let Some(home_prompt_id) = profile_home_prompt_id
                         .as_deref()
                         .filter(|_| profile_receipt_is_new)
                     {
+                        // A permanent profile refusal needs a durable receipt.
+                        runtime
+                            .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
                         runtime.update_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,
@@ -694,6 +636,8 @@ impl KernelRuntimeState {
                     if let (Some(home_prompt_id), Some((worker_provider_run_id, _))) =
                         (profile_home_prompt_id.as_deref(), replayed.as_ref())
                     {
+                        runtime
+                            .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
                         runtime.update_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,
@@ -769,31 +713,54 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         };
+        if let crate::app::PreparedLeasedProviderRun::LaunchRequired(request) =
+            &prepared.provider_run
+        {
+            if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+                && provider_launch_credential.is_none()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "launch remote provider without credential",
+                    message: format!(
+                        "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
+                    ),
+                });
+            }
+        }
+        let account_lease = leased_agent_id.clone();
+        if let Err(error) = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).require_leased_prompt_account(&account_lease)
+            })
+            .await
+        {
+            if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
+                self.update_relay_leased_prompt_admission_receipt(
+                    &leased_agent_id,
+                    home_prompt_id,
+                    WorkerPromptReceiptPhase::Rejected,
+                    None,
+                )
+                .await?;
+            }
+            return Err(error);
+        }
+        // Fence replay durably before any launch or prompt side effect. Permanent
+        // preparation failures above also create their definitive rejection.
+        if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt) {
+            self.update_relay_leased_prompt_admission_receipt(
+                &leased_agent_id,
+                home_prompt_id,
+                WorkerPromptReceiptPhase::Dispatching,
+                None,
+            )
+            .await?;
+        }
         let provider_run_id = match &prepared.provider_run {
             crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
                 provider_run_id.clone()
             }
             crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
-                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-                    && provider_launch_credential.is_none()
-                {
-                    if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt)
-                    {
-                        self.update_relay_leased_prompt_admission_receipt(
-                            &leased_agent_id,
-                            home_prompt_id,
-                            WorkerPromptReceiptPhase::Rejected,
-                            None,
-                        )
-                        .await?;
-                    }
-                    return Err(DaemonError::LocalTransport {
-                        operation: "launch remote provider without credential",
-                        message: format!(
-                            "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
-                        ),
-                    });
-                }
                 match self
                     .launch_provider_for_remote_lease_detached(
                         request.clone(),
@@ -833,10 +800,57 @@ impl KernelRuntimeState {
         let finish_provider_run_id = provider_run_id.clone();
         let outcome = self
             .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app)
-                    .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
+                let backing_session_id = prepared.leased_agent.backing_session_id.clone();
+                let backing_agent_id = prepared.leased_agent.backing_agent_id.clone();
+                let finished = RemoteLeaseRuntime::new(app)
+                    .finish_prepared_leased_prompt_submission_holding_dispatch(
+                        prepared,
+                        provider_run_id,
+                    );
+                // A failed admission that left no backing prompt cannot run.
+                // Only that exact outcome may settle the receipt as rejected.
+                let left_no_prompt = finished.is_err()
+                    && app
+                        .prompt_owner_active_prompt_for_agent(
+                            &backing_session_id,
+                            &backing_agent_id,
+                        )
+                        .is_ok_and(|active| active.is_none())
+                    && app
+                        .prompt_owner_peek_next_queued_prompt(
+                            &backing_session_id,
+                            &backing_agent_id,
+                        )
+                        .is_ok_and(|queued| queued.is_none());
+                Ok((finished, left_no_prompt))
             })
             .await?;
+        let (run, outcome, dispatch) = match outcome {
+            (Ok(outcome), _) => outcome,
+            (Err(error), left_no_prompt) => {
+                if let Some(home_prompt_id) = finish_home_prompt_id
+                    .as_deref()
+                    .filter(|_| new_receipt && left_no_prompt)
+                {
+                    self.update_relay_leased_prompt_admission_receipt(
+                        &finish_leased_agent_id,
+                        home_prompt_id,
+                        WorkerPromptReceiptPhase::Rejected,
+                        None,
+                    )
+                    .await?;
+                }
+                return Err(error);
+            }
+        };
+        if let Some(dispatch) = dispatch {
+            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                return self
+                    .fail_prompt_dispatch(dispatch, error)
+                    .await
+                    .map(|_| (run, outcome));
+            }
+        }
         if let Some(home_prompt_id) = finish_home_prompt_id.as_deref().filter(|_| new_receipt) {
             self.update_relay_leased_prompt_admission_receipt(
                 &finish_leased_agent_id,
@@ -846,7 +860,7 @@ impl KernelRuntimeState {
             )
             .await?;
         }
-        Ok(outcome)
+        Ok((run, outcome))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1007,13 +1021,41 @@ impl KernelRuntimeState {
         context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
         materialization: crate::account_profile::ProviderAccountMaterialization,
     ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
-        let lease_id = context.execution_lease_id.clone();
-        self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.consume_execution_lease_authorization(&lease_id)?;
-            runtime.ensure_remote_provider_account(context, materialization)
+        // Native probes may take a full network deadline. Serialize this
+        // owner's account family without holding the shared kernel app lock.
+        let owner = &materialization.profile.owner_user_id;
+        let provider =
+            crate::provider::canonical_provider_family(&materialization.profile.provider)
+                .unwrap_or(&materialization.profile.provider);
+        let operation_key = format!("provider-account:{}:{owner}:{provider}", owner.len());
+        let permit = self.leased_agent_operations.lock(&operation_key).await;
+        let task_context = context.clone();
+        let task = self
+            .with_app_side_effect(|app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_execution_lease_authorization(&context.execution_lease_id)?;
+                runtime.prepare_remote_provider_account(task_context, owner)
+            })
+            .await?;
+        let profile = tokio::task::spawn_blocking(move || {
+            // Keep the family lane until native cleanup ends even if the
+            // requesting peer disconnects and drops its awaiting future.
+            let _permit = permit;
+            task.run(materialization)
         })
         .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "ensure remote provider account",
+            message: format!("provider-account provisioning task failed: {error}"),
+        })??;
+        // A lease may have been removed while its native utility was running.
+        // The account is worker-owned; never acknowledge it for a stale lease.
+        self.with_app_side_effect(|app| {
+            RemoteLeaseRuntime::new(app)
+                .validate_remote_provider_account_context(&context, &profile.owner_user_id)
+        })
+        .await?;
+        Ok(profile)
     }
 
     pub(crate) async fn check_relay_remote_mcp_availability(
@@ -1347,11 +1389,45 @@ impl KernelRuntimeState {
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
+        let target_leased_id = leased_agent_id.clone();
+        let target_run_id = provider_run_id.clone();
+        let native_target = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                if require_authorization {
+                    runtime.consume_leased_agent_authorization(&target_leased_id)?;
+                }
+                if pump_output {
+                    runtime.leased_native_output_pump_target(&target_leased_id, &target_run_id)
+                } else {
+                    Ok(None)
+                }
+            })
+            .await?;
+        if let Some((session_id, recipients)) = native_target {
+            if let Some(_permit) = self.provider_runtime_lanes.try_acquire(&provider_run_id) {
+                if let Err(error) = Box::pin(self.pump_owned_provider_output(
+                    &session_id,
+                    &provider_run_id,
+                    recipients,
+                    false,
+                ))
+                .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider_output",
+                        "leased native output pump failed",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "provider_run_id": provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
-            if require_authorization {
-                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            }
             runtime.drain_leased_runtime_projection_with_recovery(
                 &leased_agent_id,
                 &provider_run_id,
@@ -1362,18 +1438,22 @@ impl KernelRuntimeState {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn project_relay_remote_runtime_projection(
         &self,
-        session_id: &str,
-        agent_id: &str,
-        provider_run_id: &str,
-        provider_run: Option<crate::provider::RuntimeProviderRun>,
-        prompts: Vec<RelayProjectedPrompt>,
-        output_chunks: Vec<RelayProjectedOutputChunk>,
-        notices: Vec<String>,
-        completions: Vec<RelayProjectedCompletion>,
+        authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
+        event: crate::transport::relay_peer::RelayPeerEvent,
     ) -> Result<(), DaemonError> {
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id,
+            home_agent_id,
+            provider_run_id: worker_provider_run_id,
+            provider_run,
+            output_chunks,
+            completions,
+            ..
+        } = &event;
+        let worker_provider_run_id = worker_provider_run_id.clone();
+
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
                 run,
@@ -1382,23 +1462,11 @@ impl KernelRuntimeState {
                 }) || !completions.is_empty(),
             )
         });
-        let session_id = session_id.to_string();
-        let agent_id = agent_id.to_string();
-        let projection_session_id = session_id.clone();
-        let projection_agent_id = agent_id.clone();
-        let projection_provider_run_id = provider_run_id.to_string();
+        let session_id = home_session_id.clone();
+        let agent_id = home_agent_id.clone();
         let outcome = self
             .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
-                    &projection_session_id,
-                    &projection_agent_id,
-                    &projection_provider_run_id,
-                    provider_run,
-                    prompts,
-                    output_chunks,
-                    notices,
-                    completions,
-                )
+                RemoteLeaseRuntime::new(app).project_remote_runtime_projection(authority, event)
             })
             .await?;
         if !outcome.accepted {
@@ -1410,8 +1478,24 @@ impl KernelRuntimeState {
         if outcome.provider_failed {
             self.finish_remote_provider_failure(&session_id, &outcome.completions)?;
         }
+        let leased_agent_id = self
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .ok()
+            .and_then(|agent| agent.remote_execution().map(|r| r.leased_agent_id.clone()));
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
+            if let Some(leased_agent_id) = leased_agent_id.as_deref() {
+                self.settle_leased_agent_task(
+                    &session_id,
+                    &agent_id,
+                    &completion.completed,
+                    leased_agent_id,
+                    &worker_provider_run_id,
+                )
+                .await;
+            }
         }
         if let Some((provider, account_profile, state)) = provider_auth_observation {
             self.apply_remote_slice_provider_auth_observation(
@@ -1529,297 +1613,5 @@ mod provider_auth_observation_tests {
 }
 
 #[cfg(test)]
-mod relay_native_provider_launch_tests {
-    use std::sync::Arc;
-
-    use tokio::sync::Mutex;
-
-    use super::*;
-
-    struct NativeLeaseFixture {
-        state: KernelRuntimeState,
-        leased_agent_id: String,
-        matching_request: crate::provider::LaunchProviderRequest,
-    }
-
-    impl NativeLeaseFixture {
-        fn insert_live_run(&self, provider_run_id: &str) {
-            let mut run = crate::provider::RuntimeProviderRun::new(
-                provider_run_id,
-                &self.matching_request,
-                crate::provider::ProviderLaunchResult {
-                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                    process_label: "relay-native-reuse-test".to_string(),
-                    pty_target: None,
-                    pty_program: None,
-                    pty_args: Vec::new(),
-                    pty_env: std::collections::BTreeMap::new(),
-                    pty_env_remove: Vec::new(),
-                    working_directory: self.matching_request.working_directory.clone(),
-                    structured_endpoint: None,
-                },
-            );
-            assert!(self.matching_request.matches_existing_run_selection(&run));
-            run.mark_running();
-            self.state
-                .owned
-                .provider_store
-                .write()
-                .insert_run_for_test(run);
-        }
-
-        async fn launch(
-            &self,
-            model: &str,
-        ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-            self.state
-                .launch_relay_leased_native_provider_run(
-                    &self.leased_agent_id,
-                    "claude",
-                    "claude",
-                    "work",
-                    model,
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    Some(Vec::new()),
-                    crate::extension::RemoteExtensionManifest::default(),
-                    None,
-                )
-                .await
-        }
-    }
-
-    fn native_lease_fixture() -> NativeLeaseFixture {
-        let mut config = crate::config::DaemonConfig::for_tests();
-        config.accept_remote_leases = true;
-        let mut app =
-            crate::app::DaemonApp::bootstrap(config).expect("worker app should bootstrap");
-        let (leased_agent_id, matching_request) = {
-            let mut runtime = RemoteLeaseRuntime::new(&mut app);
-            let lease = runtime
-                .create_execution_lease(
-                    "home-kernel-native-reuse",
-                    "home-session-native-reuse",
-                    "home-agent-native-reuse",
-                    false,
-                    "owner-native-reuse",
-                )
-                .expect("execution lease should create");
-            let leased_agent = runtime
-                .create_leased_agent(
-                    &lease.id,
-                    "claude",
-                    "work",
-                    Some("sonnet".to_string()),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .expect("leased agent should create");
-            let request = runtime
-                .prepare_leased_native_provider_launch(
-                    &leased_agent.id,
-                    "claude",
-                    "claude",
-                    "work",
-                    "sonnet",
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    Some(Vec::new()),
-                    crate::extension::RemoteExtensionManifest::default(),
-                )
-                .expect("matching native request should prepare");
-            (leased_agent.id, request)
-        };
-
-        NativeLeaseFixture {
-            state: runtime_state_from_app(app),
-            leased_agent_id,
-            matching_request,
-        }
-    }
-
-    fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
-        let config_projection = app.config_projection_store();
-        let session_store = app.session_state_store();
-        let agent_store = app.agents().clone();
-        let attachment_store = app.attachments().clone();
-        let provider_store = app.providers().clone();
-        let provider_process_tracking = app.provider_process_tracking_store();
-        let slice_store = app.slices();
-        let session_projection = app.session_state_projection_store();
-        let provider_run_projection = app.provider_run_projection_store();
-        let operational_history_store = app.operational_history_store();
-        let durable_state_store = app.durable_state_store();
-        let prompt_state_owner = app.prompt_state_owner();
-        let active_turns = app.active_turn_store();
-        let prompt_activity = app.prompt_activity_store();
-        let prompt_workspace_claims = app.prompt_workspace_claim_store();
-        let structured_output_records = app.structured_output_record_store();
-        let terminal_stream = app.terminal_stream_store();
-        let workflow_design_events = app.workflow_design_event_store();
-        let metaagent_events = app.metaagent_event_store();
-        let workspace_coordinator = app.workspace_coordinator();
-        KernelRuntimeState::new_with_owned_state(
-            Arc::new(Mutex::new(app)),
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            session_projection,
-            provider_run_projection,
-            operational_history_store,
-            durable_state_store,
-            prompt_state_owner,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            terminal_stream,
-            workflow_design_events,
-            metaagent_events,
-            workspace_coordinator,
-        )
-    }
-
-    #[tokio::test]
-    async fn relay_native_launch_reuses_matching_live_worker_run_without_credential() {
-        let fixture = native_lease_fixture();
-        fixture.insert_live_run("worker-native-run-1");
-
-        let run = fixture
-            .launch("sonnet")
-            .await
-            .expect("matching live run should be reused without a cold credential");
-
-        assert_eq!(run.id(), "worker-native-run-1");
-        assert!(fixture
-            .state
-            .owned
-            .provider_run_projection
-            .is_leased_provider_run(run.id()));
-        assert_eq!(fixture.state.owned.provider_store.list_runs().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn relay_native_launch_rejects_mismatched_live_worker_selection() {
-        let fixture = native_lease_fixture();
-        fixture.insert_live_run("worker-native-run-mismatch");
-
-        let error = fixture
-            .launch("opus")
-            .await
-            .expect_err("a live native run with a different model must not be replaced");
-
-        assert!(matches!(error, DaemonError::InvalidProviderRunState { .. }));
-        assert_eq!(fixture.state.owned.provider_store.list_runs().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn concurrent_relay_native_launches_serialize_and_reuse_one_worker_run() {
-        let fixture = native_lease_fixture();
-        let operation = fixture
-            .state
-            .leased_agent_operations
-            .lock(&fixture.leased_agent_id)
-            .await;
-        let first_state = fixture.state.clone();
-        let first_leased_agent_id = fixture.leased_agent_id.clone();
-        let mut first = tokio::spawn(async move {
-            first_state
-                .launch_relay_leased_native_provider_run(
-                    &first_leased_agent_id,
-                    "claude",
-                    "claude",
-                    "work",
-                    "sonnet",
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    Some(Vec::new()),
-                    crate::extension::RemoteExtensionManifest::default(),
-                    None,
-                )
-                .await
-        });
-        let second_state = fixture.state.clone();
-        let second_leased_agent_id = fixture.leased_agent_id.clone();
-        let mut second = tokio::spawn(async move {
-            second_state
-                .launch_relay_leased_native_provider_run(
-                    &second_leased_agent_id,
-                    "claude",
-                    "claude",
-                    "work",
-                    "sonnet",
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    Some(Vec::new()),
-                    crate::extension::RemoteExtensionManifest::default(),
-                    None,
-                )
-                .await
-        });
-
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(25), &mut first)
-                .await
-                .is_err(),
-            "the first launch must wait for the leased-agent operation lane"
-        );
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(25), &mut second)
-                .await
-                .is_err(),
-            "the concurrent launch must wait for the same operation lane"
-        );
-        fixture.insert_live_run("worker-native-run-serialized");
-        drop(operation);
-
-        let first_run = first
-            .await
-            .expect("first launch task should finish")
-            .expect("first launch should reuse the serialized run");
-        let second_run = second
-            .await
-            .expect("second launch task should finish")
-            .expect("second launch should reuse the serialized run");
-        assert_eq!(first_run.id(), "worker-native-run-serialized");
-        assert_eq!(second_run.id(), first_run.id());
-        assert_eq!(fixture.state.owned.provider_store.list_runs().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn stale_active_run_hint_requires_cold_claude_credential_on_worker() {
-        let fixture = native_lease_fixture();
-
-        let error = fixture
-            .launch("sonnet")
-            .await
-            .expect_err("a missing hinted worker run must not silently cold-launch Claude");
-
-        match error {
-            DaemonError::LocalTransport { operation, message } => {
-                assert_eq!(operation, "launch remote provider without credential");
-                assert!(message.contains(
-                    crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-                ));
-            }
-            other => panic!("unexpected worker cold-launch error: {other}"),
-        }
-        assert!(fixture.state.owned.provider_store.list_runs().is_empty());
-    }
-}
+#[path = "relay_peer_runtime_state/native_provider_launch_tests.rs"]
+mod relay_native_provider_launch_tests;

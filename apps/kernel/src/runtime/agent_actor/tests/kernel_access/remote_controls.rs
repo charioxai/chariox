@@ -141,12 +141,35 @@ async fn assert_revoked_remote_control(operation: RemoteControl) {
             session_id: session.id().into(),
             attachment_id: attachment.id().into(),
             target_agent_id: Some(agent.id().into()),
+            expected_prompt_id: Some(active_id.clone()),
         })
     };
     let mut command =
         KernelCommand::from_local_request("external-remote-control", None, None, &local_request);
     command.caller.connection_class = Some(KernelConnectionClass::ExternalAgent);
     command.caller.caller_id = grant.clone();
+    // MP-08 / MP-10 / MP-11: stale and foreign exact-prompt controls stay home.
+    if operation == RemoteControl::Cancel {
+        let mut stale = match local_request.clone() {
+            LocalDaemonRequest::CancelActivePrompt(request) => request,
+            _ => unreachable!(),
+        };
+        stale.expected_prompt_id = Some("settled-prompt-A".into());
+        assert!(matches!(
+            runtime
+                .dispatch_prompt_cancel(&command, stale.clone())
+                .await,
+            Err(DaemonError::NoActivePrompt { .. })
+        ));
+        stale.expected_prompt_id = Some(active_id.clone());
+        stale.attachment_id = "foreign-attachment".into();
+        assert!(runtime
+            .dispatch_prompt_cancel(&command, stale)
+            .await
+            .is_err());
+        assert_eq!(worker.request_count(), 0);
+        assert_eq!(state.session_snapshot(session.id()).await.unwrap(), before);
+    }
     let locked_app = app.lock().await;
     let pending = tokio::spawn({
         let runtime = runtime.clone();

@@ -70,55 +70,87 @@ impl BrowserControllerDownloadCancellationResult {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "Vec<PathBuf>", into = "Vec<PathBuf>")]
-pub(crate) struct BrowserUploadFiles {
-    paths: Vec<PathBuf>,
+// MP-08/MP-10/MP-11: configured paths and approved opaque bytes share receipts.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum BrowserUploadFiles {
+    Paths(Vec<PathBuf>),
+    Artifacts {
+        artifacts: Vec<crate::runtime::browser_artifact::BrowserArtifactBytes>,
+    },
 }
-
+impl<'de> Deserialize<'de> for BrowserUploadFiles {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged, deny_unknown_fields)]
+        enum Wire {
+            Paths(Vec<PathBuf>),
+            Artifacts {
+                artifacts: Vec<crate::runtime::browser_artifact::BrowserArtifactBytes>,
+            },
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Paths(paths) => Self::new(paths),
+            Wire::Artifacts { artifacts } => Self::from_artifacts(artifacts),
+        }
+        .map_err(serde::de::Error::custom)
+    }
+}
 impl std::fmt::Debug for BrowserUploadFiles {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BrowserUploadFiles")
-            .field("file_count", &self.paths.len())
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserUploadFiles")
+            .field("file_count", &self.file_count())
             .finish()
     }
 }
-
-impl TryFrom<Vec<PathBuf>> for BrowserUploadFiles {
-    type Error = String;
-
-    fn try_from(paths: Vec<PathBuf>) -> Result<Self, Self::Error> {
-        Self::new(paths)
-    }
-}
-
-impl From<BrowserUploadFiles> for Vec<PathBuf> {
-    fn from(files: BrowserUploadFiles) -> Self {
-        files.paths
-    }
-}
-
 impl BrowserUploadFiles {
     pub(crate) fn new(paths: Vec<PathBuf>) -> Result<Self, String> {
         if paths.is_empty() || paths.len() > MAX_UPLOAD_FILES {
-            return Err(format!(
-                "browser upload requires 1 through {MAX_UPLOAD_FILES} files"
-            ));
+            return Err("invalid Browser upload file count".into());
         }
         for path in &paths {
             let value = path
                 .to_str()
-                .ok_or_else(|| "browser upload paths must be valid UTF-8".to_string())?;
+                .ok_or("browser upload paths must be valid UTF-8")?;
             if !path.is_absolute() || value.len() > MAX_UPLOAD_PATH_BYTES || value.contains('\0') {
-                return Err("browser upload paths must be bounded absolute paths".to_string());
+                return Err("browser upload paths must be bounded absolute paths".into());
             }
         }
-        Ok(Self { paths })
+        Ok(Self::Paths(paths))
     }
-
+    pub(crate) fn from_artifacts(
+        artifacts: Vec<crate::runtime::browser_artifact::BrowserArtifactBytes>,
+    ) -> Result<Self, String> {
+        if artifacts.is_empty() || artifacts.len() > MAX_UPLOAD_FILES {
+            return Err("invalid Browser upload artifact count".into());
+        }
+        let mut total = 0;
+        for artifact in &artifacts {
+            total += artifact.decode()?.len();
+        }
+        if total > crate::runtime::browser_artifact::MAX_BROWSER_ARTIFACT_BYTES {
+            return Err("Browser upload artifact byte bound exceeded".into());
+        }
+        Ok(Self::Artifacts { artifacts })
+    }
+    pub(crate) fn file_count(&self) -> usize {
+        match self {
+            Self::Paths(paths) => paths.len(),
+            Self::Artifacts { artifacts } => artifacts.len(),
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn controller_paths(&self) -> Vec<&str> {
-        self.paths.iter().filter_map(|path| path.to_str()).collect()
+        match self {
+            Self::Paths(paths) => paths.iter().filter_map(|p| p.to_str()).collect(),
+            _ => vec![],
+        }
+    }
+    pub(crate) fn controller_params(&self) -> serde_json::Value {
+        match self {
+            Self::Paths(paths) => serde_json::json!({ "file_paths": paths }),
+            Self::Artifacts { artifacts } => serde_json::json!({ "artifact_files": artifacts }),
+        }
     }
 }
 

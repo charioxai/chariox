@@ -308,15 +308,11 @@ pub(super) fn parse_meta_agent_spawn_args(
         create.display_mode = mode;
     }
     let worktree_id = directory.map(|directory| resolve_metaagent_directory(session, &directory));
-    let worktree_placement = if let Some(target_directory) = git_worktree {
-        Some(GitWorktreePlacement {
-            target_directory: Some(target_directory),
-            branch,
-            from_ref,
-        })
-    } else {
-        None
-    };
+    let worktree_placement = git_worktree.map(|target_directory| GitWorktreePlacement {
+        target_directory: Some(target_directory),
+        branch,
+        from_ref,
+    });
 
     Ok(MetaAgentSpawnArgs {
         alias: positional.first().cloned(),

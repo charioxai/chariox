@@ -1,32 +1,18 @@
-import { appendFileSync } from "node:fs"
-import { mkdir, rm, writeFile } from "node:fs/promises"
-import os from "node:os"
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
+import { appendFileSync, renameSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
-import { setTimeout as sleep } from "node:timers/promises"
 
 import { LocalIpcClient } from "../ipc.js"
+import { createCliRelayIdentityStore } from "../cli-relay-identity-store.js"
 import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
+import { runClaudeKernelScreen } from "./claude-kernel-screen.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import {
-  startClaudeBridge,
-} from "./claude-bridge.js"
-import { claudeHookSettings, writeClaudeHookHandler } from "./claude-hook-handler.js"
-import {
-  type ClaudePromptOriginState,
-  startClaudePermissionBridge,
-} from "./claude-permission-bridge.js"
-import {
-  launchClaudeNativeRun,
   launchClaudeRemoteRenderedRun,
   waitForClaudeProviderRunReady,
   waitForClaudeRemoteRenderedRunExit,
 } from "./claude-provider-run.js"
-import {
-  type ClaudeTuiController,
-  startClaudeAttachedPty,
-  startClaudeScreen,
-} from "./claude-tui-launcher.js"
 import {
   createClaudeRemoteRenderedReadiness,
   forwardClaudeRemoteRenderedStdin,
@@ -35,7 +21,6 @@ import {
   submitClaudeRemoteRenderedInitialPrompt,
   writeClaudeRemoteRenderedTerminalRecords,
 } from "./claude-remote-rendered-io.js"
-import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
 import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
@@ -44,6 +29,7 @@ import {
   defaultKernelEndpoint,
   inferWorkspaceTargetsFromLaunchDirectory,
   parseKernelPort,
+  relayTokenFromEnvironment,
   parseNativeMode as parseMode,
   parseNativePermissions as parsePermissions,
 } from "./launch-environment.js"
@@ -61,6 +47,7 @@ type NativeClaudeOptions = {
   kernelUrl?: string
   kernelPort?: string
   relayUrl?: string
+  relayTokenIssuer?: { endpoint: string; daemonId: string }
   relayToken?: string
   targetDaemonId?: string
   targetDaemonAlias?: string
@@ -77,7 +64,7 @@ type NativeClaudeOptions = {
   permissions: "required" | "yolo"
   initialPrompt?: string
   detachedScreen: boolean
-  remoteRendered: boolean
+  detachedScreenIndices: number[]
   grantMcps: string[]
   grantSkills: string[]
 }
@@ -87,142 +74,23 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
   const inferredTargets = await inferWorkspaceTargetsFromLaunchDirectory(process.cwd())
   const workspace = options.workspace ?? inferredTargets.workspace
   const worktree = options.worktree ?? inferredTargets.worktree
+  if (options.detachedScreen) {
+    await runClaudeKernelScreen(args.filter((_, index) => !options.detachedScreenIndices.includes(index)), worktree)
+    return
+  }
   const kernelEndpoint = options.relayUrl ?? options.kernelUrl ?? options.socketPath ?? defaultKernelEndpoint(options.kernelPort)
   const client = new LocalIpcClient(kernelEndpoint, options.relayUrl
     ? {
       relayAuthToken: options.relayToken,
+      relayIdentity: createCliRelayIdentityStore().load() ?? undefined,
+      relayAuthorizationIssuer: options.relayTokenIssuer,
       targetDaemonId: options.targetDaemonId,
       targetDaemonAlias: options.targetDaemonAlias,
     }
     : undefined)
-  if (options.remoteRendered) {
-    await runClaudeRemoteRendered(options, client, workspace, worktree)
-    return
-  }
-
-  const tempRoot = path.join(os.tmpdir(), `chariox-claude-native-${process.pid}-${Date.now()}`)
-  const eventsFile = path.join(tempRoot, "events.jsonl")
-  const contextFile = path.join(tempRoot, "hidden-context.txt")
-  const originFile = path.join(tempRoot, "approval-origin.json")
-  const contextResponseDir = path.join(tempRoot, "hook-context-responses")
-  const attachmentContextDir = path.join(tempRoot, "attachments")
-  const settingsPath = path.join(tempRoot, "settings.json")
-  const hookHandlerPath = path.join(tempRoot, "hook-handler.mjs")
-  const screenName = `chariox-claude-${process.pid}-${Date.now()}`
-  const screenLogDir = path.join(tempRoot, "screen")
-  let bridge: { stop: () => void } | null = null
-  let permissionBridge: { url: string; stop: () => Promise<void> } | null = null
-  let pump: { stop: () => void } | null = null
-  let tui: ClaudeTuiController | null = null
-  const promptOrigin: ClaudePromptOriginState = { current: null }
-
-  try {
-    await mkdir(screenLogDir, { recursive: true })
-    await mkdir(contextResponseDir, { recursive: true })
-    await writeFile(contextFile, "", "utf8")
-    await writeClaudeHookHandler(hookHandlerPath)
-    await writeFile(settingsPath, JSON.stringify(claudeHookSettings(hookHandlerPath), null, 2), "utf8")
-
-    const created = options.sessionRef
-      ? null
-      : await createNativeSession(client, workspace, worktree, options.alias, {
-        provider: "claude",
-        model: options.model,
-        effort: options.effort,
-        execution_mode: options.mode,
-        permission_level: options.permissions,
-      })
-    const session = created?.session ?? await resolveNativeSession(client, options.sessionRef!, workspace)
-    const attachment = await attachNativeSession(client, session.id, options.clientId)
-    const agent = created?.agent
-      ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnNativeAgent(client, session.id, "claude", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef)
-    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
-    const launched = await launchClaudeNativeRun(client, session.id, agent.id, options.model, options.effort)
-    const run = launched.session_id === session.id
-      ? await waitForClaudeProviderRunReady(client, launched.id)
-      : launched
-    permissionBridge = await startClaudePermissionBridge({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentId: agent.id,
-      promptOrigin,
-    })
-
-    const sliceInventory = agent.remote_execution
-      ? await loadNativeTuiSliceInventory(client)
-      : { slices: [], error: null }
-    process.stderr.write(formatNativeTuiRuntimeBanner({
-      surface: "claude native-tui",
-      session,
-      agent,
-      worktree,
-      slices: sliceInventory.slices,
-      sliceLookupError: options.sliceRef ? sliceInventory.error : null,
-      run,
-      grantedMcps: options.grantMcps,
-      grantedSkills: options.grantSkills,
-      providerLines: [
-        `  tui:            ${options.detachedScreen ? `screen:${screenName}` : "attached-pty"}`,
-        ...(options.detachedScreen ? [`  screen:         ${screenName}`] : []),
-      ],
-      promptPolicy: "Claude Code TUI is native; Chariox observes hooks and injects queued prompts through the PTY",
-    }))
-
-    const launchOptions: Parameters<typeof startClaudeScreen>[2] = {
-      worktree,
-      settingsPath,
-      model: options.model,
-      effort: options.effort,
-      permissions: options.permissions,
-      env: {
-        ...process.env,
-        CHARIOX_CLAUDE_NATIVE_EVENTS: eventsFile,
-        CHARIOX_CLAUDE_NATIVE_CONTEXT: contextFile,
-        CHARIOX_CLAUDE_NATIVE_ORIGIN: originFile,
-        CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES: contextResponseDir,
-        CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL: permissionBridge.url,
-      },
-    }
-    tui = options.detachedScreen
-      ? await startClaudeScreen(screenName, screenLogDir, launchOptions)
-      : await startClaudeAttachedPty(launchOptions)
-    bridge = startClaudeBridge({
-      client,
-      sessionId: session.id,
-      attachmentId: attachment.id,
-      agentId: agent.id,
-      providerRunId: run.id,
-      eventsFile,
-      contextFile,
-      originFile,
-      attachmentContextDir,
-      hookContextResponseDir: contextResponseDir,
-      workspace,
-      worktree,
-      inlineLocalAttachments: Boolean(options.relayUrl) || promptAttachmentTransferIsForced(),
-      promptOrigin,
-      submitPrompt: tui.submitPrompt,
-      debug: debugNativeClaude,
-    })
-    pump = startNativeKernelPumpLoop(client, session.id, attachment.id)
-    if (options.initialPrompt) {
-      await sleep(1_000)
-      await tui.submitPrompt(options.initialPrompt)
-    }
-
-    await tui.waitForExit()
-  } finally {
-    bridge?.stop()
-    pump?.stop()
-    await tui?.stop()
-    await permissionBridge?.stop().catch(() => {})
-    await client.close()
-    if (!options.detachedScreen) {
-      await rm(tempRoot, { recursive: true, force: true }).catch(() => {})
-    }
-  }
+  // Local and remote native input share the home kernel's provider run,
+  // prompt admission, permission interactions and hidden-context hook.
+  await runClaudeRemoteRendered(options, client, workspace, worktree)
 }
 
 function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
@@ -233,10 +101,11 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
     mode: "build",
     permissions: "required",
     detachedScreen: false,
-    remoteRendered: false,
+    detachedScreenIndices: [],
     grantMcps: [],
     grantSkills: [],
   }
+  let relayTokenSource = false
   const positional: string[] = []
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? ""
@@ -260,8 +129,18 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
       case "--relay-url":
         options.relayUrl = next()
         break
+      case "--relay-token-issuer":
+        options.relayTokenIssuer = { endpoint: next(), daemonId: next() }
+        break
       case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
         options.relayToken = next()
+        break
+      case "--relay-token-env":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        relayTokenSource = true
+        options.relayToken = relayTokenFromEnvironment(next())
         break
       case "--target-daemon-id":
         options.targetDaemonId = next()
@@ -309,9 +188,10 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
         break
       case "--detached-screen":
         options.detachedScreen = true
+        options.detachedScreenIndices.push(index)
         break
       case "--remote-rendered":
-        options.remoteRendered = true
+        // Retained compatibility flag; the kernel-rendered path is the default.
         break
       case "--grant-mcp":
         options.grantMcps.push(next())
@@ -332,12 +212,6 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
   if (options.machineRef && options.sliceRef) {
     throw new Error("--machine and --slice cannot be used together")
   }
-  if (options.machineRef && !options.remoteRendered) {
-    throw new Error("--machine requires --remote-rendered so Claude Code runs in the worker kernel PTY")
-  }
-  if (options.sliceRef && !options.remoteRendered) {
-    throw new Error("--slice requires --remote-rendered so Claude Code runs in the slice worker kernel PTY")
-  }
   if (positional[0] !== undefined) options.sessionRef = positional[0]
   return options
 }
@@ -351,6 +225,8 @@ function printNativeClaudeUsage() {
     "Options:",
     "  --kernel-port, --port <port>     Kernel websocket port (default 43119)",
     "  --kernel-url <url>               Kernel websocket URL",
+    "  --relay-url <url>                Hosted relay websocket URL",
+    "  --relay-token-env <name>         Read relay authorization from the named environment variable",
     "  --workspace <path>               Workspace root",
     "  --worktree <path>                Worktree root",
     "  --machine, --kernel-ref <ref>    Run the Chariox agent/provider on a remote worker kernel",
@@ -378,6 +254,7 @@ async function runClaudeRemoteRendered(
   let disposeEvents: (() => void) | null = null
   let restoreStdin: (() => void) | null = null
   let restoreResize: (() => void) | null = null
+  const exitController = new AbortController()
   try {
     const created = options.sessionRef
       ? null
@@ -397,12 +274,19 @@ async function runClaudeRemoteRendered(
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
     const readiness = createClaudeRemoteRenderedReadiness()
+    // MP-08/MP-11: trust/onboarding can end the official provider. Release the
+    // queued initial prompt wait and its timer instead of waiting sixty seconds.
+    const exited = waitForClaudeRemoteRenderedRunExit(client, run.id, exitController.signal)
+    void exited.then(() => readiness.fail(new Error(
+      "Claude native TUI ended before its input composer was ready. Complete onboarding and trust the workspace, then retry.",
+    )), (error: unknown) => readiness.fail(error instanceof Error ? error : new Error(String(error))))
 
     const sliceInventory = agent.remote_execution
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
-    process.stderr.write(formatNativeTuiRuntimeBanner({
-      surface: "claude remote-native-tui",
+    const banner = formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
+      surface: "claude native-tui",
       session,
       agent,
       worktree,
@@ -412,7 +296,13 @@ async function runClaudeRemoteRendered(
       grantedMcps: options.grantMcps,
       grantedSkills: options.grantSkills,
       providerLines: ["  tui:            target-kernel-pty"],
-    }))
+    })
+    process.stderr.write(banner)
+    if (process.env.CHARIOX_CLAUDE_NATIVE_BANNER_FILE) {
+      const destination = process.env.CHARIOX_CLAUDE_NATIVE_BANNER_FILE
+      writeFileSync(`${destination}.tmp`, banner, { mode: 0o600 })
+      renameSync(`${destination}.tmp`, destination)
+    }
 
     disposeEvents = client.onKernelEvent((event) => {
       if (event.event !== "terminal_output") return
@@ -449,8 +339,9 @@ async function runClaudeRemoteRendered(
         readiness,
       })
     }
-    await waitForClaudeRemoteRenderedRunExit(client, run.id)
+    await exited
   } finally {
+    exitController.abort()
     restoreResize?.()
     restoreStdin?.()
     disposeEvents?.()

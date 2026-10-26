@@ -219,6 +219,8 @@ impl PackageUploadStore {
 
     /// Interruption callbacks execute only trusted kernel code. An error after
     /// archive sync may leave an uncommitted suffix; retry/reopen truncates it.
+    // MP-11: keep owner, digest and interruption checkpoint explicit at admission.
+    #[allow(clippy::too_many_arguments)]
     pub fn chunk_with_checkpoint(
         &self,
         owner: &str,

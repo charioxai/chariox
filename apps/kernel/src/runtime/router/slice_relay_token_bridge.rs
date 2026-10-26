@@ -44,15 +44,7 @@ struct ManagedSliceRelayTokenClaims {
 
 impl CommandRouter {
     pub(crate) fn managed_slice_relay_identity(&self) -> Option<ManagedSliceRelayIdentity> {
-        let slice_id = std::env::var("CHARIOX_SLICE_ID").ok()?;
-        let owner_kernel_id = std::env::var("CHARIOX_SLICE_OWNER_KERNEL_ID").ok()?;
-        let owner_machine_id = std::env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").ok()?;
-        managed_slice_relay_identity_for_config(
-            &self.config_projection.snapshot(),
-            slice_id,
-            owner_kernel_id,
-            owner_machine_id,
-        )
+        managed_slice_relay_identity_from_environment(&self.config_projection.snapshot())
     }
 
     pub(crate) fn managed_slice_relay_token_refresh_due(&self) -> bool {
@@ -277,6 +269,17 @@ impl CommandRouter {
             recovery_expires_at_ms,
         ))
     }
+}
+
+pub(in crate::runtime) fn managed_slice_relay_identity_from_environment(
+    config: &DaemonConfig,
+) -> Option<ManagedSliceRelayIdentity> {
+    managed_slice_relay_identity_for_config(
+        config,
+        std::env::var("CHARIOX_SLICE_ID").ok()?,
+        std::env::var("CHARIOX_SLICE_OWNER_KERNEL_ID").ok()?,
+        std::env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").ok()?,
+    )
 }
 
 fn managed_slice_relay_identity_for_config(

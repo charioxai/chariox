@@ -13,6 +13,7 @@ type TranscriptPaneKernelFields = Pick<
   | "blobCollapsed"
   | "blobTitle"
   | "blobSummary"
+  | "blobIcon"
 > & {
   readonly turnId?: KernelTranscriptEntry["turnId"] | null
 }
@@ -31,6 +32,7 @@ export type TranscriptPaneEntry = {
   readonly blobCollapsed?: TranscriptPaneKernelFields["blobCollapsed"]
   readonly blobTitle?: TranscriptPaneKernelFields["blobTitle"]
   readonly blobSummary?: TranscriptPaneKernelFields["blobSummary"]
+  readonly blobIcon?: TranscriptPaneKernelFields["blobIcon"]
 }
 
 export type TranscriptPaneRenderable<TEntry extends TranscriptPaneEntry> = {
@@ -69,6 +71,7 @@ export function transcriptEntriesEqual<TEntry extends TranscriptPaneEntry>(
     && left.blobCollapsed === right.blobCollapsed
     && left.blobTitle === right.blobTitle
     && left.blobSummary === right.blobSummary
+    && left.blobIcon === right.blobIcon
 }
 
 export function transcriptEntriesShareMountedPrefix<TEntry extends TranscriptPaneEntry>(
@@ -191,7 +194,8 @@ export function reconcileMountedTranscriptPane<TEntry extends TranscriptPaneEntr
   scrollbox.requestRender()
 }
 
-function transcriptPaneEntryIsMounted<TEntry extends TranscriptPaneEntry>(
+// Rows a pane mounts: folded-turn rows and deferred history fragments are not.
+export function transcriptPaneEntryIsMounted<TEntry extends TranscriptPaneEntry>(
   entry: TEntry,
 ): boolean {
   return !entry.hidden && !entry.historyDeferred

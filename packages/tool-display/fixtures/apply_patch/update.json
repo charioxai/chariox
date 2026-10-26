@@ -10,9 +10,18 @@
   "expect": {
     "summary": "Patched src/app.ts",
     "previewLines": [
-      { "kind": "meta", "text": "@@ -1,2 +1,2 @@" },
-      { "kind": "added", "text": "const newValue = 2" },
-      { "kind": "context", "text": "console.log('ready')" }
+      {
+        "kind": "meta",
+        "text": "@@"
+      },
+      {
+        "kind": "added",
+        "text": "const newValue = 2"
+      },
+      {
+        "kind": "context",
+        "text": "console.log('ready')"
+      }
     ]
   }
 }

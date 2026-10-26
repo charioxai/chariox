@@ -198,6 +198,22 @@ async fn kernel_access_revocation_refuses_a_cold_prompt_waiting_for_app_lock() {
         runtime.agent_runtime_projection.clone(),
         runtime.prompt_id_allocator.clone(),
     );
+    // MP-08 / MP-10 / MP-11: the lane must retain only the selected handler.
+    fn future_size<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    assert!(
+        future_size(
+            || executor.execute(super::super::AgentCommand::SubmitPrompt {
+                request: request.clone(),
+                trace_id: "stack-budget".into(),
+                operation_id: "stack-budget".into(),
+                operation_fingerprint: "stack-budget".into(),
+                response_mode: super::super::command_lane::PromptSubmitResponseMode::Full,
+            })
+        ) <= 1_024,
+        "agent lane handler must fit the ordinary stack budget"
+    );
     let locked_app = app.lock().await;
     let submission = runtime.dispatch_prompt_submit(&command, request.clone());
     tokio::pin!(submission);

@@ -103,8 +103,8 @@ test("provider command can switch backends and manage codex auth", async () => {
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider reauth", value: "reauth" })
 
   assert.deepEqual(events, ["provider:codex", "provider:claude-p", "provider:claude-headless"])
-  assert.equal(flashedMessage, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
-  assert.equal(notice, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
+  assert.equal(flashedMessage, "codex reauth started • code ABCD-1234 • authorization link below")
+  assert.equal(notice, "\nhttps://auth.openai.com/codex/device\n")
 })
 
 test("config command renders kernel mutation effects", async () => {
@@ -150,51 +150,10 @@ test("config command renders kernel mutation effects", async () => {
     raw: "/config keys",
     args: ["keys"],
   })
-  await handlers.handleConfigCommand({
-    kind: "config",
-    raw: "/config workspace-live-sync off",
-    args: ["workspace-live-sync", "off"],
-  })
-  await handlers.handleConfigCommand({
-    kind: "config",
-    raw: "/config workspace-live-sync tracked",
-    args: ["workspace-live-sync", "tracked"],
-  })
-  await handlers.handleConfigCommand({
-    kind: "config",
-    raw: "/config workspace-live-sync",
-    args: ["workspace-live-sync"],
-  })
-  await handlers.handleConfigCommand({
-    kind: "config",
-    raw: "/config workspace-live-sync managed",
-    args: ["workspace-live-sync", "managed"],
-  })
-  await handlers.handleConfigCommand({
-    kind: "config",
-    raw: "/config workspace-live-sync required",
-    args: ["workspace-live-sync", "required"],
-  })
 
-  assert.deepEqual(updates, [
-    { path: "providers.workspace_live_sync", value: "off" },
-    { path: "providers.workspace_live_sync", value: "tracked" },
-    { path: "providers.workspace_live_sync", value: "managed" },
-  ])
-  assert.deepEqual(notices, [
-    "providers.workspace_live_sync (enum; live; provider_reload unset values=off|managed|tracked)",
-    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
-    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
-    "workspace live sync policy updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
-  ])
-  assert.deepEqual(flashes, [
-    "listed 1 config key",
-    "default workspace live sync for new sessions disabled; other repositories remain unrestricted",
-    "default workspace live sync for new sessions set to tracked (selected workspace/worktree only; other repositories unrestricted)",
-    "usage: /config workspace-live-sync off|managed|tracked",
-    "default workspace live sync for new sessions set to managed (selected workspace/worktree only; other repositories unrestricted)",
-    "usage: /config workspace-live-sync off|managed|tracked",
-  ])
+  assert.deepEqual(updates, [])
+  assert.deepEqual(notices, ["(no config keys)"]) // MP-08 OWNER-20: discontinued key stays hidden
+  assert.deepEqual(flashes, ["listed 0 config keys"])
 })
 
 test("provider processes command lists and tears down safe daemon-tracked processes", async () => {

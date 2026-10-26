@@ -1,5 +1,8 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { reconcileMountedTranscriptPane } from "@chariox/kernel-client/transcript-pane-reconcile"
+import {
+  reconcileMountedTranscriptPane,
+  transcriptPaneEntryIsMounted,
+} from "@chariox/kernel-client/transcript-pane-reconcile"
 
 export type AgentPaneTranscriptChild = {
   id: string
@@ -102,12 +105,20 @@ export function createAgentPaneTranscriptRenderController<
     }
 
     const renderables = entryRenderablesForAgent(agentId)
-    for (const entry of paneEntries.filter((candidate) => !candidate.historyDeferred)) {
+    for (const entry of paneEntries.filter(transcriptPaneEntryIsMounted)) {
       const renderable = deps.buildEntryRenderable(agentId, entry)
       renderables.set(entry.id, renderable)
       scrollbox.add(renderable.wrapper)
     }
     scrollbox.requestRender()
+  }
+
+  // Panes built while history was loading show the loading state; rebuild them
+  // once it settles so they show their entries or the real empty state.
+  const rebuildEmptyPanes = () => {
+    for (const agentId of [...deps.emptyRenderables.keys()]) {
+      rebuildPane(agentId)
+    }
   }
 
   const mountEntry = (agentId: string, entry: TranscriptEntry, requestRender = true) => {
@@ -210,6 +221,7 @@ export function createAgentPaneTranscriptRenderController<
     clearAll,
     clearPane,
     rebuildPane,
+    rebuildEmptyPanes,
     mountEntry,
     updateEntry,
     reconcileMountedTranscript,

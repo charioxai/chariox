@@ -59,139 +59,61 @@ function removeWorkflowEdgeRequest(sessionId, workflowRef, edgeId, expectedRevis
 }
 
 export async function runHostedMultiUserAssertions({
-  LocalIpcClient,
   requests,
-  localClient,
   ownerRemoteClient,
   ownerProfile,
-  ownerClientId,
+  ownerTerminal,
+  modules,
+  stateRoot,
+  homeDaemonId,
+  connectSessionScopedCloudClient,
+  cleanupHostedCloudTerminal,
   workspace,
-  daemonAlias,
   session,
-  apiUrl,
   log,
   assert,
   unwrap,
-  postJson,
-  issueSessionScopedClientToken,
   manualCloudDeviceLogin,
   installSendRetry,
   expectReject,
-  cleanupHostedCloudIdentity,
 }) {
   log("multi-user-cloud-invites")
   const localInvite = unwrap(
     await ownerRemoteClient.send(requests.createSessionInviteRequest(session.id, null, 2)),
     "SessionInviteCreated",
   )
-  const cloudInvite = unwrap(
-    await ownerRemoteClient.send(requests.createCloudSessionInviteRequest(session.id, {
-      displayName: "Hosted cloud relay multi-user drill",
-      maxUses: 2,
-    })),
-    "CloudSessionInviteCreated",
-  )
+  // MP-08 / MP-10 / MP-11: human collaboration uses each terminal's CLIENT
+  // authority; only local session membership mutations go through the kernel.
+  const cloudInvite = await ownerTerminal.client.collaboration.createSessionInvite(session.id, {
+    displayName: "Hosted cloud relay multi-user drill", maxUses: 2,
+  })
   const localInviteToken = localInvite.invite?.invite_token
   const cloudInviteToken = cloudInvite.invite?.invite_token
-  assert(localInviteToken, "local session invite token should be returned", localInvite)
-  assert(cloudInviteToken, "cloud session invite token should be returned", cloudInvite)
-
-  const ownerScopedToken = await issueSessionScopedClientToken(apiUrl, {
-    sessionToken: ownerProfile.cloudSessionToken,
-    accountId: ownerProfile.accountId,
-    realmId: ownerProfile.realmId,
-    subject: ownerClientId,
-    userId: ownerProfile.userId,
-    clientId: ownerClientId,
-    sessionId: session.id,
-    targetDaemonAlias: daemonAlias,
-  })
-  const ownerScopedClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
-    relayAuthToken: ownerScopedToken,
-    targetDaemonAlias: daemonAlias,
-    kernelPingIntervalMs: 60_000,
-    kernelMaxMissedPongs: 10,
-  }), "owner-scoped-relay")
-
-  const peerClientId = `${ownerClientId}-peer`
-  const thirdClientId = `${ownerClientId}-third`
-  let peerRemoteClient = null
-  let thirdRemoteClient = null
-  let peerLogin = null
-  let thirdLogin = null
+  assert(localInviteToken, "local session invite token should be returned")
+  assert(cloudInviteToken, "cloud session invite token should be returned")
+  const scope = {accountId: ownerProfile.accountId, realmId: ownerProfile.realmId, sessionId: session.id, targetDaemonId: homeDaemonId}
+  let ownerScopedClient = null, peerRemoteClient = null, thirdRemoteClient = null
+  let peerLogin = null, thirdLogin = null, peerClientId = null, thirdClientId = null
   let scenarioFailure = null
   try {
-    peerLogin = await manualCloudDeviceLogin({
-      role: "peer",
-      clientId: peerClientId,
-      clientAlias: "hosted-peer-cli",
-      localClient,
-      requests,
-    })
-    thirdLogin = await manualCloudDeviceLogin({
-      role: "third",
-      clientId: thirdClientId,
-      clientAlias: "hosted-third-cli",
-      localClient,
-      requests,
-    })
-    const peerProfile = peerLogin.profile
-    const thirdProfile = thirdLogin.profile
-    assert(peerProfile.userId !== ownerProfile.userId, "peer login must use a different Auth0 user from owner", {
-      ownerUserId: ownerProfile.userId,
-      peerUserId: peerProfile.userId,
-    })
-    assert(thirdProfile.userId !== ownerProfile.userId && thirdProfile.userId !== peerProfile.userId, "third login must use a distinct Auth0 user", {
-      ownerUserId: ownerProfile.userId,
-      peerUserId: peerProfile.userId,
-      thirdUserId: thirdProfile.userId,
-    })
+    ownerScopedClient = installSendRetry(await connectSessionScopedCloudClient(modules, ownerTerminal, scope), "owner-scoped-relay")
+    peerLogin = await manualCloudDeviceLogin({role: "peer", stateRoot, modules})
+    thirdLogin = await manualCloudDeviceLogin({role: "third", stateRoot, modules})
+    const peerProfile = peerLogin.profile, thirdProfile = thirdLogin.profile
+    peerClientId = peerProfile.clientId
+    thirdClientId = thirdProfile.clientId
+    assert(peerProfile.userId !== ownerProfile.userId, "peer login must use a different Auth0 user from owner")
+    assert(thirdProfile.userId !== ownerProfile.userId && thirdProfile.userId !== peerProfile.userId, "third login must use a distinct Auth0 user")
 
     log("peer-accept-cloud-invite")
-    const peerAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
-      sessionToken: peerLogin.cloudSessionToken,
-    })
-    assert(peerAcceptance.userId === peerProfile.userId, "peer should accept the cloud invite as itself", peerAcceptance)
-
+    const peerAcceptance = await peerLogin.client.collaboration.acceptSessionInvite(cloudInviteToken)
+    assert(peerAcceptance.acceptance.user_id === peerProfile.userId, "peer should accept the cloud invite as itself")
     log("third-accept-cloud-invite")
-    const thirdAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
-      sessionToken: thirdLogin.cloudSessionToken,
-    })
-    assert(thirdAcceptance.userId === thirdProfile.userId, "third user should accept the cloud invite as itself", thirdAcceptance)
+    const thirdAcceptance = await thirdLogin.client.collaboration.acceptSessionInvite(cloudInviteToken)
+    assert(thirdAcceptance.acceptance.user_id === thirdProfile.userId, "third user should accept the cloud invite as itself")
 
-    const peerRelayToken = await issueSessionScopedClientToken(apiUrl, {
-      sessionToken: peerLogin.cloudSessionToken,
-      accountId: ownerProfile.accountId,
-      realmId: ownerProfile.realmId,
-      subject: peerClientId,
-      userId: peerProfile.userId,
-      clientId: peerClientId,
-      sessionId: session.id,
-      targetDaemonAlias: daemonAlias,
-    })
-    const thirdRelayToken = await issueSessionScopedClientToken(apiUrl, {
-      sessionToken: thirdLogin.cloudSessionToken,
-      accountId: ownerProfile.accountId,
-      realmId: ownerProfile.realmId,
-      subject: thirdClientId,
-      userId: thirdProfile.userId,
-      clientId: thirdClientId,
-      sessionId: session.id,
-      targetDaemonAlias: daemonAlias,
-    })
-
-    peerRemoteClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
-      relayAuthToken: peerRelayToken,
-      targetDaemonAlias: daemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    }), "peer-relay")
-    thirdRemoteClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
-      relayAuthToken: thirdRelayToken,
-      targetDaemonAlias: daemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    }), "third-relay")
+    peerRemoteClient = installSendRetry(await connectSessionScopedCloudClient(modules, peerLogin, scope), "peer-relay")
+    thirdRemoteClient = installSendRetry(await connectSessionScopedCloudClient(modules, thirdLogin, scope), "third-relay")
 
     await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
     await thirdRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, thirdProfile.userId))
@@ -363,19 +285,16 @@ export async function runHostedMultiUserAssertions({
   } finally {
     await thirdRemoteClient?.close().catch(() => {})
     await peerRemoteClient?.close().catch(() => {})
-    await ownerScopedClient.close().catch(() => {})
+    await ownerScopedClient?.close().catch(() => {})
     const cleanupErrors = []
     for (const identity of [
       { login: peerLogin, clientId: peerClientId, role: "peer" },
       { login: thirdLogin, clientId: thirdClientId, role: "third" },
     ]) {
       if (!identity.login) continue
-      await cleanupHostedCloudIdentity({
-        profile: identity.login.profile,
-        cloudSessionToken: identity.login.cloudSessionToken,
-        clientIds: [identity.clientId],
+      await cleanupHostedCloudTerminal(identity.login, {
         reason: `hosted Cloud ${identity.role} drill cleanup`,
-      }).catch((error) => cleanupErrors.push(error))
+      }).catch(error => cleanupErrors.push(error))
     }
     if (cleanupErrors.length > 0) {
       log("multi-user-cloud-cleanup-failed", {

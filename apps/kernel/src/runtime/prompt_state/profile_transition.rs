@@ -25,7 +25,6 @@ impl AgentProfileTransitionClaim {
         self,
         session: &RuntimeSession,
         agent_id: &str,
-        prompt_id: String,
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let mut owner = self
             .state
@@ -46,7 +45,6 @@ impl AgentProfileTransitionClaim {
             owner.ensure_agent_state(session, agent_id),
             agent_id,
             None,
-            prompt_id,
         );
         owner.profile_transitions.remove(&self.key);
         result
@@ -86,6 +84,12 @@ impl PromptStateOwner {
                 message: "the agent already has a profile change in progress".to_string(),
             });
         }
+        if state.queue_promotions.contains(&key) {
+            return Err(DaemonError::LocalTransport {
+                operation: "update agent profile",
+                message: format!("agent `{agent_id}` is preparing queued work; retry the profile change after preparation finishes"),
+            });
+        }
         if state
             .ensure_agent_state(session, agent_id)
             .active_prompt
@@ -114,6 +118,99 @@ impl PromptStateOwner {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn local_profile_release_with_gated_promotion_preserves_backlog_order() {
+        let owner = PromptStateOwner::default();
+        let session =
+            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let claim = owner
+            .claim_idle_agent_profile_transition(&session, "agent-1")
+            .unwrap();
+        assert!(matches!(
+            owner
+                .submit_prepared_prompt(
+                    &session,
+                    PromptQueueItem::new(
+                        "older",
+                        "client",
+                        "agent-1",
+                        "older request",
+                        PromptStatus::Queued
+                    ),
+                    false,
+                )
+                .unwrap(),
+            PromptSubmissionOutcome::Queued { .. }
+        ));
+
+        // Local commit/rejection releases the claim before detached Project/Vault
+        // preparation finishes. A ready run permits ordinary, non-forced admission.
+        drop(claim);
+        let (preparing, prepared) = tokio::sync::oneshot::channel();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let promoter_owner = owner.clone();
+        let promoter_session = session.clone();
+        let promotion = tokio::spawn(async move {
+            let head = promoter_owner
+                .peek_next_queued_prompt(&promoter_session, "agent-1")
+                .unwrap();
+            preparing.send(()).unwrap();
+            gate.await.unwrap();
+            promoter_owner.activate_next_queued_prompt(
+                &promoter_session,
+                "agent-1",
+                Some(head.id()),
+            )
+        });
+        prepared.await.unwrap();
+        let newer = owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "newer",
+                    "client",
+                    "agent-1",
+                    "newer request",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .unwrap();
+        let (active_while_preparing, backlog_while_preparing) =
+            owner.state_parts(&session, "agent-1");
+        // Always release/join the gate, including on the unchanged-code RED path.
+        release.send(()).unwrap();
+        let promoted = promotion.await.unwrap();
+        assert!(
+            matches!(newer, PromptSubmissionOutcome::Queued { .. }),
+            "new ordinary prompt overtook the older queued request: {newer:?}"
+        );
+        assert!(active_while_preparing.is_none());
+        assert_eq!(
+            backlog_while_preparing
+                .iter()
+                .map(PromptQueueItem::prompt)
+                .collect::<Vec<_>>(),
+            vec!["older request", "newer request"]
+        );
+        assert_eq!(promoted.unwrap().unwrap().prompt(), "older request");
+        assert_eq!(
+            owner
+                .complete_active_prompt_only(&session, "agent-1")
+                .unwrap()
+                .prompt(),
+            "older request"
+        );
+        assert_eq!(
+            owner
+                .activate_next_queued_prompt(&session, "agent-1", None,)
+                .unwrap()
+                .unwrap()
+                .prompt(),
+            "newer request"
+        );
+    }
+
     #[test]
     fn profile_completion_reserves_oldest_prompt_before_new_admission() {
         let owner = PromptStateOwner::default();
@@ -141,12 +238,17 @@ mod tests {
                 PromptSubmissionOutcome::Queued { .. }
             ));
         }
+        let queued_id = owner
+            .peek_next_queued_prompt(&session, "agent-1")
+            .unwrap()
+            .id()
+            .to_string();
         let started = claim
-            .finish_and_activate_next(&session, "agent-1", "started".into())
+            .finish_and_activate_next(&session, "agent-1")
             .unwrap()
             .unwrap();
         assert_eq!(started.prompt(), "first");
-        assert_eq!(started.id(), "started");
+        assert_eq!(started.id(), queued_id);
         assert_eq!(started.workflow_run_id(), Some("run-first"));
         assert_eq!(started.workflow_node_run_id(), Some("node-first"));
         assert_eq!(started.source_client_id(), Some("caller-client"));
@@ -200,7 +302,7 @@ mod tests {
             .claim_idle_agent_profile_transition(&session, "agent-1")
             .unwrap();
         assert!(claim
-            .finish_and_activate_next(&session, "agent-1", "unused".into())
+            .finish_and_activate_next(&session, "agent-1")
             .unwrap()
             .is_none());
         assert!(matches!(
@@ -232,14 +334,12 @@ mod tests {
         let second = owner
             .claim_idle_agent_profile_transition(&session, "agent-2")
             .unwrap();
-        assert!(first
-            .finish_and_activate_next(&session, "agent-2", "wrong".into())
-            .is_err());
+        assert!(first.finish_and_activate_next(&session, "agent-2").is_err());
         assert!(owner
             .claim_idle_agent_profile_transition(&session, "agent-2")
             .is_err());
         assert!(second
-            .finish_and_activate_next(&session, "agent-2", "empty".into())
+            .finish_and_activate_next(&session, "agent-2")
             .unwrap()
             .is_none());
     }
@@ -266,12 +366,7 @@ mod tests {
             panic!("reserved agent must queue");
         };
         assert!(owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(prompt.id()),
-                "started".into()
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(prompt.id()))
             .unwrap()
             .is_none());
         assert!(matches!(
@@ -295,12 +390,7 @@ mod tests {
             .is_err());
         drop(claim);
         let started = owner
-            .activate_next_queued_prompt_with_prompt_id(
-                &session,
-                "agent-1",
-                Some(prompt.id()),
-                "started".into(),
-            )
+            .activate_next_queued_prompt_for_dispatch(&session, "agent-1", Some(prompt.id()))
             .unwrap()
             .unwrap();
         assert_eq!(started.prompt(), "first");

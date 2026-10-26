@@ -11,6 +11,7 @@ pub(crate) use catalog::AGENT_SPAWN_USAGE;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetaCommandPolicy {
     Allow,
+    #[allow(dead_code)] // Catalog policy vocabulary includes approvals.
     Approval,
     Deny,
 }

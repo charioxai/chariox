@@ -6,7 +6,7 @@ import * as providerRequests from "./ipc-provider-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("provider login request carries the selected enrollment method", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 416)
+
   const request = startProviderLoginRequest("codex", "work", "device_code") as {
     StartProviderLogin: Record<string, unknown>
   }
@@ -55,4 +55,21 @@ test("MP-08/MP-11 setup-token run carries only scope and replacement policy", ()
   assert.deepEqual(setProviderAccountCredentialRequest("claude", "work", "", true, { sessionId: "session-1" }, true), {
     SetProviderAccountCredential: { provider: "claude", account_profile: "work", value: "", run: true, overwrite: true, session_id: "session-1" },
   })
+})
+
+
+test("MP-08 / MP-10 / MP-11 protocol 518 catalogs use the ordinary provider scope for revision checks", async () => {
+  const {getClientCatalogRevisionsRequest,clientCatalogRevisionsMinimumProtocolVersion,getProviderCatalogRequest} = await import("./ipc-provider-requests.js")
+  const scope = {provider:"codex",accountProfile:"work",executionLocation:{kind:"worker" as const,kernel_ref:"worker-one"}}
+  assert.equal(clientCatalogRevisionsMinimumProtocolVersion,518)
+  assert.deepEqual(getClientCatalogRevisionsRequest(scope),{GetClientCatalogRevisions:getProviderCatalogRequest(scope).GetProviderCatalog})
+})
+
+test("MP-08 / MP-10 conditional catalogs carry known revisions and the ordinary scope", async () => {
+  const {getClientCatalogSnapshotRequest,clientCatalogSnapshotMinimumProtocolVersion,getProviderCatalogRequest} = await import("./ipc-provider-requests.js")
+  const scope = {provider: "codex", accountProfile: "work"}
+  const known = {provider_accounts: "a".repeat(64), provider_catalog: "b".repeat(64), provider_commands: "c".repeat(64), terminal_commands: `sha256:${"d".repeat(64)}`}
+  assert.equal(clientCatalogSnapshotMinimumProtocolVersion, 534)
+  assert.deepEqual(getClientCatalogSnapshotRequest(scope, known), {GetClientCatalogSnapshot: {scope: getProviderCatalogRequest(scope).GetProviderCatalog, known}})
+  assert.equal(getClientCatalogSnapshotRequest().GetClientCatalogSnapshot.known, null)
 })

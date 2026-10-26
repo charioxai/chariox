@@ -3174,7 +3174,7 @@ function rulesFor(file, embeddedPath, lineNumber = null) {
     && (lineNumber === null || !rule.ranges || rule.ranges.some(([start, end]) => lineNumber >= start && lineNumber <= end)));
 }
 
-export function sourceRuleCandidates(file, lines, embeddedPath = null) {
+export function sourceRuleCandidates(file, lines, embeddedPath = null, lineOffset = 0) {
   const candidates = [];
   for (const rule of rulesFor(file, embeddedPath)) {
     for (const [category, symbol] of rule.anchors) {
@@ -3185,7 +3185,7 @@ export function sourceRuleCandidates(file, lines, embeddedPath = null) {
         ? new RegExp("(?:^|[,{])\\s*" + JSON.stringify(symbol) + "\\s*:") : null;
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const match = declaration.exec(lines[lineIndex]) ?? jsonProperty?.exec(lines[lineIndex]);
-        if (match && (!rule.ranges || rule.ranges.some(([start, end]) => lineIndex + 1 >= start && lineIndex + 1 <= end))) candidates.push({
+        if (match && (!rule.ranges || rule.ranges.some(([start, end]) => lineOffset + lineIndex + 1 >= start && lineOffset + lineIndex + 1 <= end))) candidates.push({
           category, symbol, selector: symbol, lineIndex,
           column: lines[lineIndex].indexOf(symbol) + 1,
           affectedBehavior: rule.rationale, ruleId: rule.id,

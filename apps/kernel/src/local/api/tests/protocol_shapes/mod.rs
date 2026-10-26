@@ -11,20 +11,31 @@ mod app_fetch;
 mod app_install;
 mod app_publisher;
 mod apps;
+mod browser_artifact;
 mod browser_import;
+mod browser_mirror;
+mod client_catalog_revisions;
 mod cloud_relay;
+mod computer_hold;
 mod core;
 mod credential_enrollment;
+mod display_resumption;
 mod disposable_worker;
 mod event_publication;
 mod extension_apps;
 mod fresh_remote_relay_inventory;
+mod handoff_config;
 mod kernel_access;
+mod kernel_browser;
+mod kernel_computer;
 mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod notes;
+mod panes_history;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_settings;
@@ -33,14 +44,19 @@ mod provider_auth_recovery;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
+mod released_provider_run;
 mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
+mod session_view;
 mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
+mod user_app_views;
+mod user_domain_access;
 mod workflow_code;
+mod workflow_notifications;
 mod workspace_history_external;
 
 fn history_page_entry(
@@ -51,6 +67,9 @@ fn history_page_entry(
 ) -> crate::session_history_page::SessionHistoryPageEntry {
     crate::session_history_page::SessionHistoryPageEntry {
         entry_index: sequence,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
+        sequence_indices: Vec::new(),
         fragment_start: 0,
         fragment_end: text.chars().count(),
         total_chars: text.chars().count(),
@@ -79,3 +98,13 @@ fn history_page_entry(
         },
     }
 }
+
+mod agent_lifecycle;
+mod owner_handoff;
+mod room_workflows;
+mod screenshot;
+
+mod relay_transport;
+mod ssh_machine;
+
+mod waiting_room_workspace;

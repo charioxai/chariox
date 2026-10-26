@@ -7,6 +7,7 @@ use crate::local::{
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
+use crate::runtime::session_projection_refresh::redact_agent_activity_for_session;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workflow_projection::{projected_resolve_workflow, projected_workflow_id};
 use crate::session::{EnvironmentError, RuntimeSession};
@@ -51,23 +52,32 @@ pub(crate) fn projected_session_state_response(
     }
     let agent_activity =
         runtime_state.agent_activity_for_session_with_unread(&session, Some(caller_user_id));
-    let redacted_session = session.redacted_for_user(caller_user_id);
-    let visible_agent_ids = redacted_session
-        .agents()
-        .iter()
-        .map(|agent| agent.id().to_string())
-        .collect::<std::collections::BTreeSet<_>>();
+    let room_workflows =
+        match crate::runtime::projection::RoomWorkflowInventory::project_with_history(
+            &session,
+            caller_user_id,
+            Some(runtime_state.durable_state_store()),
+        ) {
+            Ok(inventory) => inventory,
+            Err(error) => return Some(Err(error)),
+        };
+    let redacted_session = match session.redacted_for_user_with_workflow_history(
+        caller_user_id,
+        runtime_state.durable_state_store(),
+    ) {
+        Ok(session) => session,
+        Err(error) => return Some(Err(error)),
+    };
     Some(Ok(LocalDaemonResponse::SessionState {
-        agent_activity: agent_activity
-            .into_iter()
-            .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))
-            .collect(),
+        room_workflows,
+        agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
         agent_activity_revision: session_projection.change_sequence(),
         session: redacted_session,
     }))
 }
 
 pub(crate) fn projected_resolve_session_response(
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     request: &ResolveSessionRequest,
     caller_user_id: &str,
@@ -75,7 +85,11 @@ pub(crate) fn projected_resolve_session_response(
     if let Some(session) = session_projection
         .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())
     {
-        return Some(redacted_session_resolved_response(session, caller_user_id));
+        return Some(redacted_session_resolved_response(
+            session,
+            caller_user_id,
+            runtime_state.durable_state_store(),
+        ));
     }
     if let Some(result) = session_projection.resolve_session_ref_id_from_warmed_list(
         &request.session_ref,
@@ -91,7 +105,11 @@ pub(crate) fn projected_resolve_session_response(
                 return Some(Err(DaemonError::SessionNotFound { session_id }));
             }
         };
-        return Some(redacted_session_resolved_response(session, caller_user_id));
+        return Some(redacted_session_resolved_response(
+            session,
+            caller_user_id,
+            runtime_state.durable_state_store(),
+        ));
     }
     None
 }
@@ -105,8 +123,13 @@ pub(crate) async fn projected_list_sessions_response(
         let sessions = sessions
             .into_iter()
             .filter(|session| session.has_member(caller_user_id))
-            .map(|session| session.redacted_for_user(caller_user_id))
-            .collect();
+            .map(|session| {
+                session.redacted_for_user_with_workflow_history(
+                    caller_user_id,
+                    runtime_state.durable_state_store(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         return Ok(LocalDaemonResponse::SessionsListed { sessions });
     }
     let sessions: Vec<_> = runtime_state
@@ -118,8 +141,13 @@ pub(crate) async fn projected_list_sessions_response(
     Ok(LocalDaemonResponse::SessionsListed {
         sessions: sessions
             .into_iter()
-            .map(|session| session.redacted_for_user(caller_user_id))
-            .collect(),
+            .map(|session| {
+                session.redacted_for_user_with_workflow_history(
+                    caller_user_id,
+                    runtime_state.durable_state_store(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -151,9 +179,12 @@ pub(crate) async fn projected_session_read_response(
         }
     }
     if let LocalDaemonRequest::ResolveSession(request) = request {
-        if let Some(response) =
-            projected_resolve_session_response(session_projection, request, caller_user_id)
-        {
+        if let Some(response) = projected_resolve_session_response(
+            runtime_state,
+            session_projection,
+            request,
+            caller_user_id,
+        ) {
             return Some(response);
         }
     }
@@ -487,6 +518,7 @@ pub(crate) fn projected_session_or_absence(
 fn redacted_session_resolved_response(
     session: RuntimeSession,
     caller_user_id: &str,
+    history: &crate::durable_state::DurableKernelStateStore,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if !session.has_member(caller_user_id) {
         return Err(DaemonError::SessionAccessDenied {
@@ -495,6 +527,6 @@ fn redacted_session_resolved_response(
         });
     }
     Ok(LocalDaemonResponse::SessionResolved {
-        session: session.redacted_for_user(caller_user_id),
+        session: session.redacted_for_user_with_workflow_history(caller_user_id, history)?,
     })
 }

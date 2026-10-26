@@ -11,9 +11,7 @@ use super::identity::{
 use super::{
     default_os_name, load_user_config_from_path, parse_kernel_runtime_role,
     parse_remote_lease_capacity,
-    persisted_daemon::{
-        load_cli_cloud_relay_profile, load_persisted_relay_config, PersistedCloudRelayProfile,
-    },
+    persisted_daemon::{load_persisted_relay_config, PersistedCloudRelayProfile},
     DaemonConfig, KernelRuntimeRole, DEFAULT_RELAY_HEARTBEAT_MS,
 };
 
@@ -46,11 +44,6 @@ impl DaemonConfig {
             .as_ref()
             .and_then(|config| config.cloud_relay.clone());
         let env_cloud_relay = load_env_cloud_relay_profile();
-        let cli_cloud_relay = if persisted_cloud_relay.is_none() {
-            load_cli_cloud_relay_profile()
-        } else {
-            None
-        };
         let env_relay_url = env::var("CHARIOX_RELAY_URL")
             .ok()
             .map(|value| value.trim().to_string())
@@ -121,7 +114,7 @@ impl DaemonConfig {
             .map(|value| serde_json::from_str(&value))
             .transpose();
         let lease_worker_home_caller_parse_error = home_caller.is_err();
-        Self {
+        let mut loaded = Self {
             lease_worker_home_caller: home_caller.unwrap_or(None),
             lease_worker_home_caller_parse_error,
             room_environment_worker_binding: super::RoomEnvironmentWorkerBinding::from_environment(
@@ -225,9 +218,7 @@ impl DaemonConfig {
             cloud_relay: if env_relay_configured {
                 env_cloud_relay
             } else {
-                env_cloud_relay
-                    .or(persisted_cloud_relay)
-                    .or(cli_cloud_relay)
+                env_cloud_relay.or(persisted_cloud_relay)
             },
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
@@ -255,6 +246,7 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
+            room_agent_tools: env::var("CHARIOX_ROOM_AGENT_TOOLS").as_deref() == Ok("1"),
             accept_remote_leases,
             kernel_runtime_role,
             remote_lease_capacity,
@@ -263,7 +255,11 @@ impl DaemonConfig {
             os_user: env::var("USER")
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
+        };
+        if !env_relay_configured {
+            loaded.load_kernel_cloud_state();
         }
+        loaded
     }
 }
 
@@ -423,6 +419,15 @@ fn default_kernel_alias(machine_alias: Option<&str>, port: u16) -> Option<String
     }
 }
 
+fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
+    let payload = env::var("CHARIOX_CLOUD_RELAY_CONFIG_JSON").ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&payload).ok()?;
+    let profile_value = value.get("cloud_relay").cloned().unwrap_or(value);
+    serde_json::from_value::<PersistedCloudRelayProfile>(profile_value)
+        .ok()
+        .map(PersistedCloudRelayProfile::canonicalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -516,13 +521,4 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("requires a token"));
     }
-}
-
-fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
-    let payload = env::var("CHARIOX_CLOUD_RELAY_CONFIG_JSON").ok()?;
-    let value = serde_json::from_str::<serde_json::Value>(&payload).ok()?;
-    let profile_value = value.get("cloud_relay").cloned().unwrap_or(value);
-    serde_json::from_value::<PersistedCloudRelayProfile>(profile_value)
-        .ok()
-        .map(PersistedCloudRelayProfile::canonicalized)
 }

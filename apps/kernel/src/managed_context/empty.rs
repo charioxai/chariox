@@ -350,7 +350,7 @@ fn read_receipt(path: &Path) -> Result<Option<(EmptyManagedContextReceipt, Strin
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     let mut file = match options.open(path) {
         Ok(file) => file,
@@ -689,6 +689,9 @@ mod tests {
         config.daemon_id = kernel_id.to_string();
         config.user_config.state.path = Some(root.join("state.db").display().to_string());
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             api_url: api_url.to_string(),
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),
@@ -716,4 +719,10 @@ mod tests {
             rand::random::<u64>()
         ))
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| read_receipt(&path).is_err());
 }

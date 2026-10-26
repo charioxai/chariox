@@ -377,12 +377,13 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
         config.runtime_mcp_port = unused_tcp_port();
         config.kernel_websocket_queue_capacity = 64;
         let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+        // MP-11: production startup materializes the terminal credential.
+        drop(kernel_websocket_listener);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
-            run_kernel_websocket_server_on_listener(
+            chariox_kernel::runtime_transport::run_kernel_websocket_server(
                 std::sync::Arc::new(tokio::sync::Mutex::new(app)),
-                kernel_websocket_listener,
                 async {
                     let _ = shutdown_rx.await;
                 },
@@ -390,7 +391,7 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
             .await
         });
 
-        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let mut socket = connect_terminal_with_retry(&config.kernel_websocket_url()).await;
         let cwd = std::env::current_dir()
             .expect("current directory should be available")
             .to_string_lossy()
@@ -451,31 +452,15 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
             Some(true)
         );
 
-        let mut health_socket = connect_with_retry(&config.kernel_websocket_url()).await;
-        let health = timeout(Duration::from_secs(5), async {
-            let mut attempt = 0_u64;
-            loop {
-                let request_id = format!("daemon-health-after-inbound-overload-{attempt}");
-                attempt += 1;
-                send_frame(
-                    &mut health_socket,
-                    json!({
-                        "type": "request",
-                        "request_id": request_id,
-                        "request": LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
-                    }),
-                )
-                .await;
-                let response = wait_for_request_completion(&mut health_socket, &request_id).await;
-                match response["error"]["code"].as_str() {
-                    Some("kernel_request_overloaded") => sleep(Duration::from_millis(25)).await,
-                    Some(code) => panic!("health recovery probe failed with `{code}`: {response}"),
-                    None => break response,
-                }
-            }
-        })
-        .await
-        .expect("kernel admission should recover after slow requests complete");
+        let mut health_socket = connect_terminal_with_retry(&config.kernel_websocket_url()).await;
+        // The saturated connection's shell commands are still running; its
+        // load must not refuse another connection's health request.
+        let health = send_request(
+            &mut health_socket,
+            "daemon-health-during-inbound-overload",
+            LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+        )
+        .await;
         let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
         assert!(
             transport["inbound_overload_rejections"]

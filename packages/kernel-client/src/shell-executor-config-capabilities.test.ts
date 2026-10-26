@@ -156,35 +156,23 @@ test("executeShellCommand mutates user config", async () => {
   const schemaResult = await executeShellCommand(parseShellCommand("config schema"), context, { client: fake.client })
   const setResult = await executeShellCommand(parseShellCommand("config set providers.default opencode"), context, { client: fake.client })
   const unsetResult = await executeShellCommand(parseShellCommand("config unset providers.default"), context, { client: fake.client })
-  const offWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync off"), context, { client: fake.client })
-  const managedWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync managed"), context, { client: fake.client })
-  const defaultWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync"), context, { client: fake.client })
   assert.equal(pathResult.ok, true)
   assert.equal(pathResult.message, "/home/.chariox/config.json")
   assert.equal(keysResult.ok, true)
-  assert.match(keysResult.message ?? "", /providers\.workspace_live_sync/)
+  assert.doesNotMatch(keysResult.message ?? "", /workspace_live_sync/) // MP-08 OWNER-20
   assert.equal(schemaResult.ok, true)
   assert.equal(schemaResult.format, "json")
-  assert.match(schemaResult.message ?? "", /provider_reload/)
+  assert.equal(schemaResult.message, "[]") // MP-08 OWNER-20: the only fixture key is discontinued Live Sync
   assert.equal(setResult.ok, true)
   assert.match(setResult.message ?? "", /config providers.default set to opencode/)
   assert.equal(unsetResult.ok, true)
   assert.match(unsetResult.message ?? "", /config providers.default unset/)
-  assert.equal(offWorkspaceLiveSyncResult.ok, true)
-  assert.match(offWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions disabled; other repositories remain unrestricted/)
-  assert.equal(managedWorkspaceLiveSyncResult.ok, true)
-  assert.match(managedWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions set to managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
-  assert.equal(defaultWorkspaceLiveSyncResult.ok, true)
-  assert.match(defaultWorkspaceLiveSyncResult.message ?? "", /default workspace live sync for new sessions disabled; other repositories remain unrestricted/)
   assert.deepEqual(requests, [
     { GetUserConfig: null },
     { GetUserConfigSchema: null },
     { GetUserConfigSchema: null },
     { SetUserConfigValue: { path: "providers.default", value: "opencode" } },
     { UnsetUserConfigValue: { path: "providers.default" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "off" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "managed" } },
-    { SetUserConfigValue: { path: "providers.workspace_live_sync", value: "off" } },
   ])
 })
 
@@ -526,14 +514,13 @@ test("executeShellCommand grants, revokes, and lists agent extensions", async ()
   assert.match(grantsResult.message ?? "", /agent-1 MCP grants/)
   assert.match(grantsResult.message ?? "", /playwright/)
   assert.deepEqual(requests, [
-    { ListAgents: { session_id: "session-1" } },
     { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "mcp", name: "playwright" } },
     { RevokeAgentExtension: { agent_ref: "agent-1", kind: "skill", name: "qa" } },
     { ListAgents: { session_id: "session-1" } },
   ])
 })
 
-test("executeShellCommand confirms active home-proxy grants before exposing home execution", async () => {
+test("executeShellCommand grants an explicit home-proxy grant without a second confirmation", async () => {
   const agent = makeAgent({
     remote_execution: {
       worker_kernel_id: "worker-1",
@@ -554,19 +541,13 @@ test("executeShellCommand confirms active home-proxy grants before exposing home
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
 
-  const blocked = await executeShellCommand(parseShellCommand("extension grant script agent-1 lookup --env py"), context, { client: fake.client })
-  const confirmed = await executeShellCommand(parseShellCommand("extension grant script agent-1 lookup --env py --confirm-home-proxy"), context, { client: fake.client })
+  const granted = await executeShellCommand(parseShellCommand("extension grant script agent-1 lookup --env py"), context, { client: fake.client })
+  const legacy = await executeShellCommand(parseShellCommand("extension grant script agent-1 lookup --env py --confirm-home-proxy"), context, { client: fake.client })
 
-  assert.equal(blocked.ok, false)
-  assert.match(blocked.message ?? "", /Confirm exposing script lookup to remote agent agent-1; home keeps credentials local and executes calls on this machine\./)
-  assert.match(blocked.message ?? "", /rerun: extension grant script agent-1 lookup --env py --confirm-home-proxy/)
-  assert.equal(confirmed.ok, true)
-  assert.match(confirmed.message ?? "", /granted script lookup to agent-1/)
-  assert.deepEqual(requests, [
-    { ListAgents: { session_id: "session-1" } },
-    { ListAgents: { session_id: "session-1" } },
-    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "script", name: "lookup", environment: "py" } },
-  ])
+  assert.equal(granted.ok, true)
+  assert.match(granted.message ?? "", /granted script lookup to agent-1/)
+  assert.equal(legacy.ok, true)
+  assert.equal(requests.filter(request => "GrantAgentExtension" in request).length, 2)
 })
 
 test("executeShellCommand grants passive remote skills without home-proxy confirmation", async () => {
@@ -804,7 +785,6 @@ test("executeShellCommand manages script environments and script extensions", as
     { RegisterEnvironment: { workspace_id: "/repo", config: environment } },
     { ValidateScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
     { RegisterScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
-    { ListAgents: { session_id: "session-1" } },
     { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "script", name: "lookup", environment: "py" } },
     { ListScripts: { workspace_id: "/repo" } },
     { ListEnvironments: { workspace_id: "/repo" } },

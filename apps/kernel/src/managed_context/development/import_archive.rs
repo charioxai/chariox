@@ -13,18 +13,16 @@ pub(super) fn extract_and_verify_archive(
     artifacts_root: &Path,
 ) -> Result<DevelopmentContextManifest, DaemonError> {
     let decoder = MultiGzDecoder::new(archive_file);
-    let mut archive = StrictTarReader::new(decoder, MAX_DECOMPRESSED_ARCHIVE_BYTES);
+    let mut archive = StrictTarReader::new(
+        decoder,
+        crate::managed_context::limits::disk_budget(artifacts_root),
+    );
     let mut manifest = None;
     let mut expected_artifacts = BTreeMap::new();
     let mut seen_artifacts = BTreeSet::new();
     let mut entry_count = 0_usize;
     while let Some(entry) = archive.next_entry()? {
         entry_count = entry_count.saturating_add(1);
-        if entry_count > MAX_REPOSITORIES * (MAX_OVERLAY_FILES_PER_REPOSITORY * 2 + 2) + 1 {
-            return Err(context_error(
-                "development context archive contains too many entries",
-            ));
-        }
         let path = entry.path;
         validate_relative_path(&path)?;
         if entry_count == 1 {
@@ -105,6 +103,7 @@ fn validate_import_manifest(
         DEVELOPMENT_CONTEXT_SCHEMA_VERSION,
         DIRECTORY_CONTEXT_SCHEMA_VERSION,
         ENVIRONMENT_CONTEXT_SCHEMA_VERSION,
+        VAULT_CONTEXT_SCHEMA_VERSION,
     ]
     .contains(&manifest.schema_version)
     {
@@ -114,7 +113,10 @@ fn validate_import_manifest(
         )));
     }
     if manifest.project_environment.is_some()
-        && manifest.schema_version != ENVIRONMENT_CONTEXT_SCHEMA_VERSION
+        && !matches!(
+            manifest.schema_version,
+            ENVIRONMENT_CONTEXT_SCHEMA_VERSION | VAULT_CONTEXT_SCHEMA_VERSION
+        )
     {
         return Err(context_error(
             "Project environment requires development schema 4",
@@ -140,7 +142,7 @@ fn validate_import_manifest(
             ));
         }
     }
-    if manifest.repositories.is_empty() || manifest.repositories.len() > MAX_REPOSITORIES {
+    if manifest.repositories.is_empty() {
         return Err(context_error(
             "development context repository count is invalid",
         ));
@@ -161,7 +163,6 @@ fn validate_import_manifest(
     let mut repository_ids = BTreeSet::new();
     let mut target_directories = BTreeSet::new();
     let mut artifacts = BTreeMap::new();
-    let mut total_artifact_bytes = 0_u64;
     for repository in &manifest.repositories {
         if repository.source_binding_sha256.len() != 64
             || !repository
@@ -202,6 +203,7 @@ fn validate_import_manifest(
             if ![
                 DIRECTORY_CONTEXT_SCHEMA_VERSION,
                 ENVIRONMENT_CONTEXT_SCHEMA_VERSION,
+                VAULT_CONTEXT_SCHEMA_VERSION,
             ]
             .contains(&manifest.schema_version)
                 || !repository.head_sha.is_empty()
@@ -271,9 +273,7 @@ fn validate_import_manifest(
                 "repositories/{}/repository.bundle",
                 repository.repository_id
             );
-            if repository.bundle_path != expected_bundle
-                || repository.bundle_size_bytes > MAX_BUNDLE_BYTES_PER_REPOSITORY
-            {
+            if repository.bundle_path != expected_bundle {
                 return Err(context_error(
                     "development context Git bundle metadata is invalid",
                 ));
@@ -285,16 +285,9 @@ fn validate_import_manifest(
                 &repository.bundle_sha256,
                 repository.bundle_size_bytes,
             )?;
-            total_artifact_bytes =
-                total_artifact_bytes.saturating_add(repository.bundle_size_bytes);
         }
         for directory in &repository.directories {
             budget.consume(directory.len() + 256)?;
-        }
-        if repository.overlay.len() > MAX_OVERLAY_FILES_PER_REPOSITORY {
-            return Err(context_error(
-                "development context overlay has too many paths",
-            ));
         }
         let mut overlay_paths = BTreeSet::new();
         let mut overlay_objects = BTreeMap::new();
@@ -351,9 +344,7 @@ fn validate_import_manifest(
         let overlay_bytes = overlay_objects
             .values()
             .fold(0_u64, |total, (_, size)| total.saturating_add(*size));
-        if overlay_bytes != repository.overlay_size_bytes
-            || overlay_bytes > MAX_OVERLAY_BYTES_PER_REPOSITORY
-        {
+        if overlay_bytes != repository.overlay_size_bytes {
             return Err(context_error(
                 "development context overlay size metadata is invalid",
             ));
@@ -361,25 +352,53 @@ fn validate_import_manifest(
         for (path, (sha256, size_bytes)) in overlay_objects {
             insert_artifact(&mut artifacts, &path, &sha256, size_bytes)?;
         }
-        total_artifact_bytes = total_artifact_bytes.saturating_add(overlay_bytes);
-        if total_artifact_bytes > MAX_PACKAGE_BYTES {
+    }
+    if !manifest.vault_artifacts.is_empty()
+        && manifest.schema_version != VAULT_CONTEXT_SCHEMA_VERSION
+    {
+        return Err(context_error(
+            "Vault artifacts require development schema 5",
+        ));
+    }
+    let mut sealed_paths = BTreeSet::new();
+    for artifact in &manifest.vault_artifacts {
+        let binding = &artifact.binding;
+        validate_relative_path(&binding.object_path)?;
+        validate_sha256(&artifact.encrypted_sha256)?;
+        if !sealed_paths.insert(&binding.object_path)
+            || binding.project_id != manifest.project_id
+            || binding.items.is_empty()
+            || binding.context_id.is_empty()
+            || binding.source_kernel_id.is_empty()
+            || binding.target_kernel_id.is_empty()
+        {
+            return Err(context_error("invalid Vault artifact binding"));
+        }
+        let expectation = artifacts
+            .get_mut(&binding.object_path)
+            .ok_or_else(|| context_error("Vault artifact is not declared by a repository"))?;
+        if expectation.sha256 != binding.plaintext_sha256
+            || expectation.size_bytes != binding.plaintext_size_bytes
+        {
             return Err(context_error(
-                "development context artifact total exceeds the package limit",
+                "Vault artifact does not match repository content",
             ));
         }
+        for item in &binding.items {
+            budget.consume(
+                item.path
+                    .len()
+                    .saturating_add(item.kind.len())
+                    .saturating_add(256),
+            )?;
+        }
+        expectation.sha256 = artifact.encrypted_sha256.clone();
+        expectation.size_bytes = artifact.encrypted_size_bytes;
     }
     Ok(artifacts)
 }
 
 fn validate_directory_paths(repository: &DevelopmentRepositoryManifest) -> Result<(), DaemonError> {
-    if repository
-        .directories
-        .len()
-        .saturating_add(repository.overlay.len())
-        > MAX_OVERLAY_FILES_PER_REPOSITORY
-    {
-        return Err(context_error("directory workspace has too many paths"));
-    }
     let mut directories = BTreeSet::new();
     for path in &repository.directories {
         validate_relative_path(path)?;
@@ -597,7 +616,7 @@ impl<R: Read> Read for HardLimitReader<R> {
                 _ => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "development context archive exceeds {} decompressed bytes",
+                        "development context archive needs more than the {} bytes of free disk below the import directory; free space on that volume, then retry",
                         self.maximum_bytes
                     ),
                 )),

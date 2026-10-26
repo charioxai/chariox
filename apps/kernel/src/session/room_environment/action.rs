@@ -64,6 +64,16 @@ pub enum EnvironmentActionArguments {
     KeyboardKey {
         repeat: u16,
     },
+    KeyboardHold {
+        duration_ms: u32,
+    },
+    PointerHold {
+        x: u32,
+        y: u32,
+        button: EnvironmentPointerButton,
+        duration_ms: u32,
+        viewport_revision: u64,
+    },
     ClipboardWrite {
         utf8_byte_count: u32,
         character_count: u32,

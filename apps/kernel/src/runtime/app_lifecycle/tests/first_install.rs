@@ -293,6 +293,8 @@ fn failed_actual_health_never_acknowledges_ready_or_runs_postcommit_startup() {
             .phase
             == InstallPhase::Failed
     });
+    // Failure is persisted before the retiring owner's cleanup finishes.
+    wait(|| all_reaped(&observations));
     assert!(all_reaped(&observations));
     let observations = observations.lock().unwrap();
     assert_eq!(observations.len(), 1);
@@ -356,7 +358,6 @@ fn one_saturated_stop_before_first_claim_cancels_both_recovery_paths() {
             == InstallPhase::Cancelled
     });
     service.shutdown_blocking().unwrap();
-    drop(service);
     drop(control);
     // The blocking recovery task may still be returning after shutdown.
     // Join the fixture runtime before trying to acquire its durable owner again.

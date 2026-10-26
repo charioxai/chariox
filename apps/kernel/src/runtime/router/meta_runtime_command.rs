@@ -32,3 +32,6 @@ mod summary;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod room_admission_tests;

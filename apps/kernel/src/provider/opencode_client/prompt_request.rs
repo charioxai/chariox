@@ -9,6 +9,10 @@ use crate::session::PromptAttachment;
 use super::OpenCodeClient;
 
 impl OpenCodeClient {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_prompt operation signature and explicit context arguments"
+    )]
     pub fn submit_prompt(
         &self,
         session_id: &str,

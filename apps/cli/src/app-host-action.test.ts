@@ -85,3 +85,21 @@ test("userinfo in a returned link never invokes the browser shim", async () => {
   await assert.rejects(acceptAppHostOffer("s", "op", async () => ({ AppHostActionAccepted: { operation_id: "op", action: { kind: "open_link", url: "https://trusted.example@evil.example/" } } }), () => assert.fail(),
     { copy: async () => assert.fail(), openLink: async () => assert.fail() }), /Invalid App link/)
 })
+
+test("MP-08/MP-10/MP-11 a user-domain App Tab offer has no session and is taken by its explicit operation", async () => {
+  const operation = "host-action-55563b241d9871bb5dea91c10344f8f1"
+  const sent: unknown[] = []
+  const opened: string[] = []
+  const deps = { currentAppSessionId: () => "s", currentAppHostOperationIds: () => [],
+    userAppViews: { handle: async () => false, hostOfferIds: async () => [operation] },
+    sendAppRequest: async (request: Record<string, unknown>) => { sent.push(request); return { AppHostActionAccepted: { operation_id: operation, action: { kind: "open_link", url: "https://github.com/charioxai/chariox" } } } },
+    appHostTerminal: { copy: async () => assert.fail(), openLink: async (url: string) => { opened.push(url); return true } }, appendNotice: () => {}, flashFooter: () => assert.fail() }
+  const command = { kind: "app" as const, raw: `/app host accept ${operation}`, args: ["host", "accept", operation] }
+  await handleAppSlashCommand(deps, command)
+  await handleAppSlashCommand({ ...deps, currentAppSessionId: () => undefined }, command)
+  assert.deepEqual(sent, [0, 1].map(() => ({ AcceptAppHostAction: { session_id: "", operation_id: operation } })))
+  assert.deepEqual(opened, ["https://github.com/charioxai/chariox", "https://github.com/charioxai/chariox"])
+  await assert.rejects(handleAppSlashCommand(deps, { kind: "app", raw: "/app host accept", args: ["host", "accept"] }), /App Tab outside the session/)
+  // An operation that is not a pending user-domain offer keeps the attached-session rule.
+  await assert.rejects(handleAppSlashCommand({ ...deps, currentAppSessionId: () => undefined, userAppViews: { handle: async () => false, hostOfferIds: async () => [] } }, command), /Attach/)
+})

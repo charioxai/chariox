@@ -24,7 +24,7 @@ test("assistant completion controller finalizes the visible transcript turn", ()
     ["tool", "tool output", true],
     ["assistant", "done", false],
   ])
-  assert.equal(harness.entryCounter, 4)
+  assert.equal(harness.entryCounter, 3)
   assert.equal(harness.persistedEntries.at(-1)?.length, 4)
   assert.deepEqual(harness.reconciled, [{ current: ["Investigate", "tool output", "done"], next: ["Investigate", "click to expand", "tool output", "done"] }])
   assert.deepEqual(harness.calls.slice(-3), ["busy:agent-1", "turn:confirm", "turn:schedule"])

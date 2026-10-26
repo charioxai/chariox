@@ -3,6 +3,7 @@ type SessionChromeUpdateControllerOptions<TimerHandle> = {
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer: (timer: TimerHandle) => void
   isBatched: () => boolean
+  isDisposed?: () => boolean
   applyUpdate: () => void
 }
 
@@ -28,6 +29,7 @@ export function createSessionChromeUpdateController<TimerHandle>(
   }
 
   const applyOrDefer = () => {
+    if (options.isDisposed?.()) return
     if (options.isBatched()) {
       deferredUpdate = true
       return
@@ -42,6 +44,7 @@ export function createSessionChromeUpdateController<TimerHandle>(
 
   return {
     request(throttle) {
+      if (options.isDisposed?.()) return
       if (options.isBatched()) {
         deferredUpdate = true
         return

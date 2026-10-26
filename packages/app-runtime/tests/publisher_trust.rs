@@ -94,7 +94,6 @@ fn enrolled_key_reopens_with_exact_owner_and_manifest_identity() {
         registry.get("alice", "local.other", &public.key_id),
         Err(Error::NotFound)
     ));
-    drop(registry);
     assert!(matches!(
         check_snapshot(&snapshot, &mut connection, "bob"),
         Err(Error::NotFound)

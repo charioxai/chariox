@@ -12,6 +12,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::InvokeWorkflowEndpointRequest,
         caller_user_id: &str,
+        caller_agent_id: Option<&str>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
@@ -28,14 +29,32 @@ impl KernelRuntimeState {
             "invoke workflow endpoint",
         ) {
             Ok(()) => {
-                let (outcome, dispatches) = match owned.workflow_enqueue_prompt_and_maybe_start(
-                    &request.session_id,
-                    &request.workflow_ref,
-                    &request.endpoint_ref,
-                    request.prompt.clone(),
-                    request.queue_ref.as_deref(),
-                    request.publication_invocation.clone(),
-                ) {
+                let obligation = match caller_agent_id
+                    .map(|id| {
+                        let actor = self.owned.agent_store.get_agent(id)?;
+                        self.register_room_dispatch_obligation(
+                            &actor,
+                            "workflow_run",
+                            Some(&request.workflow_ref),
+                        )
+                    })
+                    .transpose()
+                {
+                    Ok(id) => id.flatten(),
+                    Err(error) => return (Err(error), None),
+                };
+                let (outcome, dispatches) = match owned
+                    .workflow_enqueue_prompt_by_agent_and_maybe_start(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.endpoint_ref,
+                        request.prompt.clone(),
+                        request.queue_ref.as_deref(),
+                        request.publication_invocation.clone(),
+                        caller_agent_id,
+                        caller_agent_id.is_none().then_some(caller_user_id),
+                        obligation.as_deref(),
+                    ) {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), None),
                 };
@@ -48,7 +67,24 @@ impl KernelRuntimeState {
                     }
                     _ => None,
                 };
-                self.spawn_workflow_prompt_dispatches(dispatches);
+                let resource_id = match &outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        ..
+                    } => workflow_run.id(),
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                        queued_prompt,
+                        ..
+                    } => queued_prompt.id(),
+                };
+                // Admission already committed: receipt failure must not discard dispatches.
+                if let Err(error) =
+                    self.finish_room_dispatch(obligation.as_deref(), Some(resource_id), || {
+                        self.spawn_workflow_prompt_dispatches(dispatches)
+                    })
+                {
+                    return (Err(error), None);
+                }
                 let refreshed_workflow_run = match dev_stub_workflow_run_id.as_deref() {
                     Some(workflow_run_id) => {
                         self.wait_for_dev_stub_workflow_run_start(
@@ -142,8 +178,25 @@ impl KernelRuntimeState {
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
+        self.execute_workflow_cancel_run_request_for_user(request, None)
+            .await
+    }
+
+    pub(super) async fn execute_workflow_cancel_run_request_for_user(
+        &self,
+        request: crate::local::CancelWorkflowRunRequest,
+        stop_user: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
         let result = self
-            .execute_workflow_interrupt_run(&request.session_id, &request.workflow_run_ref, false)
+            .execute_workflow_interrupt_run_for_user(
+                &request.session_id,
+                &request.workflow_run_ref,
+                false,
+                stop_user,
+            )
             .await
             .map(
                 |(workflow_run, session)| LocalDaemonResponse::WorkflowRunCancelled {
@@ -181,6 +234,17 @@ impl KernelRuntimeState {
         workflow_run_ref: &str,
         pause: bool,
     ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
+        self.execute_workflow_interrupt_run_for_user(session_id, workflow_run_ref, pause, None)
+            .await
+    }
+
+    pub(super) async fn execute_workflow_interrupt_run_for_user(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+        pause: bool,
+        stop_user: Option<&str>,
+    ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
         self.authorize_current_external_command()?;
         let owned = &self.owned;
         let session = owned.session_store.get_session(session_id)?;
@@ -198,6 +262,12 @@ impl KernelRuntimeState {
                 session_id: session_id.to_string(),
                 workflow_run_id: workflow_run_ref.to_string(),
             })?;
+        owned.ensure_workflow_run_interrupt_allowed(
+            &session,
+            &resolved_workflow_run,
+            pause,
+            stop_user,
+        )?;
         let workflow_run_id = resolved_workflow_run.id().to_string();
         let expected_status = if pause {
             crate::session::WorkflowRunStatus::Paused
@@ -205,6 +275,10 @@ impl KernelRuntimeState {
             crate::session::WorkflowRunStatus::Stopped
         };
         if resolved_workflow_run.status() == expected_status {
+            if !pause {
+                self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                    .await?;
+            }
             return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
         }
         let mut provider_run_ids = owned
@@ -233,6 +307,24 @@ impl KernelRuntimeState {
                 self.authorize_current_external_command()?;
                 let mut sessions = owned.session_store.write();
                 let session_before_interrupt = sessions.get_session(session_id)?;
+                let current_run = sessions
+                    .resolve_workflow_run_ref(session_id, &workflow_run_id)
+                    .ok()
+                    .or(durable_state_store.resolve_workflow_run(
+                        session_before_interrupt.host_daemon_id(),
+                        session_id,
+                        &workflow_run_id,
+                    )?)
+                    .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                        session_id: session_id.into(),
+                        workflow_run_id: workflow_run_id.clone(),
+                    })?;
+                owned.ensure_workflow_run_interrupt_allowed(
+                    &session_before_interrupt,
+                    &current_run,
+                    pause,
+                    stop_user,
+                )?;
                 // Prompt records of every agent holding this run's queued prompts commit in
                 // the interrupt's SQLite transaction; the live prompt owner is untouched
                 // until that write succeeds, so a rejected write needs no owner restore.
@@ -343,6 +435,10 @@ impl KernelRuntimeState {
                 self.spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
             }
         }
+        if !pause {
+            self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                .await?;
+        }
         Ok((workflow_run, owned.session_snapshot(session_id)?))
     }
 
@@ -355,6 +451,29 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
         let session_id = request.session_id.clone();
+        let admitted = (|| {
+            let session = owned.session_store.get_session(&request.session_id)?;
+            // MP-08/MP-10/MP-11: history may already be pruned from hot state.
+            // Resolve the same durable archive used by reads before classifying control.
+            let run = owned
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)
+                .ok()
+                .or(owned.durable_state_store.resolve_workflow_run(
+                    session.host_daemon_id(),
+                    session.id(),
+                    &request.workflow_run_ref,
+                )?)
+                .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                    session_id: request.session_id.clone(),
+                    workflow_run_id: request.workflow_run_ref.clone(),
+                })?;
+            owned.ensure_workflow_run_has_control_provenance(&session, &run)
+        })();
+        if let Err(error) = admitted {
+            return (Err(error), None);
+        }
         if let Err(error) = owned.require_publication_activation() {
             return (Err(error), owned.session_snapshot(&session_id).ok());
         }
@@ -392,19 +511,24 @@ impl KernelRuntimeState {
         session_id: &str,
         workflow_run_ref: &str,
     ) -> Result<(), DaemonError> {
-        let workflow_run_id = self
+        let workflow_run = self
             .owned
             .session_store
             .read()
             .resolve_workflow_run_ref(session_id, workflow_run_ref)?
-            .id()
-            .to_string();
+            .clone();
+        if workflow_run.status() != crate::session::WorkflowRunStatus::Paused {
+            return Ok(());
+        }
+        let workflow_run_id = workflow_run.id().to_string();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         loop {
             self.authorize_current_external_command()?;
             self.reap_structured_prompt_jobs_and_dispatch();
             let session = self.owned.session_store.get_session(session_id)?;
-            let cancelling = self
+            // Paused is published before cancellation admission. Its preceding
+            // prompt must settle even if it has not entered Cancelling yet.
+            let settling = self
                 .owned
                 .agent_store
                 .get_session_agents(session_id)
@@ -414,11 +538,8 @@ impl KernelRuntimeState {
                         .prompt_state_owner
                         .active_prompt_for_agent(&session, agent.id())
                 })
-                .any(|prompt| {
-                    prompt.workflow_run_id() == Some(workflow_run_id.as_str())
-                        && prompt.status() == crate::session::PromptStatus::Cancelling
-                });
-            if !cancelling {
+                .any(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()));
+            if !settling {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {

@@ -5,7 +5,6 @@ use serde::Deserialize;
 
 use crate::account_profile::{ProviderAccountAuthState, ProviderAccountProfileRegistry};
 use crate::error::DaemonError;
-use crate::local::GetProviderAuthStatusRequest;
 
 const PUBLICATION_PROVIDER_ACCOUNT_BINDINGS: &str = "CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS";
 const CREDENTIAL_BINDINGS_ROOT: &str = "/home/chariox/.credential-bindings";
@@ -38,28 +37,29 @@ struct PublicationProviderAccountBinding {
 pub(crate) fn materialize_publication_provider_accounts(
     registry: &ProviderAccountProfileRegistry,
     owner_user_id: &str,
+    config: &crate::config::DaemonConfig,
 ) -> Result<(), DaemonError> {
     let Some(source) = std::env::var_os(PUBLICATION_PROVIDER_ACCOUNT_BINDINGS) else {
         return Ok(());
     };
     let bindings = validated_bindings(source.to_string_lossy().as_bytes())?;
     materialize_validated_bindings(registry, owner_user_id, &bindings)?;
-    refresh_materialized_provider_account_auth(registry, owner_user_id, &bindings)
+    refresh_materialized_provider_account_auth(registry, owner_user_id, &bindings, config)
 }
 
 fn refresh_materialized_provider_account_auth(
     registry: &ProviderAccountProfileRegistry,
     owner_user_id: &str,
     bindings: &PublicationProviderAccountBindings,
+    config: &crate::config::DaemonConfig,
 ) -> Result<(), DaemonError> {
     for binding in &bindings.accounts {
-        let result = crate::local::provider_requests::provider_auth_status_response(
+        let result = crate::local::provider_requests::refresh_provider_account_auth_with_config(
             registry,
             owner_user_id,
-            GetProviderAuthStatusRequest {
-                provider: binding.provider.clone(),
-                account_profile: binding.account_profile.clone(),
-            },
+            &binding.provider,
+            &binding.account_profile,
+            config,
         );
         if let Err(error) = result {
             registry.update_observation(
@@ -192,6 +192,80 @@ mod tests {
         PublicationProviderDefaultAccount,
     };
     use crate::account_profile::{ProviderAccountAuthState, ProviderAccountProfileRegistry};
+
+    #[test]
+    fn publication_startup_preserves_registered_token_observation_without_verification() {
+        crate::test_support::isolated_env_test!();
+        let root = std::env::temp_dir().join(format!(
+            "claudesetup-publication-{:016x}",
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        std::env::set_var("CHARIOX_CLAUDE_BIN", root.join("missing-claude"));
+        let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "claude", "MP-08 publication")
+            .unwrap();
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile.profile_id);
+        // Registration is enough for an automatic refresh. Neither a Vault
+        // read nor an official model turn is needed at publication startup.
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        let bindings = PublicationProviderAccountBindings {
+            schema_version: 1,
+            defaults: vec![],
+            accounts: vec![PublicationProviderAccountBinding {
+                provider: "claude".into(),
+                account_profile: profile.profile_id.clone(),
+                label: "MP-08 publication".into(),
+                home: root.join("unused-binding"),
+            }],
+        };
+        for auth_state in [
+            ProviderAccountAuthState::Authenticated,
+            ProviderAccountAuthState::Expired,
+        ] {
+            let before = registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    auth_state,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            refresh_materialized_provider_account_auth(
+                &registry,
+                "local",
+                &bindings,
+                &crate::config::DaemonConfig::for_tests(),
+            )
+            .unwrap();
+            assert_eq!(
+                registry
+                    .get("local", "claude", &profile.profile_id)
+                    .unwrap(),
+                before,
+                "MP-08/MP-11: startup must preserve the exact saved token observation"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn provider_account_materialization_manifest_has_no_agent_scope() {
@@ -463,8 +537,13 @@ exit 2
             )
             .is_err());
 
-        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
-            .expect("refresh deployment account auth");
+        refresh_materialized_provider_account_auth(
+            &registry,
+            "local",
+            &bindings,
+            &crate::config::DaemonConfig::for_tests(),
+        )
+        .expect("refresh deployment account auth");
 
         registry
             .require_authenticated(
@@ -492,8 +571,13 @@ exit 2
 "#,
         )
         .expect("replace Claude fixture with unauthenticated response");
-        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
-            .expect("record unauthenticated deployment account");
+        refresh_materialized_provider_account_auth(
+            &registry,
+            "local",
+            &bindings,
+            &crate::config::DaemonConfig::for_tests(),
+        )
+        .expect("record unauthenticated deployment account");
         assert!(registry
             .require_authenticated(
                 "local",
@@ -520,8 +604,13 @@ exit 2
 "#,
         )
         .expect("replace Claude fixture with operational failure");
-        refresh_materialized_provider_account_auth(&registry, "local", &bindings)
-            .expect("operational auth failure must not abort publication startup");
+        refresh_materialized_provider_account_auth(
+            &registry,
+            "local",
+            &bindings,
+            &crate::config::DaemonConfig::for_tests(),
+        )
+        .expect("operational auth failure must not abort publication startup");
         assert_eq!(
             registry
                 .get("local", "claude", "profile-claude")

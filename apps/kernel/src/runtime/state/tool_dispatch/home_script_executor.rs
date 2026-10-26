@@ -47,7 +47,11 @@ impl KernelRuntimeState {
             });
         };
         let script_name = grant.name;
+        let state = self.clone();
+        let context = context.clone();
         tokio::task::spawn_blocking(move || {
+            HomeExtensionAuthorizationService::new(&state)
+                .authorize_invocation_context(&context)?;
             let result = script_registry.execute(&script_name, &env, arguments)?;
             let payload = if result.logs.is_empty() || !result.ok {
                 result.payload

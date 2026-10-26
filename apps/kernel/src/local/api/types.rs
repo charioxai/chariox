@@ -24,9 +24,13 @@ mod event_publication;
 mod external_provider_session;
 mod history;
 mod kernel_access;
+mod kernel_browser;
+mod kernel_computer;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod notes;
+mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_control;
@@ -37,12 +41,16 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod screenshot;
 mod session_control;
 mod slice;
+mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod user_domain_access;
 mod waiting_room;
 mod workflow;
+mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
@@ -59,9 +67,13 @@ pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
 pub use kernel_access::*;
+pub use kernel_browser::*;
+pub use kernel_computer::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use notes::*;
+pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
 pub use prompt_control::*;
@@ -72,12 +84,16 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
+pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
+pub use workflow_notification::*;
 pub use workspace::*;
 
 /// Version 319 adds Git credential enrollment for an existing managed environment.
@@ -251,4 +267,75 @@ pub use workspace::*;
 /// Version 413 adds terminal sudo turns and critical approval receipts.
 /// Version 415 adds external sudo requests and requester attribution.
 /// Version 416 refuses evicted App control replays with `receipt_expired`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 416;
+/// Version 435 combines Apps, Browser artifacts, bounded Computer holds, and
+/// the allowlisted public provider-run DTO (MP-08/MP-10/MP-11).
+/// MP-08/MP-10/MP-11: version 443 combines main 435 with the multidomain
+/// host browser, App views, Notes, grants, captures and DOM mirror contract.
+/// MP-08/MP-11: reserved version446 adds owned Linux desktop targets and input.
+/// MP-08/MP-10/MP-11: version 447 adds bounded stripe display to that contract.
+/// MP-08 / MP-10 / MP-11: Room AT-SPI and per-agent Computer revoke.
+/// MP-08 / MP-11: version 461 adds bulk Room Computer restore (`agent_id: null`).
+/// MP-08/MP-10: version 466 makes display frame events binary (raw payload
+/// segments) and adds lossless WebP tiles and scroll move rectangles.
+/// MP-08/MP-10/MP-11: version 474 adds the protected desktop display subscription.
+/// MP-08/MP-10: version 475 adds pushed display (`display_ack` drives the
+/// kernel push pump of a relay display subscription; `display_next` remains).
+/// Version 450 adds immutable room spawn/object creators and regular room tools
+/// behind the transitional room-agent-tools flag (MP-08/MP-10/MP-11 A01).
+/// Version 462 adds user-requested capability grant causes, absolute grant
+/// expiry and the `not_requested` refusal (MP-08/MP-10/MP-11 A05).
+/// Version 452 adds durable agent events, enforced turn dispositions and
+/// kernel-emitted workflow notifications (MP-08/09/10/11 A02).
+/// Version 459 adds kernel-owned timer/process wakes with proof-of-life and
+/// delivery receipts on `RuntimeSession.agent_wakes` (MP-08/09/10/11 A03).
+/// Version 451 grants the whole local kernel and routes access popups without sessions.
+/// Version 470 adds structured OS requester identity to access decisions.
+/// Version 472 advertises identity-preserving terminal relay renewal with
+/// explicit capability negotiation and recoverable target-offline handshakes.
+/// Version 484 replaces one-turn sudo with hour-scale windows bound to owner
+/// work, fresh-passkey extension, session status and no agent approvals
+/// (MP-08/MP-10/MP-11 A04).
+/// Version 487 adds value-free Project Environment aggregates and reserves the
+/// complete Environment operation contract on top of 472 (developed as 471;
+/// MP-02/MP-03/MP-08/MP-10/MP-11).
+/// Version 493 reconciles the agent-model union, task/wake projections and leased watchers (MP-08/MP-09/MP-10/MP-11).
+/// MP-08/MP-10/MP-11: version 447 added bounded stripe display, App views,
+/// Notes, grants, captures and DOM mirrors; 466 added binary display frames,
+/// WebP tiles and scroll rectangles; 475 added relay display push/ACKs.
+/// Version 490 added bounded relay response framing and socket-local receipts.
+/// Version 491 combined native display and agent-tab provenance/activity.
+/// Main's version 491 (#974) adds credential-free Cloud kernel ownership
+/// projections, receiving CLIENT key-bound pivots, Cloud-free terminal pairing
+/// and provider account portability preflight, and requires a distinct relay
+/// subscription identity for every fresh encrypted binding while retaining the
+/// logical session replay cursor. It also restores workflow notifications, Room
+/// workflow inventory and controls, opt-in Cloud device denial and exact
+/// home-prompt cancellation admission (MP-08/MP-10/MP-11).
+/// Version 506 integrates those contracts, including main's 491, with the 493
+/// agent-model union; generated consumers follow this coordinator-allocated
+/// acceptance version.
+/// Version 511 orders a DOM mirror read behind its viewer's earlier mirror input,
+/// so a client sends the read with the key and gets its echo in one round trip
+/// (MP-08/MP-10/MP-11).
+/// Version 517 combines App Tab calls/grants and ordered reads with DOM mirror v2
+/// author CSS, live controls, compact deltas, native density and long-poll credits.
+/// MP-08/MP-10/MP-11: allocated 525 carries shared producer resumption on
+/// the display integration train (519 region clients precede this final step).
+/// MP-08/MP-10/MP-11: allocated 528 adds the Browser state's `chrome_window` (the
+/// native band's window epoch and active Tab) and `browser_lockdown` fields.
+/// MP-08/MP-10/MP-11: allocated 529 adds page display region_offset placement.
+/// Allocated 530 adds band middle/right click and drag (`KernelBrowserInput`), the
+/// `browser_auxiliary` display target and the state's `chrome_window.auxiliary`.
+/// MP-08/MP-10/MP-11: allocated 532 bounds multiplexed opaque relay transfers.
+/// Allocated 535 registers525 resumption, worker attach and initial push credit once.
+/// MP-08/MP-10/MP-11: allocated536 captures only the visible page on the owned desktop.
+/// MP-08/MP-10/MP-11: allocated 540 keeps the omnibox list's `chrome_window.auxiliary`
+/// entry (visible height 0) while the address bar has the person's keys.
+/// MP-08/MP-10/MP-11: allocated 550 versions the mirror v2 wire extensions (navigation preview,
+/// font requirements, known sheets, flush, snapshot completion); clients require it for mirror v2.
+/// MP-08/MP-10/MP-11: allocated 552 adds the Browser reply's `parked_input` (input this observer has
+/// parked behind a busy renderer); the viewer holds its preview handover until it is admitted.
+/// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
+/// replacing the viewer's 250 ms poll.
+/// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;

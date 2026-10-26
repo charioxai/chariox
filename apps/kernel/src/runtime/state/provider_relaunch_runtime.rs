@@ -90,7 +90,10 @@ impl KernelRuntimeState {
                         return Ok(false);
                     }
                     crate::app::ProviderLaunchProcessRuntime::new(app)
-                        .spawn_for_launch(&started.run)
+                        .spawn_for_launch_with_credentials(
+                            &started.run,
+                            &started.provider_credential_env,
+                        )
                         .map(|_| true)
                 })
                 .await;
@@ -111,8 +114,12 @@ impl KernelRuntimeState {
                 return;
             }
             let run = started.run.clone();
+            let provider_credential_env = started.provider_credential_env.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
+                    &run,
+                    &provider_credential_env,
+                )
             })
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -306,5 +313,95 @@ mod tests {
             .map(|run| run.id().to_string())
             .collect::<Vec<_>>();
         assert_eq!(live_runs, vec![newer.id().to_string()]);
+    }
+
+    /// MP-08/MP-10/MP-11: a reload (runtime tool catalog, MCP continuation,
+    /// login recovery) keeps the account's Vault launch credential. Without it
+    /// `claude -p` reports "Not logged in" and the replayed prompt is blocked.
+    #[tokio::test]
+    async fn relaunch_delivers_the_resolved_launch_credential() {
+        let worktree = crate::test_support::TestWorktree::new(
+            "relaunch_delivers_the_resolved_launch_credential",
+        );
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .expect("session should be created");
+        let request = || {
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id())
+        };
+        let first = app
+            .launch_provider(request())
+            .expect("first provider should launch");
+        app.update_provider_run_projection(first.clone());
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let ended = runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(session.id(), first.id())
+            .expect("first provider should terminate");
+        runtime
+            .owned
+            .clear_active_provider_run_session_pointer(session.id(), first.id())
+            .expect("active pointer should clear");
+        runtime
+            .owned
+            .provider_run_projection
+            .update(ended.into_run());
+        let number: u64 = first
+            .id()
+            .strip_prefix("provider-run-")
+            .and_then(|n| n.parse().ok())
+            .expect("sequential provider run id");
+        let next = format!("provider-run-{}", number + 1);
+        let probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+            &next,
+            &[("CLAUDE_CODE_OAUTH_TOKEN", "relaunch-setup-token")],
+        );
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            zeroize::Zeroizing::new("relaunch-setup-token".to_string()),
+        );
+        runtime.spawn_provider_relaunch(
+            request().with_provider_credential_env(credentials),
+            0,
+            Some(first.id().to_string()),
+            0,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !(probe.observed_exactly("pty_spawn")
+                && probe.observed_exactly("runtime_binding"))
+            {
+                if runtime
+                    .owned
+                    .provider_store
+                    .get_run(&next)
+                    .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("relaunch should finish");
+        assert!(
+            probe.observed_exactly("pty_spawn"),
+            "spawn got the credential"
+        );
+        assert!(
+            probe.observed_exactly("runtime_binding"),
+            "runtime binding got the credential"
+        );
     }
 }

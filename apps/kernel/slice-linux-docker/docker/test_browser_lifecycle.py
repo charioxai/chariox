@@ -118,6 +118,27 @@ time.sleep(60)
         self.assertFalse(self.store.retired(record))
         self.assertTrue(self.lifecycle.same_process(record["supervisor"]))
 
+    def test_retired_supervisor_cleanup_child_does_not_block_close(self):
+        # A cleanup fork inherits the retired supervisor's browser argv until exec.
+        cleanup = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                    f"--user-data-dir={self.profile}"])
+        self.assertIsInstance(cleanup.pid, int)
+        self.assertGreater(cleanup.pid, 1)
+        pidfd = os.pidfd_open(cleanup.pid)
+        try:
+            owner = self.lifecycle.identity(os.getpid())
+            self.assertIn(cleanup.pid, self.lifecycle.profile_processes(self.profile))
+            self.assertNotIn(cleanup.pid, self.lifecycle.profile_processes(self.profile, owner))
+            self.assertIn(cleanup.pid, self.lifecycle.profile_processes(
+                self.profile, {**owner, "start": "0"}))
+        finally:
+            try:
+                if cleanup.poll() is None:
+                    signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+                cleanup.wait(timeout=3)
+            finally:
+                os.close(pidfd)
+
     def test_graceful_close_ack_waits_for_owned_browser_flush(self):
         # MP-08/MP-10/MP-11: CDP acknowledges close before profile writes and
         # the owned descendant lifetime finish. TERM must not race that flush.

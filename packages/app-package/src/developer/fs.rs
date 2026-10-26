@@ -403,6 +403,9 @@ impl PreparedFile {
         self.directory.sync()
     }
 
+    // MP-11: keep native stat IDs normalized to the stored u64 identity.
+    // Darwin dev_t differs from Linux; the existing casts are no-ops on b3.
+    #[allow(clippy::unnecessary_cast)]
     fn matches_temporary(&self) -> bool {
         let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
         if unsafe {

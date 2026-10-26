@@ -37,7 +37,7 @@ impl KernelRuntimeState {
         })
     }
 
-    pub(super) async fn maybe_gate_workspace_live_sync_mutation(
+    pub(in crate::runtime::state) async fn maybe_gate_workspace_live_sync_mutation(
         &self,
         session_id: &str,
         agent_id: Option<&str>,
@@ -52,6 +52,9 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         if !workspace_live_sync_tool_requires_popup(tool_name) {
+            return Ok(None);
+        }
+        if self.sudo_task_authorizes_agent(session_id, agent_id).await {
             return Ok(None);
         }
         let interaction =

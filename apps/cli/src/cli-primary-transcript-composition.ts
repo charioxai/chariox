@@ -1,3 +1,4 @@
+import { createWaitingRoomBootstrapDefaultsController } from "./waiting-room-bootstrap-defaults.js"
 import { onMount } from "solid-js"
 
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
@@ -20,6 +21,8 @@ import {
   buildWorkflowOutlineRenderable,
 } from "./workspace-renderables.js"
 
+import { relayCloudProfile } from "./preferences.js"
+
 type AnyFn = (...args: any[]) => any
 
 export type CliPrimaryTranscriptCompositionDeps = {
@@ -37,14 +40,21 @@ export type CliPrimaryTranscriptCompositionDeps = {
   entryCounter: AnyFn
   setEntryCounter: AnyFn
   setHistoryLoadingState: AnyFn
+  setSessionHydratingState: AnyFn
   setEntries: AnyFn
   setPromptHistoryEntries: AnyFn
+  promptHistoryEntries?: AnyFn
+  promptHistoryIndex?: AnyFn
+  promptHistoryDraft?: AnyFn
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
   setProviderCatalogState: AnyFn
+  setProviderRunState: AnyFn
   setProviderCommandCatalogState: AnyFn
   setTerminalCommandCatalogState: AnyFn
   updateSessionChrome: AnyFn
+  applyAttachLaunch: AnyFn
+  reportAttachLaunchFailure: AnyFn
   flashFooter: AnyFn
   attachmentState: AnyFn
   sessionState: AnyFn
@@ -58,12 +68,15 @@ export type CliPrimaryTranscriptCompositionDeps = {
   workflowInspector: AnyFn
   workspaceShellEntries: AnyFn
   workspaceShellContext: AnyFn
+  waitingRoomLaunchOwnershipRevision?: AnyFn
+  applyWaitingRoomBootstrapDefaults?: AnyFn
   waitingRoomState: AnyFn
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
   providerCatalogState: AnyFn
   waitingRoomCloudNotice: AnyFn
   waitingRoomInventoryStatus: AnyFn
+  preferencesState: AnyFn
   relayStatusState: AnyFn
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
@@ -110,7 +123,6 @@ export type CliPrimaryTranscriptCompositionDeps = {
   requestTranscriptRender: AnyFn
   requestRootRender: AnyFn
   logViewDebug: AnyFn
-  promptHistoryHydrationController: any
   splitAgentResponseMode: AnyFn
   maxAgentsPerScreen: AnyFn
   setAgentPaneEntries: AnyFn
@@ -134,6 +146,12 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     }
   }
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
+    // A zero-length click selection holds nothing worth preserving.
+    preserveTextSelection: () => {
+      const selection = deps.renderer.getSelection()
+      return !deps.isAttached() && Boolean(selection && (selection.isDragging || selection.getSelectedText()))
+    },
+    textSelectionView: () => !deps.isAttached(),
     getScrollbox: deps.transcriptScrollboxRefController.current,
     getEmptyRenderable: deps.primaryTranscriptRuntimeStore.getEmptyRenderable,
     setEmptyRenderable: deps.primaryTranscriptRuntimeStore.setEmptyRenderable,
@@ -169,12 +187,13 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         surfaceTone: deps.primaryTranscriptSurfaceTone(),
       },
     }),
-    buildEmptyRenderable: () => deps.isAttached()
-      ? (deps.sessionHydrating()
-          ? buildLoadingTranscriptRenderable(deps.renderer)
-          : buildEmptyTranscriptRenderable(deps.renderer))
-      : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
+    buildEmptyRenderable: () => deps.sessionHydrating()
+      ? buildLoadingTranscriptRenderable(deps.renderer, deps.sessionState().alias?.trim() || deps.sessionState().id)
+      : deps.isAttached()
+        ? buildEmptyTranscriptRenderable(deps.renderer)
+        : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
         ...waitingRoomRemoteTargets(),
+        collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
         cloudNotice: deps.waitingRoomCloudNotice(),
         inventoryStatus: deps.waitingRoomInventoryStatus(),
         loadingFrame: deps.waitingRoomState().introStep,
@@ -286,7 +305,6 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   }
 
   const attachedSessionPrimeController = createAttachedSessionPrimeController({
-    promptHistoryHydrationController: deps.promptHistoryHydrationController,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
     loadSessionHistoryOutline: (sessionId, agentIds) => getSessionHistoryOutline(deps.client, sessionId, agentIds, 4),
@@ -302,15 +320,31 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   })
   const primeAttachedSessionBinding = attachedSessionPrimeController.prime
 
+  const bootstrapDefaultsController = createWaitingRoomBootstrapDefaultsController({
+    state: deps.waitingRoomState,
+    ownershipRevision: deps.waitingRoomLaunchOwnershipRevision ?? (() => 0),
+    isAttached: deps.isAttached,
+    apply: (state) => deps.applyWaitingRoomBootstrapDefaults?.(state),
+  })
   const deferredBootstrapController = createDeferredBootstrapController({
     getDeferred: () => deps.bootstrap.deferred,
+    applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
+    currentAttachmentId: () => deps.attachmentState()?.id ?? null,
+    ...(deps.promptHistoryEntries ? { currentPromptHistoryEntries: deps.promptHistoryEntries } : {}),
+    ...(deps.promptHistoryIndex ? { currentPromptHistoryIndex: deps.promptHistoryIndex } : {}),
+    ...(deps.promptHistoryDraft ? { currentPromptHistoryDraft: deps.promptHistoryDraft } : {}),
+    focusedAgentId: () => deps.sessionState()?.focused_agent_id ?? null,
+    setProviderRun: deps.setProviderRunState,
+    providerLaunchFailed: message => deps.flashFooter(message, "error"),
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,
     setProviderCatalog: deps.setProviderCatalogState,
     setProviderCommandCatalogs: deps.setProviderCommandCatalogState,
     setTerminalCommandCatalog: deps.setTerminalCommandCatalogState,
     updateSessionChrome: deps.updateSessionChrome,
+    applyAttachLaunch: deps.applyAttachLaunch,
+    reportAttachLaunchFailure: deps.reportAttachLaunchFailure,
     setPromptHistoryEntries: deps.setPromptHistoryEntries,
     resetPromptHistoryNavigation: () => {
       deps.setPromptHistoryIndex(null)
@@ -324,6 +358,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       }))
     },
     setAgentPanePreview: deps.setAgentPanePreview,
+    setSessionHydratingState: deps.setSessionHydratingState,
     replaceTranscriptEntries,
     prependTranscriptEntries,
     logWarning: (message, fields) => {
@@ -349,10 +384,13 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   })
 
   return {
+    hydrateComposer: deferredBootstrapController.hydrateComposer,
+    hydratePromptInputHistory: deferredBootstrapController.hydratePromptInputHistory,
     mountTranscriptEntry,
     reconcileMountedTranscript,
     updateTranscriptEntry,
     rebuildTranscript,
+    flushDeferredRebuild: primaryTranscriptRenderController.flushDeferredRebuild,
     replaceTranscriptEntries,
     prependTranscriptEntries,
     primeAttachedSessionBinding,

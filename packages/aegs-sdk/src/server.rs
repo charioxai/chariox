@@ -18,7 +18,7 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 
 use crate::management_capability::{parse_public_key, verify_management_capability_scoped};
@@ -162,15 +162,20 @@ where
             "protocol_version": AEGS_PROTOCOL_VERSION,
         })
     );
+    let connections = Arc::new(tokio::sync::Semaphore::new(64));
     loop {
+        let permit = Arc::clone(&connections).acquire_owned().await?;
         let (stream, _) = listener.accept().await?;
         let server = server.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let service = service_fn(move |request| {
                 let server = server.clone();
                 async move { Ok::<_, Infallible>(server.handle(request).await) }
             });
             let _ = http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(Duration::from_secs(15))
                 .serve_connection(TokioIo::new(stream), service)
                 .await;
         });
@@ -190,20 +195,20 @@ fn spawn_subscription_maintenance(provider: Arc<dyn AegsProvider>) {
             let provider = Arc::clone(&provider);
             match tokio::task::spawn_blocking(move || provider.maintain_subscriptions()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(message)) => eprintln!(
+                Ok(Err(_message)) => eprintln!(
                     "{}",
                     serde_json::json!({
                         "component": "chariox-aegs",
                         "event": "subscription_maintenance_failed",
-                        "error": message,
+                        "error": "provider_maintenance_failed",
                     })
                 ),
-                Err(error) => eprintln!(
+                Err(_error) => eprintln!(
                     "{}",
                     serde_json::json!({
                         "component": "chariox-aegs",
                         "event": "subscription_maintenance_task_failed",
-                        "error": error.to_string(),
+                        "error": "provider_maintenance_task_failed",
                     })
                 ),
             }
@@ -943,11 +948,11 @@ impl AegsServer {
                 if let Err(message) = self.provider.revoke_connection(&revoke.connection_id) {
                     return error(StatusCode::BAD_GATEWAY, "provider_revoke_failed", message);
                 }
-                match self.store.revoke_connection(
-                    &revoke.connection_id,
-                    &revoke.owner_id,
-                    now_ms(),
-                ) {
+                match self
+                    .store
+                    .revoke_connection_wait(&revoke.connection_id, &revoke.owner_id, now_ms())
+                    .await
+                {
                     Ok(true) => json(
                         StatusCode::OK,
                         AegsConnectionRevokeResponse { revoked: true },
@@ -1237,11 +1242,15 @@ impl AegsServer {
                         )
                     }
                 };
-                let subscriptions = match self.store.matching(
-                    &self.producer_id,
-                    &normalized.event_type,
-                    &normalized.connection_scope,
-                ) {
+                let subscriptions = match self
+                    .store
+                    .matching_for_delivery(
+                        &self.producer_id,
+                        &normalized.event_type,
+                        &normalized.connection_scope,
+                    )
+                    .await
+                {
                     Ok(values) => values,
                     Err(message) => {
                         return error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
@@ -1249,7 +1258,7 @@ impl AegsServer {
                 };
                 let mut interest_keys = HashSet::new();
                 let mut responses = Vec::new();
-                for subscription in subscriptions {
+                for (subscription, generation) in subscriptions {
                     if route
                         .connection_id
                         .as_deref()
@@ -1263,6 +1272,14 @@ impl AegsServer {
                     if !interest_keys.insert(subscription.event_interest_key.clone()) {
                         continue;
                     }
+                    let _delivery_guard =
+                        match self.store.delivery_guard(&subscription, generation).await {
+                            Ok(guard) => guard,
+                            Err(_) => {
+                                interest_keys.remove(&subscription.event_interest_key);
+                                continue;
+                            }
+                        };
                     let connection_id = subscription.connection_id.clone();
                     let event = PublishEventRequest {
                         producer_id: self.producer_id.clone(),
@@ -1372,13 +1389,16 @@ impl AegsServer {
         normalized: crate::NormalizedEvent,
         connection_id: Option<&str>,
     ) -> Result<AegsConnectionTestEventResponse, String> {
-        let subscriptions = self.store.matching(
-            &self.producer_id,
-            &normalized.event_type,
-            &normalized.connection_scope,
-        )?;
+        let subscriptions = self
+            .store
+            .matching_for_delivery(
+                &self.producer_id,
+                &normalized.event_type,
+                &normalized.connection_scope,
+            )
+            .await?;
         let mut interest_keys = HashSet::new();
-        for subscription in subscriptions {
+        for (subscription, generation) in subscriptions {
             if connection_id.is_some_and(|value| subscription.connection_id != value) {
                 continue;
             }
@@ -1388,6 +1408,13 @@ impl AegsServer {
             if !interest_keys.insert(subscription.event_interest_key.clone()) {
                 continue;
             }
+            let _delivery_guard = match self.store.delivery_guard(&subscription, generation).await {
+                Ok(guard) => guard,
+                Err(_) => {
+                    interest_keys.remove(&subscription.event_interest_key);
+                    continue;
+                }
+            };
             let accepted_connection_id = subscription.connection_id.clone();
             self.publisher
                 .publish(PublishEventRequest {
@@ -1553,23 +1580,65 @@ pub fn read_secret(name: &str, file_name: &str) -> Result<Option<String>, String
     Ok(Some(value))
 }
 
-async fn read_body(request: Request<Incoming>) -> Result<Bytes, Response<Full<Bytes>>> {
-    let body = request.into_body().collect().await.map_err(|error_value| {
-        error(
-            StatusCode::BAD_REQUEST,
-            "invalid_body",
-            error_value.to_string(),
-        )
-    })?;
-    let body = body.to_bytes();
-    if body.len() > MAX_WEBHOOK_BYTES {
+async fn read_body<B>(request: Request<B>) -> Result<Bytes, Response<Full<Bytes>>>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+{
+    if request
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .is_some_and(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .is_some_and(|length| length > MAX_WEBHOOK_BYTES as u64)
+        })
+    {
         return Err(error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "payload_too_large",
-            format!("webhook exceeds {MAX_WEBHOOK_BYTES} bytes"),
+            "request exceeds byte limit",
         ));
     }
-    Ok(body)
+    bounded_body(request.into_body(), Duration::from_secs(15)).await
+}
+
+async fn bounded_body<B>(mut body: B, timeout: Duration) -> Result<Bytes, Response<Full<Bytes>>>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+{
+    tokio::time::timeout(timeout, async move {
+        let mut bytes = bytes::BytesMut::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| {
+                error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_body",
+                    "request body read failed",
+                )
+            })?;
+            if let Ok(data) = frame.into_data() {
+                if data.len() > MAX_WEBHOOK_BYTES.saturating_sub(bytes.len()) {
+                    return Err(error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "payload_too_large",
+                        "request exceeds byte limit",
+                    ));
+                }
+                bytes.extend_from_slice(&data);
+            }
+        }
+        Ok(bytes.freeze())
+    })
+    .await
+    .map_err(|_| {
+        error(
+            StatusCode::REQUEST_TIMEOUT,
+            "body_timeout",
+            "request body timed out",
+        )
+    })?
 }
 
 fn normalized_headers(headers: &hyper::HeaderMap) -> HashMap<String, String> {
@@ -1691,9 +1760,25 @@ fn error(
     code: impl Into<String>,
     message: impl Into<String>,
 ) -> Response<Full<Bytes>> {
+    let code = code.into();
+    let message = if code.starts_with("provider_")
+        || code.starts_with("authorization_")
+        || code.starts_with("invalid_provider_")
+        || matches!(
+            code.as_str(),
+            "aeds_rejected"
+                | "test_event_failed"
+                | "webhook_rejected"
+                | "invalid_signature"
+                | "resource_query_failed"
+        ) {
+        "provider operation failed".to_string()
+    } else {
+        message.into()
+    };
     json(
         status,
-        serde_json::json!({"error": {"code": code.into(), "message": message.into()}}),
+        serde_json::json!({"error": {"code": code, "message": message}}),
     )
 }
 
@@ -1701,6 +1786,77 @@ fn error(
 mod tests {
     use super::*;
     use chariox_event_protocol::AegsConnectionLifecycleState;
+
+    struct CountedBody {
+        frames: std::collections::VecDeque<Bytes>,
+        polled: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl hyper::body::Body for CountedBody {
+        type Data = Bytes;
+        type Error = Infallible;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+            self.polled
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(
+                self.frames
+                    .pop_front()
+                    .map(|bytes| Ok(hyper::body::Frame::data(bytes))),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn body_limit_stops_chunked_input_at_the_first_overflow() {
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body = CountedBody {
+            frames: [
+                Bytes::from(vec![b'x'; MAX_WEBHOOK_BYTES]),
+                Bytes::from_static(b"x"),
+                Bytes::from_static(b"must not be polled"),
+            ]
+            .into(),
+            polled: polled.clone(),
+        };
+        let response = read_body(Request::new(body)).await.unwrap_err();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn body_limit_rejects_an_oversized_first_frame_without_polling_more() {
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let body = CountedBody {
+            frames: [
+                Bytes::from(vec![b'x'; MAX_WEBHOOK_BYTES + 1]),
+                Bytes::from_static(b"must not be polled"),
+            ]
+            .into(),
+            polled: polled.clone(),
+        };
+        assert_eq!(
+            read_body(Request::new(body)).await.unwrap_err().status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn body_limit_accepts_empty_and_exact_limit() {
+        for length in [0, MAX_WEBHOOK_BYTES] {
+            let bytes = Bytes::from(vec![b'x'; length]);
+            assert_eq!(
+                read_body(Request::new(Full::new(bytes.clone())))
+                    .await
+                    .unwrap(),
+                bytes
+            );
+        }
+    }
 
     #[test]
     fn query_parser_rejects_duplicate_callback_parameters() {
@@ -1791,5 +1947,471 @@ mod tests {
         assert!(enforce_management_owner(&authorization, "owner-1").is_ok());
         let response = enforce_management_owner(&authorization, "owner-2").unwrap_err();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+}
+
+#[cfg(test)]
+mod mp11_ingress_tests {
+    use super::*;
+    struct Frames {
+        remaining: usize,
+        polled: Arc<std::sync::atomic::AtomicUsize>,
+        stall: bool,
+    }
+    impl hyper::body::Body for Frames {
+        type Data = Bytes;
+        type Error = Infallible;
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+            if self.stall {
+                return std::task::Poll::Pending;
+            }
+            if self.remaining == 0 {
+                return std::task::Poll::Ready(None);
+            }
+            self.remaining -= 1;
+            self.polled
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(
+                vec![b'x'; 1024 * 1024],
+            )))))
+        }
+    }
+    #[tokio::test]
+    async fn mp11_ingress_stops_polling_chunked_overflow() {
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = bounded_body(
+            Frames {
+                remaining: 100,
+                polled: polled.clone(),
+                stall: false,
+            },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+    #[tokio::test]
+    async fn mp11_ingress_rejects_stalled_body() {
+        let result = bounded_body(
+            Frames {
+                remaining: 1,
+                polled: Default::default(),
+                stall: true,
+            },
+            Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().status(), StatusCode::REQUEST_TIMEOUT);
+    }
+    #[tokio::test]
+    async fn mp11_provider_http_error_projection_is_private() {
+        let response = error(
+            StatusCode::BAD_GATEWAY,
+            "authorization_failed",
+            "synthetic-client-secret",
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-client-secret"));
+    }
+}
+
+#[cfg(test)]
+mod mp11_delivery_http_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct SignedProvider;
+    impl AegsProvider for SignedProvider {
+        fn generator_id(&self) -> &'static str {
+            "dev.chariox.github"
+        }
+        fn provider_slug(&self) -> &'static str {
+            "github"
+        }
+        fn normalize_webhook(
+            &self,
+            input: WebhookInput<'_>,
+            _: &crate::WebhookRoute,
+        ) -> Result<crate::NormalizedEvent, String> {
+            let signature = input
+                .headers
+                .get("x-signature")
+                .ok_or("signature missing")?;
+            if !crate::verify_hmac_sha256_hex(input.body, signature, "synthetic-webhook-key") {
+                return Err("signature invalid".into());
+            }
+            Ok(event())
+        }
+    }
+    fn event() -> crate::NormalizedEvent {
+        crate::NormalizedEvent {
+            occurrence_id: "occurrence".into(),
+            event_type: "event".into(),
+            occurred_at: "2026-10-05T00:00:00Z".into(),
+            connection_scope: "scope".into(),
+            prompt: "fixture".into(),
+            metadata: serde_json::Value::Null,
+            reply_context: None,
+        }
+    }
+    // This fake AEDS accepts real HTTP and records calls. Stop/join even on assertion failure.
+    struct PublisherFixture {
+        url: String,
+        calls: Arc<AtomicUsize>,
+        stop: Arc<AtomicBool>,
+        hold: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl PublisherFixture {
+        fn new() -> Self {
+            Self::with_blocked_publication(false)
+        }
+        fn with_blocked_publication(blocked: bool) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/events", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let count = calls.clone();
+            let done = stop.clone();
+            let hold = Arc::new(AtomicBool::new(blocked));
+            let held = hold.clone();
+            let thread = std::thread::spawn(move || {
+                while !done.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .unwrap();
+                            let mut header = Vec::new();
+                            while !header.ends_with(b"\r\n\r\n") {
+                                let mut byte = [0];
+                                stream.read_exact(&mut byte).unwrap();
+                                header.push(byte[0]);
+                                assert!(header.len() < 8192);
+                            }
+                            let header = String::from_utf8(header).unwrap();
+                            let length: usize = header
+                                .lines()
+                                .find_map(|line| {
+                                    line.split_once(':')
+                                        .filter(|(name, _)| {
+                                            name.eq_ignore_ascii_case("content-length")
+                                        })
+                                        .map(|(_, value)| value.trim().parse().unwrap())
+                                })
+                                .unwrap();
+                            assert!(length < 8192);
+                            stream.read_exact(&mut vec![0; length]).unwrap();
+                            count.fetch_add(1, Ordering::SeqCst);
+                            while held.load(Ordering::SeqCst) && !done.load(Ordering::SeqCst) {
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                            if done.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            let body = r#"{"occurrence_id":"occurrence","accepted_route_count":1,"delivery_ids":[],"duplicate":false}"#;
+                            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2))
+                        }
+                        Err(error) => panic!("fixture accept: {error}"),
+                    }
+                }
+            });
+            Self {
+                url,
+                calls,
+                stop,
+                hold,
+                thread: Some(thread),
+            }
+        }
+    }
+    impl Drop for PublisherFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = self.thread.take().unwrap().join();
+        }
+    }
+    async fn signed_webhook(server: Arc<AegsServer>) -> serde_json::Value {
+        use hmac::Mac;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/webhooks/github/connection",
+            listener.local_addr().unwrap()
+        );
+        let serving = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(
+                    TokioIo::new(stream),
+                    service_fn(move |request| {
+                        let server = server.clone();
+                        async move { Ok::<_, Infallible>(server.handle(request).await) }
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let body = "synthetic-webhook";
+        let mut mac =
+            <hmac::Hmac<sha2::Sha256> as Mac>::new_from_slice(b"synthetic-webhook-key").unwrap();
+        mac.update(body.as_bytes());
+        let signature: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let response = tokio::task::spawn_blocking(move || {
+            ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .post(&url)
+                .set("x-signature", &signature)
+                .set("connection", "close")
+                .send_string(body)
+                .unwrap()
+                .into_json::<serde_json::Value>()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        serving.await.unwrap();
+        response
+    }
+    #[tokio::test]
+    async fn mp11_review_oauth_completion_survives_blocked_webhook_publisher() {
+        let publisher = PublisherFixture::with_blocked_publication(true);
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let claim = crate::SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        store
+            .create_authorization(crate::store::CreateAuthorizationRequest {
+                state_digest: "pending-state",
+                connection_id: "pending",
+                owner_id: "owner",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 1000,
+                now_ms: 1,
+            })
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            producer_id: claim.generator_id.clone(),
+            management_token: None,
+            management_public_key: None,
+            management_issuer: "fixture".into(),
+            management_url: None,
+            manifest_digest: None,
+            publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
+            store: store.clone(),
+            provider: Arc::new(SignedProvider),
+            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        });
+
+        let publishing = tokio::spawn(signed_webhook(server));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while publisher.calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!publishing.is_finished());
+        let completion_store = store.clone();
+        let completion = tokio::task::spawn_blocking(move || {
+            completion_store.complete_authorization(
+                "pending-state",
+                b"synthetic-encrypted-exchange",
+                &serde_json::Value::Null,
+                None,
+                2,
+            )
+        });
+        let result = tokio::time::timeout(Duration::from_secs(2), completion).await;
+        // Release the real publisher even when the assertion below fails.
+        publisher.hold.store(false, Ordering::SeqCst);
+        let ready = result.unwrap().unwrap().unwrap();
+        assert_eq!(ready.status, "ready");
+        assert_eq!(
+            ready.encrypted_credential.as_deref(),
+            Some(b"synthetic-encrypted-exchange".as_slice())
+        );
+        assert_eq!(publishing.await.unwrap()["matched_interest_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn mp11_signed_webhook_delivers_shared_interest_after_first_binding_retires() {
+        let publisher = PublisherFixture::with_blocked_publication(true);
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let earlier = crate::SubscriptionClaim {
+            binding_id: "00-earlier".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "earlier-interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        };
+        let first = crate::SubscriptionClaim {
+            binding_id: "10-first".into(),
+            event_interest_key: "shared-interest".into(),
+            ..earlier.clone()
+        };
+        let remaining = crate::SubscriptionClaim {
+            binding_id: "20-remaining".into(),
+            ..first.clone()
+        };
+        let allowed_owners = ["owner".to_string()];
+        store
+            .reconcile_scoped(
+                "kernel",
+                Some(&allowed_owners),
+                &earlier.generator_id,
+                &[earlier.clone(), first, remaining.clone()],
+            )
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            producer_id: earlier.generator_id.clone(),
+            management_token: None,
+            management_public_key: None,
+            management_issuer: "fixture".into(),
+            management_url: None,
+            manifest_digest: None,
+            publisher: AedsPublisher::new(&earlier.generator_id, None, &publisher.url),
+            store: store.clone(),
+            provider: Arc::new(SignedProvider),
+            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        });
+        let publishing = tokio::spawn(signed_webhook(server));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while publisher.calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!publishing.is_finished());
+        // All three bindings have been selected. Retire only the first shared
+        // binding while the earlier interest is waiting for its HTTP response.
+        let reconciliation = store.reconcile_scoped(
+            "kernel",
+            Some(&allowed_owners),
+            &earlier.generator_id,
+            &[earlier.clone(), remaining.clone()],
+        );
+        publisher.hold.store(false, Ordering::SeqCst);
+        reconciliation.unwrap();
+        let response = publishing.await.unwrap();
+        assert_eq!(
+            store
+                .matching(
+                    &earlier.generator_id,
+                    &earlier.event_type,
+                    &earlier.connection_scope
+                )
+                .unwrap(),
+            vec![earlier, remaining]
+        );
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(response["matched_interest_count"], 2);
+        assert_eq!(response["publications"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn mp11_signed_late_webhook_and_selected_test_event_do_not_publish_after_revoke() {
+        let publisher = PublisherFixture::new();
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let claim = crate::SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: serde_json::Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        let server = Arc::new(AegsServer {
+            producer_id: claim.generator_id.clone(),
+            management_token: None,
+            management_public_key: None,
+            management_issuer: "fixture".into(),
+            management_url: None,
+            manifest_digest: None,
+            publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
+            store: store.clone(),
+            provider: Arc::new(SignedProvider),
+            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        });
+        assert_eq!(
+            signed_webhook(server.clone()).await["matched_interest_count"],
+            1
+        );
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+        let selected_test_event = event();
+        store.revoke_connection("connection", "owner", 2).unwrap();
+        assert_eq!(
+            signed_webhook(server.clone()).await["matched_interest_count"],
+            0
+        );
+        assert!(
+            !server
+                .publish_normalized_event(selected_test_event, Some("connection"))
+                .await
+                .unwrap()
+                .accepted
+        );
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
+        store
+            .upsert_ready_connection("connection", "owner", "github", &serde_json::Value::Null, 3)
+            .unwrap();
+        assert_eq!(
+            signed_webhook(server.clone()).await["matched_interest_count"],
+            0
+        );
+        store
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
+            .unwrap();
+        assert_eq!(signed_webhook(server).await["matched_interest_count"], 1);
+        assert_eq!(publisher.calls.load(Ordering::SeqCst), 2);
     }
 }

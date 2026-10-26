@@ -1,10 +1,11 @@
 import type { KernelEvent } from "@chariox/kernel-client/kernel-events"
 
-import type { LocalIpcClient } from "./ipc.js"
+import type { LocalIpcClient, RelaySubscriptionDiagnostic } from "./ipc.js"
 
 type KernelEventHandler = (event: KernelEvent) => void
 
 export type MutableLocalIpcClient = LocalIpcClient & {
+  onClientChanged: (handler: () => void) => () => void
   currentClient: () => LocalIpcClient
   replaceClient: (nextClient: LocalIpcClient) => Promise<void>
   swapClient: (nextClient: LocalIpcClient) => LocalIpcClient
@@ -45,13 +46,19 @@ export function beginMutableLocalIpcClientPivot(
 
 export function createMutableLocalIpcClient(initialClient: LocalIpcClient): MutableLocalIpcClient {
   let currentClient = initialClient
+  const clientChangedHandlers = new Set<() => void>()
   const handlers = new Map<KernelEventHandler, () => void>()
+  const diagnostics = new Map<(value: RelaySubscriptionDiagnostic) => void, () => void>()
 
   const bindHandler = (handler: KernelEventHandler) => currentClient.onKernelEvent(handler)
 
   const proxy = {
     get socketPath() {
       return currentClient.socketPath
+    },
+    onClientChanged(handler: () => void) {
+      clientChangedHandlers.add(handler)
+      return () => { clientChangedHandlers.delete(handler) }
     },
     currentClient: () => currentClient,
     async replaceClient(nextClient: LocalIpcClient) {
@@ -69,17 +76,28 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
       for (const dispose of handlers.values()) {
         dispose()
       }
+      for (const dispose of diagnostics.values()) dispose()
       currentClient = nextClient
+      for (const handler of diagnostics.keys()) diagnostics.set(handler, currentClient.onRelaySubscriptionDiagnostic(handler))
       for (const handler of handlers.keys()) {
         handlers.set(handler, bindHandler(handler))
       }
+      for (const handler of clientChangedHandlers) handler()
       return previousClient
     },
+    retainForRelayRenewal() { return currentClient.retainForRelayRenewal() },
+    startRelayAuthRenewal(...args: Parameters<LocalIpcClient["startRelayAuthRenewal"]>) { return currentClient.startRelayAuthRenewal(...args) },
+    invalidateRelayAuthorization(error: unknown) { currentClient.invalidateRelayAuthorization(error) },
+    prioritizeInteractiveDisplay() { return currentClient.prioritizeInteractiveDisplay() },
+    isReceivingKernelResponse() { return currentClient.isReceivingKernelResponse() },
     supportsKernelEvents() {
       return currentClient.supportsKernelEvents()
     },
     getRelayClientIdentity() {
       return currentClient.getRelayClientIdentity()
+    },
+    isLocalDirectTransport() {
+      return currentClient.isLocalDirectTransport()
     },
     isRelayTransport() {
       return currentClient.isRelayTransport()
@@ -89,6 +107,9 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     },
     send<TResponse>(request: unknown): Promise<TResponse> {
       return currentClient.send<TResponse>(request)
+    },
+    requestStats() {
+      return currentClient.requestStats()
     },
     subscribeToKernelEvents(sessionId: string, attachmentId: string): Promise<void> {
       return currentClient.subscribeToKernelEvents(sessionId, attachmentId)
@@ -101,6 +122,10 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     },
     restartKernelEventStream(): Promise<void> {
       return currentClient.restartKernelEventStream()
+    },
+    onRelaySubscriptionDiagnostic(handler: (value: RelaySubscriptionDiagnostic) => void) {
+      diagnostics.set(handler, currentClient.onRelaySubscriptionDiagnostic(handler))
+      return () => { diagnostics.get(handler)?.(); diagnostics.delete(handler) }
     },
     onKernelEvent(handler: KernelEventHandler) {
       const dispose = bindHandler(handler)
@@ -118,6 +143,7 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
       currentClient.destroy()
     },
   } satisfies Pick<LocalIpcClient, keyof LocalIpcClient> & {
+    onClientChanged: (handler: () => void) => () => void
     currentClient: () => LocalIpcClient
     replaceClient: (nextClient: LocalIpcClient) => Promise<void>
     swapClient: (nextClient: LocalIpcClient) => LocalIpcClient

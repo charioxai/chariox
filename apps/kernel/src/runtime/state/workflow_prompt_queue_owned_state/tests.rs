@@ -64,6 +64,7 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
         .execute_workflow_invoke_endpoint_request(
             request.clone(),
             crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
         )
         .await;
     assert!(failed
@@ -94,7 +95,11 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
         .execute_batch("DROP TRIGGER fail_workflow_invoke_append;")
         .expect("invoke append failure trigger should be removed");
     let (retried, projected) = runtime
-        .execute_workflow_invoke_endpoint_request(request, crate::session::DEFAULT_LOCAL_USER_ID)
+        .execute_workflow_invoke_endpoint_request(
+            request,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+        )
         .await;
     let queued_prompt_id = match retried.expect("invoke retry should succeed") {
         crate::local::LocalDaemonResponse::WorkflowPromptEnqueued { queued_prompt, .. } => {
@@ -136,6 +141,15 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
 
 #[test]
 fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once() {
+    scheduled_watchdog_append_failure_scenario(false);
+}
+
+#[test]
+fn mp11_busy_schedule_append_failure_rolls_back_owner_and_queue() {
+    scheduled_watchdog_append_failure_scenario(true);
+}
+
+fn scheduled_watchdog_append_failure_scenario(entry_busy: bool) {
     let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
     runtime
         .owned
@@ -170,6 +184,23 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .persist_workflow_runtime_session(&session_id, "watchdog_failure_test_baseline")
         .expect("watchdog baseline should persist");
 
+    if entry_busy {
+        runtime
+            .owned
+            .session_store
+            .write()
+            .invoke_workflow_endpoint(
+                &session_id,
+                &workflow_id,
+                &endpoint_id,
+                Some("busy entry".into()),
+            )
+            .unwrap();
+        runtime
+            .owned
+            .persist_workflow_runtime_session(&session_id, "busy_entry_baseline")
+            .unwrap();
+    }
     let state_path = runtime.owned.durable_state_store.path().to_path_buf();
     let connection = rusqlite::Connection::open(state_path)
         .expect("durable database should open for watchdog failure injection");
@@ -198,7 +229,15 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .get_session(&session_id)
         .expect("rolled-back session should remain available");
     assert!(rolled_back.workflow_queued_prompts().is_empty());
-    assert!(rolled_back.workflow_runs().is_empty());
+    let owner_records: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM durable_state_metadata WHERE metadata_key LIKE '%workflow.user_invocation%'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        owner_records, 0,
+        "MP-11: failed admission also rolls back its owner record"
+    );
+    assert_eq!(rolled_back.workflow_runs().len(), usize::from(entry_busy));
     assert!(
         !rolled_back
             .workflow_prompt_queues()
@@ -222,7 +261,10 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .session_snapshot(&session_id)
         .expect("unrelated session snapshot should remain available");
     assert!(unrelated_snapshot.workflow_queued_prompts().is_empty());
-    assert!(unrelated_snapshot.workflow_runs().is_empty());
+    assert_eq!(
+        unrelated_snapshot.workflow_runs().len(),
+        usize::from(entry_busy)
+    );
 
     connection
         .execute_batch("DROP TRIGGER fail_workflow_watchdog_admission_append;")
@@ -236,7 +278,12 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .session_store
         .get_session(&session_id)
         .expect("retried session should remain available");
-    assert!(retried.workflow_runs().is_empty());
+    // Retry may reconcile the synthetic busy run, which has no provider.
+    // The disabled queue must not create a new scheduled run.
+    assert!(retried
+        .workflow_runs()
+        .iter()
+        .all(|run| run.queue_item_id().is_none()));
     assert_eq!(retried.workflow_queued_prompts().len(), 1);
     assert!(!retried
         .workflow_prompt_queues()
@@ -245,6 +292,14 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .expect("default queue configuration should remain available after retry")
         .enabled());
     let queued_prompt = &retried.workflow_queued_prompts()[0];
+    assert_eq!(
+        runtime
+            .owned
+            .durable_state_store
+            .workflow_invocation_owner(retried.host_daemon_id(), &session_id, queued_prompt.id(),)
+            .unwrap(),
+        Some(crate::session::DEFAULT_LOCAL_USER_ID.into())
+    );
     assert_eq!(queued_prompt.watchdog_id(), Some(watchdog.id()));
     assert_eq!(queued_prompt.prompt(), Some("scheduled exactly once"));
     let retried_watchdog = retried
@@ -911,7 +966,7 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
 }
 
 fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, TestRoot) {
-    let test_root = TestRoot(std::env::temp_dir().join(format!(
+    let test_root = TestRoot(crate::test_support::test_workspace_root().join(format!(
         "chariox-owned-workflow-admission-{}-{}-{:032x}",
         std::process::id(),
         crate::session::unix_epoch_ms(),
@@ -919,8 +974,9 @@ fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, 
     )));
     std::fs::create_dir_all(&test_root.0).expect("workflow test root should be created");
     let test_root_path = test_root.0.to_string_lossy().to_string();
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(test_root.0.join("state.db").display().to_string());
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             &test_root_path,
@@ -1964,4 +2020,97 @@ pub(in crate::runtime) fn runtime_state_from_app(app: DaemonApp) -> KernelRuntim
         metaagent_events,
         workspace_coordinator,
     )
+}
+
+// MP-08/MP-10/MP-11 A01: instance nodes belong to the invoking agent, not the template.
+#[test]
+fn room_admission_concurrent_workflow_nodes_record_invoking_creator() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    let actor = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .find(|agent| agent.alias().is_none())
+        .unwrap();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .set_workflow_endpoint_max_instances(&session_id, &workflow_id, &endpoint_id, 2)
+        .unwrap();
+    for message in ["first real dispatch", "second real dispatch"] {
+        runtime
+            .owned
+            .workflow_enqueue_prompt_by_agent_and_maybe_start(
+                &session_id,
+                &workflow_id,
+                &endpoint_id,
+                Some(message.into()),
+                None,
+                None,
+                Some(actor.id()),
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let copies = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .filter(|agent| !agent.visible_in_freeform())
+        .collect::<Vec<_>>();
+    assert!(
+        !copies.is_empty(),
+        "second invocation must materialize an instance node"
+    );
+    for copy in copies {
+        assert_eq!(
+            copy.spawned_by_agent_id(),
+            Some(actor.id()),
+            "new instance nodes need the initiator's immutable lineage"
+        );
+    }
+}
+
+// MP-08 / MP-10: launch completion can inspect an empty queue after admission
+// observed Starting but before it committed the prompt. Recreate that ordering.
+#[test]
+fn workflow_queue_admission_wakes_a_provider_that_became_ready() {
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    let providers = runtime.owned.provider_store.clone();
+    super::super::workflow::AFTER_WORKFLOW_QUEUE_ADMISSION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |id| {
+            let run = providers.get_run(id).unwrap();
+            assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+            providers.mark_run_running(id).unwrap();
+        }));
+    });
+    let (_, dispatches) = runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session,
+            &workflow,
+            &endpoint,
+            Some("ready while admitting".into()),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(dispatches.starting_provider_runs.is_empty());
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let agent = snapshot.workflow_runs()[0].node_runs()[0].agent_id();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&snapshot, agent);
+    assert!(active.is_none());
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        dispatches.project_queue_promotions,
+        vec![(session, agent.to_string())],
+        "ready queue must carry a wakeup even though the launch-completion wakeup was missed"
+    );
 }

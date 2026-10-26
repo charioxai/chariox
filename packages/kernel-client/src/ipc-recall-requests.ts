@@ -9,6 +9,7 @@ export function getSessionHistoryOutlineRequest(
   agentIds?: readonly string[] | null,
   latestPromptCount?: number | null,
   cursor?: SessionHistoryOutlineCursor | null,
+  includePrefetchedContent = false,
 ) {
   return {
     GetSessionHistoryOutline: {
@@ -16,6 +17,7 @@ export function getSessionHistoryOutlineRequest(
       agent_ids: agentIds ? [...agentIds] : null,
       latest_prompt_count: latestPromptCount ?? null,
       cursor: cursor ?? null,
+      ...(includePrefetchedContent ? { include_prefetched_content: true } : {}),
     },
   }
 }
@@ -30,6 +32,21 @@ export function getSessionHistoryBlobContentRequest(
       session_id: sessionId,
       agent_id: agentId,
       blob_id: blobId,
+    },
+  }
+}
+
+// Protocol ≥508: several blobs of one agent in one round trip.
+export function getSessionHistoryBlobContentsRequest(
+  sessionId: string,
+  agentId: string,
+  blobIds: readonly string[],
+) {
+  return {
+    GetSessionHistoryBlobContents: {
+      session_id: sessionId,
+      agent_id: agentId,
+      blob_ids: [...blobIds],
     },
   }
 }

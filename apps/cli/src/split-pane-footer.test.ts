@@ -34,11 +34,11 @@ test("reflectedDistance bounces the highlight across the badge width", () => {
 test("formatSplitPaneFooter includes alias and runtime config metadata", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, null, null),
-    "Planner • OpenAI • GPT-5.4",
+    "Planner • OpenAI • gpt-5.4",
   )
   assert.equal(
     formatSplitPaneFooter(secondaryAgent, null, "gpt-5.4"),
-    "agent • OpenAI • GPT-5.4",
+    "agent • OpenAI • gpt-5.4",
   )
 })
 
@@ -56,14 +56,14 @@ test("formatSplitPaneFooter prefers the active run model for the matching agent"
       activeRun,
       null,
     ),
-    "Planner • OpenCode • OpenCode GPT-5.4 • High",
+    "Planner • OpenCode • opencode/gpt-5.4 • High",
   )
 })
 
 test("formatSplitPaneFooter prefers an override variant when idle", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, null, null, { variant: "high" }),
-    "Planner • OpenAI • GPT-5.4 • High",
+    "Planner • OpenAI • gpt-5.4 • High",
   )
 })
 
@@ -80,14 +80,14 @@ test("formatSplitPaneFooter does not mix an idle selection into an active run", 
       null,
       { provider: "codex", model: "gpt-5.6-luna", variant: "high" },
     ),
-    "Planner • OpenCode • OpenCode Kimi-K2.7-Code",
+    "Planner • OpenCode • opencode/kimi-k2.7-code",
   )
 })
 
 test("formatSplitPaneFooter marks Meta mode agents", () => {
   assert.equal(
     formatSplitPaneFooter({ ...primaryAgent, meta_mode: { activated_at_ms: 1 } }, null, null),
-    "Planner • Meta mode • OpenAI • GPT-5.4",
+    "Planner • Meta mode • OpenAI • gpt-5.4",
   )
 })
 
@@ -101,7 +101,7 @@ test("formatSplitPaneFooterParts includes agent identity and provider metadata",
     [
       { kind: "agent", text: "Planner" },
       { kind: "provider", text: "OpenAI" },
-      { kind: "model", text: "GPT-5.4" },
+      { kind: "model", text: "gpt-5.4" },
     ],
   )
 })
@@ -117,7 +117,7 @@ test("formatSplitPaneFooterParts shows only view slice before the menu for slice
       { kind: "agent", text: "Planner" },
       { kind: "location", text: "view slice" },
       { kind: "provider", text: "OpenAI" },
-      { kind: "model", text: "GPT-5.4" },
+      { kind: "model", text: "gpt-5.4" },
     ],
   )
 })
@@ -136,7 +136,7 @@ test("formatSplitPaneFooterParts includes mode and permission overrides", () => 
     [
       { kind: "agent", text: "Planner" },
       { kind: "provider", text: "OpenAI" },
-      { kind: "model", text: "GPT-5.4" },
+      { kind: "model", text: "gpt-5.4" },
       { kind: "mode", text: "plan" },
       { kind: "permission", text: "required" },
     ],
@@ -158,7 +158,7 @@ test("formatSplitPaneFooterParts counts per-turn substitutes", () => {
     [
       { kind: "agent", text: "Planner" },
       { kind: "provider", text: "OpenAI" },
-      { kind: "model", text: "GPT-5.4" },
+      { kind: "model", text: "gpt-5.4" },
       { kind: "substitute", text: "1 sub" },
     ],
   )

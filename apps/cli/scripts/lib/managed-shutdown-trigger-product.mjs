@@ -7,6 +7,7 @@ import {
   projectOperation,
   projectSummary,
   recordOperation,
+  recordSnapshotCoverage,
   recordSummary,
   requireOperationHistory,
   responseBody,
@@ -14,7 +15,7 @@ import {
 import { requireValue, SHUTDOWN_TRIGGER_LIMITS } from "./managed-shutdown-trigger-config.mjs"
 
 export function createManagedShutdownProduct({ deps, options, capture, getTarget, isCleanupStarted,
-  waitForAction, remaining, now, pause, runId }) {
+  waitForAction, remaining, now, monotonic, pause, runId }) {
   const send = deps.send ?? ((request) => deps.client.send(request))
 
   const sendUntil = async (request, deadline, preserveMutation = false) => {
@@ -37,6 +38,7 @@ export function createManagedShutdownProduct({ deps, options, capture, getTarget
   const snapshot = async (deadline, forceObservation = false) => {
     const target = getTarget()
     requireValue(target, "managed target is unavailable")
+    const requestStarted = monotonic()
     const response = await sendUntil(deps.requests.getManagedEnvironmentRequest(target.environmentId), deadline)
     const details = responseBody(response, "ManagedEnvironment")
     const summary = projectSummary(details.environment)
@@ -44,8 +46,11 @@ export function createManagedShutdownProduct({ deps, options, capture, getTarget
     requireValue(JSON.stringify(summary.autoStopPolicy) === JSON.stringify(options.descriptor.policy),
       "managed shutdown policy changed")
     const operations = operationList(details, target)
-    recordSummary(capture, summary, now().toISOString(), forceObservation)
-    if (operations) for (const operation of operations) recordOperation(capture, operation)
+    const capturedAt = now().toISOString()
+    recordSnapshotCoverage(capture, isCleanupStarted() ? "cleanup" : "workflow",
+      capturedAt, requestStarted, monotonic())
+    recordSummary(capture, summary, capturedAt, forceObservation)
+    if (operations) for (const operation of operations) recordOperation(capture, operation, capturedAt)
     return { summary, operations }
   }
 

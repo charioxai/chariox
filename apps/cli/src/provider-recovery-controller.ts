@@ -1,6 +1,7 @@
 import type { RuntimeSession } from "./cli-types.js"
 import {
   resolvePromptRecoveryProviderLaunch,
+  resolveAgentLaunchAccountProfile,
   type SessionLifecycleLaunchSelection,
 } from "@chariox/kernel-client/session-lifecycle-state"
 
@@ -61,7 +62,7 @@ export function createProviderRecoveryController<TSession, TProviderRun>(
         const providerRun = await options.launchProviderRun({
           sessionId: options.getSessionId(),
           provider: launchDecision.launch.provider,
-          accountProfile: options.getAccountProfile(),
+          accountProfile: resolveAgentLaunchAccountProfile(launchDecision.targetAgent, options.getAccountProfile()),
           model: launchDecision.launch.model,
           effort: launchDecision.launch.effort,
           targetAgentId: launchDecision.targetAgentId,

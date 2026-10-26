@@ -94,3 +94,72 @@ test('ciphertext modification and wrong recipient keys are rejected', async () =
   const other = await browser.createRelayKeypair();
   await assert.rejects(browser.decryptRelayPayload(other.privateKey,encrypted.payload));
 });
+
+test('MP-08/MP-10 protocol 466 display events expose raw contiguous payload views', () => {
+  const encode = (header: unknown, payload: number[]) => {
+    const json = new TextEncoder().encode(JSON.stringify(header))
+    const bytes = new Uint8Array(8 + json.length + payload.length)
+    bytes.set([0x43, 0x58, 0x44, 0x31])
+    new DataView(bytes.buffer).setUint32(4, json.length)
+    bytes.set(json, 8)
+    bytes.set(payload, 8 + json.length)
+    return bytes
+  }
+  const frame = (tiles: unknown[]) => ({ event: 'kernel_browser_frame', subscription_id: 's', frame: { kind: 'tiles', moves: [[0, 1, 4, 1, -1]], tiles } })
+  const event = browser.decodeDisplayEvent(encode(frame([{ format: 'webp', data: [0, 3] }, { format: 'png', data: [3, 1] }]), [1, 2, 3, 4]))
+  const tiles = (event?.frame as { tiles: { data: Uint8Array }[] }).tiles
+  assert.deepEqual([...tiles[0]!.data], [1, 2, 3])
+  assert.deepEqual([...tiles[1]!.data], [4])
+  assert.equal(browser.decodeDisplayEvent(new TextEncoder().encode('{"event":"terminal_output"}')), null)
+  for (const [tiles, payload] of [
+    [[{ data: [1, 2] }], [0, 1, 2]],
+    [[{ data: [0, 2] }], [0, 1, 2]],
+    [[{ data: [0, 4] }], [0, 1, 2]],
+    [[{ data: [0, 0] }], []],
+  ] as const) {
+    assert.throws(() => browser.decodeDisplayEvent(encode(frame([...tiles]), [...payload])), /display/)
+  }
+  assert.throws(() => browser.decodeDisplayEvent(encode({ event: 'other', frame: {} }, [])), /display event/)
+})
+
+
+test('MP-08/MP-10/MP-11 peer96 binary relay events retain authenticated ciphertext and reject bad bounds', async () => {
+  const receiver = await browser.createRelayKeypair();
+  const sender = native.createRelayKeypair();
+  const payload = new native.RelayClientIdentity(sender.privateKey).encrypt(receiver.publicKeyBase64, Buffer.from('{"event":"terminal_output"}'));
+  const raw = Buffer.from(payload.ciphertext, 'base64');
+  const header = Buffer.from(JSON.stringify({ kind:'client_event', subscription_id:'s', event_id:17, sender_public_key:payload.sender_public_key, nonce:payload.nonce }));
+  const prefix = Buffer.alloc(8); prefix.write('CXR1'); prefix.writeUInt32BE(header.length, 4);
+  const wire = Buffer.concat([prefix, header, raw]);
+  const decoded = browser.decodeBinaryRelayEvent(wire);
+  assert.equal(decoded.event_id, 17);
+  assert.equal(decoded.encrypted_event.ciphertext instanceof Uint8Array, true);
+  assert.deepEqual(await browser.decryptRelayEvent(receiver.privateKey, decoded.encrypted_event, sender.publicKeyBase64), { event:'terminal_output' });
+  await assert.rejects(browser.decryptRelayEvent(receiver.privateKey, decoded.encrypted_event, 'wrong-sender'), /sender identity/);
+  const corrupted = wire.slice(); corrupted[corrupted.length-1] = corrupted[corrupted.length-1]! ^ 1;
+  await assert.rejects(browser.decryptRelayEvent(receiver.privateKey, browser.decodeBinaryRelayEvent(corrupted).encrypted_event, sender.publicKeyBase64));
+  const excessive = wire.slice(); excessive.writeUInt32BE(4097,4);
+  assert.throws(() => browser.decodeBinaryRelayEvent(excessive), /bounds/);
+  assert.throws(() => browser.decodeBinaryRelayEvent(wire.subarray(0,8+header.length+15)), /bounds/);
+});
+
+
+test('MP-08/MP-10 peer96 browser negotiation retries the existing connection on a legacy relay', async () => {
+  const original = globalThis.WebSocket;
+  const offers: unknown[][] = [];
+  class Socket {
+    onopen?: () => void; onerror?: () => void; binaryType=''; protocol=''; closed=false;
+    constructor(url:string, protocols?:string[]) {
+      offers.push([url,protocols]);
+      queueMicrotask(() => { if(protocols)this.onerror?.();else this.onopen?.() });
+    }
+    close(){this.closed=true}
+  }
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  try {
+    const socket = await browser.connectRelaySocket('wss://example/relay');
+    assert.equal(socket.protocol, '');
+    assert.deepEqual(offers, [['wss://example/relay',['chariox-relay-binary-v96']],['wss://example/relay',undefined]]);
+    assert.equal(socket.binaryType,'arraybuffer');
+  } finally { globalThis.WebSocket=original }
+});

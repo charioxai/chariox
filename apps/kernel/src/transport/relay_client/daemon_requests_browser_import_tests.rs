@@ -131,6 +131,8 @@ impl ImportClient {
             identity,
             encrypted,
             &self.cache,
+            &Default::default(),
+            None,
         )
         .await;
         if let Some(error) = result.error {
@@ -389,6 +391,8 @@ fn browser_import_encrypted_delivery_revalidates_sender_and_quarantines_before_c
             Some(service),
             relay_crypto::encrypt_payload_for_peer(&client.private_key, &peer, &plaintext).unwrap(),
             &client.cache,
+            &Default::default(),
+            None,
         )
         .await;
         assert_eq!(denied.error.unwrap().code, "unauthorized");
@@ -406,6 +410,8 @@ fn browser_import_encrypted_delivery_revalidates_sender_and_quarantines_before_c
             Some(client.identity.clone()),
             relay_crypto::encrypt_payload_for_peer(&client.private_key, &peer, &plaintext).unwrap(),
             &client.cache,
+            &Default::default(),
+            None,
         )
         .await;
         assert_eq!(routed.error.unwrap().code, "browser_import_failed");

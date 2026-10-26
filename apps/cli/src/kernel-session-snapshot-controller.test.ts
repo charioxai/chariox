@@ -312,3 +312,11 @@ function providerRun(id: string): RuntimeProviderRun {
     state: "running",
   }
 }
+
+test("MP-08 / MP-10 / MP-11 G03 ignores a late snapshot from the previously selected room", async () => {
+  const harness = createHarness({session: session({id: "session-2"}), providerRun: providerRun("run-2")})
+  await harness.controller.apply(session(), providerRun("run-1"))
+  assert.equal(harness.session.id, "session-2")
+  assert.equal(harness.providerRun?.id, "run-2")
+  assert.deepEqual(harness.calls, [])
+})

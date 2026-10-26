@@ -9,6 +9,12 @@ export type ProviderAccountCapacity = {
 
 const PROVIDER_USAGE_STALE_AFTER_MS = 24 * 60 * 60 * 1000
 
+function meterCurrentlyExhausted(meter: ProviderAccountUsageMeter, nowMs: number): boolean {
+  return nowMs - meter.observed_at_ms <= PROVIDER_USAGE_STALE_AFTER_MS
+    && meter.state === "exhausted"
+    && (meter.resets_at_ms == null || meter.resets_at_ms > nowMs)
+}
+
 export function providerAccountCapacity(
   profile: ProviderAccountProfile,
   nowMs = Date.now(),
@@ -25,26 +31,12 @@ export function providerAccountCapacity(
   const isFresh = (meter: ProviderAccountUsageMeter): boolean => (
     nowMs - meter.observed_at_ms <= PROVIDER_USAGE_STALE_AFTER_MS
   )
-  const currentlyExhausted = (meter: ProviderAccountUsageMeter): boolean => (
-    isFresh(meter)
-    && meter.state === "exhausted"
-    && (meter.resets_at_ms == null || meter.resets_at_ms > nowMs)
-  )
+  const currentlyExhausted = (meter: ProviderAccountUsageMeter): boolean => meterCurrentlyExhausted(meter, nowMs)
   const provider = profile.provider === "claude-headless" || profile.provider === "claude-p"
     ? "claude"
     : profile.provider
   const selectedOpenCodeService = provider === "opencode" ? openCodeServiceFromModel(model) : null
-  const codexModel = model?.trim().replace(/^codex\//, "")
-  const relevantMeters = provider === "opencode" && selectedOpenCodeService
-    ? meters.filter((meter) => openCodeMeterService(meter) === selectedOpenCodeService)
-    : provider === "opencode"
-      ? meters.filter((meter) => openCodeMeterService(meter) == null)
-      : provider === "codex" ? meters.filter((meter) => {
-        if (!codexModel || codexModel === "default" || !meter.meter_id.startsWith("rolling/")) return true
-        const bucket = meter.meter_id.split("/").at(-1)
-        if (bucket !== "codex" && bucket !== "codex_bengalfox") return true
-        return bucket === (codexModel === "gpt-5.3-codex-spark" ? "codex_bengalfox" : "codex")
-      }) : meters
+  const relevantMeters = providerAccountModelMeters(profile, model)
   const freshRelevantMeters = relevantMeters.filter(isFresh)
   const exhausted = freshRelevantMeters.filter(currentlyExhausted)
   if (provider === "codex" || provider === "claude") {
@@ -90,15 +82,38 @@ export function providerAccountCapacity(
   return { state: "ready", detail: "usage available" }
 }
 
-export function providerAccountCapacityLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string {
+/** Pre-admission gate. OpenCode owns service fallback (Go may draw Zen credits), so only its own refusal stops a run. */
+export function providerAccountAdmissionBlocked(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): boolean {
+  return profile.provider !== "opencode" && providerAccountCapacity(profile, nowMs, model).state === "exhausted"
+}
+
+/** The account name, qualified by the OpenCode service when the selected model fixes one. */
+export function providerAccountName(profile: ProviderAccountProfile, model?: string | null): string {
   const serviceId = profile.provider === "opencode" ? openCodeServiceFromModel(model) : null
   const serviceLabel = serviceId ? openCodeServiceLabel(profile, serviceId) : null
-  const base = serviceLabel && profile.label.localeCompare(serviceLabel, "en", { sensitivity: "base" }) !== 0
+  return serviceLabel && profile.label.localeCompare(serviceLabel, "en", { sensitivity: "base" }) !== 0
     ? `${profile.label} · ${serviceLabel}`
     : profile.label
-  return providerAccountCapacity(profile, nowMs, model).state === "exhausted"
-    ? `${base} (exhausted)`
-    : base
+}
+
+/**
+ * The one short reason an account cannot take work right now, shown inline
+ * after its name. Healthy accounts have no status.
+ */
+export function providerAccountStatusLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string | null {
+  if (profile.auth_state === "unknown") return "sign-in not checked"
+  if (profile.auth_state === "not_configured") return "sign in"
+  if (profile.auth_state !== "authenticated") return "sign in again"
+  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
+  const until = providerAccountRecoveryMs(profile, nowMs, model)
+  return until === null ? "usage limit reached" : `usage limit until ${utcDayMonth(until)}`
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+function utcDayMonth(ms: number): string {
+  const date = new Date(ms)
+  return `${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`
 }
 
 function openCodeServiceFromModel(model?: string | null): string | null {
@@ -120,4 +135,49 @@ function openCodeServiceLabel(profile: ProviderAccountProfile, serviceId: string
   if (serviceId === "opencode-go") return "OpenCode Go"
   if (serviceId === "opencode") return "OpenCode Zen"
   return serviceId
+}
+
+export function providerAccountCapacityResetLabel(profile: ProviderAccountProfile, nowMs = Date.now(), model?: string | null): string | null {
+  const reset = providerAccountRecoveryMs(profile, nowMs, model)
+  return reset === null ? null : `resets ${new Date(reset).toISOString().slice(0, 16).replace("T", " ")} UTC`
+}
+
+/**
+ * First scheduled instant an exhausted account is admitted again, from the same
+ * condition as providerAccountCapacity: Codex/Claude reopen when every exhausted
+ * allowance window resets or any credit/spend meter resets; other providers when
+ * every exhausted meter resets. Null when nothing is scheduled.
+ */
+function providerAccountRecoveryMs(profile: ProviderAccountProfile, nowMs: number, model?: string | null): number | null {
+  if (providerAccountCapacity(profile, nowMs, model).state !== "exhausted") return null
+  // A group reopens when every exhausted meter has reset; one without a scheduled reset keeps it closed.
+  const reopens = (meters: readonly ProviderAccountUsageMeter[]): number | null => {
+    const live = meters.filter(meter => meterCurrentlyExhausted(meter, nowMs))
+    return live.length && live.every(meter => meter.resets_at_ms != null) ? Math.max(...live.map(meter => meter.resets_at_ms!)) : null
+  }
+  const isCredit = (meter: ProviderAccountUsageMeter): boolean => meter.kind === "credit_balance" || meter.kind === "spend_limit"
+  const modelMeters = providerAccountModelMeters(profile, model)
+  const family = profile.provider.startsWith("claude") ? "claude" : profile.provider
+  if (family !== "codex" && family !== "claude") return reopens(modelMeters)
+  const credits = (profile.usage?.meters ?? []).filter(isCredit)
+  const options = [reopens(modelMeters.filter(meter => !isCredit(meter))), ...credits.map(meter => reopens([meter]))]
+    .filter((reset): reset is number => reset !== null)
+  return options.length ? Math.min(...options) : null
+}
+
+function providerAccountModelMeters(profile: ProviderAccountProfile, model?: string | null) {
+  const meters = profile.usage?.meters ?? []
+  const family = profile.provider.startsWith("claude") ? "claude" : profile.provider
+  const selectedOpenCodeService = family === "opencode" ? openCodeServiceFromModel(model) : null
+  const codexModel = model?.trim().replace(/^codex\//, "")
+  return family === "opencode" && selectedOpenCodeService
+    ? meters.filter((meter) => openCodeMeterService(meter) === selectedOpenCodeService)
+    : family === "opencode"
+      ? meters.filter((meter) => openCodeMeterService(meter) == null)
+      : family === "codex" ? meters.filter((meter) => {
+        if (!codexModel || codexModel === "default" || !meter.meter_id.startsWith("rolling/")) return true
+        const bucket = meter.meter_id.split("/").at(-1)
+        if (bucket !== "codex" && bucket !== "codex_bengalfox") return true
+        return bucket === (codexModel === "gpt-5.3-codex-spark" ? "codex_bengalfox" : "codex")
+      }) : meters
 }

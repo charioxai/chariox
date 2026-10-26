@@ -3,6 +3,7 @@ use crate::local::{WorkspaceCommitMessageUtilityInput, WorkspaceGitOverview};
 use crate::runtime::workspace_git_changes::workspace_git_diff_text;
 use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
 
+#[allow(dead_code)] // Preserve the bundled commit-message utility prompt interface.
 pub(crate) fn workspace_commit_message_utility_prompt(
     input: &WorkspaceCommitMessageUtilityInput,
 ) -> Result<String, DaemonError> {

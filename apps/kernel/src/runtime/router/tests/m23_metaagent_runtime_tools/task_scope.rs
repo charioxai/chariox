@@ -1288,7 +1288,9 @@ async fn forwarded_remote_metaagent_runtime_tools_use_home_scope() {
     let env = TestMetaRuntimeEnv::new("forwarded-remote");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "home-kernel".into();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
             workspace.to_string_lossy(),
@@ -1318,7 +1320,10 @@ async fn forwarded_remote_metaagent_runtime_tools_use_home_scope() {
         )
         .expect("metaagent should be remote-backed");
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "home-kernel".to_string(),
         home_session_id: session.id().to_string(),
@@ -1367,7 +1372,9 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
     let env = TestMetaRuntimeEnv::new("forwarded-remote-forgery");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "home-kernel".into();
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
             workspace.to_string_lossy(),
@@ -1418,7 +1425,10 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
         )
         .expect("regular agent should be remote-backed");
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "home-kernel".to_string(),
         home_session_id: session.id().to_string(),
@@ -1447,7 +1457,7 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
     assert!(
         lease_denied
             .to_string()
-            .contains("forwarded metaagent context does not match"),
+            .contains("sender prompt or leased worker binding is no longer current"),
         "{lease_denied:?}"
     );
 
@@ -1464,7 +1474,7 @@ async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context()
     assert!(
         worker_denied
             .to_string()
-            .contains("forwarded metaagent context does not match"),
+            .contains("sender prompt or leased worker binding is no longer current"),
         "{worker_denied:?}"
     );
 

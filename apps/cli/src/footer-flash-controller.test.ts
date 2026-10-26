@@ -74,3 +74,18 @@ test("footer flash controller can clear the pending timer", () => {
   assert.equal(timers[0]?.cleared, true)
   assert.deepEqual(flashes, [{ message: "saved", tone: "info" }])
 })
+
+test("MP-08 / MP-10 footer flash controller clears only the matching visible flash", () => {
+  const { controller, flashes, timers } = createHarness()
+
+  controller.flash("kernel transport `x` failed: gone", "error")
+  controller.clearIf(flash => flash.message === "other")
+  assert.deepEqual(flashes, [{ message: "kernel transport `x` failed: gone", tone: "error" }])
+
+  controller.clearIf(flash => flash.tone === "error")
+  assert.deepEqual(flashes.at(-1), null)
+  assert.equal(timers[0]?.cleared, true)
+
+  controller.clearIf(() => true)
+  assert.equal(flashes.length, 2)
+})

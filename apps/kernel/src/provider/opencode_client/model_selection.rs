@@ -14,12 +14,31 @@ impl OpenCodeClient {
             .filter(|value| !value.is_empty() && *value != "default")
         else {
             // With no selection, OpenCode owns its native default choice.
+            *self
+                .model_selection_cache
+                .lock()
+                .expect("OpenCode model selection cache poisoned") = None;
             return Ok(None);
         };
+        let cached = self
+            .model_selection_cache
+            .lock()
+            .expect("OpenCode model selection cache poisoned")
+            .as_ref()
+            .filter(|(selection, resolved)| selection == requested || resolved == requested)
+            .map(|(_, resolved)| resolved.clone());
+        if let Some(resolved) = cached {
+            return Ok(Some(resolved));
+        }
         let catalog = self.provider_catalog()?;
-        resolve_model(&catalog, requested)
-            .map(Some)
-            .map_err(|message| self.protocol_error("opencode_prompt_model", message))
+        let resolved = resolve_model(&catalog, requested)
+            .map_err(|message| self.protocol_error("opencode_prompt_model", message))?;
+        *self
+            .model_selection_cache
+            .lock()
+            .expect("OpenCode model selection cache poisoned") =
+            Some((requested.to_string(), resolved.clone()));
+        Ok(Some(resolved))
     }
 }
 
@@ -72,11 +91,12 @@ mod tests {
 
     use crate::provider::{AgentExecutionMode, OpenCodeClient};
 
-    fn server(expect_prompt: bool) -> (String, thread::JoinHandle<Vec<Value>>) {
+    fn server(prompt_count: usize) -> (String, thread::JoinHandle<Vec<Value>>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let handle = thread::spawn(move || {
             let mut requests = Vec::new();
+            let mut prompts = 0;
             loop {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -110,19 +130,65 @@ mod tests {
                 } else {
                     assert!(headers.starts_with("GET /provider "));
                     json!({"all": [{"id": "linked", "name": "Linked", "models": {
-                        "available": {"id": "available", "name": "Available"}
+                        "available": {"id": "available", "name": "Available"},
+                        "second": {"id": "second", "name": "Second"}
                     }}], "connected": ["linked"], "default": {"linked": "available"}})
                     .to_string()
                 };
                 let status = if post { "204 No Content" } else { "200 OK" };
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).unwrap();
-                if post || !expect_prompt {
+                if post {
+                    prompts += 1;
+                }
+                if prompts >= prompt_count {
                     break;
                 }
             }
             requests
         });
         (endpoint, handle)
+    }
+
+    // MP-08 / MP-10 / PANE-11: keep validation local to a native client.
+    #[test]
+    fn panes_stream_model_cache_reuses_only_the_current_client_selection() {
+        let (endpoint, captured) = server(4);
+        let client = OpenCodeClient::new("run-one", &endpoint).unwrap();
+        for model in ["available", "linked/available", "second"] {
+            client
+                .submit_prompt(
+                    "session",
+                    "message",
+                    "hello",
+                    &[],
+                    None,
+                    Some(model),
+                    None,
+                    AgentExecutionMode::Build,
+                    false,
+                    false,
+                )
+                .unwrap();
+        }
+        OpenCodeClient::new("run-two", &endpoint)
+            .unwrap()
+            .submit_prompt(
+                "session-two",
+                "message-two",
+                "hello",
+                &[],
+                None,
+                Some("available"),
+                None,
+                AgentExecutionMode::Build,
+                false,
+                false,
+            )
+            .unwrap();
+        let requests = captured.join().unwrap();
+        assert_eq!(requests.iter().filter(|r| r["post"] == false).count(), 3,
+            "same selection/qualified alias must reuse validation; changed model and another client must validate");
+        assert_eq!(requests.iter().filter(|r| r["post"] == true).count(), 4);
     }
 
     fn submit(endpoint: &str, model: &str) -> Result<(), crate::error::DaemonError> {
@@ -144,7 +210,7 @@ mod tests {
 
     #[test]
     fn unavailable_explicit_model_fails_before_prompt_post() {
-        let (endpoint, captured) = server(false);
+        let (endpoint, captured) = server(0);
         let result = submit(&endpoint, "linked/missing");
         let requests = captured.join().unwrap();
         assert!(
@@ -159,7 +225,7 @@ mod tests {
 
     #[test]
     fn unqualified_model_uses_unique_connected_catalog_provider() {
-        let (endpoint, captured) = server(true);
+        let (endpoint, captured) = server(1);
         submit(&endpoint, "available").unwrap();
         let requests = captured.join().unwrap();
         assert_eq!(

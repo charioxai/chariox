@@ -10,6 +10,7 @@ pub(super) struct PendingMcpContinuation {
     pub(super) session_id: String,
     pub(super) agent_id: String,
 
+    pub(super) source_prompt_id: Option<String>,
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
     pub(super) reload_reason: super::ProviderReloadReason,
@@ -60,7 +61,11 @@ impl PendingProviderReloadStore {
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
+    /// Kernel-wide decisions live on the same interaction board without a session.
+    pub(super) kernel_wide_interaction: Option<crate::session::RuntimeInteraction>,
     pub(super) session_id: String,
+    /// Detached kernel decision; no Session projection exists for it.
+    pub(super) user_domain_interaction: Option<crate::session::RuntimeInteraction>,
     pub(super) session_store_identity: Weak<()>,
     pub(super) agent_lifetime: Option<PendingAgentInteractionLifetime>,
     pub(super) kernel_operation_owner: Option<String>,
@@ -90,6 +95,7 @@ pub(super) struct PendingWorkerInteractionLifetime {
     pub(super) execution_lease_id: String,
     pub(super) provider_run_id: String,
     pub(super) binding_observed: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) startup_permission: bool,
 }
 
 impl PendingInteraction {
@@ -125,6 +131,10 @@ impl std::fmt::Debug for PendingInteractionResolution {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit PendingInteractionStore state or return type at the existing boundary"
+)]
 pub(super) struct PendingInteractionStore {
     pub(super) inner: Arc<StdMutex<BTreeMap<String, PendingInteraction>>>,
     pub(super) mutation: Arc<StdMutex<()>>,

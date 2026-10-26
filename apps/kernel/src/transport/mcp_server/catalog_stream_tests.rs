@@ -155,7 +155,7 @@ async fn authenticated_stream_is_scoped_and_fresh_tools_list_observes_only_its_g
     );
     listed_connection.abort();
     {
-        let mut app = app.lock().await;
+        let app = app.lock().await;
         let ended = app
             .providers_mut()
             .terminate_run_provider_only(run.session_id(), run.id())

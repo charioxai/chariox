@@ -240,14 +240,36 @@ impl ProviderResumeState {
         }
     }
 
+    /// The resume state an agent keeps across a profile change. Every official
+    /// harness resumes its native session under another model or effort, so the
+    /// provider keeps the whole conversation; a different provider or account
+    /// cannot read that session, so the kernel transfers the conversation instead.
+    pub fn after_profile_change(
+        &self,
+        from_provider: &str,
+        from_account_profile: &str,
+        to_provider: &str,
+        to_account_profile: &str,
+    ) -> Self {
+        let same_provider = super::canonical_provider_family(from_provider)
+            .is_some_and(|family| super::canonical_provider_family(to_provider) == Some(family));
+        if same_provider && from_account_profile == to_account_profile {
+            return self.clone();
+        }
+        self.without_provider_session_id(
+            super::canonical_provider_family(from_provider).unwrap_or(from_provider),
+        )
+        .without_provider_session_id(
+            super::canonical_provider_family(to_provider).unwrap_or(to_provider),
+        )
+    }
+
     pub fn replacement_after_provider_resume_failure(
         &self,
         provider: &str,
         operation: &str,
     ) -> Option<Self> {
-        if self.provider_session_id(provider).is_none() {
-            return None;
-        }
+        self.provider_session_id(provider)?;
         match (
             provider.trim().to_ascii_lowercase().as_str(),
             operation.trim(),
@@ -472,6 +494,14 @@ pub struct LaunchProviderRequest {
     /// execution kernel resolves the stable profile id against its registry.
     #[serde(skip)]
     pub(crate) provider_account_env: BTreeMap<String, String>,
+    /// MP-08/MP-10/MP-11: execution-kernel account authority, derived from
+    /// its current lease binding on every preparation/reload. Clients cannot
+    /// supply it and provider runs do not persist a stale namespace decision.
+    #[serde(skip)]
+    pub(crate) provider_account_owner_user_id: Option<String>,
+    /// Selected kernel-local namespace survives subsequent preparation passes.
+    #[serde(skip)]
+    pub(crate) resolved_provider_account: Option<crate::account_profile::ResolvedProviderAccount>,
     /// Vault-resolved values for this in-flight launch. This is excluded from
     /// every serialized request shape and uses a redacted debug projection.
     #[serde(skip)]
@@ -645,6 +675,8 @@ impl LaunchProviderRequest {
             provider_config_overrides: BTreeMap::new(),
             provider_env_remove: Vec::new(),
             provider_account_env: BTreeMap::new(),
+            provider_account_owner_user_id: None,
+            resolved_provider_account: None,
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
             project_environment_revision: None,
             preparation_environment: None,
@@ -1012,6 +1044,57 @@ mod tests {
                 .without_provider_session_id("unknown")
                 .provider_session_id("codex"),
             Some("codex-thread")
+        );
+    }
+
+    #[test]
+    fn provider_resume_state_keeps_the_native_session_across_a_model_change() {
+        let mut state = ProviderResumeState::from_codex_thread_id("thread-1");
+        state.set_claude_session_id("claude-1");
+
+        let model_change = state.after_profile_change("codex", "work", "codex", "work");
+        let account_change = state.after_profile_change("codex", "work", "codex", "personal");
+        let provider_change = state.after_profile_change("codex", "work", "claude", "work");
+
+        assert_eq!(model_change.codex_thread_id(), Some("thread-1"));
+        assert_eq!(account_change.codex_thread_id(), None);
+        assert_eq!(account_change.claude_session_id(), Some("claude-1"));
+        assert_eq!(provider_change.codex_thread_id(), None);
+        assert_eq!(provider_change.claude_session_id(), None);
+    }
+
+    // MP-08 / MP-10 / MP-11: provider mode names must not retain another account's conversation.
+    #[test]
+    fn provider_resume_state_clears_claude_modes_across_accounts() {
+        for from in ["claude", "claude-p", "claude-headless"] {
+            for to in ["claude", "claude-p", "claude-headless"] {
+                let mut state = ProviderResumeState::from_claude_session_id("previous-account");
+                state.set_codex_thread_id("unrelated-thread");
+                let changed = state.after_profile_change(from, "work", to, "personal");
+                assert_eq!(changed.claude_session_id(), None, "{from} -> {to}");
+                assert_eq!(changed.codex_thread_id(), Some("unrelated-thread"));
+            }
+        }
+    }
+
+    #[test]
+    fn provider_resume_state_clears_both_families_across_claude_modes() {
+        for mode in ["claude-p", "claude-headless"] {
+            let mut state = ProviderResumeState::from_claude_session_id("claude-account");
+            state.set_codex_thread_id("codex-account");
+            for (from, to) in [("codex", mode), (mode, "codex")] {
+                let changed = state.after_profile_change(from, "work", to, "personal");
+                assert!(changed.is_empty(), "{from} -> {to}");
+            }
+        }
+    }
+
+    #[test]
+    fn provider_resume_state_preserves_same_account_across_claude_modes() {
+        let state = ProviderResumeState::from_claude_session_id("same-account");
+        assert_eq!(
+            state.after_profile_change("claude-p", "work", "claude-headless", "work"),
+            state
         );
     }
 

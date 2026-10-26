@@ -187,7 +187,7 @@ test("GET /health collapses provider runtime aliases before readiness probing", 
   }
 })
 
-test("GET /health checks each selected provider account instead of the provider default", async () => {
+test("MP-08/MP-11 GET /health reads saved accounts without paid verification", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-account-health-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
   await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
@@ -213,12 +213,12 @@ test("GET /health checks each selected provider account instead of the provider 
     createProviderReadinessClient: () => ({
       send: async (request) => {
         requests.push(request)
-        const accountProfile = (request.GetProviderAuthStatus as { account_profile?: string })?.account_profile
+        const accountProfile = (request.GetProviderAccountProfile as { account_profile?: string })?.account_profile
         return {
-          ProviderAuthStatus: {
-            status: {
+          ProviderAccountProfile: {
+            profile: {
               auth_state: accountProfile === "default" ? "expired" : "authenticated",
-              account_profile: accountProfile,
+              profile_id: accountProfile,
             },
           },
         }
@@ -232,8 +232,8 @@ test("GET /health checks each selected provider account instead of the provider 
 
     assert.equal(response.statusCode, 200)
     assert.deepEqual(requests, [
-      { GetProviderAuthStatus: { provider: "claude", account_profile: "claude-personal" } },
-      { GetProviderAuthStatus: { provider: "claude", account_profile: "claude-team" } },
+      { GetProviderAccountProfile: { provider: "claude", account_profile: "claude-personal" } },
+      { GetProviderAccountProfile: { provider: "claude", account_profile: "claude-team" } },
     ])
     assert.deepEqual(response.json().provider_readiness.map((readiness: Record<string, unknown>) => ({
       provider: readiness.provider,
@@ -254,6 +254,52 @@ test("GET /health checks each selected provider account instead of the provider 
     assert.equal(closed, true)
   } finally {
     await app.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("MP-08/MP-11 publication health rejects saved missing and failed authentication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-saved-auth-"))
+  await writeFile(join(root, "publication.json"), "{}")
+  await writeFile(join(root, "requirements.json"), "{}")
+  try {
+    for (const provider of ["claude", "codex", "opencode"]) {
+      await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+        agents: [{ provider, account_profile: "saved-account" }],
+      }))
+      for (const authState of ["not_configured", "error", "expired", "authenticated"]) {
+        const requests: Record<string, unknown>[] = []
+        const { app } = buildServer({ ...baseConfig, package_root: root }, {
+          invokeWorkflow: async () => ({ accepted: true }),
+          getProviderCliStatus: async (command) => ({ available: true, command, version: "fixture" }),
+          createProviderReadinessClient: () => ({
+            send: async (request) => {
+              requests.push(request)
+              return { ProviderAccountProfile: { profile: {
+                auth_state: authState, profile_id: "saved-account",
+              } } }
+            },
+          }),
+        })
+        try {
+          for (const url of ["/health", "/.well-known/chariox/publication/status"]) {
+            const response = await app.inject({ method: "GET", url })
+            assert.equal(response.statusCode, 200)
+            const [readiness] = response.json().provider_readiness
+            const ready = authState === "authenticated"
+            assert.equal(readiness.ready, ready, `${provider}/${authState}/${url}`)
+            assert.equal(readiness.status, ready ? "provider_ready" : "provider_auth_expired")
+            assert.equal(readiness.auth.status, readiness.status)
+          }
+          assert.deepEqual(requests, Array(2).fill({
+            GetProviderAccountProfile: { provider, account_profile: "saved-account" },
+          }))
+        } finally {
+          await app.close()
+        }
+      }
+    }
+  } finally {
     await rm(root, { recursive: true, force: true })
   }
 })

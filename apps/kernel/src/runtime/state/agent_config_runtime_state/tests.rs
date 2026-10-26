@@ -1,9 +1,23 @@
 use super::*;
+#[path = "tests/account_sync_timeout.rs"]
+mod account_sync_timeout;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[path = "tests/profile_selection.rs"]
+mod profile_selection;
+
+#[path = "tests/profile_native_identity.rs"]
+mod profile_native_identity;
+
+#[path = "tests/remote_profile_active_run.rs"]
+mod remote_profile_active_run;
+
 #[path = "tests/automatic_substitutes.rs"]
 mod automatic_substitutes;
+
+#[path = "tests/goal_assessment.rs"]
+mod goal_assessment;
 
 #[path = "tests/worker_failure_settlement.rs"]
 mod worker_failure_settlement;
@@ -46,6 +60,64 @@ fn remote_extension_manifest_pending_revoke_preserves_retry_state_only_without_i
         Some(&pending_revoke),
         Some(false),
     ));
+}
+
+// MP-08 / MP-10 / MP-11: restarting must not turn a required approval into yolo.
+#[tokio::test]
+async fn agent_config_required_permission_survives_restart_and_inherit() {
+    let config = crate::config::DaemonConfig::for_tests();
+    let (app, runtime, session_id, agent_id) =
+        agent_config_runtime_with_config(config.clone()).await;
+    runtime
+        .update_agent_config(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some(Some(crate::provider::AgentExecutionMode::Plan)),
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .await
+        .expect("mode and approval configuration should update");
+    drop(runtime);
+    drop(app);
+    let restored = DaemonApp::bootstrap(config.clone()).expect("kernel should restore");
+    let agent = restored
+        .agents()
+        .get_agent(&agent_id)
+        .expect("agent should restore");
+    assert_eq!(
+        agent.execution_mode_override(),
+        Some(crate::provider::AgentExecutionMode::Plan)
+    );
+    assert_eq!(
+        agent.permission_level_override(),
+        Some(crate::provider::AgentPermissionLevel::Required)
+    );
+    let app = Arc::new(Mutex::new(restored));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .update_agent_config(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some(None),
+            Some(None),
+            None,
+            None,
+        )
+        .await
+        .expect("returning to inherited configuration should update");
+    drop(runtime);
+    drop(app);
+    let restored = DaemonApp::bootstrap(config).expect("kernel should restore inherited values");
+    let agent = restored
+        .agents()
+        .get_agent(&agent_id)
+        .expect("agent should restore");
+    assert_eq!(agent.execution_mode_override(), None);
+    assert_eq!(agent.permission_level_override(), None);
 }
 
 #[tokio::test]
@@ -132,6 +204,9 @@ async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
     let cloud_owner = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         user_id: cloud_owner.to_string(),
         ..Default::default()
     });
@@ -181,6 +256,42 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
         .expect_err("active prompt ownership should block config update");
 
     assert_active_turn_error(error, "update agent config");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_profile_request_the_relay_never_accepts_fails_instead_of_hanging() {
+    // lpb3: after "Preparing the worker's profile change…" the home logged
+    // nothing for minutes and the worker never saw the request.
+    let mut config = crate::config::DaemonConfig::for_tests();
+    let relay_url = "ws://127.0.0.1:1".to_string();
+    config.relay_url = Some(relay_url.clone());
+    config.relay_token = Some("relay-token".to_string());
+    let (app, runtime, _session_id, _agent_id) = agent_config_runtime_with_config(config).await;
+    let relay_state = app.lock().await.relay_client_state();
+    let (outgoing_tx, _priority_rx, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(4);
+    relay_state
+        .write()
+        .await
+        .test_set_connected_sender(outgoing_tx, relay_url);
+    let stalled = relay_state.write().await;
+    let config = runtime.config_snapshot().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        runtime.send_remote_profile_request(
+            &config,
+            "worker-1",
+            crate::transport::relay_peer::RelayPeerRequest::GetLeasedPromptReceipt {
+                leased_agent_id: "leased-agent-1".into(),
+                home_prompt_id: "binding-probe".into(),
+            },
+        ),
+    )
+    .await
+    .expect("a profile request must not wait forever for the relay");
+    drop(stalled);
+    let error = result.expect_err("an unaccepted request fails");
+    assert!(error.to_string().contains("was not queued"), "{error}");
 }
 
 #[tokio::test]
@@ -419,6 +530,46 @@ async fn assert_remote_agent_profile_response(
                 .await
         }
     });
+    // A profile change first confirms the worker still holds the lease.
+    let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), priority_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+        request_id,
+        encrypted_request,
+        ..
+    } = envelope
+    else {
+        panic!("expected the lease probe")
+    };
+    let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &target_config.relay_private_key,
+        &encrypted_request,
+    )
+    .unwrap();
+    assert!(matches!(
+        serde_json::from_slice(&decrypted.plaintext).unwrap(),
+        crate::transport::relay_peer::RelayPeerRequest::GetLeasedPromptReceipt { .. }
+    ));
+    let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &target_config.relay_private_key,
+        &home_public_key,
+        &serde_json::to_vec(
+            &crate::transport::relay_peer::RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: None,
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        &relay_state,
+        request_id,
+        "worker-1".into(),
+        encrypted,
+    )
+    .await;
     if fixture_account {
         let envelope = tokio::time::timeout(std::time::Duration::from_secs(2), priority_rx.recv())
             .await
@@ -1187,3 +1338,6 @@ fn same_execution_profile(
         && a.model() == b.model()
         && a.effort() == b.effort()
 }
+
+#[path = "tests/profile_compaction.rs"]
+mod profile_compaction;

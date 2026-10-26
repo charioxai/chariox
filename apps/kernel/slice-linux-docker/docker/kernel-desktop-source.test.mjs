@@ -1,0 +1,332 @@
+// MP-08 / MP-11: native desktop readbacks are masked from bracketing protection snapshots.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DesktopSource, nativeDesktopWorker } from './kernel-desktop-source.mjs';
+import { displayMaskRegions } from './kernel-browser-pixels.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
+const binding={width:1280,height:800,ownedProcesses:async()=>[],browserProcesses:async()=>[]};
+function fixture({mask=false}={}){
+  const source=new DesktopSource(binding,{values:[],targets:[],unknown:false},{native:{executable:'/worker',root:'/packets'}});
+  const notices=[],published=[],snapshots=[];let clock=1000,released=0;
+  source.current={processes:[],browser_processes:[],browser_protection:null,serial:0,mask};
+  source.worker={notify:command=>notices.push(command)};
+  source.subscribe(sample=>published.push(sample));
+  // Each snapshot takes 10 ms of wall clock; the test scripts their digests.
+  source.measure=async scope=>{
+    const start=clock;clock+=10;const [digest,masks]=snapshots.shift()??['same',[[0,0,10,10]]];
+    const snapshot={scope,digest,masks,start,end:clock+1};source.history=[...(source.history??[]),snapshot];return snapshot;
+  };
+  const raw=(serial,captured_ms)=>({serial,captured_ms,width:1280,height:800,pixels:Buffer.alloc(1280*800*4,200),retain(){},release(){released++}});
+  return {source,notices,published,snapshots,raw,advance:ms=>{clock+=ms},now:()=>clock,released:()=>released};
+}
+test('MP-11 a native readback with no preceding snapshot is dropped and read again',async()=>{
+  const f=fixture();
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  assert.equal(f.published.length,0);assert.equal(f.released(),1);assert.deepEqual(f.notices,[{refresh:true}]);
+});
+test('MP-08/MP-11 a readback between two equal snapshots carries exactly their masks',async()=>{
+  const f=fixture();
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,1);
+  assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:10,height:10}]);
+  assert.equal(f.published[0].raw.nativeEncode,undefined,'the fixture raw has no worker');
+});
+test('MP-11 a protection change drops the readback',async()=>{
+  const f=fixture();
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.snapshots.push(['changed',[]]);
+  f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,0);
+  assert.deepEqual(f.notices,[{refresh:true},{refresh:true}],'an unbound frame asks for a fresh readback');
+});
+test('MP-11 unavailable field snapshots drop the readback',async()=>{
+  const f=fixture();
+  f.snapshots.push(['same',null],['same',null]);
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,0);
+});
+test('MP-11 an unobserved gap above 200 ms before the readback drops it',async()=>{
+  const f=fixture();
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.advance(500);f.source.next=f.raw(2,f.now()-100);await f.source.protect();
+  assert.equal(f.published.length,0);assert.equal(f.notices.length,2);
+});
+test('MP-11 a new process or protection scope retires earlier snapshots',async()=>{
+  const f=fixture();
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.source.current={...f.source.current,processes:[{pid:7,started:'1'}]};
+  f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,0);
+});
+test('MP-11 an unknown policy drops native readbacks without snapshots',async()=>{
+  const f=fixture({mask:true});
+  f.source.measure=async()=>{throw Error('no snapshot under a masking policy')};
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  assert.equal(f.published.length,0);
+});
+test('MP-08 the native worker is used only with an absolute worker and packet root',()=>{
+  assert.equal(nativeDesktopWorker({}),null);
+  assert.equal(nativeDesktopWorker({CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:'/k'}),null);
+  assert.equal(nativeDesktopWorker({CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:'k',CHARIOX_BROWSER_DISPLAY_PACKET_ROOT:'/p'}),null);
+  assert.deepEqual(nativeDesktopWorker({CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:'/k',CHARIOX_BROWSER_DISPLAY_PACKET_ROOT:'/p'}),{executable:'/k',root:'/p'});
+});
+test('MP-08/MP-11 a process run-state change keeps the protection scope; a new process replaces it',async()=>{
+  let processes=[{pid:9,parent:1,started:'7',state:'R'},{pid:8,parent:1,started:'6',state:'S'}];
+  const source=new DesktopSource({...binding,ownedProcesses:async()=>processes.map(item=>({...item}))},{values:[],targets:[],unknown:false},{native:{executable:'/worker',root:'/packets'}});
+  const notices=[];source.worker={notify:command=>notices.push(command)};
+  source.current=await source.scope();
+  const first=source.current;
+  assert.deepEqual(first.processes,[{pid:8,parent:1,started:'6'},{pid:9,parent:1,started:'7'}],'identity only, canonical order');
+  processes=[{pid:8,parent:1,started:'6',state:'R'},{pid:9,parent:1,started:'7',state:'D'}];
+  await source.wake();
+  assert.equal(source.current,first,'run state is not process identity');
+  processes=[...processes,{pid:10,parent:9,started:'8',state:'S'}];
+  await source.wake();
+  assert.notEqual(source.current,first);assert.equal(source.current.processes.length,3);
+  assert.equal(notices.length,2);
+});
+test('MP-08/MP-11 idle snapshots give the first readback after a quiet desktop its preceding observation',async()=>{
+  const f=fixture();
+  f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,1);
+  // A quiet second: heartbeat snapshots keep every gap below 200 ms.
+  for(let n=0;n<10;n++){f.advance(90);await f.source.observeIdle();}
+  f.source.next=f.raw(3,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,2,'bound without a drop/refresh round trip');
+  assert.deepEqual(f.notices,[{refresh:true}]);
+  // Never while a readback waits or under a masking policy.
+  const calls=f.source.history.length;f.source.next=f.raw(4,f.now());await f.source.observeIdle();
+  assert.equal(f.source.history.length,calls);f.source.next=null;
+  f.source.current={...f.source.current,mask:true};await f.source.observeIdle();assert.equal(f.source.history.length,calls);
+});
+const until=async(predicate,ms=2000)=>{for(const end=Date.now()+ms;!predicate();){if(Date.now()>end)throw Error('condition timeout');await new Promise(resolve=>setTimeout(resolve,2));}};
+function gated(f){
+  const steps=[];
+  f.source.gate={protectionSerial:1,protection:null,step:()=>new Promise(resolve=>{const started=Date.now();steps.push({started,finish:(verified=1,changed=false)=>resolve({started,verified,changed})});})};
+  const frame=(serial,captured)=>({raw:{...f.raw(serial,captured),serial},serial,width:1280,height:800,motion:true});
+  return {steps,frame};
+}
+test('MP-08/MP-11 a gate step starts when a readback arrives and verifies a frame bound during it',async()=>{
+  const f=fixture(),{steps,frame}=gated(f);
+  f.source.next=f.raw(1,Date.now()-5);
+  const loop=f.source.verify();
+  try{
+    await until(()=>steps.length===1);
+    f.source.next=null;f.source.offer(frame(1,Date.now()-5),1,Date.now()-5);
+    assert.equal(f.published.length,0,'never before a step that began after the capture completes');
+    steps[0].finish();
+    await until(()=>f.published.length===1);
+  }finally{f.source.closed=true;steps.at(-1)?.finish();await loop;}
+});
+test('MP-08/MP-11 each step publishes the newest frame captured before it began; later frames wait, retired serials never publish',async()=>{
+  const f=fixture(),{steps,frame}=gated(f);
+  const before=Date.now()-5;
+  f.source.offer(frame(1,before-3),1,before-3);f.source.offer(frame(2,before),1,before);
+  const loop=f.source.verify();
+  try{
+    await until(()=>steps.length===1);
+    const start=steps[0].started;
+    f.source.offer(frame(3,start+1),1,start+1);f.source.offer(frame(4,start+2),1,start+2);
+    steps[0].finish();
+    await until(()=>f.published.length===1);
+    assert.equal(f.published[0].serial,2);
+    await until(()=>steps.length===2);
+    steps[1].finish();
+    await until(()=>f.published.length===2);
+    assert.equal(f.published[1].serial,4,'the frame captured during the first step is verified by the second');
+    f.source.offer(frame(5,Date.now()),1,Date.now()+1);
+    await until(()=>steps.length===3);
+    steps[2].finish(null,true);await delay(20);
+    assert.equal(f.published.length,2,'a changed measurement verifies nothing');
+  }finally{f.source.closed=true;steps.at(-1)?.finish();await loop;}
+});
+test('MP-08/MP-11 a withheld kernel-browser window keeps the gate re-measuring on a still desktop',async()=>{
+  const f=fixture(),{steps}=gated(f);
+  f.source.withheld=true;
+  const loop=f.source.verify();
+  try{
+    await until(()=>steps.length===1,1000);steps[0].finish(1,false);
+    await until(()=>steps.length===2,1000);
+    f.source.withheld=false;steps[1].finish(1,false);
+    await delay(400);assert.equal(steps.length,2,'a bound desktop with nothing pending does not measure');
+  }finally{f.source.closed=true;steps.at(-1)?.finish();await loop;}
+});
+test('MP-08/MP-11 Vault values never mask the whole desktop; the oracle gets them for best-effort boxes',async()=>{
+  const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
+  const source=new DesktopSource({...binding},policy,{native:{executable:'/worker',root:'/packets'}});
+  const scope=await source.scope();
+  assert.equal(scope.mask,false,'owner 2026-10-09: no blackout under Vault values');
+  assert.deepEqual(scope.values,['synthetic-vault-value']);
+  const written=[];source.oracle={stdin:{write:line=>written.push(JSON.parse(line))}};
+  source.answers={next:async()=>({done:false,value:JSON.stringify({digest:'d',masks:[],state:[1,1,0,0]})})};
+  await source.measure(scope);
+  assert.deepEqual(written[0].values,['synthetic-vault-value']);
+});
+
+test('MP-08/MP-10/MP-11 Computer drops screenshot-transformed native pixels and resumes stable readbacks',async()=>{
+ const f=fixture();let stable=false;
+ f.source.binding={...binding,browser:()=>({connection:{presentationFence:{stable:()=>stable}}})};
+ f.source.next=f.raw(1,f.now());await f.source.protect();
+ f.source.next=f.raw(2,f.now()+2);await f.source.protect();
+ assert.equal(f.published.length,0,'temporary DPR2 screenshot pixels must never enter Computer');
+ stable=true;f.source.next=f.raw(3,f.now()+2);await f.source.protect();
+ assert.equal(f.published.length,1,'stable native readbacks resume');
+});
+
+
+test('MP-08/MP-10/MP-11 Computer coalesces transient retries until capture restoration',async()=>{
+ const {CapturePresentationFence}=await import('./browser-capture-presentation.mjs');const f=fixture();let finish,wakes=0;
+ const fence=new CapturePresentationFence(f.now),held=fence.run(()=>new Promise(resolve=>finish=resolve),async()=>{});
+ f.source.binding={...binding,browser:()=>({connection:{presentationFence:fence}})};f.source.wake=async()=>{wakes++};f.source.worker.close=()=>{};
+ try{
+  for(let n=0;n<20;n++)f.source.offer({raw:f.raw(n,f.now()+1)},0,f.now()+1);
+  assert.equal(wakes,0);assert.equal(f.published.length,0);assert.equal(f.released(),20);
+  f.advance(200);finish();await held;f.advance(2);await delay(10);assert.equal(wakes,1);assert.equal(f.published.length,0);
+ }finally{await f.source.close()}
+});
+// MP-08/MP-11: serial 0 means no adopted measurement. While a Vault fill is tracked in a live kernel
+// browser (a password field revealed as text, a plain field being filled) frames must wait for the
+// measurement that covers the new geometry; they are never published unmasked.
+function fillFixture({browser=true,targets=[{kind:'browser',value_hash:'h'}],tracked=0}={}){
+  const policy={values:['synthetic-vault-value'],targets,unknown:false};
+  const source=new DesktopSource({...binding,browser:()=>browser?{fillTargets:new Map(Array.from({length:tracked},(_,n)=>[n,{}]))}:null},policy,{native:{executable:'/worker',root:'/packets'}});
+  const published=[];let released=0;source.subscribe(sample=>published.push(sample));
+  const frame=serial=>({raw:{serial,captured_ms:Date.now(),release(){released++}},serial,width:1280,height:800,motion:true});
+  return {source,published,frame,released:()=>released};
+}
+test('MP-08/MP-11 an unadopted frame is withheld while a Vault fill is tracked in a live kernel browser',()=>{
+  const f=fillFixture();
+  f.source.offer(f.frame(1),0);
+  assert.equal(f.published.length,0);assert.equal(f.released(),1);
+});
+test('MP-08/MP-11 the native oracle covers a tracked fill itself: its serial-0 frames are published, never waited for',()=>{
+  const f=fillFixture();f.source.worker={};
+  f.source.offer(f.frame(1),0);
+  assert.equal(f.published.length,1,'the frame arrives with the oracle masks, so a masked viewer resumes at once');
+});
+test('MP-08/MP-11 the oracle is told when a Vault fill is tracked',()=>{
+  for(const [options,expected] of [[{},true],[{targets:[],tracked:1},true],[{targets:[]},false],[{browser:false},false]]){
+    const f=fillFixture(options),written=[];f.source.oracle={stdin:{write:line=>written.push(JSON.parse(line))}};
+    f.source.answers=(async function*(){yield JSON.stringify({digest:'d',masks:[],state:[1,1,0,0]})})();
+    f.source.measure({processes:[],browser_processes:[],browser_protection:null,values:[]});
+    assert.equal(written[0].fill,expected);
+  }
+});
+test('MP-08/MP-11 a fill still pending in the browser controller withholds unadopted frames too',()=>{
+  const f=fillFixture({targets:[],tracked:1});
+  f.source.offer(f.frame(1),0);
+  assert.equal(f.published.length,0);
+});
+test('MP-08/MP-11 an unadopted desktop publishes at once without a tracked fill or without a kernel browser',()=>{
+  for(const options of [{targets:[]},{targets:[{kind:'native',target:{}}]},{browser:false}]){
+    const f=fillFixture(options);f.source.offer(f.frame(1),0);assert.equal(f.published.length,1);
+  }
+});
+test('MP-08/MP-11 a reveal that changes the adopted measurement publishes nothing until the new one is adopted',async()=>{
+  const {ProtectionGate}=await import('./browser-protection-regions.mjs');
+  const f=fillFixture();let measurement={pages:[{target_id:'t',regions:[]}]};
+  f.source.gate=new ProtectionGate(async()=>measurement);
+  await f.source.gate.step();await f.source.gate.step();
+  assert.equal(f.source.gate.protectionSerial,1,'adopted while the filled password field paints dots');
+  f.source.offer(f.frame(1),1);f.source.pending.splice(0);
+  measurement={pages:[{target_id:'t',regions:[[40,80,740,120]]}]};
+  const {changed}=await f.source.gate.step();
+  assert.equal(changed,true);assert.equal(f.source.gate.protectionSerial,0,'the reveal drops the adopted measurement');
+  f.source.offer(f.frame(2),f.source.gate.protectionSerial);
+  assert.equal(f.published.length,0,'the revealed secret is never in a published frame');
+  await f.source.gate.step();
+  assert.equal(f.source.gate.protectionSerial,2,'the new region is adopted after two equal measurements');
+});
+test('MP-08/MP-11 a new source with a tracked fill measures while it waits for its first frame',async()=>{
+  for(const native of [true,false]){
+    const f=fillFixture();let steps=0;
+    f.source.native=native?f.source.native:null;
+    f.source.startNative=f.source.startHelper=async()=>{};
+    // Frames stay withheld at serial 0: only an adopted measurement lets the first one through.
+    f.source.gate={protectionSerial:0,protection:null,step:async()=>{
+      const started=Date.now();steps++;f.source.gate.protectionSerial=1;
+      f.source.offer(f.frame(1),1,started-5);return {started,verified:1,changed:false};
+    }};
+    try{
+      await f.source.start();
+      assert.equal(steps>=1,true);assert.equal(f.published.length,1,'the first frame is the one the adopted measurement covers');
+    }finally{await f.source.close()}
+  }
+});
+
+test('MP-08/MP-11 helper frames carry their capture time into the gate, so a tracked fill can start the helper stream',async()=>{
+  const f=fillFixture();
+  f.source.native=null;f.source.startNative=f.source.startHelper=async()=>{};
+  f.source.gate={protectionSerial:0,protection:null,step:async()=>{
+    const started=Date.now();f.source.gate.protectionSerial=1;
+    // The helper's header carries captured_ms; the frame arrives through the helper callback, not offer().
+    const sample=f.frame(1);f.source.helperFrame({protected_regions:[],protection_serial:1,captured_ms:started-5},sample.raw);
+    return {started,verified:1,changed:false};
+  }};
+  try{
+    await f.source.start();
+    assert.equal(f.published.length,1,'the helper frame the adopted measurement covers is published');
+  }finally{await f.source.close()}
+});
+
+// MP-08/MP-11: a lost protection oracle withholds masked frames only; the source stays, the owner's view continues and the proof is rebuilt.
+function recoveryFixture(){
+  const f=fixture();let spawned=0;
+  f.source.spawnOracle=()=>{spawned++};
+  f.source.scope=async()=>({processes:[],browser_processes:[],browser_protection:null,serial:0,mask:false,values:[]});
+  const measure=f.source.measure;
+  f.fail=()=>{f.source.measure=async()=>{throw Error('MP-11: desktop protection unavailable')}};
+  f.heal=()=>{f.source.measure=measure};
+  return {...f,spawned:()=>spawned};
+}
+test('MP-08/MP-11 an oracle failure under a readback keeps the source, rebuilds the oracle and resumes masked frames',async()=>{
+  const f=recoveryFixture();
+  f.fail();f.source.next=f.raw(1,f.now());await f.source.protect();
+  assert.equal(f.source.closed,false);assert.equal(f.published.length,0,'no masked frame while the proof is uncertain');
+  await until(()=>f.spawned()===1&&!f.source.rebuilding);
+  f.heal();
+  f.source.history=[];f.source.next=f.raw(2,f.now());await f.source.protect();
+  f.source.next=f.raw(3,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,1,'the stream resumes on its own');
+  assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:10,height:10}]);
+});
+test('MP-08/MP-11 an oracle failure in an idle snapshot keeps the source and rebuilds the oracle',async()=>{
+  const f=recoveryFixture();
+  f.fail();await f.source.observeIdle();
+  assert.equal(f.source.closed,false);await until(()=>f.spawned()===1&&!f.source.rebuilding);
+});
+test('MP-08/MP-11 a failed ownership refresh keeps the source and retries until the scope is read',async()=>{
+  const f=recoveryFixture();let calls=0;const scope=f.source.scope;
+  f.source.scope=async()=>{if(calls++<2)throw Error('ownership');return scope()};
+  await f.source.wake();
+  assert.equal(f.source.closed,false);await until(()=>f.spawned()===1&&!f.source.rebuilding);
+  assert.equal(calls,3,'rebuilt on the first successful read');
+});
+test('MP-08/MP-11 readbacks arriving while the oracle is rebuilt are dropped, never published unmasked',async()=>{
+  const f=recoveryFixture();
+  f.fail();f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.heal();f.source.next=f.raw(2,f.now());f.source.next.captured_ms=f.now();await f.source.protect();
+  assert.equal(f.published.length,0);await until(()=>!f.source.rebuilding);
+});
+test('MP-08/MP-11 the owner feed carries the unmasked desktop whatever the oracle does',async()=>{
+  const f=recoveryFixture(),seen=[];
+  f.source.worker={notify(){}};f.source.owner.subscribe(sample=>seen.push(sample));
+  f.fail();
+  const raw=f.raw(1,Date.now());f.source.ownerFrame(raw);await f.source.protect();
+  assert.equal(seen.length,1);assert.equal(seen[0].raw,raw);assert.equal(seen[0].raw[displayMaskRegions],undefined);
+  assert.equal(f.source.ownerFeed(),f.source.owner,'a native source serves the owner its own feed');
+  assert.equal(f.source.owner.sample(),seen[0]);assert.equal(f.published.length,0,'the masked feed stays empty');
+});
+test('MP-08/MP-11 a helper source has no unmasked feed: the owner gets the masked one',()=>{
+  const f=fixture();f.source.worker=undefined;assert.equal(f.source.ownerFeed(),f.source);
+});
+test('MP-08/MP-11 a source starts on the owner feed alone when the oracle cannot answer',async()=>{
+  const f=recoveryFixture();
+  f.source.worker.close=()=>{};f.source.startHelper=async()=>{};
+  f.source.startNative=async()=>{setTimeout(()=>f.source.ownerFrame(f.raw(1,Date.now())),20);};
+  f.source.verify=async()=>{};
+  try{await f.source.start();assert.equal(f.source.owner.sample().serial,1);}finally{await f.source.close();}
+});

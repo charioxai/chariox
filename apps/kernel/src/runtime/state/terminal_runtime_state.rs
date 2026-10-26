@@ -180,7 +180,7 @@ impl KernelRuntimeState {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<crate::terminal::RuntimeNoticeRecord> {
-        self.publish_credential_copy_notices(session_id);
+        self.publish_credential_copy_notices(session_id).await;
         self.owned
             .terminal_stream
             .drain_notice_records(session_id, attachment_id)
@@ -214,7 +214,6 @@ impl KernelRuntimeState {
             return Ok(Vec::new());
         }
         let mut terminal_outputs = Vec::with_capacity(request.outputs.len());
-        let mut history_entries = Vec::new();
         let mut provider_run_agent_cache =
             std::collections::BTreeMap::<String, Option<String>>::new();
         for output in request.outputs {
@@ -246,10 +245,9 @@ impl KernelRuntimeState {
                 &request.session_id,
                 agent_id.as_deref(),
             );
-            if output.kind != crate::terminal::TerminalOutputKind::PromptEcho
-                && output.kind != crate::terminal::TerminalOutputKind::ProviderTerminal
-            {
-                history_entries.push(
+            let history_entry = (output.kind != crate::terminal::TerminalOutputKind::PromptEcho
+                && output.kind != crate::terminal::TerminalOutputKind::ProviderTerminal)
+                .then(|| {
                     crate::history::SessionHistoryEntry::provider_output(
                         &request.session_id,
                         &output.provider_run_id,
@@ -259,24 +257,22 @@ impl KernelRuntimeState {
                         output.text.clone(),
                     )
                     .with_prompt_origin(prompt_metadata.prompt_origin)
-                    .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-                );
-            }
-            terminal_outputs.push(
+                    .with_source_attachment_id(prompt_metadata.source_attachment_id.clone())
+                });
+            terminal_outputs.push((
                 super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                     provider_run_id: output.provider_run_id,
                     agent_id,
                     kind: output.kind,
                     merge_key: output.merge_key,
+                    sequence: None,
                     bytes: output.text.into_bytes(),
                 },
-            );
+                history_entry,
+            ));
         }
-        let records = self
+        Ok(self
             .owned
-            .fan_out_terminal_outputs(&request.session_id, terminal_outputs);
-        self.owned
-            .append_history_entries(&request.session_id, history_entries);
-        Ok(records)
+            .append_history_and_fan_out(&request.session_id, None, terminal_outputs))
     }
 }

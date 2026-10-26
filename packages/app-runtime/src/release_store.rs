@@ -379,6 +379,8 @@ mod unix {
             Ok(())
         }
 
+        // MP-11: normalize native statvfs widths for portable reservation accounting.
+        #[allow(clippy::unnecessary_cast)]
         fn disk_state(&self) -> Result<(u64, u64)> {
             let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
             check(unsafe { libc::fstatvfs(self.root.0.as_raw_fd(), stats.as_mut_ptr()) })?;

@@ -28,7 +28,7 @@ function waitingRoomLaunchIntentSignature(state: WaitingRoomState): string {
     state.executionMode,
     state.permissionLevel,
     state.workspaceLiveSyncMode,
-    state.projectSelectionId,
+    state.projectSelectionId ?? "default",
     state.worktreeSelectionId,
     state.sliceSelectionId,
     state.managedComputeClass,

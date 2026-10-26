@@ -204,3 +204,8 @@ function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession
     ...overrides,
   }
 }
+
+// MP-08 / MP-10 / MP-11: historical user-facing output is explicitly read-only.
+test("historical workflow summaries label ownership tracking", () => {
+  assert.match(formatWorkflowRunSummary({ ...workflowRun(), created_before_ownership_tracking: true }), /Created before ownership tracking · read-only/);
+});

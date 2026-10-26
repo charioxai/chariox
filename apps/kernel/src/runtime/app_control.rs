@@ -30,7 +30,10 @@ pub(crate) use workers::AppWorkerPublisher;
 mod catalog;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod first_install;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[cfg(all(
+    test,
+    any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))
+))]
 pub(crate) use first_install::FirstInstallControlError;
 
 /// See `AppControlService::admit_reply`.
@@ -53,6 +56,10 @@ async fn admit_within(
 }
 
 #[derive(Clone)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit AppControlService state or return type at the existing boundary"
+)]
 pub(crate) struct AppControlService {
     store: DurableKernelStateStore,
     request_receipts: request_receipts::AppRequestReceipts,
@@ -63,6 +70,7 @@ pub(crate) struct AppControlService {
     wake_pump: super::app_wake_pump::AppWakePump,
     wake_scheduler: Arc<Semaphore>,
     views: super::app_views::AppViews,
+    user_views: super::user_app_views::UserAppViews,
     validation_pump: super::app_wake_pump::AppWakePump,
     /// Shown prompts: operation → (owner, the session showing it once known).
     validation_prompts:
@@ -127,6 +135,7 @@ impl AppControlService {
             wake_pump: Default::default(),
             wake_scheduler: Arc::new(Semaphore::new(1)),
             views: Default::default(),
+            user_views: Default::default(),
             validation_pump: Default::default(),
             validation_prompts: Default::default(),
             publishers,
@@ -188,6 +197,10 @@ impl AppControlService {
 
     pub(crate) fn wake_pump(&self) -> &super::app_wake_pump::AppWakePump {
         &self.wake_pump
+    }
+
+    pub(crate) fn user_views(&self) -> &super::user_app_views::UserAppViews {
+        &self.user_views
     }
 
     pub(crate) fn views(&self) -> &super::app_views::AppViews {

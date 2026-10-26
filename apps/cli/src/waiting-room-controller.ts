@@ -14,7 +14,7 @@ import {
 } from "./waiting-room-remote-rows.js"
 import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
-import { waitingRoomSliceSelectionUnavailable, waitingRoomSlices } from "./waiting-room-slices.js"
+import { waitingRoomSliceSelectionUnavailable, waitingRoomSelectedSlice, waitingRoomSlices } from "./waiting-room-slices.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import {
@@ -25,6 +25,7 @@ import {
 import {
   clearStagedWaitingRoomWorktreeSelection,
   stageWaitingRoomWorktreeSelection,
+  waitingRoomWorktreeDisabledHint,
 } from "./waiting-room-worktrees.js"
 import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type {
@@ -42,7 +43,7 @@ import {
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectDevelopmentSetup,
 } from "./waiting-room-managed-environments.js"
-import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
+import { providerAccountSignInCommand, selectedProviderAccount, selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
@@ -323,6 +324,10 @@ export function deriveWaitingRoomActivationDecision(options: {
     if (typeof managedEnvironment === "string") {
       return { action: "error", message: managedEnvironment }
     }
+    const accountBlock = managedEnvironment || choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
+      options.remote?.providerAccounts, launch.provider, launch.accountProfile, null, launch.model,
+    )
+    if (accountBlock) return { action: "error", message: accountBlock }
     const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
@@ -365,6 +370,10 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   if (typeof managedEnvironment === "string") {
     return { action: "error", message: managedEnvironment }
   }
+  const accountBlock = managedEnvironment || choice.sliceRef || waitingRoomAccountInventoryIsRemote(options.state, options.remote ?? {}) ? null : selectedProviderAccountStartBlockReason(
+    options.remote?.providerAccounts, choice.providerId, options.state.accountProfileId, null, choice.model?.id,
+  )
+  if (accountBlock) return { action: "error", message: accountBlock }
   const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
@@ -417,6 +426,12 @@ function waitingRoomManagedLaunchSelection(
   return environmentId ? { kind: "existing", environmentId } : undefined
 }
 
+function waitingRoomAccountInventoryIsRemote(state: WaitingRoomState, remote: WaitingRoomRemoteState): boolean {
+  const placement = waitingRoomLaunchPlacement(state, remote)
+  return Boolean(placement.kernelRef && placement.kernelRef !== "local"
+    && placement.kernelRef !== remote.relay?.daemon_id)
+}
+
 function waitingRoomUnavailableSliceMessage(
   state: WaitingRoomState,
   remote: WaitingRoomRemoteState | undefined,
@@ -451,6 +466,33 @@ export function deriveWaitingRoomControlActivationDecision(options: {
 }): WaitingRoomControlActivationDecision {
   const remote = options.remote ?? {}
   switch (options.state.focus) {
+    case "new": {
+      // Source accounts are not authoritative until managed preparation has
+      // started and connected the selected machine.
+      if (waitingRoomManagedLaunchSelection(options.state, remote)
+        || waitingRoomAccountInventoryIsRemote(options.state, remote)) return { action: "none" }
+      const placement = waitingRoomLaunchPlacement(options.state, remote)
+      const slices = waitingRoomSlices(remote, {
+        worktreeSelectionId: options.state.worktreeSelectionId,
+        projectSelectionId: options.state.projectSelectionId,
+        developmentMode: options.state.managedDevelopmentMode,
+        repositorySelection: options.state.managedRepositorySelection,
+        selectedMachineRef: placement.machineRef,
+        selectedKernelRef: placement.kernelRef,
+      })
+      if (waitingRoomSelectedSlice(options.state.sliceSelectionId, slices)) return { action: "none" }
+      const account = selectedProviderAccount(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)
+      if (account && account.auth_state !== "authenticated" && !waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) {
+        return {
+          action: "stage-command",
+          command: providerAccountSignInCommand(account),
+          message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
+        }
+      }
+      const quotaBlock = account && selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId, null, options.state.modelId)
+      if (quotaBlock && account?.auth_state === "authenticated") return { action: "info", message: quotaBlock }
+      return { action: "none" }
+    }
     case "relay":
       return { action: "cloud" }
     case "workspace":
@@ -460,6 +502,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         message: "edit the workspace path and press Enter",
       }
     case "worktree":
+      if (waitingRoomWorktreeDisabledHint()) return { action: "error", message: waitingRoomWorktreeDisabledHint()! }
       return {
         action: "stage-command",
         command: `/worktree ${options.worktreePath}`,
@@ -483,6 +526,12 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         options.state.providerId,
         options.state.accountProfileId,
       )
+      if (account && account.auth_state !== "authenticated") {
+        return {
+          action: "stage-command", command: providerAccountSignInCommand(account),
+          message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
+        }
+      }
       return {
         action: "info",
         message: account

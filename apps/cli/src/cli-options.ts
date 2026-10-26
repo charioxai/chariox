@@ -8,7 +8,6 @@ import type {
   CliOptions,
 } from "./cli-types.js"
 import { cliAppUsage, tuiAppHelp } from "./app-command-catalog.js"
-import { describeCliError } from "./runtime.js"
 
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
@@ -17,13 +16,15 @@ export function parseArgs(args: string[]): CliOptions {
     accountProfile: "default",
     effort: "",
   }
+  let helpRequested = false
+  let explicitRelayToken: string | undefined
   let relayTokenSource: "argv" | "environment" | null = null
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? ""
     const next = () => {
       const value = args[index + 1]
-      if (!value) {
+      if (!value || value.startsWith("-")) {
         throw new Error(`missing value for ${arg}`)
       }
       index += 1
@@ -49,9 +50,15 @@ export function parseArgs(args: string[]): CliOptions {
       case "--relay-url":
         options.relayUrl = next()
         break
+      case "--relay-token-issuer": {
+        const endpoint = next()
+        const daemonId = next()
+        options.relayTokenIssuer = { endpoint, daemonId }
+        break
+      }
       case "--relay-token":
         if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
-        options.relayToken = next()
+        options.relayToken = explicitRelayToken = next()
         relayTokenSource = "argv"
         break
       case "--relay-token-env": {
@@ -60,7 +67,7 @@ export function parseArgs(args: string[]): CliOptions {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("--relay-token-env requires an environment variable name")
         const token = process.env[name]
         if (!token?.trim()) throw new Error(`--relay-token-env ${name} is empty or missing`)
-        options.relayToken = token
+        options.relayToken = explicitRelayToken = token
         relayTokenSource = "environment"
         break
       }
@@ -106,8 +113,8 @@ export function parseArgs(args: string[]): CliOptions {
         break
       case "--help":
       case "-h":
-        printUsage()
-        process.exit(0)
+        helpRequested = true
+        break
       default:
         if (isTerminalPairingLink(arg)) {
           applyTerminalPairingLinkOptions(options, arg)
@@ -117,6 +124,12 @@ export function parseArgs(args: string[]): CliOptions {
     }
   }
 
+  if (helpRequested) {
+    printUsage()
+    process.exit(0)
+  }
+  if (explicitRelayToken) options.relayToken = explicitRelayToken
+  if (options.relayToken === "operator-client-token-required") throw new Error("Scoped self-host pairing requires an operator-issued CLIENT transport token; supply --relay-token-env NAME. The kernel credential is private.")
   validateOptions(options)
   return options
 }
@@ -198,13 +211,13 @@ function applyTerminalPairingLinkOptions(options: CliOptions, pairingLink: strin
   options.clientId = parsed.terminalId ?? options.clientId
 }
 
-function parseTerminalPairingLink(pairingLink: string) {
+export function parseTerminalPairingLink(pairingLink: string) {
   const payload = pairingLink.trim().replace(/^chariox-terminal-pair-v1[.]/, "")
   let decoded: Record<string, unknown>
   try {
     decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>
   } catch (error) {
-    throw new Error(`invalid terminal pairing link: ${describeCliError(error)}`)
+    throw new Error(`invalid terminal pairing link: ${error instanceof Error ? error.message : String(error)}`)
   }
   const relayUrl = typeof decoded.relay_url === "string" ? decoded.relay_url : ""
   const relayToken = typeof decoded.relay_token === "string" ? decoded.relay_token : ""
@@ -223,12 +236,14 @@ function parseTerminalPairingLink(pairingLink: string) {
 
 function printUsage() {
   process.stdout.write([
-    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
+    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME) [--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID]] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
     "       chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
     cliAppUsage(),
     "",
     "commands:",
     "  /stop                 request cancellation of the active provider turn",
+    "  /goal [--interval N] <objective>  run a durable goal (1–60 minutes; default 10)",
+    "  /goal pause|resume|cancel|interval <N>|edit <objective>  control the focused goal",
     "  /exit                 exit the CLI",
     "  /waiting              go to the waiting room",
     "  /provider <name>      select the provider backend",
@@ -242,7 +257,6 @@ function printUsage() {
     "  /variant <name>       select the model variant",
     "  /workspace [path]     show or set the next-session workspace path",
     "  /workspace link ...   manage workspace links for the attached session",
-    "  /workspace sync ...   manage live sync status, session mode, global default, links, and diagnostics",
     "  /worktree [path]      show or set the next-session worktree path",
     "  /worktree create <branch> [directory] [--from <ref>] create a named git worktree",
     "  /worktree name [a]    set or clear the current worktree display name",
@@ -251,7 +265,7 @@ function printUsage() {
     "  /session create [d]   alias for /session new",
     "  /session <a>          alias the current session",
     "  /session attach <r>   attach to a session by id or alias",
-    "  /session status       show owner, placement, live sync, extensions, and blockers",
+    "  /session status       show owner, placement, extensions, and blockers",
     "  /session delete [r]   delete the current or referenced session",
     "  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r|--kernel k|--slice off|new|s] [--slice-display headless|headed] spawn a local, remote, or slice agent",
     "  /agent delete [r]     delete the focused or referenced agent",
@@ -268,7 +282,7 @@ function printUsage() {
     "  /extension sync-retry retry home-proxy manifest projection after worker reconnect",
     "  /extension audit      show home extension audit events and denials for an agent",
     "  /kernel health        show runtime health, remote readiness, and invariants",
-    "  /kernel remote-runtime show home authority, worker runs, slices, home-proxy tools, and live sync readiness",
+    "  /kernel remote-runtime show home authority, worker runs, slices, home-proxy tools readiness",
     "  /kernel debug-bundle [label] export attached-session logs on the kernel machine",
     "  /machine list         list approved, pending, and offline remote machines",
     "  /machine kernels <m>  list live kernels for a remote machine",
@@ -297,11 +311,15 @@ function printUsage() {
     "  /config keys          list settable config keys",
     "  /config schema        show config key metadata",
     "  /config set <p> <v>   update the Chariox user config",
-    "  /config workspace-live-sync off|managed|tracked set global workspace live sync policy",
     "  /notifications ...     discover, install, inspect, reconnect, and remove notification services",
     ...tuiAppHelp(),
     "  /cloud                open Chariox Cloud terminal",
-    "  /cloud link           link this machine to Chariox Cloud",
+    "  chariox cloud login|logout|status|kernels [--api-url URL] manage this terminal profile without a kernel",
+    "  /cloud login          sign in this terminal profile",
+    "  /cloud logout         revoke this terminal profile; kernels keep running",
+    "  /cloud kernels        list My kernels when detached",
+    "  /cloud link           enroll this kernel independently in Chariox Cloud",
+    "  /cloud unlink         revoke this kernel enrollment",
     "  /cloud status         show Cloud and relay status",
     "  /cloud deployments    manage deployed workflow projects and releases",
     "  /cloud deployments claim create|review|accept|revoke manage customer handoff",

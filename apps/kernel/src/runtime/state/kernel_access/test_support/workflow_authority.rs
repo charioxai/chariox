@@ -5,6 +5,10 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 
+// MP-08 / MP-10 / MP-11: these independent test kernels share the process's
+// two-job compiler admission. Isolate fixtures, retaining each revocation race.
+static WORKFLOW_COMPILER_CASES: Mutex<()> = Mutex::const_new(());
+
 #[tokio::test]
 async fn kernel_access_workflow_apply_rechecks_app_wait() {
     revoked_workflow(false, false).await;
@@ -26,6 +30,7 @@ async fn kernel_access_workflow_run_rechecks_compiler_wait() {
 }
 
 async fn revoked_workflow(run: bool, compiler_wait: bool) {
+    let _compiler_case = WORKFLOW_COMPILER_CASES.lock().await;
     let worktree = crate::test_support::TestWorktree::new("access-workflow-source");
     let root = crate::test_support::TestWorktree::new("access-workflow-state");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -57,22 +62,22 @@ async fn revoked_workflow(run: bool, compiler_wait: bool) {
         state.owned.agent_runtime_projection.clone(),
     );
     let grant = state.insert_access_grant_for_test(session.id());
-    let source = r#"
+    // Unique per test: concurrent tests compile the same workflow.
+    let gate_marker = format!("// compiler gate {}", root.path().display());
+    let source = gate_marker.clone()
+        + r#"
 workflow.define({ alias: "external-authority" })
 const worker = workflow.node({ handle: "worker", agent: workflow.newAgent({ alias: "generated", provider: "dev-stub", model: "default" }), instructions: "Finish.", canCompleteWorkflowRun: true })
 workflow.endpoint(worker, { handle: "entry", alias: "entry" })
-"#.to_string();
-    let started = root.path().join("compile-started");
-    let release = root.path().join("compile-release");
-    let node_path = if compiler_wait {
-        use std::os::unix::fs::PermissionsExt;
-        let wrapper = root.path().join("node-gate");
-        std::fs::write(&wrapper, format!("#!/bin/sh\nprintf started > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done\nexec node \"$@\"\n", started.display(), release.display())).unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
-        wrapper.display().to_string()
+"#;
+    // The kernel ignores caller node paths, so hold the compilation in-process.
+    let (compile_started, compile_release) = if compiler_wait {
+        let (started, release) = crate::workflow_code::compile_gate_for_test::install(&gate_marker);
+        (Some(started), Some(release))
     } else {
-        "node".into()
+        (None, None)
     };
+    let node_path = "node".to_string();
     let request = if run {
         LocalDaemonRequest::RunWorkflowCode(crate::local::RunWorkflowCodeRequest {
             session_id: session.id().into(),
@@ -109,14 +114,11 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         let command = external_command(&request, &grant);
         async move { runtime.dispatch_workflow_command(command, request).await }
     });
-    if compiler_wait {
-        timeout(Duration::from_secs(5), async {
-            while !started.exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+    if let Some(started) = compile_started {
+        timeout(Duration::from_secs(5), started)
+            .await
+            .unwrap()
+            .unwrap();
     } else {
         timeout(Duration::from_secs(3), probe.notified())
             .await
@@ -126,8 +128,8 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
         .unwrap();
     drop(guard);
-    if compiler_wait {
-        std::fs::write(&release, "release").unwrap();
+    if let Some(release) = compile_release {
+        release.send(()).unwrap();
     }
     let result = timeout(Duration::from_secs(5), pending)
         .await
@@ -183,7 +185,8 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
 }
 
 #[tokio::test]
-async fn kernel_access_artifact_registry_refuses_other_session_source() {
+async fn kernel_access_artifact_registry_authorizes_all_local_sources() {
+    let _compiler_case = WORKFLOW_COMPILER_CASES.lock().await;
     let worktree = crate::test_support::TestWorktree::new("access-artifact-source");
     let root = crate::test_support::TestWorktree::new("access-artifact-state");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -227,8 +230,6 @@ async fn kernel_access_artifact_registry_refuses_other_session_source() {
     let artifacts = registry.list().unwrap();
     assert_eq!(artifacts.len(), 1);
     let name = artifacts[0].name.clone();
-    let victim = registry.get(&name).unwrap().unwrap();
-    let before = state.session_snapshot(other.id()).await.unwrap();
     let grant = state.insert_access_grant_for_test(allowed.id());
     let requests = vec![
         LocalDaemonRequest::GetWorkflowCodeArtifact(crate::local::GetWorkflowCodeArtifactRequest {
@@ -290,29 +291,14 @@ async fn kernel_access_artifact_registry_refuses_other_session_source() {
         ),
     ];
     for request in requests {
-        let command = external_command(&request, &grant);
-        let response = runtime.dispatch_workflow_command(command, request).await;
-        assert!(
-            response.is_err(),
-            "external grant reached global source registry"
-        );
-        assert_eq!(registry.list().unwrap(), artifacts);
-        let remaining = registry.get(&name).unwrap().unwrap();
-        assert_eq!(remaining.source, victim.source);
-        assert_eq!(remaining.metadata, victim.metadata);
+        assert!(state.authorize_external_request(&grant, &request).is_ok());
     }
-    assert!(state.session_snapshot(other.id()).await.unwrap() == before);
     let request =
         LocalDaemonRequest::GetWorkflowCodeArtifact(crate::local::GetWorkflowCodeArtifactRequest {
             session_id: other.id().into(),
             name,
         });
-    let command = crate::runtime::command::KernelCommand::from_local_request(
-        "terminal-read-private-source",
-        None,
-        None,
-        &request,
-    );
+    let command = external_command(&request, &grant);
     assert!(matches!(
         runtime
             .dispatch_workflow_command(command, request)

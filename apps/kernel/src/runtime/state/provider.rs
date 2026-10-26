@@ -106,6 +106,7 @@ impl KernelRuntimeOwnedState {
             }
         }
 
+        crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let outcome = self.provider_store.start_run_provider_only(request)?;
         self.session_store
@@ -197,7 +198,7 @@ impl KernelRuntimeOwnedState {
         Ok(run)
     }
 
-    fn provider_run_for_activation(
+    pub(super) fn provider_run_for_activation(
         &self,
         session_id: &str,
         provider_run_id: &str,
@@ -230,15 +231,13 @@ impl KernelRuntimeOwnedState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-        let previous_active_run = started
-            .previous_active_run_id
-            .as_deref()
-            .and_then(|run_id| self.provider_store.get_run(run_id).ok());
-        if let Some(binding) = binding {
-            self.provider_store
-                .apply_runtime_binding(started.run.id(), binding)?;
-        }
-        let run = self.provider_store.mark_run_running(started.run.id())?;
+        let run = self
+            .provider_store
+            .finish_current_launch(&started.run, binding)?;
+        crate::app::ProviderProcessTracker::bind_endpoint_identity(
+            &self.provider_process_tracking,
+            &run,
+        );
         self.session_store
             .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
         let _ = self.session_snapshot(run.session_id())?;
@@ -270,14 +269,11 @@ impl KernelRuntimeOwnedState {
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
-                Some(run.account_profile().to_string()),
+                Some(crate::account_profile::provider_account_selection_for_run(&run).to_string()),
                 run.resume_state().clone(),
                 Some(run.id()),
                 None,
             )?;
-        }
-        if let Some(previous_active_run) = previous_active_run.as_ref() {
-            self.prepare_provider_switch_context_handoff(previous_active_run, &run);
         }
         self.provider_run_projection.update(run.clone());
         Ok(run)

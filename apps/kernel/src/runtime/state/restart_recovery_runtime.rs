@@ -212,6 +212,7 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) async fn recover_durable_runtime_after_restart(
         &self,
     ) -> DurableRestartRecoverySummary {
@@ -736,15 +737,15 @@ impl KernelRuntimeState {
                 .get_run_for_agent(session_id, agent_id)
                 .map(|run| run.id().to_string())
         };
+        self.owned.workflow_cancel_prompt(session_id, prompt)?;
         let cancellation = self
             .owned
             .finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 agent_id,
+                prompt.id(),
                 provider_run_id.as_deref(),
             )?;
-        self.owned
-            .workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
         if cancellation.released_claim {
             self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         }

@@ -20,7 +20,7 @@ use crate::runtime::waiting_room_activity::{
     waiting_room_workflow_activity_summary,
 };
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, workspace_display_label, worktree_display_label,
+    detect_git_branch, workspace_display_label, workspace_repository_state, worktree_display_label,
 };
 use crate::session::{unix_epoch_ms, RuntimeProject, RuntimeSession};
 use crate::slice::SliceRecord;
@@ -326,6 +326,11 @@ fn cached_session_sources_match(
     visible_session_count == cached.entries.len()
 }
 
+#[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -358,6 +363,11 @@ pub(crate) fn build_waiting_room_public_snapshot(
     )
 }
 
+#[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_shared operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     runtime_sessions: &[Arc<RuntimeSession>],
     metaagent_events: &MetaagentEventStore,
@@ -393,6 +403,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_cached_shared operation signature and explicit context arguments"
+)]
 pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     runtime_sessions: &[Arc<RuntimeSession>],
     session_revision: u64,
@@ -432,6 +446,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing waiting_room_snapshot_auxiliary_fingerprint operation signature and explicit context arguments"
+)]
 fn waiting_room_snapshot_auxiliary_fingerprint(
     runtime_projects: &[RuntimeProject],
     slices: &[SliceRecord],
@@ -459,6 +477,10 @@ fn waiting_room_snapshot_auxiliary_fingerprint(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build_waiting_room_public_snapshot_from_summaries operation signature and explicit context arguments"
+)]
 fn build_waiting_room_public_snapshot_from_summaries(
     sessions: Vec<WaitingRoomPublicSessionSummary>,
     projects: Vec<WaitingRoomPublicProjectSummary>,
@@ -587,6 +609,7 @@ fn compute_waiting_room_launch_target(
         .unwrap_or_else(|| cwd_string.to_string());
     let branch = cached_git_branch(&worktree, now_ms);
     Some(WaitingRoomLaunchTarget {
+        repository_state: Some(workspace_repository_state(&workspace)),
         workspace_label: cached_workspace_label(&workspace),
         directory: Some(workspace.clone()),
         worktree_label: worktree_display_label(&worktree, &workspace, branch.as_deref()),
@@ -686,6 +709,8 @@ fn waiting_room_structural_version(
                 "id": project.id,
                 "owner_user_id": project.owner_user_id,
                 "workspace_id": project.workspace_id,
+                "workspace_ids": project.workspace_ids,
+                "pinned": project.pinned,
                 "name": project.name,
                 "kind": project.kind,
                 "status": project.status,
@@ -758,6 +783,7 @@ fn hash_waiting_room_version(
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
 }
 
+#[cfg(test)]
 fn waiting_room_session_summaries(
     sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -837,6 +863,7 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 .or_insert_with(|| cached_worktree_label(&worktree_id, &workspace_id))
                 .clone();
             WaitingRoomPublicSessionSummary {
+                repository_state: Some(workspace_repository_state(&workspace_id)),
                 id: session.id().to_string(),
                 project_id: session.project_id().to_string(),
                 alias: session.alias().map(ToOwned::to_owned),
@@ -857,15 +884,15 @@ fn waiting_room_session_summaries_from_refs<'a>(
                     .filter(|member| member.user_id() != session.owner_user_id())
                     .count(),
                 pending_collaboration_invite_count: pending_session_invite_count(session),
-                activity: waiting_room_session_activity_summary(&session, caller_user_id),
+                activity: waiting_room_session_activity_summary(session, caller_user_id),
                 agents: waiting_room_public_agent_summaries(
-                    &session,
+                    session,
                     metaagent_events,
                     workspace_label.clone(),
                     &mut worktree_labels,
                     caller_user_id,
                 ),
-                workflows: waiting_room_public_workflow_summaries(&session),
+                workflows: waiting_room_public_workflow_summaries(session),
             }
         })
         .collect()
@@ -1027,6 +1054,7 @@ fn waiting_room_public_project_summaries(
                 workspace_id: project.workspace_id().to_string(),
                 workspace_ids: project.workspace_ids().to_vec(),
                 name: project.name().to_string(),
+                pinned: project.pinned(),
                 kind: project.kind(),
                 status: project.status(),
                 created_at_ms: project.created_at_ms(),
@@ -2217,5 +2245,26 @@ mod tests {
             waiting_room_structural_version(&structural_change, &[], &[], false, None, None)
                 .unwrap(),
         );
+    }
+}
+
+#[cfg(test)]
+mod owner15_projection_tests {
+    #[test]
+    fn mp08_owner15_pin_changes_structural_revision_for_all_subscribers() {
+        let project = crate::session::RuntimeProject::new(
+            "p",
+            "u",
+            "/repo",
+            "Project",
+            crate::session::RuntimeProjectKind::Named,
+        );
+        let mut projects = super::waiting_room_public_project_summaries(&[project], &[], "u");
+        let before =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        projects[0].pinned = true;
+        let after =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        assert_ne!(before, after);
     }
 }

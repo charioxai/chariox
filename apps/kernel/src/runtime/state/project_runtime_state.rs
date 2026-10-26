@@ -83,6 +83,21 @@ impl KernelRuntimeState {
             .list_visible_projects(caller_user_id, true)
     }
 
+    pub(crate) async fn set_project_pinned(
+        &self,
+        project_id: &str,
+        pinned: bool,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeProject, DaemonError> {
+        let project =
+            self.owned
+                .session_store
+                .set_project_pinned(project_id, pinned, caller_user_id)?;
+        self.append_project_durable_event("project.updated", &project)?;
+        self.owned.runtime_projection_changes.record_change();
+        Ok(project)
+    }
+
     pub(crate) async fn rename_project(
         &self,
         project_id: &str,
@@ -543,6 +558,7 @@ mod tests {
 
     fn managed_context_target() -> crate::local::ManagedContextLaunchTarget {
         crate::local::ManagedContextLaunchTarget {
+            destination: None,
             environment_id: "environment-1".to_string(),
             kernel_id: "kernel-1".to_string(),
             context_id: "context-1".to_string(),

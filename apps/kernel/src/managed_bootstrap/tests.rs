@@ -165,6 +165,9 @@ fn pre_reimage_observation_binding_requires_exact_confirmed_generation_and_curre
     config.host_machine_id = receipt.machine_id.clone();
     config.relay_public_key = receipt.relay_public_key.clone();
     config.cloud_relay = Some(PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: "https://cloud.example.test".to_string(),
         user_id: "owner-1".to_string(),
         machine_id: Some(receipt.machine_id.clone()),
@@ -2855,6 +2858,9 @@ fn path1_test_identity() -> ManagedRuntimeIdentity {
 
 fn path1_test_profile() -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         api_url: "https://cloud.example.test".to_string(),
         user_id: "owner-1".to_string(),
         machine_id: Some("managed-machine-1".to_string()),

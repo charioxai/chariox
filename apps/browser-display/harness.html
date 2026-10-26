@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>MD-DISPLAY-04 protocol 419 presenter harness</title>
+<style>body{margin:0;background:#202124;color:white;font:14px system-ui}canvas{width:1280px;height:800px;display:block;cursor:default}p{padding:8px}</style>
+<p>MD-DISPLAY-04 · kernel-owned tab · experimental display</p><canvas id="display"></canvas>
+<script type="module">
+import { BrowserDisplayPresenter, attachBrowserDisplay } from './presenter.mjs';
+window.MDDisplay = { BrowserDisplayPresenter, attachBrowserDisplay, canvas: document.querySelector('canvas') };
+</script>

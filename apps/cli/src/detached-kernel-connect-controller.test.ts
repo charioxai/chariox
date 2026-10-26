@@ -84,3 +84,14 @@ function createHarness(options: {
 
   return { calls, controller }
 }
+
+// MP-08/MP-10: catalog completion cannot publish over a superseding attachment.
+test("cancelled detached hydration cannot publish catalogs or connection state", async () => {
+  let active = true, release!: () => void
+  const delayed = new Promise<void>(resolve => { release = resolve })
+  const harness = createHarness({ getProviderCatalog: async () => { await delayed; return fallbackProviderCatalog() } })
+  const result = harness.controller.connect(() => active)
+  active = false; release(); await result
+  assert.equal(harness.calls.some(call => /^set|^invalidate|^refresh/.test(call)), false)
+  assert.equal(harness.calls.includes("flash:info:connected to kernel"), false)
+})

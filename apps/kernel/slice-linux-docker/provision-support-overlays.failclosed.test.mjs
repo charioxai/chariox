@@ -25,6 +25,7 @@ const requiredOverlayDestinations = [
   ...[
     "browser-controller-actions.mjs",
     "browser-app-restore.mjs",
+    "browser-app-drafts.mjs",
     "browser-controller-cdp.mjs",
     "browser-controller-resources.mjs",
     "browser-controller-cookie-fence.mjs",
@@ -163,6 +164,20 @@ test("recovery fails closed on representative required overlay errors before sta
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// MP-08 / MP-10 / MP-11: a failed native dependency overlay blocks recovery.
+test("native dependency copy failures stop recovery before runtime startup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-native-overlay-"))
+  try {
+    await writeFakeDocker(root)
+    for (const name of ["native-x11.py", "native-fill-targets.py"]) {
+      const result = await recover(root, { failCopyDestination: `chariox-slice-fixture:/opt/chariox-slice/${name}` })
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /failed to refresh required slice support overlay: native Python dependency/)
+      assert.equal(await runtimeStarted(root), false)
+    }
+  } finally { await rm(root, {recursive: true, force: true}) }
+})
 
 async function recover(root, options = {}) {
   const log = join(root, "docker-calls");

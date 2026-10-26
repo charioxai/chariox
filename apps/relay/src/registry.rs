@@ -161,6 +161,7 @@ impl<V: Clone> ShardedRouteMap<String, V> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveEventRoute {
+    pub(crate) display: bool,
     pub(crate) daemon_key: DaemonKey,
     pub(crate) client_sender: RelaySender,
 }
@@ -205,6 +206,13 @@ impl RelayRouteIndex {
 
     pub(crate) fn subscription(&self, subscription_id: &str) -> Option<ActiveEventRoute> {
         self.subscriptions.get_str(subscription_id)
+    }
+
+    /// MP-08/MP-10/MP-11: scheduling hint only for this acknowledged route/socket.
+    /// A foreign sender or an ordinary terminal subscription never gains bypass.
+    pub(crate) fn display_for_sender(&self, subscription_id: &str, sender: &RelaySender) -> bool {
+        self.subscription(subscription_id)
+            .is_some_and(|route| route.display && route.client_sender.same_channel(sender))
     }
 
     fn subscription_queue_pressure(&self) -> (usize, usize) {
@@ -342,6 +350,7 @@ pub(crate) struct PendingDaemonPeerRequest {
 pub(crate) enum PendingRequestKind {
     Request,
     Subscribe {
+        display: bool,
         subscription_id: String,
         client_public_key: String,
     },
@@ -490,7 +499,14 @@ impl RelayRegistry {
         tunnel_id: String,
         expires_at_ms: u64,
         capabilities: Vec<String>,
-    ) {
+    ) -> bool {
+        if self
+            .display_tunnels
+            .get(&tunnel_id)
+            .is_some_and(|entry| entry.daemon_key != daemon_key)
+        {
+            return false;
+        }
         self.display_tunnels.insert(
             tunnel_id,
             DisplayTunnelRegistration {
@@ -499,6 +515,7 @@ impl RelayRegistry {
                 capabilities,
             },
         );
+        true
     }
 
     pub(crate) fn revoke_display_tunnel(&mut self, tunnel_id: &str) -> bool {
@@ -604,6 +621,17 @@ impl RelayRegistry {
         self.pending_display_streams.remove(stream_id);
     }
 
+    pub(crate) fn remove_display_stream_for_daemon(
+        &mut self,
+        stream_id: &str,
+        daemon_key: &DaemonKey,
+    ) -> Option<mpsc::Sender<DisplayStreamEvent>> {
+        self.display_stream_sender_for_daemon(stream_id, daemon_key)?;
+        self.pending_display_streams
+            .remove(stream_id)
+            .map(|entry| entry.sender)
+    }
+
     pub(crate) fn display_stream_sender_for_daemon(
         &self,
         stream_id: &str,
@@ -628,9 +656,20 @@ impl RelayRegistry {
     }
 
     pub(crate) fn live_machines_in_realm(&self, realm_id: &str) -> Vec<RelayMachinePresence> {
-        let relay_aliases = self.relay_kernel_aliases(realm_id);
+        self.live_machines_in_realm_with_targets(realm_id, None)
+    }
+
+    pub(crate) fn live_machines_in_realm_with_targets(
+        &self,
+        realm_id: &str,
+        targets: Option<&[String]>,
+    ) -> Vec<RelayMachinePresence> {
+        let machine_names = self.machine_names_in_realm(realm_id);
         let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
         for registration in self.daemon_registrations_in_realm(realm_id) {
+            if targets.is_some_and(|targets| !targets.contains(&registration.daemon_id)) {
+                continue;
+            }
             grouped
                 .entry(registration.machine_id.clone())
                 .or_default()
@@ -650,11 +689,7 @@ impl RelayRegistry {
                         .iter()
                         .flat_map(|registration| registration.provider_accounts.iter().cloned()),
                 );
-                let machine_alias = registrations
-                    .iter()
-                    .min_by_key(|registration| normalized_kernel_started_at_ms(registration))
-                    .and_then(|registration| relay_aliases.get(&registration.daemon_id))
-                    .cloned();
+                let machine_alias = machine_names.get(&machine_id).map(MachineName::label);
                 RelayMachinePresence {
                     machine_alias,
                     machine_id,
@@ -676,6 +711,7 @@ impl RelayRegistry {
         machine_ref: &str,
     ) -> Vec<RelayKernelPresence> {
         let relay_aliases = self.relay_kernel_aliases(realm_id);
+        let machine_names = self.machine_names_in_realm(realm_id);
         self.daemon_registrations_in_realm(realm_id)
             .filter(|registration| {
                 registration.machine_id == machine_ref
@@ -683,9 +719,12 @@ impl RelayRegistry {
                         .get(&registration.daemon_id)
                         .map(String::as_str)
                         == Some(machine_ref)
-                    || registration.machine_alias.as_deref() == Some(machine_ref)
+                    || machine_names
+                        .get(&registration.machine_id)
+                        .and_then(|name| name.registered.as_deref())
+                        == Some(machine_ref)
             })
-            .map(|registration| self.kernel_presence(registration, &relay_aliases))
+            .map(|registration| Self::kernel_presence(&machine_names, registration, &relay_aliases))
             .collect()
     }
 
@@ -699,6 +738,7 @@ impl RelayRegistry {
         kernel_ref: &str,
     ) -> Option<RelayKernelPresence> {
         let relay_aliases = self.relay_kernel_aliases(realm_id);
+        let machine_names = self.machine_names_in_realm(realm_id);
         self.daemon_registrations_in_realm(realm_id)
             .find(|registration| {
                 registration.daemon_id == kernel_ref
@@ -709,18 +749,20 @@ impl RelayRegistry {
                         .map(String::as_str)
                         == Some(kernel_ref)
             })
-            .map(|registration| self.kernel_presence(registration, &relay_aliases))
+            .map(|registration| Self::kernel_presence(&machine_names, registration, &relay_aliases))
     }
 
     fn kernel_presence(
-        &self,
+        machine_names: &BTreeMap<String, MachineName>,
         registration: &DaemonRegistration,
         relay_aliases: &BTreeMap<String, String>,
     ) -> RelayKernelPresence {
         RelayKernelPresence {
             kernel_id: registration.daemon_id.clone(),
             machine_id: registration.machine_id.clone(),
-            machine_alias: relay_aliases.get(&registration.daemon_id).cloned(),
+            machine_alias: machine_names
+                .get(&registration.machine_id)
+                .map(MachineName::label),
             relay_alias: relay_aliases.get(&registration.daemon_id).cloned(),
             kernel_alias: registration
                 .kernel_alias
@@ -749,6 +791,43 @@ impl RelayRegistry {
             .filter(|registration| daemon_registration_is_kernel_target(registration))
     }
 
+    // Machine names are registration metadata, read once per query. Numbered
+    // relay aliases address kernels and change with live inventory; never
+    // project them as machine names.
+    fn machine_names_in_realm(&self, realm_id: &str) -> BTreeMap<String, MachineName> {
+        let mut names = BTreeMap::<String, (MachineName, (u64, &str))>::new();
+        for registration in self.daemon_registrations_in_realm(realm_id) {
+            let order = (
+                normalized_kernel_started_at_ms(registration),
+                registration.daemon_id.as_str(),
+            );
+            let (name, named_by) = names
+                .entry(registration.machine_id.clone())
+                .or_insert_with(|| (MachineName::default(), (u64::MAX, "")));
+            let registered = registration
+                .machine_alias
+                .as_deref()
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty());
+            if let Some(alias) =
+                registered.filter(|_| name.registered.is_none() || order < *named_by)
+            {
+                name.registered = Some(alias.to_string());
+                *named_by = order;
+            }
+            if name.os_name.is_none() {
+                name.os_name = registration
+                    .os_name
+                    .clone()
+                    .filter(|os| !os.trim().is_empty());
+            }
+        }
+        names
+            .into_iter()
+            .map(|(id, (name, _))| (id, name))
+            .collect()
+    }
+
     fn relay_kernel_aliases(&self, realm_id: &str) -> BTreeMap<String, String> {
         let mut registrations = self
             .daemon_registrations_in_realm(realm_id)
@@ -774,6 +853,23 @@ impl RelayRegistry {
                 )
             })
             .collect()
+    }
+}
+
+/// What a machine is called: its registered name, else a plain label.
+#[derive(Default)]
+struct MachineName {
+    registered: Option<String>,
+    os_name: Option<String>,
+}
+
+impl MachineName {
+    fn label(&self) -> String {
+        match (&self.registered, &self.os_name) {
+            (Some(name), _) => name.clone(),
+            (None, Some(os)) => format!("{} computer", os.trim()),
+            (None, None) => "Unnamed computer".to_string(),
+        }
     }
 }
 
@@ -837,6 +933,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
+                display: false,
                 daemon_key: daemon_key.clone(),
                 client_sender,
             },
@@ -867,6 +964,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
+                display: false,
                 daemon_key,
                 client_sender: client_sender.clone(),
             },
@@ -919,5 +1017,69 @@ mod tests {
         assert_eq!(registry.remove_display_tunnels_for_daemon(&daemon_a), 1);
         assert!(registry.display_tunnel("a-2", 1).is_none());
         assert!(registry.display_tunnel("b-1", 1).is_some());
+    }
+    #[test]
+    fn display_tunnel_collision_preserves_owner_and_allows_owner_renewal() {
+        let mut registry = RelayRegistry::default();
+        let owner = DaemonKey::new("realm-a", "owner");
+        registry.register_display_tunnel(owner.clone(), "shared".into(), 1000, vec!["view".into()]);
+        for foreign in [
+            DaemonKey::new("realm-a", "other"),
+            DaemonKey::new("realm-b", "owner"),
+        ] {
+            registry.register_display_tunnel(
+                foreign,
+                "shared".into(),
+                2000,
+                vec!["foreign".into()],
+            );
+            let entry = registry.display_tunnel("shared", 1).unwrap();
+            assert_eq!(entry.daemon_key, owner);
+            assert_eq!(entry.expires_at_ms, 1000);
+            assert_eq!(entry.capabilities, vec!["view"]);
+        }
+        registry.register_display_tunnel(
+            owner.clone(),
+            "shared".into(),
+            3000,
+            vec!["renewed".into()],
+        );
+        assert_eq!(
+            registry.display_tunnel("shared", 1).unwrap().expires_at_ms,
+            3000
+        );
+    }
+}
+
+#[cfg(test)]
+mod display_scheduling_tests {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_only_own_acknowledged_display_route_can_bypass() {
+        let routes = RelayRouteIndex::default();
+        let (own, _rx) = tokio::sync::mpsc::channel(8);
+        let (foreign, _rx2) = tokio::sync::mpsc::channel(8);
+        assert!(!routes.display_for_sender("display", &own));
+        routes.set_subscription(
+            "display".into(),
+            ActiveEventRoute {
+                display: false,
+                daemon_key: DaemonKey::new("realm", "kernel"),
+                client_sender: own.clone(),
+            },
+        );
+        assert!(!routes.display_for_sender("display", &own));
+        routes.set_subscription(
+            "display".into(),
+            ActiveEventRoute {
+                display: true,
+                daemon_key: DaemonKey::new("realm", "kernel"),
+                client_sender: own.clone(),
+            },
+        );
+        assert!(routes.display_for_sender("display", &own));
+        assert!(!routes.display_for_sender("display", &foreign));
+        routes.remove_subscription("display");
+        assert!(!routes.display_for_sender("display", &own));
     }
 }

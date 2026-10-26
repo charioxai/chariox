@@ -332,6 +332,7 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents_inn
         router.operational_history_store.clone(),
         crate::local::GetSessionHistoryOutlineRequest {
             session_id: session.id().to_string(),
+            include_prefetched_content: false,
             agent_ids: Some(vec![peer_worker.id().to_string()]),
             latest_prompt_count: Some(1),
             cursor: None,

@@ -68,9 +68,7 @@ pub(crate) async fn execute_approve_remote_machine_request(
     request: ApproveRemoteMachineRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let config = config_projection.snapshot();
-    let live = crate::transport::relay_discovery::list_live_machines(&config)
-        .await
-        .unwrap_or_default();
+    let live = live_registry_machines(&config).await.unwrap_or_default();
     let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
     crate::config::DaemonConfig::approve_remote_machine(
         machine.machine_id.clone(),
@@ -90,9 +88,7 @@ pub(crate) async fn execute_forget_remote_machine_request(
     request: ForgetRemoteMachineRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let config = config_projection.snapshot();
-    let live = crate::transport::relay_discovery::list_live_machines(&config)
-        .await
-        .unwrap_or_default();
+    let live = live_registry_machines(&config).await.unwrap_or_default();
     let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
     let saved = crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
     invalidate_provider_catalog_caches(app, provider_catalog_projection).await;
@@ -109,15 +105,23 @@ pub(crate) async fn execute_rename_remote_machine_request(
     request: RenameRemoteMachineRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let config = config_projection.snapshot();
-    let live = crate::transport::relay_discovery::list_live_machines(&config)
-        .await
-        .unwrap_or_default();
+    let live = live_registry_machines(&config).await.unwrap_or_default();
     let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
     crate::config::DaemonConfig::rename_remote_machine(machine.clone(), request.alias)?;
     invalidate_provider_catalog_caches(app, provider_catalog_projection).await;
     let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
     remote_relay_inventory_projection.update_machine(machine.clone());
     Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
+}
+
+// MP-08 / MP-10 / MP-11: hosted metadata reads need a client-scoped token;
+// the kernel's registration/peer token cannot authorize machine discovery.
+pub(crate) async fn live_registry_machines(
+    config: &crate::config::DaemonConfig,
+) -> Result<Vec<chariox_relay::protocol::RelayMachinePresence>, DaemonError> {
+    let discovery_config =
+        crate::runtime::cloud_api_client::scoped_metadata_config(config, true).await?;
+    crate::transport::relay_discovery::list_live_machines(&discovery_config).await
 }
 
 async fn invalidate_provider_catalog_caches(

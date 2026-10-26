@@ -18,7 +18,7 @@ pub(super) struct AgentRuntimeCommandExecutor {
     prompt_commands: AgentPromptCommandService,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
-    prompt_id_allocator: PromptIdAllocator,
+    _prompt_id_allocator: PromptIdAllocator,
 }
 
 impl AgentRuntimeCommandExecutor {
@@ -32,7 +32,7 @@ impl AgentRuntimeCommandExecutor {
             prompt_commands,
             session_projection,
             agent_runtime_projection,
-            prompt_id_allocator,
+            _prompt_id_allocator: prompt_id_allocator,
         }
     }
 
@@ -40,18 +40,27 @@ impl AgentRuntimeCommandExecutor {
         &self,
         grant_id: String,
         request: crate::local::LocalDaemonRequest,
+        sudo_binding: Option<(String, String)>,
     ) -> Self {
         let mut executor = self.clone();
-        executor.prompt_commands = self
-            .prompt_commands
-            .with_external_authority(grant_id, request);
+        executor.prompt_commands =
+            self.prompt_commands
+                .with_external_authority(grant_id, request, sudo_binding);
         executor
     }
 
-    pub(super) async fn execute(
+    // MP-08 / MP-10 / MP-11: select before constructing a handler future.
+    // An async match embeds every command's future in the agent lane and can
+    // overflow an ordinary thread before the cold-prompt authorization check.
+    pub(super) fn execute(
         &self,
         command: AgentCommand,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + '_>,
+    > {
+        if let Err(error) = self.prompt_commands.authorize_command() {
+            return Box::pin(async move { Err(error) });
+        }
         match command {
             AgentCommand::SubmitPrompt {
                 request,
@@ -59,7 +68,7 @@ impl AgentRuntimeCommandExecutor {
                 operation_id,
                 operation_fingerprint,
                 response_mode,
-            } => {
+            } => boxed_agent_handler(|| {
                 self.submit_prompt(
                     request,
                     trace_id,
@@ -67,27 +76,30 @@ impl AgentRuntimeCommandExecutor {
                     operation_fingerprint,
                     response_mode,
                 )
-                .await
-            }
+            }),
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id,
-            } => self.cancel_active_prompt(request, target_agent_id).await,
-            AgentCommand::SteerQueuedPrompt { request } => self.steer_queued_prompt(request).await,
+            } => boxed_agent_handler(|| self.cancel_active_prompt(request, target_agent_id)),
+            AgentCommand::SteerQueuedPrompt { request } => {
+                boxed_agent_handler(|| self.steer_queued_prompt(request))
+            }
+            AgentCommand::SteerActivePrompt { request } => {
+                boxed_agent_handler(|| self.steer_active_prompt(request))
+            }
             AgentCommand::CancelQueuedPrompt { request } => {
-                self.cancel_queued_prompt(request).await
+                boxed_agent_handler(|| self.cancel_queued_prompt(request))
             }
             AgentCommand::UpdateQueuedPrompt { request } => {
-                self.update_queued_prompt(request).await
+                boxed_agent_handler(|| self.update_queued_prompt(request))
             }
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id,
                 next_queued_prompt,
-            } => {
+            } => boxed_agent_handler(|| {
                 self.complete_prompt(request, target_agent_id, next_queued_prompt)
-                    .await
-            }
+            }),
         }
     }
 
@@ -99,6 +111,7 @@ impl AgentRuntimeCommandExecutor {
         operation_fingerprint: String,
         response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         let target_agent_id =
             request
                 .target_agent_id
@@ -112,6 +125,9 @@ impl AgentRuntimeCommandExecutor {
         self.prompt_commands
             .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
             .await?;
+        let mut request = request;
+        request.prompt =
+            crate::prompt_notes::admit(std::mem::take(&mut request.prompt), &request.attachments)?;
         let materialized_attachments = materialize_inline_prompt_attachments(
             &request.session_id,
             &target_agent_id,
@@ -191,6 +207,7 @@ impl AgentRuntimeCommandExecutor {
         .with_hidden_system_context(hidden_system_context)
         .with_durable_operation(operation_id, operation_fingerprint)
         .with_attachments(materialized_attachments);
+        timing.mark("prepare");
         let prepared = self
             .prompt_commands
             .submit_prepared_prompt(KernelPreparedPromptSubmission {
@@ -200,6 +217,7 @@ impl AgentRuntimeCommandExecutor {
                 refresh_projection: response_mode == PromptSubmitResponseMode::Full,
             })
             .await?;
+        timing.mark("admit");
         let mut response_session = prepared.session.clone();
         if !consumed_meta_slash {
             if let Some(updated_session) = self.prompt_commands.start_metaagent_task_for_prompt(
@@ -210,6 +228,7 @@ impl AgentRuntimeCommandExecutor {
                 response_session = updated_session;
             }
         }
+        timing.mark("meta_task");
         if response_mode == PromptSubmitResponseMode::Full {
             publish_session_runtime_projection(
                 &self.session_projection,
@@ -218,6 +237,7 @@ impl AgentRuntimeCommandExecutor {
             );
         }
 
+        timing.mark("publish");
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&prepared.outcome, prepared.dispatch.as_ref())
         {
@@ -229,6 +249,7 @@ impl AgentRuntimeCommandExecutor {
                 &trace_id,
             );
         }
+        timing.mark("active_turn");
         let agent_activity = if response_mode == PromptSubmitResponseMode::Full {
             self.prompt_commands
                 .agent_activity_for_session(&response_session)
@@ -236,6 +257,7 @@ impl AgentRuntimeCommandExecutor {
             Default::default()
         };
 
+        timing.mark("activity_projection");
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
         }
@@ -243,6 +265,8 @@ impl AgentRuntimeCommandExecutor {
             self.prompt_commands.spawn_remote_prompt_dispatch(dispatch);
         }
 
+        timing.mark("dispatch_spawn");
+        timing.finish("prompt_submit", &trace_id);
         Ok(LocalDaemonResponse::PromptSubmitted {
             outcome: prepared.outcome,
             session: response_session,
@@ -266,6 +290,7 @@ impl AgentRuntimeCommandExecutor {
                 &request.session_id,
                 &target_agent_id,
                 &request.attachment_id,
+                request.expected_prompt_id.as_deref(),
             )
             .await?;
         publish_session_runtime_projection(
@@ -316,6 +341,24 @@ impl AgentRuntimeCommandExecutor {
             agent_activity,
             agent_activity_revision: self.session_projection.change_sequence(),
         })
+    }
+
+    async fn steer_active_prompt(
+        &self,
+        mut request: crate::local::SteerActivePromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.prompt_commands
+            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+            .await?;
+        request.prompt =
+            crate::prompt_notes::admit(std::mem::take(&mut request.prompt), &request.attachments)?;
+        request.attachments = materialize_inline_prompt_attachments(
+            &request.session_id,
+            &request.target_agent_id,
+            request.attachments,
+        )?;
+        let prompt = self.prompt_commands.steer_active_prompt(request).await?;
+        Ok(LocalDaemonResponse::ActivePromptSteered { prompt })
     }
 
     async fn cancel_queued_prompt(
@@ -443,4 +486,19 @@ fn completion_started_next_is_compatible(
         }
         _ => true,
     }
+}
+
+// Keep allocation in a separate frame: unrelated match arms must not reserve
+// their stack temporaries in execute or its caller.
+#[inline(never)]
+fn boxed_agent_handler<'a, F, Fut>(
+    factory: F,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a>,
+>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<LocalDaemonResponse, DaemonError>> + Send + 'a,
+{
+    Box::pin(factory())
 }

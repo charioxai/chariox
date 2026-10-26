@@ -1,10 +1,12 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
   backendProviderLabel,
   type BackendProviderId,
   type CatalogModelOption,
 } from "./provider-catalog.js"
 import type { SliceRecord } from "./cli-types.js"
-import { providerAccountCapacityLabel, type ProviderAccountProfile } from "@chariox/kernel-client"
+import { type ProviderAccountProfile } from "@chariox/kernel-client"
+import { providerAccountAdmissionBlocked, providerAccountDisplayLabel } from "./waiting-room-provider-accounts.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
   formatWaitingRoomLaunchKernelValue,
@@ -14,7 +16,7 @@ import {
   waitingRoomSelectedLaunchKernelRef,
   waitingRoomSelectedLaunchMachineRef,
 } from "@chariox/kernel-client/waiting-room-runtime-placement"
-import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
+import { describeWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
 import {
@@ -47,6 +49,7 @@ export function waitingRoomStartRows(
     | "selectedMachineRef"
     | "selectedKernelRef"
     | "projectSelectionId"
+    | "projectNameDraft"
     | "sliceSelectionId"
     | "sliceDisplayMode"
     | "managedComputeClass"
@@ -65,6 +68,7 @@ export function waitingRoomStartRows(
     | "managedCustomIdleDelaySeconds"
     | "providerId"
     | "accountProfileId"
+    | "modelId"
   >,
   choice: WaitingRoomStartRowsChoice,
   options: {
@@ -108,14 +112,17 @@ export function waitingRoomStartRows(
         ...managedRepositoryRows,
       ]
     : []
-  return [
+  const rows: WaitingRoomRow[] = [
     {
       id: "new",
       title: configuresManaged
         ? "Create machine and start session"
         : selectedEnvironment && !managedEnvironmentIsLaunchReady(selectedEnvironment)
           ? "Start machine and session"
-          : "Start New Session",
+          : choice.accountProfile && choice.accountProfile.auth_state !== "authenticated"
+            ? `${choice.accountProfile.auth_state === "unknown" ? "Check sign-in" : "Sign in"} ${choice.accountProfile.label}`
+            : choice.accountProfile && providerAccountAdmissionBlocked(choice.accountProfile, Date.now(), choice.model?.id)
+              ? "Choose account with quota" : "Start New Session",
       value: "Press Enter",
       titleWidth: options.titleWidth,
       indent: 0,
@@ -159,7 +166,7 @@ export function waitingRoomStartRows(
       ? [{
           id: "project",
           title: "Project",
-          value: describeWaitingRoomProjectSelection(
+          value: state.projectSelectionId === "new" && state.projectNameDraft?.trim() ? `New (${state.projectNameDraft.trim()})` : describeWaitingRoomProjectSelection(
             state.projectSelectionId ?? "default",
             remote.projects,
             options.targets?.workspacePath,
@@ -197,7 +204,11 @@ export function waitingRoomStartRows(
     {
       id: "model",
       title: "Model",
-      value: choice.model ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback) : "No models available",
+      value: choice.model
+        ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback)
+        : choice.providerCatalogFallback
+          ? state.modelId && state.modelId !== "default" ? `${state.modelId} (refreshing)` : options.loadingText
+          : "No models available",
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "model",
@@ -235,10 +246,10 @@ export function waitingRoomStartRows(
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "worktree",
-      selectable: true,
+      selectable: !waitingRoomWorktreeDisabledHint(),
       scrollbar: "",
     },
-    {
+    ...(workspaceLiveSyncUiEnabled ? [{
       id: "live-sync",
       title: "Live Sync",
       value: formatWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
@@ -247,7 +258,7 @@ export function waitingRoomStartRows(
       focused: state.focus === "live-sync",
       selectable: true,
       scrollbar: "",
-    },
+    }] : []),
     {
       id: "collaborators",
       title: "Collaborators",
@@ -284,12 +295,21 @@ export function waitingRoomStartRows(
       scrollbar: "",
     },
   ]
+  const cachedRows = options.visibleSessionCount > 0
+    || remote.machines?.some(row => row.displayFreshness)
+    || remote.kernels?.some(row => row.displayFreshness)
+  const pendingFields = new Set(["new", "launch-machine", "launch-kernel", "project", "provider", "account", "model", "effort", "workspace", "worktree"])
+  return options.inventoryLoading && !cachedRows
+    ? rows.map(row => pendingFields.has(row.id) ? { ...row, value: options.loadingText, selectable: false } : row)
+    : rows
+
 }
 
 function waitingRoomManagedRepositoryRows(
   state: Pick<WaitingRoomState,
     | "focus"
     | "projectSelectionId"
+    | "projectNameDraft"
     | "managedDevelopmentMode"
     | "managedRepositorySelection"
     | "managedRepositoryIndex"
@@ -444,7 +464,7 @@ function formatAccountValue(profile: ProviderAccountProfile | null, model?: stri
   if (!profile) {
     return "Default (not discovered)"
   }
-  return providerAccountCapacityLabel(profile, Date.now(), model)
+  return providerAccountDisplayLabel(profile, model)
 }
 
 function formatTitleCase(value: string) {

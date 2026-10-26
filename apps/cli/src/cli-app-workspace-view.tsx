@@ -30,9 +30,15 @@ type PromptInputController = {
 
 type PromptTextController = {
   snapshot: () => string
+  currentText: () => string
 }
 
 export type CliAppWorkspaceViewProps = {
+  roomWorkflowsPane?: WorkspaceLayoutProps["roomWorkflowsPane"]
+  roomWorkflowsVisible?: WorkspaceLayoutProps["roomWorkflowsVisible"]
+  roomWorkflowsAvailable?: WorkspaceLayoutProps["roomWorkflowsAvailable"]
+  roomWorkflowsOpen?: WorkspaceLayoutProps["roomWorkflowsOpen"]
+  roomWorkflowsFocused?: WorkspaceLayoutProps["roomWorkflowsFocused"]
   width: number
   height: number
   fatalError: boolean
@@ -41,7 +47,7 @@ export type CliAppWorkspaceViewProps = {
   promptPlaceholder: string
   promptInputMaxHeight: number
   promptAreaBackground: WorkspaceLayoutProps["promptAreaBackground"]
-  retainPromptFocus: () => void
+  handleRootMouseUp: () => void
   handlePromptSelectionSurfaceMouseUp: WorkspaceLayoutProps["onResponseSurfaceMouseUp"]
   responsePaneRenderRefStore: MutableRefStore
   historyLoadingRenderController: {
@@ -61,8 +67,11 @@ export type CliAppWorkspaceViewProps = {
   assignFooterSummaryBox: (value: any) => void
   assignDialogOverlayBox: (value: any) => void
   assignKernelApprovalBanner: (value: any) => void
+  assignSudoBand: (value: any) => void
   assignKernelApprovalBox: (value: any) => void
   assignPasskeyPopupBox: (value: any) => void
+  assignPasskeyPopupBanner?: (value: any) => void
+  assignProviderAccountRecoveryBox?: (value: any) => void
   kernelApprovalOwnsInput: () => boolean
   handlePromptKeyDown: WorkspaceLayoutProps["onPromptKeyDown"]
   handlePromptContentChange: () => void
@@ -95,6 +104,11 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
 
   return (
     <WorkspaceLayout
+      roomWorkflowsPane={props.roomWorkflowsPane}
+      roomWorkflowsVisible={props.roomWorkflowsVisible}
+      roomWorkflowsAvailable={props.roomWorkflowsAvailable}
+      roomWorkflowsOpen={props.roomWorkflowsOpen}
+      roomWorkflowsFocused={props.roomWorkflowsFocused}
       width={props.width}
       height={props.height}
       fatalError={props.fatalError}
@@ -104,10 +118,13 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       promptInputMaxHeight={props.promptInputMaxHeight}
       promptAreaBackground={props.promptAreaBackground}
       promptKeyBindings={PROMPT_KEYBINDINGS}
-      onRootMouseUp={props.retainPromptFocus}
+      onRootMouseUp={props.handleRootMouseUp}
       onKernelApprovalBoxRef={props.assignKernelApprovalBox}
       onKernelApprovalBannerRef={props.assignKernelApprovalBanner}
+      onSudoBandRef={props.assignSudoBand}
       onPasskeyPopupBoxRef={props.assignPasskeyPopupBox}
+      {...(props.assignPasskeyPopupBanner ? { onPasskeyPopupBannerRef: props.assignPasskeyPopupBanner } : {})}
+      onProviderAccountRecoveryBoxRef={props.assignProviderAccountRecoveryBox}
       onResponseSurfaceMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onFooterMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onResponseLayoutBoxRef={(value) => {
@@ -204,7 +221,7 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       onPromptContentChange={props.handlePromptContentChange}
       onPromptSubmit={() => {
         if (props.kernelApprovalOwnsInput()) return
-        if (props.focusedAgentInteraction()) {
+        if (props.focusedAgentInteraction() && !props.promptTextController.currentText().trim()) {
           void props.submitFocusedInteractionChoice()
           return
         }

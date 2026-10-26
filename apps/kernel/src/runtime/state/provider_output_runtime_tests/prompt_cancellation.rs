@@ -149,6 +149,7 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
         .finalize_local_prompt_cancellation_with_queued_advance(
             session.id(),
             agent.id(),
+            cancellation.cancellation.prompt.id(),
             Some(provider_run.id()),
         )
         .expect("provider abort acknowledgement should promote queued workflow prompt");
@@ -210,7 +211,7 @@ async fn assert_structured_cancellation_waits_for_abort_ack(adapter_key: &str) {
     )
     .with_agent_id(agent.id());
     let mut run = crate::provider::RuntimeProviderRun::new(
-        &format!("provider-run-{adapter_key}-cancellation"),
+        format!("provider-run-{adapter_key}-cancellation"),
         &request,
         crate::provider::ProviderLaunchResult {
             endpoint_mode: crate::provider::AgentEndpointMode::Managed,
@@ -429,6 +430,7 @@ async fn paused_metaagent_cancellation_promotes_queued_user_prompt_after_abort_a
         .finalize_local_prompt_cancellation_with_queued_advance(
             session.id(),
             agent.id(),
+            cancellation.cancellation.prompt.id(),
             Some(run.id()),
         )
         .expect("provider abort acknowledgement should finalize cancellation");
@@ -544,6 +546,7 @@ async fn paused_metaagent_cancellation_holds_queued_private_event_after_abort_ac
         .finalize_local_prompt_cancellation_with_queued_advance(
             session.id(),
             agent.id(),
+            cancellation.cancellation.prompt.id(),
             Some(run.id()),
         )
         .expect("provider abort acknowledgement should finalize cancellation");
@@ -667,4 +670,142 @@ async fn paused_metaagent_queues_new_private_event_without_dispatch() {
         queued[0].prompt(),
         crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
     );
+}
+
+#[tokio::test]
+async fn structured_abort_waiter_releases_provider_lane_after_external_owner_settlement() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-codex-cancellation",
+            "worktree-codex-cancellation",
+        ))
+        .expect("session should be created");
+    let requester = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "cancellation-requester",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("requester should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-abort-owner-wait",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-abort-owner-wait".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://test-abort-owner-wait-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let active_prompt = crate::session::PromptQueueItem::new(
+        "prompt-codex-cancellation",
+        requester.id(),
+        agent.id(),
+        "run a blocking tool",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), active_prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+    let prompt_id = prompt.id().to_string();
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let cancellation = runtime
+        .owned
+        .cancel_local_prompt(session.id(), agent.id(), requester.id())
+        .unwrap()
+        .unwrap();
+    let dispatch = cancellation.dispatch.unwrap();
+    let completion = runtime.owned.provider_store.run_actor_completion_signal();
+    let sequence = completion.sequence();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let mut waiter = tokio::spawn({
+        let runtime = runtime.clone();
+        let entered = entered.clone();
+        let completion = completion.clone();
+        async move {
+            let _permit = runtime
+                .provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            entered.notify_one();
+            runtime
+                .wait_for_structured_prompt_abort_settlement(&dispatch, &completion, sequence)
+                .await;
+        }
+    });
+    entered.notified().await;
+    assert!(runtime
+        .provider_runtime_lanes
+        .try_acquire(run.id())
+        .is_none());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !waiter.is_finished(),
+        "Observation alone must not settle an unacknowledged cancellation"
+    );
+    let still_cancelling = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&still_cancelling, agent.id())
+            .unwrap()
+            .status(),
+        crate::session::PromptStatus::Cancelling
+    );
+    // An output pump reaps a previously acknowledged abort. Ownership settlement
+    // itself does not produce a new provider-actor completion event.
+    runtime
+        .owned
+        .finalize_local_prompt_cancellation_with_queued_advance(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            Some(run.id()),
+        )
+        .unwrap();
+    assert_eq!(completion.sequence(), sequence);
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiter).await;
+    if finished.is_err() {
+        waiter.abort();
+        let _ = waiter.await;
+    }
+    assert!(finished.is_ok(), "MP-08/MP-10 a settled cancellation keeps the provider lane locked without another actor completion; the next Stop cannot acquire it");
+    finished
+        .unwrap()
+        .expect("The cancellation waiter must not panic");
+    assert!(runtime
+        .provider_runtime_lanes
+        .try_acquire(run.id())
+        .is_some());
 }

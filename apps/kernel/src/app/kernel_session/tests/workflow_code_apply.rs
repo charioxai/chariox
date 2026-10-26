@@ -509,3 +509,228 @@ fn workflow_code_apply_rejects_metaagent_binding_unowned_existing_agent() {
         .expect("session should exist");
     assert!(session.workflows().is_empty());
 }
+
+// MP-08 / MP-10 / MP-11 A01: the real B->C seam starts with a generated
+// Codex node selecting an existing public label instead of the stable ID.
+#[test]
+fn amfix_r11_generated_workflow_binds_account_label_before_dispatch() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let profile = app
+        .provider_account_profile_registry()
+        .create_managed(owner, "codex", "amfix-review")
+        .unwrap();
+    let mut definition = generated_workflow_code_definition();
+    for node in &mut definition.nodes {
+        let WorkflowCodeAgentBinding::Create(agent) = &mut node.agent else {
+            panic!("generated agent")
+        };
+        agent.provider = "codex".into();
+        agent.model = Some("gpt-6-luna".into());
+        agent.effort = Some("low".into());
+        agent.account_profile = Some(profile.label.clone());
+    }
+    let report = app
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &WorkflowCodeLimitsConfig::default(),
+            owner.into(),
+            None,
+        )
+        .unwrap();
+    for id in report.agent_ids.values() {
+        let agent = app.agents().get_agent(id).unwrap();
+        assert_eq!(agent.provider_account_profile(), profile.profile_id,
+            "MP-08 / MP-10 / MP-11: C must be pinned to its stable profile at spawn, before B hands off");
+    }
+}
+
+#[test]
+fn amfix_r11_missing_downstream_account_rejects_before_any_workflow_agents() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let profile = app
+        .provider_account_profile_registry()
+        .create_managed(owner, "codex", "valid-review")
+        .unwrap();
+    let foreign = app
+        .provider_account_profile_registry()
+        .create_managed("another-owner", "codex", "private-other-label")
+        .unwrap();
+    let mut definition = generated_workflow_code_definition();
+    let WorkflowCodeAgentBinding::Create(c) = &mut definition.nodes[1].agent else {
+        panic!("generated node")
+    };
+    c.provider = "codex".into();
+    c.account_profile = Some(foreign.profile_id);
+    let before = app.agents().get_session_agents(session.id()).len();
+    let error = app
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &WorkflowCodeLimitsConfig::default(),
+            owner.into(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&profile.profile_id) && error.contains(&profile.label));
+    assert!(
+        !error
+            .split("available profiles: ")
+            .nth(1)
+            .unwrap_or("")
+            .contains(&foreign.label),
+        "another owner's labels must not appear"
+    );
+    assert_eq!(app.agents().get_session_agents(session.id()).len(), before);
+    assert!(app
+        .sessions()
+        .get_session(session.id())
+        .unwrap()
+        .workflows()
+        .is_empty());
+}
+
+// MP-08 / MP-10 / MP-11: shared spawn and launch must agree about the
+// runtime owner's exact replica and the home default alias.
+#[test]
+fn amfix_r12_spawn_launch_accepts_replica_only_account() {
+    spawn_launch_account_namespace("replica-only");
+}
+
+#[test]
+fn amfix_r12_generated_default_launch_keeps_home_namespace() {
+    spawn_launch_account_namespace("default");
+}
+
+#[test]
+fn amfix_r12_generated_label_launch_keeps_home_namespace() {
+    spawn_launch_account_namespace("Home account");
+}
+
+fn spawn_launch_account_namespace(selection: &str) {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("spawn-launch-account-namespace");
+    std::env::set_var("CHARIOX_HOME", root.path().join("home"));
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())
+                .with_owner_user_id("cloud-owner"),
+        )
+        .unwrap();
+    let registry = app.provider_account_profile_registry();
+    let home = registry
+        .create_managed("local", "codex", "Home account")
+        .unwrap();
+    registry
+        .set_default("local", "codex", &home.profile_id)
+        .unwrap();
+    let mut materialization = registry
+        .export_materialization("local", "codex", &home.profile_id)
+        .unwrap();
+    materialization.profile.owner_user_id = "cloud-owner".into();
+    registry
+        .materialize_replica("cloud-owner", &materialization)
+        .unwrap();
+    let replica_only = registry
+        .create_managed("cloud-owner", "codex", "replica-only")
+        .unwrap();
+    let selected = if selection == "replica-only" {
+        replica_only.profile_id.as_str()
+    } else {
+        selection
+    };
+    let expected_owner = if selection == "replica-only" {
+        "cloud-owner"
+    } else {
+        "local"
+    };
+    let expected_id = if selection == "replica-only" {
+        &replica_only.profile_id
+    } else {
+        &home.profile_id
+    };
+    let ids = if selection == "replica-only" {
+        vec![crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "codex")
+                    .with_owner_user_id("cloud-owner")
+                    .with_account_profile(selected),
+            )
+            .expect("shared spawn must admit the runtime owner's exact replica")
+            .id()
+            .to_string()]
+    } else {
+        let mut definition = generated_workflow_code_definition();
+        for node in &mut definition.nodes {
+            let WorkflowCodeAgentBinding::Create(agent) = &mut node.agent else {
+                panic!("create")
+            };
+            agent.provider = "codex".into();
+            agent.model = Some("gpt-6-luna".into());
+            agent.account_profile = Some(selected.into());
+        }
+        app.apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &WorkflowCodeLimitsConfig::default(),
+            "cloud-owner".into(),
+            None,
+        )
+        .unwrap()
+        .agent_ids
+        .into_values()
+        .collect()
+    };
+    for id in ids {
+        let agent = app.agents().get_agent(&id).unwrap();
+        let launch = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            agent.provider_account_profile(),
+            "gpt-6-luna",
+        )
+        .with_agent_id(&id)
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let prepared = app
+            .prepare_app_provider_launch_request(
+                launch,
+                "MP-08 / MP-10 / MP-11 spawn-launch namespace regression",
+            )
+            .unwrap();
+        assert_eq!(&prepared.account_profile, expected_id);
+        assert_eq!(
+            prepared.provider_account_env,
+            registry
+                .resolve_environment(expected_owner, "codex", expected_id)
+                .unwrap(),
+            "spawn must retain the chosen namespace through launch"
+        );
+        assert_eq!(
+            crate::account_profile::provider_account_authority_for_launch(
+                app.config(),
+                &registry,
+                &prepared
+            )
+            .unwrap(),
+            expected_owner
+        );
+    }
+}

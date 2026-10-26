@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-use std::sync::{mpsc, Arc, Mutex, OnceLock, TryLockError};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
@@ -43,17 +43,6 @@ impl StdioMcpSupervisor {
                 ),
             });
         }
-        let exited = match self.processes.get(key) {
-            Some(entry) => match entry.process.try_lock() {
-                Ok(mut process) => process.is_exited()?,
-                Err(TryLockError::WouldBlock) => false,
-                Err(TryLockError::Poisoned(_)) => panic!("stdio MCP process mutex poisoned"),
-            },
-            None => false,
-        };
-        if exited {
-            self.processes.remove(key);
-        }
         if !self.processes.contains_key(key) {
             let process = StdioMcpProcess::spawn(backing)?;
             self.processes.insert(
@@ -76,20 +65,6 @@ impl StdioMcpSupervisor {
             owner_session_id.to_string(),
         );
         Ok(entry.process.clone())
-    }
-
-    pub(super) fn discard_process(
-        &mut self,
-        key: &str,
-        expected: &Arc<Mutex<StdioMcpProcess>>,
-    ) -> Option<Arc<Mutex<StdioMcpProcess>>> {
-        let matches = self
-            .processes
-            .get(key)
-            .is_some_and(|entry| Arc::ptr_eq(&entry.process, expected));
-        matches
-            .then(|| self.processes.remove(key).map(|entry| entry.process))
-            .flatten()
     }
 
     pub(super) fn release_run(
@@ -149,7 +124,10 @@ pub(super) struct StdioMcpProcess {
     stdin: ChildStdin,
     frames: mpsc::Receiver<Result<serde_json::Value, String>>,
     request_timeout: Duration,
+    backing: CharioxMcpServerConfig,
+    initialize_request: Option<serde_json::Value>,
     initialize_response: Option<serde_json::Value>,
+    restart_required: bool,
     initialized_notified: bool,
 }
 
@@ -212,7 +190,9 @@ impl StdioMcpProcess {
             .name("chariox-stdio-mcp-reader".to_string())
             .spawn(move || read_frames(stdout, &reader_name, frame_tx))
         {
-            let _ = child.kill();
+            if child.id() > 1 {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             return Err(DaemonError::LocalTransport {
                 operation: "mcp.proxy.stdio.spawn",
@@ -228,7 +208,10 @@ impl StdioMcpProcess {
             stdin,
             frames: frame_rx,
             request_timeout: Duration::from_secs(backing.tool_timeout_sec.unwrap_or(30).max(1)),
+            backing: backing.clone(),
+            initialize_request: None,
             initialize_response: None,
+            restart_required: false,
             initialized_notified: false,
         })
     }
@@ -247,13 +230,27 @@ impl StdioMcpProcess {
         &mut self,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, DaemonError> {
-        if self.is_exited()? {
-            return Err(DaemonError::LocalTransport {
-                operation: "mcp.proxy.stdio.exited",
-                message: format!("stdio MCP `{}` exited", self.name),
-            });
-        }
         let method = payload.get("method").and_then(serde_json::Value::as_str);
+        // MP-08 / MP-10: provider clients keep their established HTTP MCP
+        // connection across a failed stdio request. A replacement child must
+        // restore that handshake before accepting the next tool request.
+        if self.restart_required || self.is_exited()? {
+            let initialize = self.initialize_request.clone();
+            let notified = self.initialized_notified;
+            let backing = self.backing.clone();
+            *self = Self::spawn(&backing)?;
+            if method != Some("initialize") {
+                if let Some(initialize) = initialize {
+                    self.dispatch(initialize)?;
+                    if notified {
+                        self.dispatch(serde_json::json!({
+                            "jsonrpc": "2.0", "method": "notifications/initialized"
+                        }))?;
+                    }
+                }
+            }
+        }
+
         if method == Some("initialize") {
             if let Some(response) = &self.initialize_response {
                 let mut response = response.clone();
@@ -262,7 +259,17 @@ impl StdioMcpProcess {
                 }
                 return Ok(response);
             }
+            self.initialize_request = Some(payload.clone());
             let response = self.send_request(payload)?;
+            if response.get("result").is_some() {
+                // The proxy is the backing server's MCP client. Complete its
+                // handshake even when the HTTP front end acknowledges the
+                // provider's initialized notification without forwarding it.
+                self.write_frame(&serde_json::json!({
+                    "jsonrpc": "2.0", "method": "notifications/initialized"
+                }))?;
+                self.initialized_notified = true;
+            }
             self.initialize_response = Some(response.clone());
             return Ok(response);
         }
@@ -281,6 +288,21 @@ impl StdioMcpProcess {
     }
 
     fn send_request(
+        &mut self,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let response = self.send_request_inner(payload);
+        if response.is_err() {
+            self.restart_required = true;
+            if self.child.id() > 1 {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+        }
+        response
+    }
+
+    fn send_request_inner(
         &mut self,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, DaemonError> {
@@ -346,7 +368,9 @@ impl StdioMcpProcess {
     }
 
     fn request_timeout_error(&mut self) -> Result<serde_json::Value, DaemonError> {
-        let _ = self.child.kill();
+        if self.child.id() > 1 {
+            let _ = self.child.kill();
+        }
         let _ = self.child.wait();
         Err(DaemonError::LocalTransport {
             operation: "mcp.proxy.stdio.timeout",
@@ -376,7 +400,9 @@ impl StdioMcpProcess {
 
 impl Drop for StdioMcpProcess {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        if self.child.id() > 1 {
+            let _ = self.child.kill();
+        }
         let _ = self.child.wait();
     }
 }

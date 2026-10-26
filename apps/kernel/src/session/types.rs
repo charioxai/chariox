@@ -8,6 +8,7 @@ pub use super::prompt_queue::{
 pub(crate) use super::prompt_queue::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub use super::queued_metaagent_task::QueuedMetaagentTask;
 pub use super::runtime_interactions::{
+    HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionKind,
     RuntimeInteractionLevel, RuntimeInteractionSubject, RuntimeProviderLogin,
@@ -69,7 +70,7 @@ pub const DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS: u32 = 1024;
 pub const DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES: u32 = 1_048_576;
 pub const DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES: u32 = 4_194_304;
 pub const DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS: u64 = 30_000;
-pub const DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES: u64 = 268_435_456;
+pub const DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES: u64 = 268_443_456;
 pub const DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT: usize = 128;
 
 pub fn unix_epoch_ms() -> u64 {

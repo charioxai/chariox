@@ -139,5 +139,5 @@ export function formatWorkflowRunSummary(workflowRun: WorkflowRun): string {
   const failureSummary = (workflowRun.failure_events?.length ?? 0) > 0
     ? `, failures ${workflowRun.failure_events?.length ?? 0}`
     : ""
-  return `${workflowRun.id} [${String(workflowRun.status).toLowerCase()}${failureSummary}]`
+  return `${workflowRun.id} [${String(workflowRun.status).toLowerCase()}${failureSummary}]${workflowRun.created_before_ownership_tracking ? " · Created before ownership tracking · read-only" : ""}`
 }

@@ -306,3 +306,251 @@ async fn app_host_take_cannot_settle_a_different_kernel_subject_with_the_same_id
         .unwrap();
     assert_eq!(receiver.await.unwrap().status, "timed_out");
 }
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+fn detached_view(router: &CommandRouter) {
+    router
+        .runtime_state
+        .app_control()
+        .user_views()
+        .open(
+            "alice",
+            crate::runtime::app_views::AppViewBinding {
+                owner: "alice".into(),
+                installation: "docs".into(),
+                generation: 3,
+                logical_tab: None,
+                panel: Default::default(),
+            },
+            "fixture",
+        )
+        .unwrap();
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test]
+async fn detached_host_offers_accept_clipboard_and_link_once_without_generic_answer_authority() {
+    let (router, room, store) = setup();
+    detached_view(&router);
+    for (id, action) in [
+        (
+            "detached-copy",
+            AppHostAction::ClipboardWrite {
+                text: "copy fixture".into(),
+            },
+        ),
+        (
+            "detached-link",
+            AppHostAction::OpenLink {
+                url: "https://example.invalid/fixture".into(),
+            },
+        ),
+    ] {
+        store
+            .app_host_action(HostActionCommand::Create(HostOffer {
+                operation_id: id.into(),
+                owner: "alice".into(),
+                installation: "docs".into(),
+                generation: 3,
+                action: action.clone(),
+                expires_ms: crate::session::unix_epoch_ms() + OFFER_MS,
+            }))
+            .unwrap();
+        router
+            .runtime_state
+            .app_host_action_pass(crate::session::unix_epoch_ms())
+            .await;
+        assert!(router
+            .runtime_state
+            .session_snapshot(&room)
+            .await
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+        let interaction = format!("app_host_{id}");
+        assert!(router
+            .runtime_state
+            .resolve_terminal_runtime_interaction(
+                "",
+                &interaction,
+                "accept_host_action",
+                None,
+                Some("alice")
+            )
+            .await
+            .is_err());
+        assert!(matches!(
+            accept(
+                &router,
+                "",
+                id,
+                "bob",
+                KernelCommandSource::LocalIpc,
+                KernelCallerKind::LocalClient
+            )
+            .await,
+            LocalDaemonResponse::AppRequestFailed { .. }
+        ));
+        assert!(matches!(
+            accept(
+                &router,
+                &room,
+                id,
+                "alice",
+                KernelCommandSource::LocalIpc,
+                KernelCallerKind::LocalClient
+            )
+            .await,
+            LocalDaemonResponse::AppRequestFailed { .. }
+        ));
+        assert_eq!(
+            accept(
+                &router,
+                "",
+                id,
+                "alice",
+                KernelCommandSource::LocalIpc,
+                KernelCallerKind::LocalClient
+            )
+            .await,
+            LocalDaemonResponse::AppHostActionAccepted {
+                operation_id: id.into(),
+                action,
+            }
+        );
+        assert!(matches!(
+            accept(
+                &router,
+                "",
+                id,
+                "alice",
+                KernelCommandSource::RelayClient,
+                KernelCallerKind::RemoteClient
+            )
+            .await,
+            LocalDaemonResponse::AppRequestFailed { .. }
+        ));
+    }
+}
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+#[tokio::test]
+async fn detached_host_decline_and_accept_arbitrate_before_one_use_payload_delivery() {
+    let (router, _, store) = setup();
+    detached_view(&router);
+    offer(
+        &store,
+        "detached-declined",
+        crate::session::unix_epoch_ms() + OFFER_MS,
+    );
+    router
+        .runtime_state
+        .app_host_action_pass(crate::session::unix_epoch_ms())
+        .await;
+    router
+        .runtime_state
+        .resolve_terminal_runtime_interaction(
+            "",
+            "app_host_detached-declined",
+            "decline",
+            None,
+            Some("alice"),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        accept(
+            &router,
+            "",
+            "detached-declined",
+            "alice",
+            KernelCommandSource::LocalIpc,
+            KernelCallerKind::LocalClient
+        )
+        .await,
+        LocalDaemonResponse::AppRequestFailed { .. }
+    ));
+    offer(
+        &store,
+        "detached-race",
+        crate::session::unix_epoch_ms() + OFFER_MS,
+    );
+    router
+        .runtime_state
+        .app_host_action_pass(crate::session::unix_epoch_ms())
+        .await;
+    // Decline arbitrates immediately but updates durable state asynchronously.
+    // The pump shows only the oldest pending offer for an installation, so
+    // advance it until the terminal can actually see the next offer.
+    let subscription =
+        LocalDaemonRequest::SubscribeUserAppViews(crate::local::SubscribeUserAppViewsRequest {
+            after: None,
+            wait_ms: 0,
+        });
+    let mut observer =
+        KernelCommand::from_local_request("observe-host-offer", None, None, &subscription);
+    observer.source = KernelCommandSource::LocalIpc;
+    observer.caller.caller_kind = KernelCallerKind::LocalClient;
+    observer.caller.user_id = Some("alice".into());
+    observer.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            router
+                .runtime_state
+                .app_host_action_pass(crate::session::unix_epoch_ms())
+                .await;
+            let reply = router
+                .runtime_state
+                .execute_user_app_view_request(&observer, &subscription)
+                .await
+                .unwrap()
+                .unwrap();
+            let LocalDaemonResponse::UserAppViewsChanged { interactions, .. } = reply else {
+                panic!("expected owner decision projection");
+            };
+            if interactions
+                .iter()
+                .any(|interaction| interaction.id() == "app_host_detached-race")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("detached offer must be projected before racing replies");
+    let (taken, declined) = tokio::join!(
+        accept(
+            &router,
+            "",
+            "detached-race",
+            "alice",
+            KernelCommandSource::LocalIpc,
+            KernelCallerKind::LocalClient
+        ),
+        router.runtime_state.resolve_terminal_runtime_interaction(
+            "",
+            "app_host_detached-race",
+            "decline",
+            None,
+            Some("alice")
+        ),
+    );
+    assert_eq!(
+        matches!(taken, LocalDaemonResponse::AppHostActionAccepted { .. }),
+        declined.is_err(),
+        "take result: {taken:?}; decline result: {declined:?}"
+    );
+    assert!(matches!(
+        accept(
+            &router,
+            "",
+            "detached-race",
+            "alice",
+            KernelCommandSource::LocalIpc,
+            KernelCallerKind::LocalClient
+        )
+        .await,
+        LocalDaemonResponse::AppRequestFailed { .. }
+    ));
+}

@@ -35,7 +35,6 @@ export function createKernelRestartRecoveryController<TSession, TAttachment>(
     !options.isClosing()
     && options.isAttached()
     && options.getSessionId() === sessionId
-    && options.isDisconnected()
   )
 
   return {
@@ -45,10 +44,12 @@ export function createKernelRestartRecoveryController<TSession, TAttachment>(
       }
 
       const sessionId = options.getSessionId()
-      if (!options.isAttached() || !sessionId) {
+      if (!options.isAttached() || !sessionId || !options.isDisconnected()) {
         return null
       }
 
+      // MP-08/MP-10: healthy control traffic does not repair an event binding.
+      // Once admitted, finish this session's repair unless it closes or changes.
       inFlight = (async () => {
         let delayMs = initialDelayMs
         while (stillRecoveringSession(sessionId)) {

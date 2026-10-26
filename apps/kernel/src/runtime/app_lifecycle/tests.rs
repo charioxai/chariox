@@ -79,7 +79,8 @@ fn wait(mut predicate: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
-fn stage(store: &DurableKernelStateStore) {
+/// Stages the fixture App release so its catalog can be listed or started.
+pub(crate) fn stage(store: &DurableKernelStateStore) {
     let (bytes, publisher) = fixture_event_package();
     let verified = verify(
         &bytes,
@@ -117,6 +118,15 @@ fn make_control(
 }
 
 impl AppLifecycleService {
+    /// MP-08/MP-11: hold a real cold start before callable publication.
+    pub(crate) fn fixture_before_publication(&self, observe: Arc<dyn Fn() + Send + Sync>) {
+        *self.0.start_checkpoint.lock().unwrap() = Some(Arc::new(move |at| {
+            if at == StartCheckpoint::BeforePublication {
+                observe();
+            }
+        }));
+    }
+
     /// Reproduce a catalog retained when an idle App's startup fails.
     pub(crate) fn fixture_dormant_catalog(&self) {
         let catalog = self
@@ -133,14 +143,33 @@ impl AppLifecycleService {
     }
 
     /// Native inbox fixture, on the same owner/registration/health path.
+    pub(crate) fn fixture_inbox_automation_workers(&self) -> Arc<Mutex<Vec<Observation>>> {
+        self.fixture_inbox_workers_with_mode(
+            chariox_app_runtime::worker_process::test_fixture::Mode::LifecycleInboxAutomation,
+        )
+    }
+
     pub(crate) fn fixture_inbox_workers(&self) -> Arc<Mutex<Vec<Observation>>> {
+        self.fixture_inbox_workers_with_mode(
+            chariox_app_runtime::worker_process::test_fixture::Mode::LifecycleInbox,
+        )
+    }
+
+    /// Release the native fixture scratch before a deadlocked-writer subprocess exits.
+    pub(crate) fn fixture_clear_workers(&self) {
+        assert!(self.0.stopped.load(Ordering::Acquire));
+        self.0.fixture.lock().unwrap().take();
+    }
+
+    pub(crate) fn fixture_inbox_workers_with_mode(
+        &self,
+        mode: chariox_app_runtime::worker_process::test_fixture::Mode,
+    ) -> Arc<Mutex<Vec<Observation>>> {
         let observations = Arc::new(Mutex::new(Vec::new()));
         *self.0.fixture.lock().unwrap() = Some(start::FixturePlatform {
             native: Arc::new(NativeFixture::compile().unwrap()),
             fail_health: false,
-            lifecycle: Some(
-                chariox_app_runtime::worker_process::test_fixture::Mode::LifecycleInbox,
-            ),
+            lifecycle: Some(mode),
             fail_migration: false,
             stop_after_commit: false,
             observations: observations.clone(),
@@ -237,7 +266,6 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
             .desired_running
     );
     drop(old);
-    drop(service);
     drop(control);
     drop(executor);
     drop(store);

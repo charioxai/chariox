@@ -107,28 +107,6 @@ impl KernelRuntimeState {
         }])
     }
 
-    /// The active App route that already claims `event_interest_key` in
-    /// `environment_id` under another binding. The event service keeps only
-    /// one route per interest.
-    pub(crate) fn event_interest_claimed_by(
-        &self,
-        kernel_id: &str,
-        environment_id: &str,
-        binding_id: &str,
-        event_interest_key: &str,
-    ) -> Result<Option<String>, String> {
-        Ok(self
-            .event_delivery_resumes(kernel_id, environment_id)?
-            .into_iter()
-            .flat_map(|resume| resume.routes)
-            .find(|claim| {
-                claim.active
-                    && claim.event_interest_key == event_interest_key
-                    && claim.binding_id != binding_id
-            })
-            .map(|claim| claim.binding_id))
-    }
-
     /// An App route has no status to mark; its owner sees no deliveries, and
     /// the log names the route that holds the interest.
     pub(crate) fn apply_event_route_conflicts(
@@ -272,6 +250,23 @@ fn app_route_claim(
     })
 }
 
+/// An occurrence no retry can deliver: logged, then acknowledged.
+fn refused(
+    delivery: &chariox_event_protocol::EventDeliveryEnvelope,
+    reason: &str,
+) -> Result<(), String> {
+    crate::logging::warn_with_fields(
+        "daemon.event_delivery",
+        "event delivery refused",
+        serde_json::json!({
+            "delivery_id": delivery.delivery_id,
+            "binding_id": delivery.binding_id,
+            "reason": reason,
+        }),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,21 +347,6 @@ mod tests {
         );
         assert_eq!(routes[0].event_interest_key, claim.event_interest_key);
         assert_eq!(runtime.active_app_route_count(), 1);
-        // A second route for the same interest is told which route holds it;
-        // the route itself is not a conflict with itself.
-        let key = claim.event_interest_key.as_str();
-        assert_eq!(
-            runtime
-                .event_interest_claimed_by("kernel-1", "default", "app-route-other", key)
-                .unwrap(),
-            Some(binding_id.clone())
-        );
-        assert_eq!(
-            runtime
-                .event_interest_claimed_by("kernel-1", "default", &binding_id, key)
-                .unwrap(),
-            None
-        );
         // A delivery that can never land (unknown route, wrong event type, a
         // retired direct workflow binding) is acknowledged, not retried
         // forever; the App is never reached.
@@ -399,21 +379,4 @@ mod tests {
         .unwrap();
         assert_eq!(accepted, (Ok(()), Ok(()), Ok(())));
     }
-}
-
-/// An occurrence no retry can deliver: logged, then acknowledged.
-fn refused(
-    delivery: &chariox_event_protocol::EventDeliveryEnvelope,
-    reason: &str,
-) -> Result<(), String> {
-    crate::logging::warn_with_fields(
-        "daemon.event_delivery",
-        "event delivery refused",
-        serde_json::json!({
-            "delivery_id": delivery.delivery_id,
-            "binding_id": delivery.binding_id,
-            "reason": reason,
-        }),
-    );
-    Ok(())
 }

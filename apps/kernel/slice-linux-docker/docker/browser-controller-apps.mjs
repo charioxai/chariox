@@ -1,3 +1,4 @@
+import { installAppDrafts } from "./browser-app-drafts.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -87,6 +88,7 @@ const BRIDGE_SOURCE = `(() => {
       get() { return request("chariox.panel", {}); },
     }),
   }) });
+  (${installAppDrafts.toString()})();
 })();`;
 
 function invalid(message) {
@@ -119,6 +121,19 @@ function assets(raw, entry) {
 }
 
 export class AppTabs {
+  // MP-08/MP-10/MP-11: only managed App pages have draft state. Finish a
+  // captured edit's disk commit before showing it as recoverable to viewers.
+  async flushDrafts(targetId) {
+    const entry = [...this.apps].find(([, app]) => app.targetId === targetId);
+    if (!entry) return;
+    const [sessionId] = entry;
+    const reply = await this.connection.send('Runtime.evaluate', {
+      expression: 'globalThis.__charioxAppDraftFlushed?.() ?? true', awaitPromise: true, returnByValue: true,
+    }, sessionId);
+    if (reply.exceptionDetails || reply.result?.value !== true) throw new Error('App draft commit unavailable');
+    return true;
+  }
+
   constructor(browser, { restoreGraceMs = 30_000 } = {}) {
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
@@ -135,27 +150,56 @@ export class AppTabs {
     this.orphanRestores = new Map();
   }
 
+  // MP-08/MP-10/MP-11: who an App Tab's calls run as comes only from input
+  // the kernel dispatched into that Tab, never from the page: App code can
+  // rewrite anything in its realm, and its timers, browser-generated events
+  // (scroll, focus, load) and own navigations can outlive the input that
+  // caused them by any delay. So once an agent drove the Tab, through any of
+  // its documents, no call from it is the person's: with one such agent every
+  // call runs as that agent (a person's own click there acts with no more than
+  // the agent's grants), with several the call is refused. A Tab no agent
+  // drove is the person's. Closing the App view ends this; a new Tab starts clean.
+  noteAgent(targetId, agent) {
+    const app = [...this.apps.values()].find(open => open.targetId === targetId);
+    app?.agents.add(agent);
+  }
+
+  // undefined: the person; null: unknown, refused.
+  callActor(app) {
+    if (!app.agents.size) return undefined;
+    return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
+  }
+
   async open(params) {
     const origin = appOrigin(params?.origin_label);
     if (typeof params?.installation_id !== "string" || !params.installation_id) throw invalid("missing installation");
+    if (params.instance_id != null && (typeof params.instance_id !== "string"
+      || !/^[a-zA-Z0-9_-]{1,128}$/.test(params.instance_id))) throw invalid("invalid App instance");
+    const instanceId = params.instance_id ?? null;
     const entry = params.entry ?? "index.html";
-    const app = { installation: params.installation_id, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
+    const app = { installation: params.installation_id, instanceId, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
     // One shared App Tab per Room and installation: opening it again (another
     // terminal, or a kernel that restarted) shows that Tab with the current
-    // assets instead of a second one.
-    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin);
+    // assets instead of a second one. User-domain instance keys keep distinct tabs.
+    const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
+      const changed = open.entry !== entry || open.assets.size !== app.assets.size
+        || [...app.assets].some(([name, value]) => open.assets.get(name)?.contentType !== value.contentType || open.assets.get(name)?.body !== value.body);
       Object.assign(open, { entry, assets: app.assets, page: app.page });
+      if (changed) open.ready = false;
       const metrics = this.browser.appMetrics?.(open.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId).catch(() => {});
       await connection.send("Target.activateTarget", { targetId: open.targetId });
       await this.fullscreen(connection, open.targetId).catch(() => false);
-      // Navigate (not reload): it returns once the document commits, so the
-      // Room projects the Tab's URL rather than the empty one of a reload.
-      await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+      // MP-08/MP-10: an unchanged Open only focuses the existing editor.
+      // Verified asset changes still navigate and retire the old document.
+      if (changed) {
+        await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+        open.ready = true;
+      }
       return { target_id: open.targetId, origin };
     }
     // Each App view gets its own fullscreen window, so page and desktop
@@ -164,12 +208,15 @@ export class AppTabs {
     // A restored placeholder has no App script or authority. Only an Open
     // with kernel-verified assets can adopt it, matching the exact origin.
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
-    const restored = targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin);
+    const restored = instanceId === null
+      ? targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin)
+      : undefined;
     const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set() });
+    const opening = { ...app, targetId, document: null, pending: new Set(), agents: new Set(), ready: false };
+    this.apps.set(sessionId, opening);
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
@@ -179,12 +226,25 @@ export class AppTabs {
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
       await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: BRIDGE_SOURCE }, sessionId);
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+      opening.ready = true;
     } catch (error) {
       this.apps.delete(sessionId);
       await this.browser.closePageTarget(connection, targetId).catch(() => {});
       throw error;
     }
     return { target_id: targetId, origin };
+  }
+
+  async close(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    await this.browser.closePageTarget(this.connection, app.targetId);
+    this.apps.delete(sessionId);
+    this.calls = this.calls.filter(call => call.target_id !== app.targetId);
+    this.wakeCalls();
+    return { closed: true };
   }
 
   // An update (or a kernel restart) rebinds an open view: serve the current
@@ -295,11 +355,18 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
+    // Attribute at binding time, before any await can admit other input.
+    const actor = this.callActor(app);
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
+    if (actor === null) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_ACTOR_UNKNOWN",
+        message: "More than one agent drove this App Tab: close the App view and open it again" });
+      return;
+    }
     if (this.calls.length >= MAX_PENDING_CALLS) {
       await this.resolve(sessionId, call.id, false, { code: "APP_BUSY",
         message: `App view call queue is full (${MAX_PENDING_CALLS} pending calls); retry after 500 ms` });
@@ -310,7 +377,7 @@ export class AppTabs {
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
       document_id: documentId, call_id: call.id,
-      method: call.method, params: call.params ?? {} });
+      method: call.method, params: call.params ?? {}, ...(actor ? { actor } : {}) });
     this.wakeCalls();
   }
 
@@ -418,8 +485,8 @@ export class AppTabs {
 
   // Keep the existing RPC and batch shape. Enqueue wakes an outstanding drain;
   // the bounded timeout still projects closed targets and maintains windows.
-  async waitForCalls() {
-    if (this.calls.length || !this.apps.size) return;
+  async waitForCalls(eligible) {
+    if (this.calls.some(eligible) || !this.apps.size) return;
     await new Promise((resolve) => {
       const wake = () => {
         clearTimeout(timer);
@@ -431,14 +498,19 @@ export class AppTabs {
     });
   }
 
-  async takeCalls() {
+  async takeCalls(params = {}) {
+    // MP-08/MP-11: only drain targets whose kernel binding was published.
+    // An existing owner's idle drain may wake while another Open is in flight.
+    const targets = params.target_ids == null ? null : new Set(params.target_ids);
+    const eligible = call => targets === null || targets.has(call.target_id);
     await this.reconcile();
-    await this.waitForCalls();
+    await this.waitForCalls(eligible);
     // A call whose Tab closed or moved to another document is not run.
     const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
-    const calls = this.calls.filter((call) => current.has(call.target_id)
+    const currentCalls = this.calls.filter((call) => current.has(call.target_id)
       && (call.document_id == null || current.get(call.target_id) == null || call.document_id === current.get(call.target_id)));
-    this.calls = [];
+    const calls = currentCalls.filter(eligible);
+    this.calls = currentCalls.filter(call => !eligible(call));
     // Keep App windows fullscreen (someone may press Esc), so the panel beside
     // each page covers exactly the desktop the page leaves free.
     this.maintainFullscreen();

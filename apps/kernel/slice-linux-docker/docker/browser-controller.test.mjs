@@ -681,3 +681,10 @@ test("stdio controller stays private to its owning process and shuts down cleanl
   });
   assert.deepEqual(exit, { code: 0, signal: null });
 });
+
+test('MP-08/MP-11 protected shared Room binary packets are not text-redacted after capture',async()=>{
+ const packet={generation:1,display_frame:{subscription_id:'room-display-one',sequence:1,kind:'video',data_base64:Buffer.from('secret').toString('base64')}};
+ const browser={protectedValues:new Set(['secret']),roomComputer:{},roomDisplay:{async request(){return packet}}};
+ const result=await handleBrowserControllerRequest({id:1,method:'room.display',params:{op:'screenshot'}},{browser});
+ assert.deepEqual(result,{id:1,ok:true,result:packet},'the shared protected source owns pixel masking; text scrubbing corrupts compressed bytes');
+});

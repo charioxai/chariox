@@ -1,5 +1,555 @@
 use super::*;
 
+#[tokio::test]
+async fn panes_stream_ready_structured_output_survives_an_unrelated_app_lock() {
+    // MP-08 / MP-10: a slow inventory/maintenance request must not hold an
+    // already-read official-provider batch before its terminal record exists.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-app-lock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-lock-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-app-lock",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-lock-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("text-1".into()),
+                    bytes: b"CHECK:".to_vec(),
+                }],
+                ..Default::default()
+            })),
+        );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let runtime_for_watch = runtime.clone();
+    let terminal = runtime.owned.terminal_stream.clone();
+    let before = terminal.attachment_change_sequence(session.id(), attachment.id());
+    let cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().to_string(),
+    };
+    let held = app.lock().await;
+    let session_id = session.id().to_string();
+    let run_id = run.id().to_string();
+    let recipient = attachment.id().to_string();
+    let pump = tokio::spawn(async move {
+        runtime
+            .pump_owned_provider_output(&session_id, &run_id, vec![recipient], false)
+            .await
+    });
+    let ready = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+        while terminal.attachment_change_sequence(session.id(), attachment.id()) == before {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    let delivered = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        runtime_for_watch.watch_relay_subscription_state(
+            session.id(),
+            attachment.id(),
+            false,
+            None,
+            0,
+        ),
+    )
+    .await;
+    drop(held);
+    let records = pump.await.unwrap().unwrap();
+    drop(cleanup);
+    assert!(records.iter().any(|record| record.bytes == b"CHECK:"));
+    assert!(
+        ready.is_ok(),
+        "ready provider output waited for an unrelated app lock"
+    );
+    assert!(
+        matches!(delivered,
+            Ok(crate::runtime_transport::WatchResult::Ok { records, .. })
+                if records.iter().any(|record| record.bytes == b"CHECK:")
+        ),
+        "terminal subscriber waited for an unrelated app lock after the record was ready"
+    );
+}
+
+#[tokio::test]
+async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
+    // MP-08 / MP-10: ready-output jobs share a task. A synchronous history
+    // wait must not stop that task from delivering an already-published record.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-history-lock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-history-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-history-lock",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-history-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("text-1".into()),
+                    bytes: b"CHECK:".to_vec(),
+                }],
+                ..Default::default()
+            })),
+        );
+    let history_store = app.history_store();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let append_lock = runtime.owned.transcript_history_append_lock.clone();
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let holder = std::thread::spawn(move || {
+        let _held = append_lock.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(350));
+    });
+    locked_rx.await.unwrap();
+    let started = std::time::Instant::now();
+    let terminal = runtime.owned.terminal_stream.clone();
+    let before = terminal.attachment_change_sequence(session.id(), attachment.id());
+    let cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().to_string(),
+    };
+    let (output, delivery_ms) = tokio::join!(
+        runtime.pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            false,
+        ),
+        async {
+            while terminal.attachment_change_sequence(session.id(), attachment.id()) == before {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            let delivered = runtime
+                .watch_relay_subscription_state(session.id(), attachment.id(), false, None, 0)
+                .await;
+            assert!(matches!(delivered,
+                crate::runtime_transport::WatchResult::Ok { records, .. }
+                    if records.iter().any(|record| record.bytes == b"CHECK:")
+            ));
+            started.elapsed().as_millis()
+        },
+    );
+    // MP-08 / MP-10: an attaching client must not read history before an
+    // already-published asynchronous write becomes durable.
+    let history_runtime = runtime.clone();
+    let history_session = session.id().to_string();
+    let history_agent = agent.id().to_string();
+    let reading = tokio::spawn(async move {
+        crate::runtime::history_executor::execute_history_request(
+            history_store,
+            history_runtime.owned.operational_history_store.clone(),
+            &history_runtime,
+            &history_runtime.owned.config_projection,
+            crate::local::LocalDaemonRequest::GetSessionHistoryOutline(
+                crate::local::GetSessionHistoryOutlineRequest {
+                    session_id: history_session,
+                    agent_ids: Some(vec![history_agent]),
+                    latest_prompt_count: Some(4),
+                    cursor: None,
+                    include_prefetched_content: true,
+                },
+            ),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let read_waited = !reading.is_finished();
+    holder.join().unwrap();
+    reading.await.unwrap().unwrap();
+    assert!(
+        read_waited,
+        "MP-08 / MP-10: initial history raced a published pending write"
+    );
+    drop(cleanup);
+    assert!(output
+        .unwrap()
+        .iter()
+        .any(|record| record.bytes == b"CHECK:"));
+    assert!(
+        delivery_ms < 150,
+        "MP-08 / MP-10: ready terminal record waited {delivery_ms} ms for history persistence"
+    );
+}
+
+#[tokio::test]
+async fn panes_stream_history_handoff_keeps_the_published_turn_identity() {
+    // MP-08 / MP-10: cancellation or replacement during the blocking handoff
+    // must not attribute the previous output to the replacement prompt.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-history-turn");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let run_id = "panes-stream-history-turn-run";
+    runtime
+        .owned
+        .active_turns
+        .start(crate::app::ActiveTurnState::new(
+            session.id().into(),
+            agent.id().into(),
+            "published-prompt".into(),
+            run_id.into(),
+        ));
+    let prepared = runtime.owned.prepare_history_entries(
+        session.id(),
+        vec![crate::history::SessionHistoryEntry::provider_output(
+            session.id(),
+            run_id,
+            Some(agent.id()),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("published-text".into()),
+            "published before replacement",
+        )],
+    );
+    runtime
+        .owned
+        .active_turns
+        .start(crate::app::ActiveTurnState::new(
+            session.id().into(),
+            agent.id().into(),
+            "replacement-prompt".into(),
+            run_id.into(),
+        ));
+    let history_owned = runtime.owned.clone();
+    tokio::task::spawn_blocking(move || {
+        history_owned.append_prepared_history_entries(prepared);
+    })
+    .await
+    .unwrap();
+    let events = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .unwrap();
+    let event = events
+        .iter()
+        .find(|event| event.content.as_deref() == Some("published before replacement"))
+        .unwrap();
+    assert_eq!(event.prompt_id.as_deref(), Some("published-prompt"));
+    assert_ne!(event.prompt_id.as_deref(), Some("replacement-prompt"));
+}
+
+#[tokio::test]
+async fn panes_stream_next_ready_batch_does_not_wait_for_previous_history_ack() {
+    // MP-08 / MP-10: first words may span batches. Busy persistence must not
+    // freeze the second batch; completion still waits for both history writes.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-history-two-batches");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-history-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-history-two-batches",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-history-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("text-1".into()),
+                    bytes: b"CHECK:".to_vec(),
+                }],
+                ..Default::default()
+            })),
+        );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let append_lock = runtime.owned.transcript_history_append_lock.clone();
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let holder = std::thread::spawn(move || {
+        let _held = append_lock.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(350));
+    });
+    locked_rx.await.unwrap();
+    let started = std::time::Instant::now();
+    let cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
+    let (output, delivery_ms) = tokio::join!(
+        async {
+            let mut records = Vec::new();
+            for bytes in [b"CHECK".as_slice(), b":".as_slice()] {
+                records.extend(
+                    runtime
+                        .apply_owned_structured_output_batch(
+                            session.id(),
+                            run.id(),
+                            vec![attachment.id().into()],
+                            crate::provider::ProviderPromptSignalBatch {
+                                chunks: vec![crate::provider::ProviderPromptChunk {
+                                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                                    merge_key: Some("two-batch-text".into()),
+                                    bytes: bytes.to_vec(),
+                                }],
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+            runtime
+                .apply_owned_structured_output_batch(
+                    session.id(),
+                    run.id(),
+                    vec![attachment.id().into()],
+                    crate::provider::ProviderPromptSignalBatch {
+                        prompt_completed: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            records
+        },
+        async {
+            let mut prefix = Vec::new();
+            loop {
+                if let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
+                    .watch_relay_subscription_state(session.id(), attachment.id(), false, None, 0)
+                    .await
+                {
+                    for record in records {
+                        prefix.extend(record.bytes);
+                    }
+                }
+                if prefix == b"CHECK:" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            started.elapsed().as_millis()
+        },
+    );
+    holder.join().unwrap();
+    assert_eq!(
+        output.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(),
+        b"CHECK:"
+    );
+    let events = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.text.as_str()).collect::<String>(),
+        "CHECK:",
+        "completion must retain both history chunks in order"
+    );
+    drop(cleanup);
+    assert!(
+        delivery_ms < 150,
+        "MP-08 / MP-10: second ready batch waited {delivery_ms} ms for history ack"
+    );
+}
+
+#[tokio::test]
+async fn panes_stream_batch_reaches_an_attachment_registered_after_the_recipient_snapshot() {
+    // MP-08 / MP-10: a view attached while the pump waited for its run lane reads
+    // history that cannot yet contain the batch; it must receive the batch live.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-late-attachment");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let late = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-late-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-late-attachment",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-late-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let _cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
+    // The pump took its recipients before `late` attached.
+    let stale_recipients = Vec::new();
+    let records = runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            stale_recipients,
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("late-text".into()),
+                    bytes: b"LATE".to_vec(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        records
+            .into_iter()
+            .flat_map(|r| r.bytes)
+            .collect::<Vec<_>>(),
+        b"LATE"
+    );
+    let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
+        .watch_relay_subscription_state(session.id(), late.id(), false, None, 0)
+        .await
+    else {
+        panic!("late attachment cannot watch");
+    };
+    assert_eq!(
+        records
+            .into_iter()
+            .flat_map(|r| r.bytes)
+            .collect::<Vec<_>>(),
+        b"LATE"
+    );
+}
+
 #[test]
 fn publication_output_rejects_opencode_model_substitution_before_run_mutation() {
     let request = crate::provider::LaunchProviderRequest::new(
@@ -135,6 +685,9 @@ async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
     app.update_provider_run_projection(run.clone());
     let expected = crate::terminal::TerminalOutputRecord {
         record_id: None,
+        sequence: None,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
         timestamp_ms: 1_000,
         session_id: session.id().to_string(),
         provider_run_id: run.id().to_string(),
@@ -392,6 +945,9 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
     let cloud_owner_user_id = "cloud-owner";
     let mut config = crate::config::DaemonConfig::for_tests();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
         user_id: cloud_owner_user_id.to_string(),
         ..Default::default()
     });
@@ -495,6 +1051,86 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
             .map(|record| record.bytes)
             .collect::<Vec<_>>(),
         vec![b"continued output".to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn leased_run_usage_for_an_unregistered_home_profile_keeps_its_output() {
+    // MP-08/MP-10: a leased worker run carries the home kernel's account
+    // profile, which the worker registry does not contain. This kernel
+    // registers no Claude profile at all.
+    let worktree = crate::test_support::TestWorktree::new("structured-output-leased-usage");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-leased-usage",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "status\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("leased-usage-output".to_string()),
+                    bytes: b"capability loaded".to_vec(),
+                }],
+                account_usage: Some(crate::account_profile::ProviderAccountUsageSnapshot {
+                    profile_id: "default".to_string(),
+                    provider: "claude".to_string(),
+                    availability:
+                        crate::account_profile::ProviderAccountUsageAvailability::Available,
+                    meters: Vec::new(),
+                    observed_at_ms: Some(1_000),
+                    source: "leased-usage-test".to_string(),
+                    management_url: None,
+                }),
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("unregistered usage must not abort the leased output batch");
+    assert_eq!(
+        runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .into_iter()
+            .map(|record| record.bytes)
+            .collect::<Vec<_>>(),
+        vec![b"capability loaded".to_vec()]
     );
 }
 
@@ -643,6 +1279,7 @@ async fn structured_output_and_completion_fanout_respect_collaborator_trace_visi
                 agent_id: Some(agent.id().to_string()),
                 kind: crate::terminal::TerminalOutputKind::ProviderTerminal,
                 merge_key: Some("collaborator-raw-terminal".to_string()),
+                sequence: None,
                 bytes: b"raw terminal paint".to_vec(),
             },
         ],
@@ -816,6 +1453,14 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
         .await
         .expect("structured output batch should be accepted");
     assert_eq!(records.len(), 2);
+    runtime.flush_provider_history(run.id()).await.unwrap();
+    for record in &records {
+        assert_eq!(
+            record.prompt_id.as_deref(),
+            Some(active_prompt.id()),
+            "live provider chunks must identify their kernel-owned prompt"
+        );
+    }
 
     let events = runtime
         .owned
@@ -846,6 +1491,44 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
             Some("trace-structured-history-turn".to_string()),
             Some("trace-structured-history-turn".to_string())
         ]
+    );
+    // MP-08 / MP-10 (panes R5): each live record carries the sequence of the
+    // history row it was stored as, so clients order live and hydrated rows by
+    // one key.
+    let history_sequences = ["structured-history-turn-1", "structured-history-turn-2"]
+        .into_iter()
+        .map(|merge_key| {
+            events
+                .iter()
+                .find(|event| {
+                    event
+                        .metadata
+                        .get("merge_key")
+                        .and_then(|value| value.as_str())
+                        == Some(merge_key)
+                })
+                .map(|event| event.sequence)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        history_sequences
+    );
+    assert!(history_sequences[0] < history_sequences[1]);
+    // The per-attachment copies clients receive keep it too.
+    assert_eq!(
+        runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .iter()
+            .filter(|record| record.kind != crate::terminal::TerminalOutputKind::PromptEcho)
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        history_sequences
     );
 }
 
@@ -1140,4 +1823,198 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
         "transient terminal paint must stay out of semantic history"
     );
     let _ = app.pty_mut().remove_process(run.id());
+}
+
+// MP-08 / MP-10 / MP-11: observed account usage is advisory, so a leased run's
+// home account never has to be registered on the worker.
+#[tokio::test]
+async fn leased_output_usage_does_not_require_a_worker_account_registration() {
+    for leased in [false, true] {
+        let worktree = crate::test_support::TestWorktree::new("leased-output-usage");
+        let mut app =
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .expect("session");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-p",
+            "home-claude-only",
+            "haiku",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-leased-usage",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "leased-usage-test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.update_provider_run_projection(run.clone());
+        if leased {
+            app.mark_leased_provider_run(run.id());
+        }
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let batch = crate::provider::ProviderPromptSignalBatch {
+            account_usage: Some(
+                crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+                    "home-claude-only",
+                    "claude",
+                ),
+            ),
+            resolved_resume_state: Some(
+                crate::provider::ProviderResumeState::from_claude_session_id("worker-native"),
+            ),
+            ..Default::default()
+        };
+        let result = runtime
+            .apply_owned_structured_output_batch(session.id(), run.id(), Vec::new(), batch)
+            .await;
+        // Observed usage is advisory metadata: an unregistered profile never
+        // drops the run's native output, leased or ordinary.
+        result.expect("unregistered account usage must not prevent native output or settlement");
+        let run = runtime.owned.provider_store.get_run(run.id()).expect("run");
+        assert_eq!(
+            run.resume_state().claude_session_id(),
+            Some("worker-native"),
+            "leased: {leased}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn panes_stream_maintenance_cannot_strand_a_ready_sibling() {
+    // MP-08 / MP-10: A waits for its lane while B has one finished poll and
+    // emits nothing else. Maintenance must leave both signals to the scheduler.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-maintenance-sibling");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let second_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "opencode",
+        ))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "sibling-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut run_ids = Vec::new();
+    for (id, agent) in [("a-blocked", first_agent), ("b-ready", second_agent)] {
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "opencode-go/gpt-6-luna",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "panes-stream-sibling-fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("http://127.0.0.1:1".into()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.update_provider_run_projection(run.clone());
+        spawn_inert_pty_for_run(&mut app, id);
+        app.structured_output_record_store()
+            .mark_poll_enqueued(id, None);
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                id.into(),
+                Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                    chunks: vec![crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some(id.into()),
+                        bytes: id.as_bytes().to_vec(),
+                    }],
+                    ..Default::default()
+                })),
+            );
+        run_ids.push(id.to_string());
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let cleanups = run_ids
+        .iter()
+        .map(|id| InertPtyCleanup {
+            app: app.clone(),
+            provider_run_id: id.clone(),
+        })
+        .collect::<Vec<_>>();
+    // Keep GC outside this scheduler test and explicitly block only A.
+    runtime
+        .owned
+        .next_provider_process_gc_at_ms
+        .store(u64::MAX, std::sync::atomic::Ordering::Release);
+    let held = runtime.provider_runtime_lanes.acquire("a-blocked").await;
+    let acquire = runtime
+        .provider_runtime_lanes
+        .notify_on_next_acquire_for_tests("a-blocked");
+    let maintenance_runtime = runtime.clone();
+    let mut maintenance =
+        tokio::spawn(async move { maintenance_runtime.pump_transport_runtime().await });
+    // On the base, maintenance claims the ready set and blocks on A. With
+    // sole ownership, maintenance finishes without touching either signal.
+    let maintenance_finished = tokio::select! {
+        _ = acquire.notified() => false,
+        result = &mut maintenance => { result.unwrap(); true },
+        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => panic!("maintenance did not reach readiness seam"),
+    };
+    let pump_runtime = runtime.clone();
+    let pump = tokio::spawn(async move { pump_runtime.run_provider_output_pump().await });
+    let delivered = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+        loop {
+            if let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
+                .watch_relay_subscription_state(session.id(), attachment.id(), false, None, 0)
+                .await
+            {
+                if records.iter().any(|record| record.bytes == b"b-ready") {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    pump.abort();
+    let _ = pump.await;
+    if !maintenance_finished {
+        maintenance.abort();
+        let _ = maintenance.await;
+    }
+    drop(held);
+    drop(cleanups);
+    assert!(
+        delivered.is_ok(),
+        "MP-08 / MP-10 maintenance stranded B behind blocked A without another provider event"
+    );
 }

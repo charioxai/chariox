@@ -1,6 +1,8 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
+mod kernel_arguments;
+
 #[cfg(all(not(test), not(debug_assertions)))]
 const _: () = chariox_app_runtime::assert_production_build();
 
@@ -14,31 +16,103 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
-        println!("chariox-kernel {}", env!("CARGO_PKG_VERSION"));
+    #[cfg(all(feature = "native-display", target_os = "linux"))]
+    if let Some(arg) = std::env::args_os().nth(1).filter(|arg| {
+        arg == "--display-native-worker"
+            || arg == "--display-native-codec-probe"
+            || arg == "--display-native-windows"
+    }) {
+        let result = if arg == "--display-native-codec-probe" {
+            chariox_kernel::display_native::probe_codec()
+        } else if arg == "--display-native-windows" {
+            chariox_kernel::display_native::inventory()
+        } else {
+            chariox_kernel::display_native::run()
+        };
+        if let Err(error) = result {
+            // MP-08/MP-10: fixed-label stage for the host's refusal reason.
+            let stage: String = error
+                .rsplit(':')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .filter(|c| c.is_ascii_alphabetic() || *c == ' ')
+                .map(|c| {
+                    if c == ' ' {
+                        '_'
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .take(48)
+                .collect();
+            eprintln!("MD-DISPLAY: native stage {stage}");
+            std::process::exit(1);
+        }
+        if arg == "--display-native-codec-probe" {
+            println!(
+                "MP-08/MP-10: native decoder {}",
+                chariox_kernel::display_native::codec_decoder_library()
+            );
+        }
         return Ok(());
     }
-    if std::env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new(
-            "--print-local-daemon-protocol-version",
-        ))
-    {
-        println!("{}", chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION);
-        return Ok(());
-    }
-    if std::env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new("--prepare-protected-slice-identity"))
-    {
-        let port = std::env::args()
-            .nth(2)
-            .and_then(|value| value.parse::<u16>().ok())
-            .ok_or_else(|| chariox_kernel::DaemonError::LocalTransport {
-                operation: "prepare protected slice identity",
-                message: "a valid local kernel port is required".to_string(),
-            })?;
-        let proof = chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
-        println!("{}", proof);
-        return Ok(());
+    let _process_logs = chariox_kernel::logging::ProcessLogGuard;
+    let command =
+        kernel_arguments::parse(std::env::args_os().skip(1).collect()).unwrap_or_else(|message| {
+            eprintln!("error: {message}\nRun chariox-kernel --help for usage.");
+            std::process::exit(2);
+        });
+    match command {
+        kernel_arguments::Command::Help => {
+            println!("{}", kernel_arguments::USAGE);
+            return Ok(());
+        }
+        kernel_arguments::Command::Version => {
+            println!("chariox-kernel {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        kernel_arguments::Command::ProtocolVersion => {
+            println!("{}", chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION);
+            return Ok(());
+        }
+        kernel_arguments::Command::PrepareProtectedSliceIdentity(port) => {
+            let proof =
+                chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
+            println!("{proof}");
+            return Ok(());
+        }
+        mode @ (kernel_arguments::Command::OwnerManagedEnroll
+        | kernel_arguments::Command::OwnerManagedReady
+        | kernel_arguments::Command::OwnerManagedSelfEnroll
+        | kernel_arguments::Command::OwnerManagedDeviceEnroll) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| chariox_kernel::DaemonError::LocalTransport {
+                    operation: "owner-managed bootstrap",
+                    message: "runtime unavailable".into(),
+                })?;
+            return runtime.block_on(async {
+                match mode {
+                    kernel_arguments::Command::OwnerManagedEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin(true).await
+                    }
+                    kernel_arguments::Command::OwnerManagedSelfEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin(false).await
+                    }
+                    kernel_arguments::Command::OwnerManagedDeviceEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_device_from_stdin().await
+                    }
+                    kernel_arguments::Command::OwnerManagedReady => {
+                        chariox_kernel::owner_managed_bootstrap::wait_ready().await
+                    }
+                    _ => unreachable!(),
+                }
+            });
+        }
+        kernel_arguments::Command::Run => {}
     }
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;

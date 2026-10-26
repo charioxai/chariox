@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawnOwned, signalOwnedProcessGroup } from "../../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { chmod, mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -67,13 +67,16 @@ export async function runLocalRustFaultDrill({
     if (interrupted) throw new Error(`${name} interrupted by ${interrupted}`)
     report.resources.push(await resourceSnapshot(run, "before", null, repoRoot))
     if (interrupted) throw new Error(`${name} interrupted by ${interrupted}`)
-    const execution = run("cargo", cargoArgs, {
+    // A fast failure must stay handled while the resource sample is collected.
+    const execution = Promise.allSettled([run("cargo", cargoArgs, {
       env: { ...process.env, CARGO_BUILD_JOBS: "1", CARGO_TARGET_DIR: cargoTarget },
       onSpawn: (child) => { cargoPid = child.pid },
-    })
+    })])
     await new Promise((resolve) => setTimeout(resolve, 100))
     report.resources.push(await resourceSnapshot(run, "during", cargoPid, repoRoot))
-    const result = await execution
+    const [outcome] = await execution
+    if (outcome.status === "rejected") throw outcome.reason
+    const result = outcome.value
     report.execution = executionMetadata(result, "passed")
     report.output = outputTails(result)
     report.probe = parseProbe(`${result.stdout}\n${result.stderr}`)
@@ -160,7 +163,7 @@ function defaultReportPath(evidenceSubdir, now = new Date()) {
 export function createRunner({ repoRoot, children }) {
   return (command, args, { env = process.env, timeoutMs = 600_000, allowFailure = false, onSpawn } = {}) => (
     new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
+      const child = spawnOwned(command, args, {
         cwd: repoRoot,
         env,
         detached: process.platform !== "win32",
@@ -208,9 +211,9 @@ export function createRunner({ repoRoot, children }) {
 }
 
 function terminateGroup(child, signal) {
-  if (!child?.pid || child.exitCode !== null) return
+  if (!Number.isSafeInteger(child?.pid) || child.pid <= 1 || child.exitCode !== null) return
   try {
-    process.kill(-child.pid, signal)
+    signalOwnedProcessGroup(child, signal)
   } catch {
     child.kill(signal)
   }

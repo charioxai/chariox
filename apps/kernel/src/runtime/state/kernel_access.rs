@@ -4,20 +4,12 @@ use crate::local::*;
 use crate::runtime::kernel_access::{
     error,
     process::{self, ProcessIdentity},
-    Grant,
+    Grant, Refusal,
 };
-use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, SessionStatus};
+use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
 
 impl KernelRuntimeState {
-    fn access_session(&self, id: &str) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let session = self.owned.session_store.read().get_session(id)?;
-        if session.status() == SessionStatus::Ended {
-            return Err(error("session has ended"));
-        }
-        Ok(session)
-    }
-
     fn audit_access(
         &self,
         grant: &KernelAccessGrant,
@@ -59,6 +51,9 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|id| state.grants.remove(&id))
             .collect::<Vec<_>>();
+        for grant in &revoked {
+            state.remember_ended(&grant.holder);
+        }
         let pending_keys = state
             .pending
             .iter()
@@ -80,6 +75,7 @@ impl KernelRuntimeState {
         drop(state);
         let mut audit_error = sudo_result.err();
         for grant in revoked {
+            self.retire_notification_grants(Some(&grant.summary.grant_id));
             if let Err(error) = self.audit_access(&grant.summary, "revoked", Some(reason)) {
                 audit_error.get_or_insert(error);
             }
@@ -116,7 +112,7 @@ impl KernelRuntimeState {
 
     fn cancel_access_prompt(&self, grant: &KernelAccessGrant, action: &str) {
         let _ = self.owned.timeout_runtime_interaction(
-            &grant.session_id,
+            crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
             &format!("{}-{action}", grant.grant_id),
         );
     }
@@ -138,8 +134,6 @@ impl KernelRuntimeState {
                     Some("expiry")
                 } else if !grant.holder.alive() {
                     Some("process_exit")
-                } else if self.access_session(&grant.summary.session_id).is_err() {
-                    Some("session_end")
                 } else {
                     None
                 };
@@ -150,8 +144,12 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|(id, reason)| state.grants.remove(&id).map(|grant| (grant, reason)))
             .collect::<Vec<_>>();
+        for (grant, _) in &removed {
+            state.remember_ended(&grant.holder);
+        }
         drop(state);
         for (grant, reason) in removed {
+            self.retire_notification_grants(Some(&grant.summary.grant_id));
             self.cancel_access_prompt(&grant.summary, "extension");
             let _ = self.audit_access(
                 &grant.summary,
@@ -185,9 +183,22 @@ impl KernelRuntimeState {
             .cloned()
             .collect();
         // A process's own grant takes precedence over an inherited grant for
-        // unscoped requests. Session-scoped requests select by session first.
+        // all requests. Authority is local-kernel-wide.
         grants.sort_by_key(|grant| grant.holder != *peer);
         grants
+    }
+
+    /// True when this peer sits under a holder whose grant has ended.
+    pub(crate) fn access_ended_for(&self, peer: &ProcessIdentity) -> bool {
+        let Ok(chain) = process::ancestry(peer) else {
+            return false;
+        };
+        let state = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        chain.iter().any(|ancestor| state.ended.contains(ancestor))
     }
 
     pub(crate) fn access_grant_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
@@ -226,8 +237,7 @@ impl KernelRuntimeState {
             ));
         }
         let holder =
-            process::holder(&peer, request.holder_pid).map_err(|e| error(e.to_string()))?;
-        let session = self.access_session(&request.session_id)?;
+            process::holder(&peer, request.holder_pid).map_err(|_| Refusal::NotCovered.error())?;
         let config = self
             .owned
             .config_projection
@@ -241,13 +251,10 @@ impl KernelRuntimeState {
             return Err(error("requested lifetime exceeds kernel access policy"));
         }
         let id = format!("access-{:016x}", rand::random::<u64>());
-        #[cfg(test)]
-        let id = self.access_id_for_test(&request.session_id, id);
         let key = (holder.pid, holder.start, holder.executable.clone());
         let summary = KernelAccessGrant {
             grant_id: id.clone(),
-            session_id: session.id().into(),
-            owner_user_id: session.owner_user_id().into(),
+            owner_user_id: self.owned.config_projection.local_owner_user_id(),
             holder_pid: holder.pid,
             holder_executable: holder.executable.clone(),
             lifetime_minutes: minutes,
@@ -288,11 +295,7 @@ impl KernelRuntimeState {
             .remove(&key)
             .is_some_and(|pending| pending.grant_id == summary.grant_id);
         let minutes = result?;
-        if !admitted
-            || state.generation != generation
-            || !holder.contains(&peer)
-            || self.access_session(session.id()).is_err()
-        {
+        if !admitted || state.generation != generation || !holder.contains(&peer) {
             self.audit_access(&summary, "revoked", Some("authorization_invalidated"))?;
             return Err(error(
                 "access request invalidated before approval completed",
@@ -331,22 +334,28 @@ impl KernelRuntimeState {
             .expires_at_ms
             .saturating_sub(crate::session::unix_epoch_ms())
             .div_ceil(60_000);
-        let title = if action == "grant" {
-            "Grant external agent access".to_owned()
-        } else {
-            format!("External agent access expires in {remaining} minutes. Extend?")
-        };
+        let requester = crate::runtime::kernel_access::requester::project(holder);
+        let (title, message) = crate::runtime::kernel_access::requester::popup_copy(
+            requester.provider_harness,
+            action == "grant",
+            remaining,
+        );
         let interaction = RuntimeInteraction::for_kernel_operation(
-            format!("{}-{action}", grant.grant_id), format!("access-{action}:{}", grant.grant_id),
+            format!("{}-{action}", grant.grant_id),
+            format!("access-{action}:{}", grant.grant_id),
             title,
-            format!("OS-verified external agent {} (pid {}) requests {} access to session {} for {} minutes. Only this process and its OS descendants will have access. Chariox agents it spawns receive no grant.",
-                grant.holder_executable.escape_debug(), grant.holder_pid, action, grant.session_id, grant.lifetime_minutes),
-            vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
-                RuntimeInteractionChoice::new("approve", "Approve", "approve", None).requiring_passkey()])
-            .with_timeout_sec(timeout_sec);
+            message,
+            vec![
+                RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
+                RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                    .requiring_passkey(),
+            ],
+        )
+        .with_timeout_sec(timeout_sec)
+        .with_requester(requester);
         let rx = self
             .create_kernel_operation_interaction(
-                &grant.session_id,
+                crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
                 &grant.owner_user_id,
                 interaction,
             )
@@ -358,8 +367,7 @@ impl KernelRuntimeState {
                 tokio::select! {
                     answer = &mut rx => break answer,
                     _ = tick.tick() => {
-                        if self.access_session(&grant.session_id).is_err()
-                            || !holder.alive() {
+                        if !holder.alive() {
                             self.cancel_access_prompt(grant, action);
                         }
                     }
@@ -399,6 +407,8 @@ impl KernelRuntimeState {
 
     pub(crate) fn pump_kernel_access(&self) {
         self.sweep_kernel_access();
+        // Dead-man for sudo window timers: the kernel pump enforces and alerts too.
+        self.pump_sudo_windows(None);
         let notices = {
             let mut state = self
                 .owned

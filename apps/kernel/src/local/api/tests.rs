@@ -78,11 +78,13 @@ use super::{
     WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
+mod cloud_kernel_ownership;
 mod protocol_shapes;
 mod provider_prompt_runtime;
 mod remote_inventory;
 mod room_environment;
 mod session_control;
+mod session_view;
 mod session_worktree_paths;
 mod terminal_output;
 mod waiting_room_projection;

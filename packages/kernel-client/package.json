@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./relay-auth-renewal": "./dist/relay-auth-renewal.js",
+    "./relay-authorization": "./dist/relay-authorization.js",
     ".": "./dist/index.js",
     "./ipc": "./dist/ipc.js",
     "./ipc-requests": "./dist/ipc-requests.js",
@@ -19,6 +21,7 @@
     "./external-provider-observation": "./dist/external-provider-observation.js",
     "./project-environment-review": "./dist/project-environment-review.js",
     "./interaction-choice": "./dist/interaction-choice.js",
+    "./owner-handoff": "./dist/owner-handoff.js",
     "./kernel-events": "./dist/kernel-events.js",
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
     "./browser-relay-crypto": "./dist/browser-relay-crypto.js",
@@ -39,6 +42,7 @@
     "./provider-status": "./dist/provider-status.js",
     "./queued-prompt-controls": "./dist/queued-prompt-controls.js",
     "./queued-prompt-strip-state": "./dist/queued-prompt-strip-state.js",
+    "./active-prompt-transcript-state": "./dist/active-prompt-transcript-state.js",
     "./queued-prompt-selection": "./dist/queued-prompt-selection.js",
     "./response-pane-selection": "./dist/response-pane-selection.js",
     "./waiting-room-activity": "./dist/waiting-room-activity.js",
@@ -50,6 +54,7 @@
     "./transcript-history-stitching": "./dist/transcript-history-stitching.js",
     "./transcript-kind-role": "./dist/transcript-kind-role.js",
     "./terminal-record-transcript": "./dist/terminal-record-transcript.js",
+    "./terminal-output-sequences": "./dist/terminal-output-sequences.js",
     "./time": "./dist/time.js",
     "./session-history-outline": "./dist/session-history-outline.js",
     "./session-history-page-entries": "./dist/session-history-page-entries.js",
@@ -67,6 +72,7 @@
     "./session-runtime-lookup": "./dist/session-runtime-lookup.js",
     "./session-runtime-transition": "./dist/session-runtime-transition.js",
     "./session-runtime-status": "./dist/session-runtime-status.js",
+    "./agent-wake-status": "./dist/agent-wake-status.js",
     "./session-runtime-labels": "./dist/session-runtime-labels.js",
     "./runtime-session-normalization": "./dist/runtime-session-normalization.js",
     "./transcript-display-state": "./dist/transcript-display-state.js",
@@ -89,13 +95,21 @@
     "./workspace-live-sync-mode": "./dist/workspace-live-sync-mode.js",
     "./project-environment-panel": "./dist/project-environment-panel.js",
     "./kernel-unix-socket-path": "./dist/kernel-unix-socket-path.js",
-    "./hidden-input": "./dist/hidden-input.js"
+    "./hidden-input": "./dist/hidden-input.js",
+    "./room-workflows": "./dist/room-workflows.js",
+    "./room-workflows-controller": "./dist/room-workflows-controller.js",
+    "./project-environment-aggregate": "./dist/project-environment-aggregate.js",
+    "./user-domain-access": "./dist/user-domain-access.js",
+    "./browser-mirror": "./dist/browser-mirror.js",
+    "./browser-mirror2": "./dist/browser-mirror2.js",
+    "./agent-task-state": "./dist/agent-task-state.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "build": "node ../../scripts/generate-protocol-versions.mjs --check && node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run build && node --test dist/*.test.js"
+    "test": "pnpm run build && node --test dist/*.test.js",
+    "test:relay-renewal-kernel": "pnpm run build && node --test scripts/relay-renewal-kernel.integration.test.mjs"
   },
   "dependencies": {
     "@chariox/tool-display": "workspace:*",

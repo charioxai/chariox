@@ -116,7 +116,6 @@ pub(super) fn serve(
                             || context.control.stopped(),
                         )
                         .map_err(|_| LifecycleError::Notification)?;
-                    callback_settled = true;
                 }
             }
             callback_settled = false;

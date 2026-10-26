@@ -7,6 +7,9 @@ use crate::local::LocalDaemonRequest;
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
     match error {
+        DaemonError::UserDomainRefused { reason } => {
+            relay_error(reason.code(), &error.to_string(), false)
+        }
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_relay_error(source);
             mapped.message = error.to_string();
@@ -41,6 +44,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 false,
             )
         }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
+                == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
         DaemonError::LocalTransport { operation, message }
             if *operation == "project environment setup" =>
         {
@@ -51,6 +64,13 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             };
             relay_error(code, &error.to_string(), false)
         }
+        // MP-08 / MP-10 / MP-11: profile absence/isolation needs an explicit
+        // account action; repeating the same launch cannot repair it.
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "resolve account profile" =>
+        {
+            relay_error("transport_error", &error.to_string(), false)
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -60,6 +80,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             retryable,
             ..
         } => relay_error(code, message, *retryable),
+        DaemonError::RelayPeerCleanupAbsent { code, .. } => {
+            relay_error(code, &error.to_string(), false)
+        }
         DaemonError::ManagedContext {
             code, retryable, ..
         } => relay_error(code, &error.to_string(), *retryable),
@@ -102,6 +125,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::SubmitPrompt(_) => "prompt.submit",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
         LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
@@ -129,6 +153,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
+        LocalDaemonRequest::GetSessionHistoryBlobContents(_) => "session.history.blobs.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
         LocalDaemonRequest::CreateSlice(_) => "slice.create",
         LocalDaemonRequest::GetSlice(_) => "slice.get",
@@ -181,6 +206,35 @@ mod tests {
         RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
         UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
     };
+
+    #[test]
+    fn missing_account_resolution_is_definitive_on_relay() {
+        let error = DaemonError::LocalTransport {
+            operation: "resolve account profile",
+            message: "account is absent on this kernel; copy login or sign in".into(),
+        };
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, "transport_error");
+        assert!(!mapped.retryable);
+        assert_eq!(mapped.message, error.to_string());
+        let transient = DaemonError::LocalTransport {
+            operation: "read account profile registry",
+            message: "temporary read failure".into(),
+        };
+        assert!(map_relay_error(&transient).retryable);
+    }
+
+    #[test]
+    fn a_leased_prompt_account_refusal_is_a_definitive_pre_admission_code() {
+        let error = DaemonError::LocalTransport {
+            operation: "admit leased prompt account",
+            message: "selected claude account `work` is not authenticated".into(),
+        };
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, "provider_account_unusable");
+        assert!(!mapped.retryable);
+        assert_eq!(mapped.message, error.to_string());
+    }
 
     #[test]
     fn room_environment_state_uses_the_shared_relay_request_path() {
@@ -274,6 +328,29 @@ mod tests {
         assert_eq!(relay_error.code, "target_disconnected");
         assert_eq!(relay_error.message, "target daemon disconnected from relay");
         assert!(relay_error.retryable);
+    }
+
+    #[test]
+    fn mp08_room_computer_policy_refusals_retain_codes_across_relay() {
+        use crate::error::UserDomainRefusalReason;
+        for reason in [
+            UserDomainRefusalReason::NotFocusedAgent,
+            UserDomainRefusalReason::ForeignOwner,
+            UserDomainRefusalReason::StaleEpoch,
+            UserDomainRefusalReason::StaleReference,
+            UserDomainRefusalReason::NotGranted,
+            UserDomainRefusalReason::SensitiveRequiresFocus,
+        ] {
+            let mapped = map_relay_error(&DaemonError::UserDomainRefused { reason });
+            assert_eq!(mapped.code, reason.code());
+            assert_eq!(mapped.message, "User-domain request refused");
+            assert!(!mapped.retryable);
+        }
+        let untrusted = map_relay_error(&DaemonError::LocalTransport {
+            operation: "controller.fixture",
+            message: "user_domain_not_granted: untrusted text".into(),
+        });
+        assert_eq!(untrusted.code, "transport_error");
     }
 
     #[test]

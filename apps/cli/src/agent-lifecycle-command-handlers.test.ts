@@ -85,7 +85,7 @@ test("agent list summary renders aliases and pluralization", () => {
       workspaceLiveSyncMode: "tracked",
       workspaceLiveSyncWorktree: "/repo",
     }),
-    /^session runtime: home kernel home-kernel@home-machine; owner user-1; authority home-owned; live sync tracked \(selected workspace\/worktree only; other repositories unrestricted\) on \/repo\n1 agent:/,
+    /^session runtime: home kernel home-kernel@home-machine; owner user-1; authority home-owned\n1 agent:/,
   )
 })
 
@@ -157,8 +157,6 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /agent-remote \(slice qa\) \[Working\]/)
   assert.match(summary, /home kernel: home-kernel@home-machine/)
   assert.match(summary, /session owner: user-1/)
-  assert.match(summary, /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
-  assert.match(summary, /live sync scope: \/repo \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(summary, /workspace: \/repo/)
   assert.match(summary, /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
   assert.match(summary, /provider run: session=run-session, worker=run-1/)

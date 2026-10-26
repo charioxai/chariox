@@ -20,7 +20,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_reservation_ranges_for_oper
 pub(in crate::runtime::state) fn workspace_live_sync_try_reserve_ranges(
     coordinator: &mut crate::io::ArtifactEditCoordinator,
     workspace_identity: &crate::io::WorkspaceIdentity,
-    path: &PathBuf,
+    path: &Path,
     ranges: Vec<crate::io::TextRange>,
     owner: crate::io::ArtifactReservationOwner,
 ) -> Result<crate::io::ArtifactReservationToken, crate::transport::runtime_tools::RuntimeToolResult>

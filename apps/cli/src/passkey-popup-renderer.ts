@@ -2,6 +2,7 @@ import {
   BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextRenderable, type CliRenderer,
 } from "@opentui/core"
 import type { PasskeyPopupView } from "./passkey-popup-controller.js"
+import { approvalCountdown } from "./kernel-clock.js"
 import { theme } from "./theme.js"
 
 /** The hot-keys popup's width. */
@@ -12,8 +13,22 @@ function expiry(expiresAtMs: number): string {
 }
 
 /** Rows a wrapped text takes at `width`, near enough to size its box. */
+function hours(minutes: number | null | undefined): string {
+  const value = (minutes ?? 60) / 60
+  return `${value} hour${value === 1 ? "" : "s"}`
+}
+
 function rows(text: string, width: number): number {
   return text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil(Array.from(line).length / width)), 0)
+}
+
+function passkeyNoticeLabel(prompt: { readonly kind: string; readonly title: string; readonly requester?: { readonly provider_harness?: string | null } | null; readonly sudo_request?: {readonly requester_name: string} | null }): string {
+  const harness = prompt.requester?.provider_harness
+  const who = harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : harness === "opencode" ? "OpenCode" : "An external agent"
+  if (prompt.kind === "access_grant") return `${who} asks for access`
+  if (prompt.kind === "access_extension") return `${who} asks to extend access`
+  if (prompt.kind === "sudo") return prompt.sudo_request?.requester_name === "You" ? "You requested one sudo task" : `${prompt.sudo_request?.requester_name ?? who} asks to run one sudo task`
+  return (prompt.title || "Critical approval").replace(/[\x00-\x1f\x7f]/g, " ").slice(0,120)
 }
 
 /** Protocol 403: the passkey popup, shaped like the hot-keys popup: a scrim
@@ -24,9 +39,13 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
   approve(): void
   refuse(): void
   cycleRemember(): void
+  toggleDetails?(): void
 }) {
   let box: BoxRenderable | undefined
+  let banner: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
+  let countdownText: TextRenderable | undefined
+  let noticeText: TextRenderable | undefined
   let lastFrame = ""
   const text = (content: string, options: { accent?: boolean; muted?: boolean; bold?: boolean } = {}) =>
     new TextRenderable(renderer, {
@@ -44,30 +63,59 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
   }
   return {
     assign(value: BoxRenderable) { box = value; lastFrame = "" },
+    assignBanner(value: BoxRenderable) { banner = value; lastFrame = "" },
     scroll(direction: -1 | 1) { body?.scrollBy(direction * 4) },
     render(view: PasskeyPopupView, dimensions: { width: number; height: number }) {
       if (!box) return
-      const frame = JSON.stringify([view, dimensions, theme.text, theme.primary, theme.backgroundPanel, theme.backgroundElement])
-      if (lastFrame === frame) return
+      const countdown = approvalCountdown(view.remainingMs)
+      const notice = view.prompt ? `Chariox · ${passkeyNoticeLabel(view.prompt)}${view.count > 1 ? ` · ${view.count} requests` : ""} · F8 · ${countdown}` : ""
+      const frame = JSON.stringify([{...view, remainingMs: undefined}, dimensions, theme.text, theme.primary, theme.backgroundPanel, theme.backgroundElement])
+      if (lastFrame === frame) {
+        // Clock ticks update text in place, preserving scroll and input focus.
+        if (countdownText) countdownText.content = countdown
+        if (noticeText) noticeText.content = notice
+        box.requestRender()
+        return
+      }
       lastFrame = frame
       body = undefined
+      countdownText = undefined
+      noticeText = undefined
       for (const child of [...box.getChildren()]) {
         box.remove(String(child.id))
         child.destroyRecursively()
       }
-      box.visible = view.count > 0
+      if (banner) {
+        for (const child of [...banner.getChildren()]) {
+          banner.remove(String(child.id))
+          child.destroyRecursively()
+        }
+        banner.visible = view.count > 0
+        banner.backgroundColor = theme.backgroundElement
+        banner.paddingLeft = 1
+        banner.paddingRight = 1
+        if (view.count) { noticeText = text(notice, {bold: true}); banner.add(noticeText) }
+        banner.onMouseUp = (event) => {
+          event.stopPropagation()
+          if (event.button === MouseButton.LEFT) actions.show()
+        }
+        banner.requestRender()
+      }
+      box.visible = view.count > 0 && (view.open || !banner)
       if (!view.count || !view.prompt) {
         box.requestRender()
         return
       }
       box.width = dimensions.width
       if (!view.open) {
+        if (banner) { box.requestRender(); return }
         box.height = 2
         const indicator = new BoxRenderable(renderer, {
           position: "absolute", right: 0, top: 1, height: 1,
           backgroundColor: theme.backgroundElement, paddingLeft: 1, paddingRight: 1,
         })
-        indicator.add(text(`Chariox · ${view.count} passkey request${view.count === 1 ? "" : "s"} · F8`, { accent: true }))
+        noticeText = text(notice, {accent: true})
+        indicator.add(noticeText)
         indicator.onMouseUp = (event) => {
           event.stopPropagation()
           if (event.button === MouseButton.LEFT) actions.show()
@@ -101,27 +149,53 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       header.add(text("Esc hides", { muted: true }))
       panel.add(header)
       const prompt = view.prompt
+      const showDetails = Boolean(view.detailsOpen)
+      const safe = (value: string) => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "")
       // The request scrolls when the terminal is too short for all of it.
-      const fixedRows = 14 + (view.error ? 2 : 0)
-      const wanted = 2 + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
+      const fixedRows = 15 + (prompt.sudo_request ? 2 : 0) + (showDetails ? 8 : 0) + (view.error ? 2 : 0)
+      const access = prompt.kind === "access_grant" || prompt.kind === "access_extension"
+      const kernelAccess = access && prompt.session_id === "kernel-access"
+      const showKind = !access || view.count > 1
+      const wanted = (prompt.sudo_request ? 5 : 0) + (showKind ? 2 : 1) + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
       body = new ScrollBoxRenderable(renderer, {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
         flexShrink: 0, scrollY: true, scrollX: false,
       })
-      body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "One sudo turn" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
+      if (showKind) body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? prompt.lifetime_minutes ? "Sudo window" : "Sudo operation scope" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
+      if (prompt.sudo_request) {
+        const sudo = prompt.sudo_request
+        body.add(text(`Agent: ${safe(sudo.agent_name)} · Session: ${safe(sudo.session_name)}`))
+        body.add(text(`“${safe(sudo.task_summary)}”`))
+      }
       panel.add(body)
+      countdownText = text(countdown, {muted: true})
+      section(countdownText)
       const session = prompt.session_alias ? `${prompt.session_alias} (${prompt.session_id})` : prompt.session_id
-      section(text(`Session: ${session} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
+      if (prompt.sudo_request) {
+        const sudo = prompt.sudo_request
+        const toggle = button(showDetails ? "Hide details · Ctrl+D" : "Show details · Ctrl+D", true, () => {
+          actions.toggleDetails?.()
+        })
+        section(toggle)
+        if (showDetails) {
+          const details = new ScrollBoxRenderable(renderer, {height: Math.max(2, Math.min(7, dimensions.height - top - 23)), flexShrink: 0, scrollY: true, scrollX: false})
+          details.add(text(safe(`Requested task:\n${sudo.task}\nSession ID: ${prompt.session_id}\n${prompt.requester ? `PID: ${prompt.requester.pid}\nExecutable: ${prompt.requester.executable}\n` : ""}${sudo.grant_id ? `Grant ID: ${sudo.grant_id}\n` : ""}Terminal ID: ${sudo.terminal_id}`)))
+          panel.add(details)
+          body = details // PageUp/PageDown scroll the expanded details.
+        }
+      }
+      if (!kernelAccess && !prompt.sudo_request) section(text(`${prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
+        ? "Local kernel" : prompt.session_id ? `Session: ${session}` : "User domain"} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
       // Hidden input: only the length is ever rendered.
       const remember = text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
-        : prompt.kind === "sudo" ? "Fresh passkey required · authority ends when this turn yields"
-        : `Access for: ${view.passkey.accessLifetimeMinutes} minutes · maximum ${prompt.max_lifetime_minutes}`)
+        : prompt.kind === "sudo" ? prompt.lifetime_minutes ? `Window: ${hours(view.passkey.accessLifetimeMinutes)} · maximum ${hours(prompt.max_lifetime_minutes)} · fresh passkey required` : "Operation scope · fresh passkey required"
+        : `Access for: ${view.passkey.accessLifetimeMinutes} minutes`)
       remember.onMouseUp = (event) => {
         event.stopPropagation()
-        if (event.button === MouseButton.LEFT && prompt.kind !== "sudo") actions.cycleRemember()
+        if (event.button === MouseButton.LEFT) actions.cycleRemember()
       }
       const input = text(`Passkey: ${"•".repeat(Math.min(view.passkey.length, 40))}▏`, { accent: true })
       section(input, remember)
@@ -133,7 +207,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(buttons)
       section(text(view.pending ? "Waiting for the kernel…"
         : !view.connected ? "Disconnected · reconnect to answer"
-        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? "" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
+        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? view.prompt.lifetime_minutes ? " · Tab duration" : "" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
       scrim.add(panel)
       box.add(scrim)
       box.requestRender()

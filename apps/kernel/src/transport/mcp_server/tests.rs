@@ -981,6 +981,18 @@ async fn mcp_get_catalog_stream_requires_running_agent_auth() {
     );
 }
 
+// MP-08/MP-11 (#922 review 3/6): providers see the typed refusal code.
+#[test]
+fn capability_tool_refusal_keeps_its_typed_code() {
+    let refused = crate::error::DaemonError::UserDomainRefused {
+        reason: crate::error::UserDomainRefusalReason::NotRequested,
+    };
+    assert_eq!(
+        super::tool_errors::message(&refused),
+        "user_domain_not_requested: User-domain request refused"
+    );
+}
+
 // MP-08/MP-10: scripts may return any JSON value, but MCP structuredContent is an object.
 #[test]
 fn runtime_tool_content_wraps_non_objects_as_structured_results() {
@@ -1018,9 +1030,45 @@ fn runtime_tool_content_preserves_objects_and_extracts_images() {
 }
 
 #[test]
+fn mp08_browser_snapshot_remains_readable_after_provider_line_truncation() {
+    // Real OpenCode stores large MCP results in a file, then caps each Read
+    // line at 2,000 characters. A compact snapshot hides later public nodes.
+    let mut nodes = (0..80)
+        .map(|i| serde_json::json!({"node_ref":i,"node_name":"DIV","text":"public article text"}))
+        .collect::<Vec<_>>();
+    nodes.push(
+        serde_json::json!({"node_ref":80,"node_name":"INPUT","attributes":{"id":"searchInput"}}),
+    );
+    let payload = serde_json::json!({"snapshot":{
+        "document_id":"document-a", "dom_nodes":nodes,
+        "accessibility_nodes":[{"node_ref":80,"value":""}]
+    }});
+    let (content, structured) = super::runtime_tool_content(payload.clone());
+    let text = content[0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), payload);
+    assert_eq!(structured, payload);
+    let readable = text
+        .lines()
+        .map(|line| line.chars().take(2_000).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        readable.contains("searchInput"),
+        "MP-08/MP-10/MP-11: public input must survive native Read's line cap"
+    );
+    assert!(
+        readable.contains("\"value\": \"\""),
+        "empty input proof must remain readable"
+    );
+}
+
+#[test]
 fn primitive_mcp_result_shape_is_versioned_and_hashed() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
     let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
         "content": content, "structuredContent": structured, "isError": false
@@ -1116,4 +1164,33 @@ async fn mcp_script_string_result_remains_available_to_strict_clients() {
     let text: Value =
         serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(text, value["result"]["structuredContent"]);
+}
+
+// MP-08/MP-10/MP-11: native MCP carries the identical image bytes and identity.
+#[test]
+fn mp08_mp10_mp11_browser_artifact_native_image_attachment() {
+    use base64::Engine as _;
+    let small = b"\x89PNG\r\n\x1a\nsynthetic-controller-pixels".to_vec();
+    let mut large = vec![37; 1024 * 1024];
+    large[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    // The native content converter retains byte equality above IPC limits.
+    // These are synthetic converter inputs, not Chromium/perception proof.
+    for bytes in [small, large] {
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let (content, metadata) = super::runtime_tool_content(serde_json::json!({
+            "source":"browser_controller","artifact_id":"art-1","mime_type":"image/png","image_base64":data,
+            "identity":{"tab_id":"tab-1","document_id":"document-1","browser_generation":1,"runtime_generation":2}
+        }));
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(content[0]["data"].as_str().unwrap())
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(content[0]["mimeType"], "image/png");
+        assert_eq!(metadata["identity"]["document_id"], "document-1");
+        assert!(metadata.get("image_base64").is_none());
+        assert_eq!(content[1]["text"], metadata.to_string());
+    }
 }

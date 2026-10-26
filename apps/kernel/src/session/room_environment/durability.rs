@@ -16,9 +16,9 @@ impl RoomEnvironment {
         self.browser_controller_recovering = false;
         self.element_references.clear();
         self.clear_pointers();
-        let interrupted = self
-            .action_ledger
-            .invalidate_after_kernel_restart(&self.actors);
+        // MP-08/MP-10/MP-11: browser recovery can retain a human, but a kernel
+        // restart has lost the View lease that made its owner visible.
+        let interrupted = self.action_ledger.invalidate_runtime();
         for action_id in interrupted {
             self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
         }

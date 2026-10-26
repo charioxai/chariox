@@ -43,3 +43,16 @@ test("unrelated requests do not add a preflight; malformed status fails closed",
     await assert.rejects(requireKernelControlCapability(async () => response, request))
   }
 })
+
+// MP-08 / MP-10 / MP-11: old kernels silently ignore optional prompt fences.
+test("conditional prompt cancellation requires its own fresh capability", async () => {
+  const conditional = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "prompt-A" } }
+  for (const capabilities of [undefined, [], ["disposable_worker_control_v1"]]) {
+    await assert.rejects(requireKernelControlCapability(async () => status(capabilities), conditional), /exact_prompt_cancellation_v499/)
+  }
+  await requireKernelControlCapability(async () => status(["exact_prompt_cancellation_v499"]), conditional)
+  await requireKernelControlCapability(async () => { throw new Error("legacy cancel must not preflight") },
+    { CancelActivePrompt: { session_id: "s", attachment_id: "a" } })
+  await assert.rejects(requireKernelControlCapability(async () => status([]),
+    { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "" } }), /exact_prompt_cancellation_v499/)
+})

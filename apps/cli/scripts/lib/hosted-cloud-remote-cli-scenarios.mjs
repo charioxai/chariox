@@ -2,6 +2,8 @@ import { rm } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { prepareHostedLinkedProviderAccount } from "./hosted-linked-provider-account.mjs"
+import { prepareHostedRemoteTerminal } from "./hosted-cloud-remote-terminal-login.mjs"
 
 async function waitForLocalSocket(socketPath, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
@@ -154,6 +156,7 @@ export async function runHostedRemoteCliPairingAssertions({
   remoteCliPairingProvider,
   remoteCliPairingModel,
   remoteCliPairingEffort,
+  remoteCliPairingAccountPath,
   pollTimeoutMs,
   log,
   assert,
@@ -165,15 +168,24 @@ export async function runHostedRemoteCliPairingAssertions({
   terminateChild,
   waitForSession,
   waitForHistoryText,
+  apiUrl,
+  ownerAccountSlug,
+  ownerAccountId,
+  prepareRemoteTerminal = prepareHostedRemoteTerminal,
 }) {
   const remoteId = `${process.pid}-${Date.now()}`
   const localAlias = `hosted-pairing-local-cli-${remoteId}`
   const remoteAlias = `hosted-pairing-cli-${remoteId}`
-  const remoteWorkspace = `/tmp/chariox-hosted-pairing-cli-${remoteId}`
+  const remoteRoot = `/var/tmp/chariox-kauthval-hosted-remote-cli-${remoteId}`
+  const remoteWorkspace = `${remoteRoot}/workspace`
   const localSocket = path.join(os.tmpdir(), `chariox-hosted-local-cli-${remoteId}.sock`)
-  const remoteSocket = `/tmp/chariox-hosted-pairing-cli-${remoteId}.sock`
+  const remoteSocket = `${remoteRoot}/automation.sock`
   const localMarker = `HOSTED_PAIRING_LOCAL_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
   const remoteMarker = `HOSTED_PAIRING_REMOTE_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
+  const providerAccount = remoteCliPairingAccountPath
+    ? await prepareHostedLinkedProviderAccount({client: homeClient, requests,
+      provider: remoteCliPairingProvider, label: `hosted-pairing-${remoteId}`, path: remoteCliPairingAccountPath})
+    : null
   const pairing = unwrap(
     await homeClient.send(requests.createTerminalPairingLinkRequest("cli", remoteAlias, 15 * 60 * 1000)),
     "TerminalPairingLinkCreated",
@@ -207,21 +219,25 @@ export async function runHostedRemoteCliPairingAssertions({
       shellQuote(remoteCliPairingModel),
       "--effort",
       shellQuote(remoteCliPairingEffort),
+      ...(providerAccount ? ["--account-profile", shellQuote(providerAccount.profile_id)] : []),
     ].join(" "),
   ].join("; ")
 
+  let receiver
   let localCli = null
   let localAutomation = null
   let remoteCli = null
   try {
+    // MP-08 / MP-10 / MP-11: this real-provider receiving terminal must
+    // complete its own CLIENT login, independently of other drill cells.
+    receiver = await prepareRemoteTerminal({remoteRoot, remoteCliRepo, apiUrl, ownerAccountSlug, ownerAccountId,
+      runSsh, shellQuote, sshArgs, spawnProcess, terminateChild})
     log("local-cli-pairing-start", {
       alias: localAlias,
       provider: remoteCliPairingProvider,
       model: remoteCliPairingModel,
     })
-    localCli = spawnProcess("script", [
-      "-q",
-      "/dev/null",
+    const localCommand = [
       "env",
       "CHARIOX_TEST_TUI=1",
       "bun",
@@ -243,9 +259,14 @@ export async function runHostedRemoteCliPairingAssertions({
       remoteCliPairingModel,
       "--effort",
       remoteCliPairingEffort,
+      ...(providerAccount ? ["--account-profile", providerAccount.profile_id] : []),
       "--client-id",
       `hosted-local-pairing-cli-${remoteId}`,
-    ], {
+    ]
+    const localScriptArgs = process.platform === "linux"
+      ? ["-q", "-c", localCommand.map(shellQuote).join(" "), "/dev/null"]
+      : ["-q", "/dev/null", ...localCommand]
+    localCli = spawnProcess("script", localScriptArgs, {
       cwd: repoRoot,
       env: process.env,
       name: "local-cli-pairing",
@@ -270,7 +291,7 @@ export async function runHostedRemoteCliPairingAssertions({
       provider: remoteCliPairingProvider,
       model: remoteCliPairingModel,
     })
-    remoteCli = spawnProcess("ssh", sshArgs(remoteCommand, { tty: true }), {
+    remoteCli = spawnProcess("ssh", sshArgs(`${receiver.environment}; ${remoteCommand}`, { tty: true }), {
       cwd: repoRoot,
       env: process.env,
       name: "remote-cli-pairing",
@@ -291,25 +312,17 @@ export async function runHostedRemoteCliPairingAssertions({
       remoteSnapshot,
     )
 
-    const terminals = unwrap(
-      await homeClient.send(requests.listTerminalsRequest()),
-      "TerminalsListed",
-    ).terminals ?? []
+    // Hosted pairing locates the kernel; admission uses the receiver's own
+    // account CLIENT, not the locator's legacy local pairing record.
+    const receivingClient = receiver.publicClient
     assert(
-      terminals.some((terminal) => terminal.terminal_id === pairing.terminal_id && terminal.terminal_type === "cli"),
-      "home kernel should list the paired CLI terminal",
-      { pairing, terminals },
+      receivingClient?.accountId === ownerAccountId
+        && /^[0-9a-f]{64}$/.test(receivingClient.publicKeyThumbprint)
+        && receivingClient.clientId === `cli:${receivingClient.publicKeyThumbprint}`,
+      "receiving CLI should use its own owner-account public key identity",
+      receivingClient,
     )
-    const pairedClients = unwrap(
-      await homeClient.send(requests.listPairedClientsRequest()),
-      "PairedClientsListed",
-    ).clients ?? []
-    const pairedCli = pairedClients.find((client) => client.client_id === pairing.terminal_id)
-    assert(
-      pairedCli && /^[0-9a-f]{64}$/.test(pairedCli.public_key_thumbprint),
-      "home kernel should record the receiving CLI public key thumbprint",
-      { terminalId: pairing.terminal_id, pairedCli },
-    )
+    log("remote-cli-account-identity", receivingClient)
 
     await waitForSession(homeClient, requests, localSnapshot.session.id)
     await waitForSession(verificationClient, requests, localSnapshot.session.id)
@@ -358,7 +371,7 @@ export async function runHostedRemoteCliPairingAssertions({
     )
 
     await localAutomation.send("submit_prompt", {
-      prompt: `Reply with exactly ${localMarker} and nothing else.`,
+      prompt: `Read docs/PROTOCOL.md section 3.3.2 with an official tool and fetch https://developer.mozilla.org/en-US/docs/Web/API/WebSocket. Explain the home/worker authority boundary and name the public page title. Do not modify files. Finish with ${localMarker}.`,
     })
     await Promise.all([
       waitForHistoryText(homeClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs, undefined, { providerOutputOnly: true }),
@@ -366,7 +379,7 @@ export async function runHostedRemoteCliPairingAssertions({
     ])
 
     await remoteAutomation(remoteSocket, "submit_prompt", {
-      prompt: `Reply with exactly ${remoteMarker} and nothing else.`,
+      prompt: `Read docs/PROTOCOL.md section 3.3.2 with an official tool and fetch https://developer.mozilla.org/en-US/docs/Web/API/WebSocket. Explain which kernel owns the session and name the public page title. Do not modify files. Finish with ${remoteMarker}.`,
       timeoutMs: pollTimeoutMs,
     }, { runSsh, shellQuote, assert })
     await Promise.all([
@@ -397,7 +410,7 @@ export async function runHostedRemoteCliPairingAssertions({
     await terminateChild(localCli)
     await terminateChild(remoteCli)
     await rm(localSocket, { force: true }).catch(() => {})
-    await runSsh(`rm -f ${shellQuote(remoteSocket)}; rm -rf ${shellQuote(remoteWorkspace)}`).catch(() => {})
+    await receiver?.cleanup()
   }
 }
 
@@ -405,9 +418,6 @@ export async function runHostedRemoteCliAssertions({
   requests,
   homeClient,
   verificationClient,
-  relayUrl,
-  relayToken,
-  targetDaemonAlias,
   repoRoot,
   remoteCliRepo,
   remoteCliHost,
@@ -420,49 +430,61 @@ export async function runHostedRemoteCliAssertions({
   spawnProcess,
   terminateChild,
   allowDevStubProvider,
+  apiUrl,
+  ownerAccountSlug,
+  ownerAccountId,
+  prepareRemoteTerminal = prepareHostedRemoteTerminal,
 }) {
   const remoteId = `${process.pid}-${Date.now()}`
   const remoteAlias = `hosted-remote-cli-${remoteId}`
   const remoteClientId = `hosted-remote-client-${remoteId}`
-  const remoteWorkspace = `/tmp/chariox-hosted-remote-cli-${remoteId}`
-  const remoteSocket = `/tmp/chariox-hosted-remote-cli-${remoteId}.sock`
-  const remoteCommand = [
-    "set -e",
-    "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
-    "export CHARIOX_TEST_TUI=1",
-    `mkdir -p ${shellQuote(remoteWorkspace)}`,
-    `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
-    [
-      "bun",
-      "dist/index.js",
-      "--relay-url",
-      shellQuote(relayUrl),
-      "--relay-token",
-      shellQuote(relayToken),
-      "--target-daemon-alias",
-      shellQuote(targetDaemonAlias),
-      "--automation-socket",
-      shellQuote(remoteSocket),
-      "--create-session",
-      "--alias",
-      shellQuote(remoteAlias),
-      "--workspace",
-      shellQuote(remoteWorkspace),
-      "--worktree",
-      shellQuote(remoteWorkspace),
-      "--client-id",
-      shellQuote(remoteClientId),
-      "--provider",
-      "dev-stub",
-      "--model",
-      "remote-cli-drill",
-      "--effort",
-      "low",
-    ].join(" "),
-  ].join("; ")
-
-  let remoteCli = null
+  const remoteRoot = `/var/tmp/chariox-kauthval-hosted-remote-cli-${remoteId}`
+  const remoteWorkspace = `${remoteRoot}/workspace`
+  const remoteSocket = `${remoteRoot}/automation.sock`
+  // MP-08 / MP-10 / MP-11: the receiving terminal uses its own signed-in
+  // CLIENT profile and key, as in the remote pairing scenario. An owner's
+  // key-bound grant cannot be forwarded to another terminal.
+  const pairing = unwrap(
+    await homeClient.send(requests.createTerminalPairingLinkRequest("cli", remoteAlias, 15 * 60 * 1000)),
+    "TerminalPairingLinkCreated",
+  ).pairing
+  assert(pairing?.pairing_link, "remote CLI pairing link should be returned")
+  let receiver, remoteCli = null
   try {
+    receiver = await prepareRemoteTerminal({ remoteRoot, remoteCliRepo, apiUrl, ownerAccountSlug, ownerAccountId,
+      runSsh, shellQuote, sshArgs, spawnProcess, terminateChild })
+    const remoteCommand = [
+      "set -e",
+      "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
+      "export CHARIOX_TEST_TUI=1",
+      receiver.environment,
+      `mkdir -p ${shellQuote(remoteWorkspace)}`,
+      `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
+      [
+        "bun",
+        "dist/index.js",
+        "--terminal-pairing-link",
+        shellQuote(pairing.pairing_link),
+        "--automation-socket",
+        shellQuote(remoteSocket),
+        "--create-session",
+        "--alias",
+        shellQuote(remoteAlias),
+        "--workspace",
+        shellQuote(remoteWorkspace),
+        "--worktree",
+        shellQuote(remoteWorkspace),
+        "--client-id",
+        shellQuote(remoteClientId),
+        "--provider",
+        "dev-stub",
+        "--model",
+        "remote-cli-drill",
+        "--effort",
+        "low",
+      ].join(" "),
+    ].join("; ")
+
     await allowDevStubProvider(homeClient, requests, "remote-cli-home-kernel")
     log("remote-cli-start", { host: remoteCliHost, repo: remoteCliRepo, alias: remoteAlias })
     remoteCli = spawnProcess("ssh", sshArgs(remoteCommand, { tty: true }), {
@@ -501,6 +523,6 @@ export async function runHostedRemoteCliAssertions({
     })
   } finally {
     await terminateChild(remoteCli)
-    await runSsh(`rm -f ${shellQuote(remoteSocket)}; rm -rf ${shellQuote(remoteWorkspace)}`).catch(() => {})
+    await receiver?.cleanup()
   }
 }

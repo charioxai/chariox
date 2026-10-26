@@ -13,7 +13,9 @@ type ExecutionKey = (String, String);
 type ExecutionOutcome = Result<Response, String>;
 
 #[derive(Default)]
-pub(super) struct CancellationSignal {
+pub(crate) struct CancellationSignal {
+    parent: Option<Arc<CancellationSignal>>,
+    authority: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     requested: AtomicBool,
     stopped: AtomicBool,
     accepted: AtomicBool,
@@ -21,8 +23,29 @@ pub(super) struct CancellationSignal {
 }
 
 impl CancellationSignal {
-    pub(super) fn requested(&self) -> bool {
+    pub(crate) fn for_authority(
+        parent: Arc<Self>,
+        authority: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            parent: Some(parent),
+            authority: Some(Box::new(authority)),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn request_cancel(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+    pub(crate) fn requested(&self) -> bool {
         self.requested.load(Ordering::Acquire)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.requested())
+            || self
+                .authority
+                .as_ref()
+                .is_some_and(|authority| !authority())
     }
     pub(super) fn confirm_stop(&self) {
         self.accepted.store(true, Ordering::Release);
@@ -93,12 +116,12 @@ impl Drop for ActiveAction {
 enum ExecutionAdmission {
     Start(ActiveAction),
     Wait(Arc<ExecutionRecord>),
-    Replay(ExecutionOutcome),
+    Replay(Box<ExecutionOutcome>),
 }
 
 enum RecoveryAdmission {
     Wait(Arc<ExecutionRecord>),
-    Replay(ExecutionOutcome),
+    Replay(Box<ExecutionOutcome>),
 }
 
 impl ActiveAction {
@@ -130,6 +153,15 @@ impl ExecutionRecord {
 
 impl BrowserActionExecutions {
     #[cfg(test)]
+    pub(super) fn test_is_active(&self, session_id: &str, execution_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .active
+            .contains_key(&(session_id.into(), execution_id.into()))
+    }
+
+    #[cfg(test)]
     fn forget_completed(&self) {
         self.state
             .lock()
@@ -160,7 +192,9 @@ impl BrowserActionExecutions {
             .map_err(|_| "browser execution registry poisoned")?;
         if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
             return if completed.fingerprint == fingerprint {
-                Ok(ExecutionAdmission::Replay(completed.outcome.clone()))
+                Ok(ExecutionAdmission::Replay(Box::new(
+                    completed.outcome.clone(),
+                )))
             } else {
                 Err("browser execution identity was reused for a different request".into())
             };
@@ -212,7 +246,9 @@ impl BrowserActionExecutions {
             .map_err(|_| "browser execution registry poisoned")?;
         if let Some(completed) = state.completed.iter().find(|entry| entry.key == key) {
             return if completed.fingerprint == fingerprint {
-                Ok(RecoveryAdmission::Replay(completed.outcome.clone()))
+                Ok(RecoveryAdmission::Replay(Box::new(
+                    completed.outcome.clone(),
+                )))
             } else {
                 Err("browser execution identity was reused for a different recovery request".into())
             };
@@ -300,7 +336,7 @@ impl BrowserControllerProcessStore {
         request_id: &str,
     ) -> bool {
         let (signal, planned) = {
-            let mut state = self
+            let state = self
                 .executions
                 .state
                 .lock()
@@ -361,6 +397,10 @@ impl BrowserControllerProcessStore {
         true
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing perform_cancellable_browser_action operation signature and explicit context arguments"
+    )]
     pub(crate) fn perform_cancellable_browser_action(
         &self,
         session_id: &str,
@@ -380,7 +420,7 @@ impl BrowserControllerProcessStore {
             .executions
             .register(session_id, execution_id, fingerprint, false)?
         {
-            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Replay(outcome) => return *outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
@@ -388,18 +428,20 @@ impl BrowserControllerProcessStore {
             let _barrier = self.lock_tab_mutation_barrier(&active.signal)?;
             let lane = self.tab_mutation_lane(target_id)?;
             let _lane = Self::lock_tab_mutation_lane(&lane, &active.signal)?;
-            let pending = ownership
+            let mut ownership = ownership
                 .lock()
-                .map_err(|_| "browser controller supervisor lock poisoned")?
-                .begin_action(
-                    session_id,
-                    target_id,
-                    document_id,
-                    node_ref,
-                    action,
-                    timeout_ms,
-                    &active.signal,
-                )?;
+                .map_err(|_| "browser controller supervisor lock poisoned")?;
+            self.authorize()?;
+            let pending = ownership.begin_action(
+                session_id,
+                target_id,
+                document_id,
+                node_ref,
+                action,
+                timeout_ms,
+                &active.signal,
+            )?;
+            drop(ownership);
             let result = pending
                 .wait(&active.signal)?
                 .into_result::<BrowserControllerActionResult>("browser.action")?;
@@ -428,8 +470,11 @@ impl BrowserControllerProcessStore {
         files: &BrowserUploadFiles,
     ) -> ExecutionOutcome {
         let fingerprint = upload_fingerprint(target_id, document_id, node_ref, files)?;
-        let controller_paths = files.controller_paths();
-        let file_count = controller_paths.len();
+        let file_count = files.file_count();
+        let mut params = files.controller_params();
+        params["target_id"] = target_id.into();
+        params["document_id"] = document_id.into();
+        params["node_ref"] = node_ref.into();
         self.perform_cancellable_tab_mutation(
             session_id,
             execution_id,
@@ -437,12 +482,7 @@ impl BrowserControllerProcessStore {
             Response::Upload { result: None },
             target_id,
             "browser.upload",
-            serde_json::json!({
-                "target_id": target_id,
-                "document_id": document_id,
-                "node_ref": node_ref,
-                "file_paths": controller_paths,
-            }),
+            params,
             move |response| {
                 let result =
                     response.into_result::<BrowserControllerUploadResult>("browser.upload")?;
@@ -454,6 +494,10 @@ impl BrowserControllerProcessStore {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing perform_cancellable_browser_import operation signature and explicit context arguments"
+    )]
     pub(crate) fn perform_cancellable_browser_import(
         &self,
         session_id: &str,
@@ -554,7 +598,7 @@ impl BrowserControllerProcessStore {
             .executions
             .register(session_id, execution_id, fingerprint, false)?
         {
-            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Replay(outcome) => return *outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
@@ -562,10 +606,17 @@ impl BrowserControllerProcessStore {
             let _barrier = self.lock_tab_mutation_barrier(&active.signal)?;
             let lane = self.tab_mutation_lane(target_id)?;
             let _lane = Self::lock_tab_mutation_lane(&lane, &active.signal)?;
-            let pending = ownership
+            let mut ownership = ownership
                 .lock()
-                .map_err(|_| "browser controller supervisor lock poisoned")?
-                .begin_cancellable_tab_mutation(session_id, method, &params, &active.signal)?;
+                .map_err(|_| "browser controller supervisor lock poisoned")?;
+            self.authorize()?;
+            let pending = ownership.begin_cancellable_tab_mutation(
+                session_id,
+                method,
+                &params,
+                &active.signal,
+            )?;
+            drop(ownership);
             finish(pending.wait(&active.signal)?)
         })();
         let outcome = if active.signal.stopped.load(Ordering::Acquire) && active.signal.accepted() {
@@ -596,7 +647,7 @@ impl BrowserControllerProcessStore {
             fingerprint,
             consume_pending_import_cancellation,
         )? {
-            ExecutionAdmission::Replay(outcome) => return outcome,
+            ExecutionAdmission::Replay(outcome) => return *outcome,
             ExecutionAdmission::Wait(record) => return record.wait(),
             ExecutionAdmission::Start(active) => active,
         };
@@ -617,6 +668,10 @@ impl BrowserControllerProcessStore {
         active.finish(outcome)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing recover_cancellable_browser_action operation signature and explicit context arguments"
+    )]
     pub(crate) fn recover_cancellable_browser_action(
         &self,
         session_id: &str,
@@ -654,7 +709,7 @@ impl BrowserControllerProcessStore {
             .executions
             .recover(session_id, execution_id, fingerprint)?
         {
-            RecoveryAdmission::Replay(outcome) => outcome,
+            RecoveryAdmission::Replay(outcome) => *outcome,
             RecoveryAdmission::Wait(record) => record.wait(),
         }
     }
@@ -713,7 +768,7 @@ mod tests {
             executions
                 .register("room", "00000000000000000000000000000001", fingerprint, false)
                 .unwrap(),
-            ExecutionAdmission::Replay(outcome) if outcome == completed()
+            ExecutionAdmission::Replay(outcome) if *outcome == completed()
         ));
         let error =
             match executions.register("room", "00000000000000000000000000000001", [8; 32], false) {
@@ -725,7 +780,7 @@ mod tests {
             executions
                 .recover("room", "00000000000000000000000000000001", fingerprint)
                 .unwrap(),
-            RecoveryAdmission::Replay(outcome) if outcome == completed()
+            RecoveryAdmission::Replay(outcome) if *outcome == completed()
         ));
     }
 

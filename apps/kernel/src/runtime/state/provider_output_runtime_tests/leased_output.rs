@@ -62,10 +62,14 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
         "owner",
         "claude",
         &account.profile_id,
+        app.config(),
     )
     .expect("observe isolated fixture account");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    // MP-08 / MP-10 / MP-11: use the production independent readiness consumer.
+    let output_runtime = runtime.clone();
+    let output_pump = tokio::spawn(async move { output_runtime.run_provider_output_pump().await });
     let lease = runtime
         .create_relay_execution_lease("home", "room", "agent", false, "owner")
         .await
@@ -156,7 +160,14 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                     .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned()),
             );
         }
-        if !projected_errors.is_empty() || tokio::time::Instant::now() >= deadline {
+        let settled = runtime
+            .owned
+            .session_store
+            .get_session(&leased.backing_session_id)
+            .unwrap()
+            .active_prompt_for_agent(&leased.backing_agent_id)
+            .is_none();
+        if (!projected_errors.is_empty() && settled) || tokio::time::Instant::now() >= deadline {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -178,11 +189,13 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
             .is_none(),
         "failed turn must settle"
     );
+    output_pump.abort();
+    let _ = output_pump.await;
 }
 
 fn run_isolated_launch_fixture() {
     let root = std::env::temp_dir().join(format!(
-        "chariox-leased-output-start-{}-{}",
+        "ch-lease-{}-{}",
         std::process::id(),
         rand::random::<u64>(),
     ));
@@ -227,6 +240,8 @@ fi
         .unwrap()
         .is_none()
     {
+        // MP-08 / MP-10 / MP-11: signal only the fixture's reserved child PID.
+        assert!(child.id() > 1, "refuse a system PID during fixture cleanup");
         let _ = child.kill();
         let _ = child.wait();
         panic!("isolated leased launch fixture timed out");

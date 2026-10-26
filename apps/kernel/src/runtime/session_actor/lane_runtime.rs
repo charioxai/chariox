@@ -31,9 +31,12 @@ struct SessionCommandEnvelope {
     telemetry: LaneCommandTrace,
     caller_user_id: String,
     caller_metaagent_id: Option<String>,
+    provider_run_id: Option<String>,
     terminal_caller: bool,
     connection_class: Option<KernelConnectionClass>,
     external_grant_id: Option<String>,
+    /// MP-08/MP-10/MP-11: the submitting turn a queued sudo command keeps.
+    sudo_binding: Option<(String, String)>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -92,6 +95,7 @@ impl SessionRuntime {
         command: KernelCommand,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let sudo_binding = self.store.sudo_binding(&command, &request);
         let session_id = self.resolve_session_lane_key(&request).await?;
         let lane_id = session_command_lane_id(&request, &session_id);
         let lane = self.session_lane(&lane_id, &session_id).await;
@@ -108,6 +112,7 @@ impl SessionRuntime {
         let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
         let connection_class = command.caller.connection_class;
         let external_grant_id = command.external_grant_id();
+        let provider_run_id = command.provider_run_id.clone();
         let command_id = command.command_id;
         let command_type = command.command_type;
         match lane.try_send(SessionCommandEnvelope {
@@ -116,9 +121,11 @@ impl SessionRuntime {
             command_type,
             caller_user_id,
             caller_metaagent_id,
+            provider_run_id,
             terminal_caller,
             connection_class,
             external_grant_id,
+            sudo_binding,
             request,
             result_tx,
         }) {
@@ -198,8 +205,8 @@ impl SessionRuntime {
 
     async fn remove_session_lanes(&self, session_id: &str) {
         let mut lanes = self.lanes.lock().await;
-        lanes.remove(session_id);
-        lanes.remove(&format!("{session_id}{ROOM_INTERRUPT_LANE_SUFFIX}"));
+        let prefix = format!("{session_id}::");
+        lanes.retain(|id, _| id != session_id && !id.starts_with(&prefix));
     }
 
     #[allow(dead_code)]
@@ -239,7 +246,8 @@ impl SessionRuntime {
         command_type: impl Into<String>,
         request: LocalDaemonRequest,
     ) -> Result<oneshot::Receiver<Result<LocalDaemonResponse, DaemonError>>, DaemonError> {
-        let lane = self.session_lane(session_id, session_id).await;
+        let lane_id = session_command_lane_id(&request, session_id);
+        let lane = self.session_lane(&lane_id, session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         let command_id = command_id.into();
         let command_type = command_type.into();
@@ -255,9 +263,11 @@ impl SessionRuntime {
             ),
             caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
             caller_metaagent_id: None,
+            provider_run_id: None,
             terminal_caller: false,
             connection_class: None,
             external_grant_id: None,
+            sudo_binding: None,
             request,
             result_tx,
         })
@@ -269,6 +279,10 @@ impl SessionRuntime {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_session_command_lane operation signature and explicit context arguments"
+)]
 async fn run_session_command_lane(
     store: SessionRuntimeStore,
     focus_projection: FocusedAgentProjection,
@@ -310,6 +324,12 @@ async fn run_session_command_lane(
             .as_deref()
             .map(|id| store.authorize_external_access(id, &envelope.request))
             .transpose();
+        let authorization = authorization.and_then(|_| {
+            store.authorize_room_provider_epoch(
+                envelope.caller_metaagent_id.as_deref(),
+                envelope.provider_run_id.as_deref(),
+            )
+        });
         let result = match authorization {
             Err(error) => Err(error),
             Ok(_) => {
@@ -319,6 +339,15 @@ async fn run_session_command_lane(
                             .external_grant_id
                             .as_deref()
                             .map(|id| (id, &envelope.request)),
+                        envelope.sudo_binding,
+                    )
+                    .with_room_provider_origin(
+                        envelope.caller_metaagent_id.as_deref(),
+                        envelope.provider_run_id.as_deref(),
+                    )
+                    .with_room_request_origin(
+                        envelope.caller_metaagent_id.as_deref(),
+                        &envelope.request,
                     )
                     .execute(
                         envelope.request,
@@ -364,6 +393,16 @@ async fn run_session_command_lane(
 }
 
 fn session_command_lane_id(request: &LocalDaemonRequest, session_id: &str) -> String {
+    let agent_id = match request {
+        LocalDaemonRequest::UpdateAgentProfile(request) => Some(&request.agent_id),
+        LocalDaemonRequest::UpdateAgentConfig(request) => Some(&request.agent_id),
+        _ => None,
+    };
+    if let Some(agent_id) = agent_id {
+        // Preserve mutation ordering for this agent while its native command
+        // waits, without blocking notices, input or interaction responses.
+        return format!("{session_id}::agent-config:{agent_id}");
+    }
     if matches!(
         request,
         LocalDaemonRequest::CancelRoomEnvironmentAction(_)
@@ -389,44 +428,6 @@ fn command_session_actor_user_id(command: &KernelCommand) -> String {
             .user_id
             .clone()
             .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::local::{
-        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentStateRequest,
-        RequestRoomEnvironmentInputTakeoverRequest,
-    };
-    use crate::session::InputTarget;
-
-    #[test]
-    fn room_interrupts_use_one_lane_independent_from_ordinary_session_work() {
-        let cancel =
-            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
-                session_id: "session-1".to_string(),
-                action_id: "action-7".to_string(),
-            });
-        let takeover = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
-            RequestRoomEnvironmentInputTakeoverRequest {
-                session_id: "session-1".to_string(),
-                target: InputTarget::Desktop,
-            },
-        );
-        let query = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
-            session_id: "session-1".to_string(),
-        });
-
-        assert_eq!(
-            session_command_lane_id(&cancel, "session-1"),
-            "session-1::room-interrupt"
-        );
-        assert_eq!(
-            session_command_lane_id(&takeover, "session-1"),
-            "session-1::room-interrupt"
-        );
-        assert_eq!(session_command_lane_id(&query, "session-1"), "session-1");
     }
 }
 
@@ -475,5 +476,43 @@ fn local_response_kind(response: &LocalDaemonResponse) -> &'static str {
         LocalDaemonResponse::TerminalResized { .. } => "TerminalResized",
         LocalDaemonResponse::RuntimeNotices { .. } => "RuntimeNotices",
         _ => "Other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::{
+        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentStateRequest,
+        RequestRoomEnvironmentInputTakeoverRequest,
+    };
+    use crate::session::InputTarget;
+
+    #[test]
+    fn room_interrupts_use_one_lane_independent_from_ordinary_session_work() {
+        let cancel =
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: "session-1".to_string(),
+                action_id: "action-7".to_string(),
+            });
+        let takeover = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: "session-1".to_string(),
+                target: InputTarget::Desktop,
+            },
+        );
+        let query = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(
+            session_command_lane_id(&cancel, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(
+            session_command_lane_id(&takeover, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(session_command_lane_id(&query, "session-1"), "session-1");
     }
 }

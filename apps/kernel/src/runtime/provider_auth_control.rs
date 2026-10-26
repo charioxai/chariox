@@ -19,16 +19,56 @@ const PROVIDER_LOGIN_MONITOR_INTERVAL: std::time::Duration =
 use crate::runtime::claude_setup_token_login::{self, CLAUDE_SETUP_TOKEN_METHOD};
 pub(crate) async fn execute_provider_auth_request(
     runtime_state: &KernelRuntimeState,
-    owner_user_id: &str,
+    command: &crate::runtime::command::KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(
+        &crate::runtime::command::command_caller_user_id(command),
+    );
     match request {
         LocalDaemonRequest::GetProviderAuthStatus(request) => {
             execute_get_provider_auth_status_request(runtime_state, &owner_user_id, request).await
         }
         LocalDaemonRequest::StartProviderLogin(request) => {
-            execute_start_provider_login_request(runtime_state, &owner_user_id, request).await
+            // MP-08/MP-10/MP-11: browser/account enrollment uses the same
+            // session interaction as the scoped TUI setup-token command.
+            let target = if crate::provider::canonical_provider_family(&request.provider)
+                == Some("claude")
+                && matches!(request.method.as_deref(), None | Some("setup_token"))
+            {
+                if let Some(session_id) = command.session_id.as_deref() {
+                    Some((
+                        session_id,
+                        runtime_state
+                            .vault_prompt_agent(
+                                session_id,
+                                command.agent_id.as_deref(),
+                                "Claude authorization",
+                            )
+                            .await?,
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let response =
+                execute_start_provider_login_request(runtime_state, &owner_user_id, request)
+                    .await?;
+            if let (
+                Some((session_id, agent_id)),
+                LocalDaemonResponse::ProviderLoginStarted { login },
+            ) = (target, &response)
+            {
+                runtime_state.spawn_provider_login_workflow(
+                    session_id,
+                    &agent_id,
+                    &owner_user_id,
+                    login.clone(),
+                );
+            }
+            Ok(response)
         }
         LocalDaemonRequest::GetProviderLoginStatus(request) => {
             execute_get_provider_login_status_request(runtime_state, &owner_user_id, request).await
@@ -53,11 +93,26 @@ pub(crate) async fn execute_get_provider_auth_status_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        provider_auth_status_response(&registry, &owner_user_id, request)
+    let config = runtime_state.config_snapshot().await;
+    let (result, changed) = tokio::task::spawn_blocking(move || {
+        let before = registry
+            .get(&owner_user_id, &request.provider, &request.account_profile)
+            .ok();
+        let provider = request.provider.clone();
+        let profile_id = request.account_profile.clone();
+        let result = provider_auth_status_response(&registry, &owner_user_id, request, &config);
+        let after = registry.get(&owner_user_id, &provider, &profile_id).ok();
+        (result, before != after)
     })
     .await
-    .map_err(|error| provider_auth_task_error("get provider auth status", error))?
+    .map_err(|error| provider_auth_task_error("get provider auth status", error))?;
+    if changed {
+        runtime_state
+            .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        runtime_state.record_waiting_room_change();
+    }
+    result
 }
 
 async fn reconcile_running_terminal_provider_auth(
@@ -105,8 +160,7 @@ async fn start_terminal_provider_auth(
         && !matches!(provider, "claude" | "opencode")
     {
         return Err(provider_login_error(format!(
-            "provider `{}` does not expose a provider-native login command",
-            provider
+            "provider `{provider}` does not expose a provider-native login command"
         )));
     }
     if operation == crate::runtime::state::ProviderAuthProcessOperation::Logout
@@ -202,6 +256,7 @@ async fn start_terminal_provider_auth(
     runtime_state.provider_login_process_store().insert(
         crate::runtime::state::ProviderLoginProcessRecord {
             owner_user_id: owner_user_id.to_string(),
+            kernel_id: runtime_state.provider_login_kernel_id(),
             provider: provider.to_string(),
             account_profile: profile.profile_id.clone(),
             credential_scope,
@@ -272,7 +327,7 @@ fn terminal_provider_auth_args(
         (
             "claude",
             crate::runtime::state::ProviderAuthProcessOperation::Login,
-            Some(CLAUDE_SETUP_TOKEN_METHOD),
+            Some(CLAUDE_SETUP_TOKEN_METHOD) | None,
         ) => vec!["setup-token".to_string()],
         (
             "opencode",
@@ -371,13 +426,15 @@ pub(crate) async fn execute_get_provider_login_status_request(
         let registry = runtime_state.provider_account_profile_registry().clone();
         let owner = owner_user_id.to_string();
         let profile_id = record.account_profile.clone();
+        let config = runtime_state.config_snapshot().await;
         let refresh_result = tokio::task::spawn_blocking(move || {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_response(
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
                     &registry,
                     &owner,
                     "codex",
                     &profile_id,
+                    &config,
                 )?;
             refresh_provider_account_family_after_login(
                 &registry,
@@ -386,11 +443,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
                 &profile_id,
                 refreshed,
                 |candidate_profile_id| {
-                    crate::local::provider_requests::refresh_provider_account_profile_response(
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
                         &registry,
                         &owner,
                         "codex",
                         candidate_profile_id,
+                        &config,
                     )
                 },
             )
@@ -474,10 +532,11 @@ pub(crate) async fn execute_get_provider_login_status_request(
         let owner = owner_user_id.to_string();
         let provider = record.provider.clone();
         let profile = record.account_profile.clone();
+        let config = runtime_state.config_snapshot().await;
         let refresh_result = tokio::task::spawn_blocking(move || {
             let refreshed =
-                crate::local::provider_requests::refresh_provider_account_profile_response(
-                    &registry, &owner, &provider, &profile,
+                crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                    &registry, &owner, &provider, &profile, &config,
                 )?;
             if record.operation == crate::runtime::state::ProviderAuthProcessOperation::Login
                 && refreshed.auth_state
@@ -490,11 +549,12 @@ pub(crate) async fn execute_get_provider_login_status_request(
                     &profile,
                     refreshed,
                     |candidate_profile_id| {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &registry,
                             &owner,
                             &provider,
                             candidate_profile_id,
+                            &config,
                         )
                     },
                 )
@@ -756,9 +816,14 @@ pub(crate) async fn execute_start_provider_login_request(
 pub(super) async fn execute_start_provider_login_with_overwrite(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
-    request: StartProviderLoginRequest,
+    mut request: StartProviderLoginRequest,
     overwrite: bool,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+        && request.method.is_none()
+    {
+        request.method = Some(CLAUDE_SETUP_TOKEN_METHOD.into());
+    }
     crate::account_profile::validate_provider_enrollment_method(
         &request.provider,
         request.method.as_deref(),
@@ -795,6 +860,7 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
             runtime_state.provider_login_process_store().insert(
                 crate::runtime::state::ProviderLoginProcessRecord {
                     owner_user_id: owner_user_id.to_string(),
+                    kernel_id: runtime_state.provider_login_kernel_id(),
                     provider: "codex".to_string(),
                     account_profile: login.account_profile.clone(),
                     credential_scope: login.account_profile.clone(),
@@ -1033,7 +1099,7 @@ mod tests {
         );
         assert_eq!(
             terminal_provider_auth_args("claude", ProviderAuthProcessOperation::Login, None),
-            ["auth", "login"]
+            ["setup-token"]
         );
     }
 

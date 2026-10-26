@@ -193,7 +193,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn read_complete_room_screenshot(
+    pub(super) async fn read_complete_room_screenshot(
         &self,
         session_id: &str,
         slice: &SliceRecord,
@@ -343,6 +343,10 @@ impl KernelRuntimeState {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_bound_room_screenshot_chunk operation signature and explicit context arguments"
+    )]
     pub(crate) fn execute_bound_room_screenshot_chunk(
         &self,
         authenticated_kernel_id: &str,
@@ -389,12 +393,24 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn authorize_room_screenshot(
+    pub(super) async fn authorize_room_screenshot(
         &self,
         caller: &KernelCaller,
         session_id: &str,
         attachment_id: &str,
     ) -> Result<SliceRecord, DaemonError> {
+        self.authorize_room_observation_attachment(caller, session_id, attachment_id)
+            .await?;
+        self.running_room_screenshot_slice(session_id)
+    }
+
+    // MP-08/MP-10/MP-11: Browser and Computer share attachment admission.
+    pub(super) async fn authorize_room_observation_attachment(
+        &self,
+        caller: &KernelCaller,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
         if !matches!(
             caller.caller_kind,
             KernelCallerKind::LocalClient | KernelCallerKind::RemoteClient
@@ -415,7 +431,7 @@ impl KernelRuntimeState {
                 user_id: caller_user_id.to_string(),
             });
         }
-        self.running_room_screenshot_slice(session_id)
+        Ok(())
     }
 
     pub(in crate::runtime::state) fn running_room_screenshot_slice(

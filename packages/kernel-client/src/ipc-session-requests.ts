@@ -77,6 +77,16 @@ export function attachToSessionRequest(sessionId: string, clientId: string) {
   }
 }
 
+// MP-08 / MP-10: protocol 508, one flight through the normal kernel read/attach paths.
+export function attachSessionViewRequest(sessionId: string, clientId: string, preferredAgentId: string | null = null) {
+  return { AttachSessionView: {
+    session_id: sessionId,
+    client_id: clientId,
+    capability_level: "FullTerminal",
+    preferred_agent_id: preferredAgentId,
+  } }
+}
+
 export function detachFromSessionRequest(attachmentId: string) {
   return {
     DetachFromSession: {
@@ -277,4 +287,8 @@ export function abortMetaagentTaskRequest(
       reason: reason ?? null,
     },
   }
+}
+
+export function setProjectPinnedRequest(projectId: string, pinned: boolean) {
+  return { SetProjectPinned: { project_id: projectId, pinned } }
 }

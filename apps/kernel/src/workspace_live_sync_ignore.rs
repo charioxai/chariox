@@ -113,12 +113,7 @@ pub(crate) fn workspace_source_capability_path(path: &str) -> bool {
 }
 
 pub(crate) fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
-    if path == ".charioxignore"
-        || path == ".git"
-        || path.starts_with(".git/")
-        || path == ".chariox"
-        || (path.starts_with(".chariox/") && !workspace_source_capability_path(path))
-    {
+    if workspace_runtime_excluded_path(path) {
         return true;
     }
     if path.split('/').any(|part| {
@@ -133,6 +128,20 @@ pub(crate) fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     }) {
         return true;
     }
+    false
+}
+
+// MP-08 / MP-11: context Copy retains runtime exclusions while selected secret
+// files use the Vault; live sync keeps its stricter secret exclusions above.
+pub(crate) fn workspace_runtime_excluded_path(path: &str) -> bool {
+    if path == ".charioxignore"
+        || path == ".git"
+        || path.starts_with(".git/")
+        || path == ".chariox"
+        || (path.starts_with(".chariox/") && !workspace_source_capability_path(path))
+    {
+        return true;
+    }
     if path.split('/').any(|part| {
         part.ends_with(".sock")
             || part.ends_with(".socket")
@@ -140,11 +149,8 @@ pub(crate) fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
     }) {
         return true;
     }
-    path.split('/').any(|part| {
-        WORKSPACE_LIVE_SYNC_FORCE_EXCLUDE_DIRS
-            .iter()
-            .any(|excluded| part == *excluded)
-    })
+    path.split('/')
+        .any(|part| WORKSPACE_LIVE_SYNC_FORCE_EXCLUDE_DIRS.contains(&part))
 }
 
 pub(crate) fn workspace_live_sync_ignored_path(path: &str, ignore_patterns: &[String]) -> bool {

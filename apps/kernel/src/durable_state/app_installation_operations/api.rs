@@ -32,6 +32,7 @@ impl DurableKernelStateStore {
             .recv()
             .map_err(|_| InstallOperationError::CommitUnknown)?
     }
+    #[cfg(test)]
     pub(crate) fn begin_first_app_install(
         &self,
         owner: &str,

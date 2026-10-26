@@ -1271,10 +1271,6 @@ test("real public create binds and starts the home-owned slice before attach use
       "ListSlices",
       "GetRoomEnvironmentSlice",
       "GetRoomEnvironmentState",
-      "ListSessions",
-      "EndSession",
-      "DeleteSession",
-      "ListSessions",
     ]);
     assert.ifError(serverError);
 
@@ -1627,10 +1623,6 @@ test("real LocalIpcClient cleanup deletes a slice after post-create validation f
       "ListSlices",
       "GetRoomEnvironmentSlice",
       "GetRoomEnvironmentState",
-      "ListSessions",
-      "EndSession",
-      "DeleteSession",
-      "ListSessions",
     ]);
     assert.ifError(serverError);
   } finally {

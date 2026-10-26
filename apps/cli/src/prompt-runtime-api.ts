@@ -22,7 +22,7 @@ import { expectVariant } from "./ipc-response.js"
 import { launchProviderRun } from "./provider-api.js"
 import { describeCliError } from "./runtime.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
-import { resolvePromptRecoveryProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
+import { resolveAgentLaunchAccountProfile, resolvePromptRecoveryProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
 import {
   expectPromptSubmittedPayload,
   promptSubmissionOutcomeName,
@@ -80,7 +80,7 @@ export async function submitPromptWithRecovery(
       client,
       sessionId,
       recoveryLaunch.launch.provider,
-      options.accountProfile,
+      resolveAgentLaunchAccountProfile(recoveryLaunch.targetAgent, options.accountProfile),
       recoveryLaunch.launch.model,
       recoveryLaunch.launch.effort,
       recoveryLaunch.targetAgentId,
@@ -120,8 +120,9 @@ export async function cancelActivePrompt(
   client: LocalIpcClient,
   sessionId: string,
   attachmentId: string,
+  targetAgentId?: string | null,
 ): Promise<void> {
-  await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId))
+  await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId, targetAgentId))
 }
 
 export async function steerQueuedPrompt(
@@ -179,4 +180,31 @@ export async function respondToInteraction(
 function isRecoverableProviderError(error: unknown): boolean {
   const message = describeCliError(error)
   return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
+}
+
+/** MP-08 / MP-10 / MP-11 A07: the owner's protected hand-off answer; the
+ * kernel returns only the safe outcome. Never resent on reconnect. */
+export async function respondToHandoff(
+  client: LocalIpcClient,
+  sessionId: string,
+  interactionId: string,
+  action: import("@chariox/kernel-client/owner-handoff").HandoffResponseAction,
+): Promise<import("@chariox/kernel-client/owner-handoff").HandoffOutcome> {
+  const { respondToHandoffRequest } = await import("@chariox/kernel-client/owner-handoff")
+  const response = await client.send<Record<string, unknown>>(respondToHandoffRequest(sessionId, interactionId, action))
+  const payload = expectVariant<{ outcome: import("@chariox/kernel-client/owner-handoff").HandoffOutcome }>(response, "HandoffResolved")
+  if (payload.outcome?.handoff_id !== interactionId) throw new Error("hand-off response identity mismatch")
+  return payload.outcome
+}
+
+/** MP-08 / MP-10 / MP-11: kernel-wide access popup; no session projection. */
+export async function respondToKernelAccessDecision(
+  client: LocalIpcClient, interactionId: string, choiceId: string,
+  proof?: InteractionPasskeyProof | null,
+): Promise<void> {
+  const response = await client.send<Record<string, unknown>>(
+    respondToInteractionRequest("kernel-access", interactionId, choiceId, null, proof),
+  )
+  const payload = expectVariant<{ interaction_id: string }>(response, "KernelAccessDecisionResponded")
+  if (payload.interaction_id !== interactionId) throw new Error("access response identity mismatch")
 }

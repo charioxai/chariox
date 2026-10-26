@@ -30,6 +30,7 @@ managed_state=$managed_home/.chariox
 legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$script_root/managed-kernel-builder-pin-transaction.sh"
+. "$script_root/managed-kernel-recovery-release.sh"
 . "$script_root/managed-app-storage.sh"
 managed_provider_topology=${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}
 case "$managed_provider_topology" in
@@ -638,6 +639,7 @@ rollback_transaction() {
   fi
   rolling_back=1
   validate_builder_pin_journal "$transaction_root" || return 1
+  verify_recovery_release "$transaction_root" previous || return 1
   previous_target=$(read_single_line "$transaction_root/previous-current") || return 1
   previous_digest=$(read_single_line "$transaction_root/previous-digest") || return 1
   previous_slice_build_context=$(read_single_line "$transaction_root/previous-slice-build-context") || return 1
@@ -749,8 +751,14 @@ recover_terminal_transaction() {
   [ "$(readlink "$slice_build_context_link")" = "$terminal_slice_build_context" ] || return 1
   verify_slice_build_context_facade "$terminal_slice_build_context" || return 1
   case "$terminal_phase" in
-    committed) validate_active_builder_pin "$terminal_transaction" target "$terminal_current" || return 1 ;;
-    rolled_back) validate_active_builder_pin "$terminal_transaction" previous "$terminal_current" || return 1 ;;
+    committed)
+      verify_recovery_release "$terminal_transaction" target || return 1
+      validate_active_builder_pin "$terminal_transaction" target "$terminal_current" || return 1
+      ;;
+    rolled_back)
+      verify_recovery_release "$terminal_transaction" previous || return 1
+      validate_active_builder_pin "$terminal_transaction" previous "$terminal_current" || return 1
+      ;;
   esac
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
     "$receipt_path" "$terminal_receipt" "$terminal_digest" \
@@ -778,6 +786,7 @@ recover_transaction() {
     target_slice_build_context=$(read_single_line "$transaction_root/target-slice-build-context") || return 1
     [ "$target_slice_build_context" = "$signed_slice_build_context_target" ] || return 1
     verify_signed_slice_build_context_facade || return 1
+    verify_recovery_release "$transaction_root" target || return 1
     validate_active_builder_pin "$transaction_root" target "$target_current" || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
       "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest" \
@@ -794,6 +803,7 @@ recover_transaction() {
     [ "$(readlink "$current_link")" = "$previous_current" ] || return 1
     previous_slice_build_context=$(read_single_line "$transaction_root/previous-slice-build-context") || return 1
     verify_slice_build_context_facade "$previous_slice_build_context" || return 1
+    verify_recovery_release "$transaction_root" previous || return 1
     validate_active_builder_pin "$transaction_root" previous "$previous_current" || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
       "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \

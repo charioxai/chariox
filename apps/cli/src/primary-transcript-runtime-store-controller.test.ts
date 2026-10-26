@@ -35,3 +35,15 @@ test("primary transcript runtime store owns mutable render and tool state", () =
   assert.equal(store.getEmptyRenderable(), undefined)
   assert.equal(store.entryWrapperY(99), null)
 })
+
+
+test("MP-08 / MP-10 / MP-11 empty/loading primary frame releases cached startup cover", () => {
+  const store = createPrimaryTranscriptRuntimeStoreController<{ wrapper: { y?: number } }, { id: string }, never>()
+  assert.equal(store.hasMountedSurface(), false)
+  store.setEmptyRenderable({ id: "loading-or-genuinely-empty" })
+  assert.equal(store.hasMountedSurface(), true)
+  store.setEmptyRenderable(undefined)
+  assert.equal(store.hasMountedSurface(), false)
+  store.transcriptRenderables.set(1, { wrapper: {} })
+  assert.equal(store.hasMountedSurface(), true)
+})

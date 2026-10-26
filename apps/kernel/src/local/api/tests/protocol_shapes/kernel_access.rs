@@ -4,8 +4,11 @@ use crate::runtime::state::{critical_approval_audit_payload, PASSKEY_ALREADY_ANS
 use crate::transport::kernel_protocol::KernelEvent;
 
 #[test]
-fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+fn sudo_protocol_487_window_extension_and_session_status_shapes() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let turn = crate::local::KernelSudoTurn {
         entry_id: "sudo:one".into(),
         session_id: "s".into(),
@@ -15,21 +18,48 @@ fn sudo_protocol_415_attributes_one_turn_to_its_human_entry() {
         requester: None,
         prompt_id: Some("turn-one".into()),
         provider_run_id: Some("run-one".into()),
+        task_id: Some("sudo:one".into()),
+        duration_minutes: 120,
+        expires_at_ms: Some(7_200_000),
+        revision: 2,
+        warning_sent: false,
+        deadline: Some(std::time::Instant::now()),
+        placement: None,
     };
-    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn":turn,
-        "receipt":crate::runtime::state::sudo_approval_receipt(&turn, "other", "critical", "approve")});
+    let extend = LocalDaemonRequest::ExtendKernelSudo(crate::local::ExtendKernelSudoRequest {
+        session_id: "s".into(),
+        attachment_id: "terminal".into(),
+        entry_id: "sudo:one".into(),
+        revision: 2,
+    });
+    let mut session = crate::session::RuntimeSession::new(
+        "s",
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
+    session.set_sudo_windows(vec![turn.clone()]);
+    let snapshot = serde_json::json!({"kind": PasskeyPromptKind::Sudo, "turn": turn, "extend": extend,
+        "extended": LocalDaemonResponse::KernelSudoExtended { turn: turn.clone() },
+        "sudo_windows": serde_json::to_value(&session).unwrap()["sudo_windows"]});
+    // The monotonic deadline is kernel memory only and never serialized.
+    assert!(snapshot["turn"].get("deadline").is_none());
+    assert!(snapshot["turn"].get("token").is_none());
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "8f52a7b4c7bdf054826de5653268cf097b60b1ce0ed8aee9da0ee4aec664d83d"
+        "256bc3e160c1813a1255ad56fbf2ab952598b25e81d9e7db13933eaec552f956"
     );
-    assert!(snapshot["turn"].get("expires_at_ms").is_none());
-    assert!(snapshot["turn"].get("token").is_none());
 }
 
 #[test]
 fn kernel_access_lifetime_config_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let response = LocalDaemonResponse::UserConfig {
         path: "/state/config.toml".into(),
         config: crate::config::CharioxUserConfig::default(),
@@ -39,8 +69,8 @@ fn kernel_access_lifetime_config_is_versioned() {
     assert_eq!(
         lifetimes,
         &serde_json::json!({
-            "grant_default_minutes": 30,
-            "grant_max_minutes": 240,
+            "grant_default_minutes": 480,
+            "grant_max_minutes": 1440,
             "grant_extend_notice_minutes": 5,
             "request_timeout_minutes": 10,
         })
@@ -48,7 +78,7 @@ fn kernel_access_lifetime_config_is_versioned() {
     let digest = Sha256::digest(serde_json::to_vec(lifetimes).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "d1286fb0a2b6dd753fa9691cdc9c1338b823fd1d0c8c8df115108edf30fbd012"
+        "f8aaa273db488ebb9318507d59428ede59b5a75e8b2bb560ca2122a556a6c369"
     );
 }
 
@@ -66,7 +96,10 @@ fn wire_name(class: KernelConnectionClass) -> &'static str {
 
 #[test]
 fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let classes = [
         KernelConnectionClass::Terminal,
         KernelConnectionClass::ExternalAgent,
@@ -122,9 +155,14 @@ fn kernel_connection_classes_and_their_audit_attribution_are_versioned() {
 
 #[test]
 fn passkey_prompts_and_their_popup_event_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
+        sudo_request: None,
+        requester: None,
         session_id: "session-1".into(),
         session_alias: session_alias.map(str::to_owned),
         interaction_id: interaction_id.into(),
@@ -138,6 +176,8 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         max_lifetime_minutes: None,
     };
     let event = KernelEvent::PasskeyPromptsChanged {
+        kernel_now_ms: 1234,
+        closed: vec![],
         prompts: vec![
             prompt(Some("Payments"), "app_validation_op-1"),
             prompt(None, "app_validation_op-2"),
@@ -164,7 +204,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
     assert_eq!(
         wire,
         serde_json::json!({
-            "event": "passkey_prompts_changed",
+            "event": "passkey_prompts_changed", "kernel_now_ms": 1234, "closed": [],
             "prompts": [
                 expected(Some("Payments"), "app_validation_op-1"),
                 expected(None, "app_validation_op-2"),
@@ -176,11 +216,15 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         event
     );
     // An empty set closes every popup.
-    let closed =
-        serde_json::to_value(KernelEvent::PasskeyPromptsChanged { prompts: vec![] }).unwrap();
+    let closed = serde_json::to_value(KernelEvent::PasskeyPromptsChanged {
+        prompts: vec![],
+        kernel_now_ms: 1234,
+        closed: vec![],
+    })
+    .unwrap();
     assert_eq!(
         closed,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": [], "kernel_now_ms": 1234, "closed": []})
     );
     // A later answer to an answered prompt is refused with this code.
     assert_eq!(PASSKEY_ALREADY_ANSWERED, "PASSKEY_ALREADY_ANSWERED");
@@ -193,20 +237,22 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "eb4f707985865d80b8ddc73fcf3f95534c4b6a99c30de7fbe666da5830159350"
+        "d764a65dbd4879191cd96b35887b4aa69859628ab4363ff95413ae3fc28761b3"
     );
 }
 
 #[test]
-fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
+fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     use crate::local::{
         KernelAccessGrant, ListKernelAccessGrantsRequest, RequestKernelAccessRequest,
         RevokeKernelAccessGrantRequest,
     };
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let grant = KernelAccessGrant {
         grant_id: "g".into(),
-        session_id: "s".into(),
         owner_user_id: "local".into(),
         holder_pid: 42,
         holder_executable: "/usr/bin/agent".into(),
@@ -215,7 +261,6 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            session_id: "s".into(),
             holder_pid: 42,
             lifetime_minutes: Some(30),
         }),
@@ -236,6 +281,9 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
             sudo_turns: vec![],
         },
         LocalDaemonResponse::KernelAccessRevoked { revoked: 1 },
+        LocalDaemonResponse::KernelAccessDecisionResponded {
+            interaction_id: "g-grant".into(),
+        },
     ];
     for request in &requests {
         assert_eq!(
@@ -251,12 +299,19 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
             *response
         );
     }
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"RequestKernelAccess": {
+            "holder_pid": 42, "session_id": "obsolete"
+        }}))
+        .is_err(),
+        "451 rejects session-scoped clients"
+    );
     let snapshot = serde_json::json!({ "requests": requests, "responses": responses,
         "kinds": [PasskeyPromptKind::AccessGrant, PasskeyPromptKind::AccessExtension] });
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "328c2b79aca163f32a42062d5fa47cd81221f9134052e286c96e051b6a7b09f0"
+        "2e0ccb5c1c904a48d996076f62a500b3dcdab528ab6f1f8c9bbabc275c90f2c1"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestKernelAccess": {
@@ -268,7 +323,10 @@ fn process_bound_access_protocol_404_has_metadata_but_no_bearer() {
 
 #[test]
 fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let request = LocalDaemonRequest::RequestKernelSudo(crate::local::RequestKernelSudoRequest {
         agent_id: "a".into(),
         prompt: "full\nprompt".into(),
@@ -293,13 +351,136 @@ fn external_sudo_protocol_415_is_versioned_and_accepts_no_credentials() {
 
 #[test]
 fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
-    let turn: crate::local::KernelSudoTurn = serde_json::from_value(serde_json::json!({"entry_id":"sudo:external","session_id":"s","agent_id":"a","owner_user_id":"local","terminal_id":"host-terminal","prompt_id":"prompt","provider_run_id":"run","requester":{"grant_id":"grant","session_id":"s","owner_user_id":"local","holder_pid":123,"holder_executable":"/fixture/external","lifetime_minutes":30,"expires_at_ms":123456}})).unwrap();
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let turn: crate::local::KernelSudoTurn = serde_json::from_value(serde_json::json!({"entry_id":"sudo:external","session_id":"s","agent_id":"a","owner_user_id":"local","terminal_id":"host-terminal","prompt_id":"prompt","provider_run_id":"run","requester":{"grant_id":"grant","owner_user_id":"local","holder_pid":123,"holder_executable":"/fixture/external","lifetime_minutes":30,"expires_at_ms":123456}})).unwrap();
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "03d835d6424136bce70c39991d068f8664f8c32d05427c01cb779e010fc5b021"
+        "50fc270c940c3ed289e977949ad9e2c009ddc00771a6cb6d8484eca224b9af7a"
+    );
+}
+
+/// MP-08/MP-09/MP-10/MP-11 A10: the home's leased sudo fence is one peer
+/// request bound to relay peer protocol 83; its wire carries no credential.
+#[test]
+fn leased_sudo_fence_is_bound_to_relay_peer_protocol_83() {
+    use crate::transport::relay_peer::*;
+    assert_eq!(
+        RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    assert_eq!(
+        crate::runtime::state::LEASED_SUDO_PEER_PROTOCOL_VERSION,
+        RELAY_PEER_PROTOCOL_VERSION
+    );
+    let request = RelayPeerRequest::UpdateLeasedSudo {
+        leased_agent_id: "leased-1".into(),
+        home_prompt_id: "prompt-1".into(),
+        grant: LeasedSudoGrant {
+            entry_id: "sudo:0123".into(),
+            revision: 2,
+            remaining_ms: 3_600_000,
+            initial: true,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"kind":"update_leased_sudo",
+            "leased_agent_id":"leased-1","home_prompt_id":"prompt-1",
+            "grant":{"entry_id":"sudo:0123","revision":2,"remaining_ms":3_600_000,"initial":true}
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(RelayPeerResponse::LeasedSudoUpdated).unwrap(),
+        serde_json::json!({"kind":"leased_sudo_updated"})
+    );
+}
+
+// MP-08 / MP-10 / MP-11: shared interaction/event wire identity, including u64 precision.
+#[test]
+fn access_requester_protocol_470_shape_and_hash() {
+    use crate::local::{KernelAccessProviderHarness, KernelAccessRequester};
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let requester: KernelAccessRequester = serde_json::from_value(serde_json::json!({"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"})).unwrap();
+    let interaction: crate::session::RuntimeInteraction = serde_json::from_value(serde_json::json!({"id": "g-grant", "kernel_operation_id": "access-grant:g", "kind": "permission", "level": "warning", "title": "Grant external agent access", "message": "Display only", "choices": [{"id": "refuse", "label": "Refuse", "reply": "refuse"}, {"id": "approve", "label": "Approve", "reply": "approve", "requires_passkey": true}], "timeout_sec": 300, "requested_at_ms": 1000, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
+    assert_eq!(interaction.requester(), Some(&requester));
+    let grant: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_grant", "session_id": "kernel-access", "interaction_id": "g-grant", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "lifetime_minutes": 30, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
+    let extension: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_extension", "session_id": "kernel-access", "interaction_id": "g-extension", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "lifetime_minutes": 30, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
+    let event = KernelEvent::PasskeyPromptsChanged {
+        kernel_now_ms: 1234,
+        closed: vec![],
+        prompts: vec![grant, extension],
+    };
+    let snapshot = serde_json::json!({"interaction":interaction,"event":event,"harnesses":[KernelAccessProviderHarness::Codex, KernelAccessProviderHarness::Claude, KernelAccessProviderHarness::Opencode]});
+    assert_eq!(
+        snapshot["event"]["prompts"][0]["requester"],
+        snapshot["interaction"]["requester"]
+    );
+    assert_eq!(
+        snapshot["event"]["prompts"][0]["requester"],
+        snapshot["event"]["prompts"][1]["requester"]
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "7ae788c3c7dedfc9f1bb25fbd4c44074d1e7263a20138c75b89d3c120eeb0f3e"
+    );
+    assert_eq!(
+        serde_json::from_value::<KernelEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
+        event
+    );
+    // An old event stays compatible but supplies no trusted requester identity.
+    let mut old = snapshot["event"]["prompts"][0].clone();
+    old.as_object_mut().unwrap().remove("requester");
+    assert!(serde_json::from_value::<PasskeyPrompt>(old)
+        .unwrap()
+        .requester
+        .is_none());
+    // The requester is output-only and cannot be forged by the Unix caller.
+    assert!(
+        serde_json::from_value::<crate::local::RequestKernelAccessRequest>(
+            serde_json::json!({"holder_pid":42,"requester":requester})
+        )
+        .is_err()
+    );
+}
+
+// MP-08 / MP-10 / MP-11: coordinator-allocated lifecycle and sudo presentation contract.
+#[test]
+fn sudo_presentation_and_authoritative_closure_protocol_538_shape_and_hash() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let snapshot = serde_json::json!({"sudo_request":{"requester_name":"Claude Code","agent_name":"Reviewer","session_name":"Payments","task_summary":"Review the release","task":"Review the release\nFull task","grant_id":"g","terminal_id":"t"},"kernel_now_ms":4001,"closed":[{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"expired"},{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"answered"},{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"revoked"}]});
+    let presentation: crate::local::SudoRequestPresentation =
+        serde_json::from_value(snapshot["sudo_request"].clone()).unwrap();
+    let closures: Vec<crate::local::PasskeyPromptClosure> =
+        serde_json::from_value(snapshot["closed"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(presentation).unwrap(),
+        snapshot["sudo_request"]
+    );
+    assert_eq!(serde_json::to_value(closures).unwrap(), snapshot["closed"]);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "4a8c957ea27a395af0494a6d25ce19333f4eb9804d63991e88b60acef08dbd3b"
     );
 }

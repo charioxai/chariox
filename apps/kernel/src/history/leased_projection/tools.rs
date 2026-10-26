@@ -151,6 +151,27 @@ pub(super) fn compact_tool_state(
     Ok(())
 }
 
+pub(crate) fn tool_identity(merge_key: &Option<String>, bytes: &[u8]) -> Option<String> {
+    merge_key.clone().or_else(|| {
+        let payload: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        ["id", "call_id"].into_iter().find_map(|field| {
+            payload
+                .get(field)?
+                .as_str()
+                .filter(|id| !id.trim().is_empty())
+                .map(str::to_string)
+        })
+    })
+}
+
+pub(super) fn tool_identity_sql(prefix: &str) -> String {
+    format!("CASE WHEN {prefix}kind = 'provider_tool' THEN COALESCE({prefix}merge_key,
+        CASE WHEN json_valid({prefix}content) THEN
+            CASE WHEN json_type({prefix}content, '$.id') = 'text' AND trim(json_extract({prefix}content, '$.id')) != '' THEN json_extract({prefix}content, '$.id')
+                 WHEN json_type({prefix}content, '$.call_id') = 'text' AND trim(json_extract({prefix}content, '$.call_id')) != '' THEN json_extract({prefix}content, '$.call_id') END
+        END) END")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,25 +242,4 @@ mod tests {
             true
         ));
     }
-}
-
-pub(crate) fn tool_identity(merge_key: &Option<String>, bytes: &[u8]) -> Option<String> {
-    merge_key.clone().or_else(|| {
-        let payload: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-        ["id", "call_id"].into_iter().find_map(|field| {
-            payload
-                .get(field)?
-                .as_str()
-                .filter(|id| !id.trim().is_empty())
-                .map(str::to_string)
-        })
-    })
-}
-
-pub(super) fn tool_identity_sql(prefix: &str) -> String {
-    format!("CASE WHEN {prefix}kind = 'provider_tool' THEN COALESCE({prefix}merge_key,
-        CASE WHEN json_valid({prefix}content) THEN
-            CASE WHEN json_type({prefix}content, '$.id') = 'text' AND trim(json_extract({prefix}content, '$.id')) != '' THEN json_extract({prefix}content, '$.id')
-                 WHEN json_type({prefix}content, '$.call_id') = 'text' AND trim(json_extract({prefix}content, '$.call_id')) != '' THEN json_extract({prefix}content, '$.call_id') END
-        END) END")
 }

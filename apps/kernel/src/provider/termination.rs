@@ -103,6 +103,28 @@ pub(crate) fn sanitize_provider_diagnostic(reason: &str) -> String {
     redact_diagnostic(reason, is_evidence_character)
 }
 
+pub(crate) fn provider_exit_before_delivery_message(
+    termination: &ProviderRunTermination,
+    diagnostic: Option<&str>,
+) -> String {
+    // An exit can be observed by the native writer and the output pump. Keep
+    // the first definitive explanation rather than wrapping it again.
+    if let Some(diagnostic) = diagnostic
+        .filter(|value| value.starts_with("Provider exited before the prompt was delivered:"))
+    {
+        return diagnostic.to_string();
+    }
+    let detail = diagnostic
+        .map(sanitize_provider_diagnostic)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" {value}"))
+        .unwrap_or_default();
+    format!(
+        "Provider exited before the prompt was delivered: {}. Retry the prompt to start a new provider run.{detail}",
+        termination.reason
+    )
+}
+
 /// The same credential redaction as [`sanitize_provider_diagnostic`], for text
 /// people read, such as substitute notices. The remaining words keep their
 /// characters (`·`, `%`, `?`, accents) instead of the narrow evidence set.

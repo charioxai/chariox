@@ -266,13 +266,14 @@ run_chromium() {
     --disable-sync \
     --disable-dev-shm-usage \
     --disable-gpu \
+    --force-renderer-accessibility \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
     "${chrome_startup_target_args[@]}" )
   if [[ "$launch_mode" == owned ]]; then
-    "${chrome_launcher[@]}" 2>>"$LOGS/chromium-gui.log"
+    /usr/bin/python3 "$ROOT/room-desktop-environment.py" "${chrome_launcher[@]}" 2>>"$LOGS/chromium-gui.log"
   else
-    exec "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1
+    exec /usr/bin/python3 "$ROOT/room-desktop-environment.py" "${chrome_launcher[@]}" >>"$LOGS/chromium-gui.log" 2>&1
   fi
 }
 
@@ -431,7 +432,12 @@ PYTHON
   # Desktop-launched programs inherit one session bus. Without it, ordinary
   # GTK applications cannot persist dconf settings. The supervisor stops the
   # bus when Openbox exits, so stop only Openbox rather than killing both.
-  nohup dbus-run-session -- openbox >"$LOGS/openbox.log" 2>&1 &
+  # MP-08 / MP-11: native observations attach to the SAME desktop session bus.
+  local computer_runtime="$ROOT/private"
+  if [[ -n "${CHARIOX_SLICE_PRIVATE_ROOT:-}" ]]; then computer_runtime="$CHARIOX_SLICE_PRIVATE_ROOT/runtime"; fi
+  install -d -m 0700 "$computer_runtime"
+  rm -f "$computer_runtime/desktop-session-address"
+  nohup dbus-run-session -- sh -c 'umask 077; printf "%s" "$DBUS_SESSION_BUS_ADDRESS" > "$1"; exec openbox' sh "$computer_runtime/desktop-session-address" >"$LOGS/openbox.log" 2>&1 &
   nohup tint2 -c "$ROOT/tint2rc" >"$LOGS/taskbar.log" 2>&1 &
   if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
     if ! slice_selkies start >/dev/null; then
@@ -456,6 +462,9 @@ PYTHON
     require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
   fi
   require_process "^(/[^[:space:]]*/)?chromium[[:space:]].*--user-data-dir=$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
+  # MP-08 / MP-11: Xorg/desktop clients may install Mode_switch on code8.
+  # Prepare one inert text slot after startup, before publishing readiness.
+  CHARIOX_OWNED_VIRTUAL_DISPLAY=1 /usr/bin/python3 "$ROOT/slice-keyboard.py" prepare-owned-keymap
   status
 }
 
@@ -576,6 +585,10 @@ pointer_click() {
     1|2) ;;
     *) printf 'pointer click count must be 1 or 2\n' >&2; return 2 ;;
   esac
+  if [[ "${CHARIOX_COMPUTER_AGENT_INPUT:-}" == 1 ]]; then
+    python3 "$ROOT/slice-keyboard.py" pointer-click "$button_name" "$click_count" "$x" "$y"
+    return
+  fi
   # xdotool also delays after the last release. A single click needs no
   # repeat interval; keep the double-click interval unchanged.
   local delay=0
@@ -664,9 +677,12 @@ type_text() {
 
 computer_type_stdin() {
   require_screen_available
+  # MP-11: slice-keyboard uses the kernel-admitted CHARIOX_COMPUTER_AGENT_INPUT
+  # actor marker to bind and recheck native focus before every press. AT-SPI
+  # is a system package; expose it without replacing the pinned keyboard backend.
   # Kernel enforces a length-derived deadline and immediate cancellation.
   # Standalone safety bound accommodates the full 64 KiB input contract.
-  timeout --foreground --kill-after=1s 2h /opt/chariox-selkies/bin/python \
+  PYTHONPATH=/usr/lib/python3/dist-packages timeout --foreground --kill-after=1s 2h /opt/chariox-selkies/bin/python \
     "${BASH_SOURCE[0]%/*}/slice-keyboard.py"
 }
 
@@ -680,17 +696,13 @@ computer_key_stdin() {
     return 2
   fi
   if [[ -z "$key" || ${#key} -gt 128 || "$key" == -* || "$key" =~ [[:space:]] ]]; then
-    printf 'computer key must be a non-whitespace xdotool key name of at most 128 bytes\n' >&2
+    printf 'computer key must be a non-whitespace native key name of at most 128 bytes\n' >&2
     return 2
   fi
-  # DOM callers use Enter; X11's ordinary Enter keysym is Return. Translate
-  # whole chord components only, preserving native names such as KP_Enter.
-  local chord="+$key+"
-  while [[ "$chord" == *"+Enter+"* ]]; do
-    chord="${chord//+Enter+/+Return+}"
-  done
-  key="${chord:1:${#chord}-2}"
-  run_xdotool key --clearmodifiers --repeat "$repeat" --delay 40 "$key"
+  # MP-08/MP-11: use the same strict XTEST chords as host native input.
+  # xdotool can return success for unknown lowercase keysyms without input.
+  printf '%s' "$key" | PYTHONPATH=/usr/lib/python3/dist-packages timeout --foreground 10s /opt/chariox-selkies/bin/python \
+    "${BASH_SOURCE[0]%/*}/slice-keyboard.py" key-repeat "$repeat"
 }
 
 computer_input_reset() {
@@ -793,7 +805,7 @@ computer_secret_paste_stdin() {
     log "computer credential input requires an approved display target"
     return 2
   fi
-  /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret "$1"
+  /usr/bin/python3 "$ROOT/room-desktop-environment.py" /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" secret "$1"
 }
 
 browser_status() {
@@ -948,7 +960,7 @@ case "${1:-status}" in
   protected-screenshot|protected-ocr|protected-find-text)
     mode="${1#protected-}"; shift
     require_screen_available
-    /opt/chariox-selkies/bin/python "$ROOT/slice-observation-mask.py" "$mode" "$@" ;;
+    /usr/bin/python3 "$ROOT/slice-observation-mask.py" "$mode" "$@" ;;
   screenshot) shift; screenshot "$@" ;;
   click) shift; click "$@" ;;
   double-click|double_click) shift; double_click "$@" ;;
@@ -963,6 +975,8 @@ case "${1:-status}" in
   computer-key-stdin|computer_key_stdin) shift; computer_key_stdin "$@" ;;
   computer-clipboard-write-stdin|computer_clipboard_write_stdin) computer_clipboard_write_stdin ;;
   computer-clipboard-read|computer_clipboard_read) computer_clipboard_read ;;
+  computer-key-hold-stdin) require_screen_available; /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" hold-key "$2" ;;
+  pointer-hold) require_screen_available; /opt/chariox-selkies/bin/python "${BASH_SOURCE[0]%/*}/slice-keyboard.py" hold-button "$4" "$5" "$2" "$3" ;;
   computer-input-reset|computer_input_reset) computer_input_reset ;;
   key) shift; key "$@" ;;
   clipboard-get|clipboard_get) clipboard_get ;;
@@ -988,7 +1002,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|computer-clipboard-write-stdin|computer-clipboard-read|computer-input-reset|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|pointer-click|pointer-drag|pointer-scroll|drag|move|scroll|type|computer-type-stdin|key|computer-key-stdin|computer-key-hold-stdin|pointer-hold|computer-clipboard-write-stdin|computer-clipboard-read|computer-input-reset|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|computer-secret-paste-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

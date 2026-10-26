@@ -45,14 +45,10 @@ export function buildCollapsedTranscriptBlob(
   onToggleBlob: (entryId: number, collapsed: boolean) => void,
 ) {
   const presentation = collapsedTranscriptBlobPresentation(entry)
-  body.add(
-    new TextRenderable(renderer, {
-      content: presentation.headline,
-      fg: transcriptTextColor(entry),
-      wrapMode: "word",
-      attributes: TextAttributes.BOLD,
-    }),
-  )
+  const headline = buildBlobToggleLabel(renderer, presentation.headline, () => onToggleBlob(entry.id, false))
+  headline.fg = transcriptTextColor(entry)
+  headline.attributes = TextAttributes.BOLD
+  body.add(headline)
   body.add(
     new TextRenderable(renderer, {
       content: presentation.detail,
@@ -68,6 +64,7 @@ export function buildBlobToggleLabel(renderer: RenderContext, content: string, o
     content,
     fg: theme.textMuted,
     wrapMode: "word",
+    selectable: false,
   })
   text.onMouseUp = (event) => {
     if (event.button !== MouseButton.LEFT) {

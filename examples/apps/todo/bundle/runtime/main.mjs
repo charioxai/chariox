@@ -90,10 +90,16 @@ export default function register(chariox) {
     return { state: reminders?.state ?? 'missing', last_delivery: reminders?.lastReceipt?.state ?? null };
   });
 
-  chariox.tools.register('create_todo', ({ title, due_at_ms: dueAtMs, notes }) => change(todos => {
+  // The kernel tells the App who called: a person (the owner) or an agent,
+  // including an agent operating this App's own page. Agents may delete only
+  // Todos an agent created; people may delete any.
+  const byAgent = context => context?.actor?.kind === 'agent';
+
+  chariox.tools.register('create_todo', ({ title, due_at_ms: dueAtMs, notes }, context) => change(todos => {
     if (todos.length >= MAX_TODOS) throw fail('LIMIT_EXCEEDED', `At most ${MAX_TODOS} Todos`);
     const todo = { id: randomUUID().slice(0, 8), title, notes: notes ?? '', due_at_ms: dueAtMs ?? null,
-      done: false, reminded: false, revision: 1, created_at_ms: Date.now() };
+      done: false, reminded: false, revision: 1, created_at_ms: Date.now(),
+      created_by: byAgent(context) ? 'agent' : 'person' };
     todos.push(todo);
     return todo;
   }, wakesFor));
@@ -117,9 +123,12 @@ export default function register(chariox) {
     return todo;
   }, wakesFor));
 
-  chariox.tools.register('delete_todo', ({ id }) => change(todos => {
+  chariox.tools.register('delete_todo', ({ id }, context) => change(todos => {
     const index = todos.findIndex(todo => todo.id === id);
     if (index < 0) throw fail('NOT_FOUND', `No Todo with id ${id}`);
+    if (byAgent(context) && todos[index].created_by !== 'agent') {
+      throw fail('FORBIDDEN', 'An agent can delete only Todos an agent added; ask the person to delete this one');
+    }
     const [todo] = todos.splice(index, 1);
     return { deleted: todo.id };
   }, (_next, result) => ({ wakes: [{ op: 'cancel', id: `todo-${result.deleted}` }] })));
@@ -132,17 +141,27 @@ export default function register(chariox) {
   chariox.schedule.onWake(async wake => {
     if (!wake.id.startsWith('todo-')) return null;
     const id = wake.id.slice('todo-'.length);
-    const remind = withOccurrence => change(todos => {
+    const remind = (withOccurrence, scheduled = true) => change(todos => {
       const todo = todos.find(item => item.id === id);
       if (!todo || todo.done || todo.reminded || String(todo.revision) !== wake.revision) return null;
       todo.reminded = true;
       return todo;
-    }, (_next, todo) => todo && withOccurrence ? { occurrences: [occurrence(todo)] } : {});
-    try {
-      await remind(true);
-    } catch (error) {
-      if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
-      await remind(false);
+    }, (_next, todo) => todo && withOccurrence ? { occurrences: [occurrence(todo, scheduled)] } : {});
+    // A wake's revision and an automation's scheduled admission are distinct.
+    // The ordinary `/app automation add` binding rejects scheduleRevision;
+    // retry that canonical shape only after the first transaction rolled back.
+    // Keep the same occurrence identity (including the Todo revision), so both
+    // binding modes retain atomic reminder marking and redelivery deduplication.
+    for (const scheduled of [true, false]) {
+      try {
+        await remind(true, scheduled);
+        break;
+      } catch (error) {
+        if (scheduled && error?.code === 'INVALID_ARGUMENT') continue;
+        if (!OPTIONAL_OCCURRENCE.has(error?.code)) throw error;
+        await remind(false);
+        break;
+      }
     }
     return null;
   });
@@ -160,13 +179,13 @@ export default function register(chariox) {
     return todo;
   }, (next, todo) => (todo ? wakesFor(next, todo) : {})));
 
-  function occurrence(todo) {
+  function occurrence(todo, scheduled) {
     return {
       automationId: AUTOMATION,
       occurrenceId: chariox.events.occurrenceId(`todo:${todo.id}:${todo.revision}`, todo.due_at_ms),
       eventVersion: 1,
       occurredAtMs: todo.due_at_ms,
-      scheduleRevision: String(todo.revision),
+      ...(scheduled ? { scheduleRevision: String(todo.revision) } : {}),
       payload: { todo_id: todo.id, title: todo.title, due_at_ms: todo.due_at_ms },
       invocation: { prompt: `The Todo "${todo.title}" is due now.`, artifacts: [] },
     };

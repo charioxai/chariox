@@ -776,6 +776,25 @@ impl DockerCommand {
         self.local_command().output()
     }
 
+    pub(super) fn bounded_log_output(&mut self) -> io::Result<super::log_output::BoundedLogOutput> {
+        use super::log_output::{BoundedLogOutput, LogCommandOutput, MAX_LOG_BYTES};
+        if broker_is_configured() {
+            // The broker already enforces its finite output/transport budget.
+            // Project a smaller byte-bounded diagnostic on both runtime paths.
+            let output = self.output()?;
+            let budget = MAX_LOG_BYTES / 2;
+            let truncated = output.stdout.len() > budget || output.stderr.len() > budget;
+            let tail = |bytes: Vec<u8>| bytes[bytes.len().saturating_sub(budget)..].to_vec();
+            return Ok(BoundedLogOutput {
+                status: output.status,
+                stdout: tail(output.stdout),
+                stderr: tail(output.stderr),
+                truncated,
+            });
+        }
+        self.local_command().bounded_log_output()
+    }
+
     pub(super) fn status(&mut self) -> io::Result<ExitStatus> {
         if broker_is_configured() {
             let output = self.output()?;

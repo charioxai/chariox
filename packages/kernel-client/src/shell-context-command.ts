@@ -90,7 +90,6 @@ function formatShellContext(
     `home kernel: ${formatContextHomeKernel(session)}`,
     `session owner: ${session?.owner_user_id?.trim() || "-"}`,
     `runtime authority: ${formatContextRuntimeAuthority(session)}`,
-    `workspace live sync: ${formatWorkspaceLiveSyncModeLabel(session?.workspace_live_sync_mode)}`,
     `attachment: ${context.attachmentId ?? "-"}`,
     `agent: ${agentLabel}`,
     ...(currentAgent ? [
@@ -129,7 +128,7 @@ function formatContextRuntimeAuthority(session: RuntimeSession | null): string {
   if (!session) {
     return "unknown until session state is available"
   }
-  return "home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools"
+  return "home owns sessions, prompts, and grants; workers execute leases and projected tools"
 }
 
 function findCurrentAgent(context: ShellContext, session: RuntimeSession | null): AgentInstance | null {

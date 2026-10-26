@@ -343,3 +343,79 @@ async fn output_seen_ack_survives_kernel_restart() {
         "acknowledged output must stay read after kernel restart"
     );
 }
+
+// MP-08 / MP-10 / MP-11: the hosted relay and replay use this attachment seam.
+#[tokio::test]
+async fn attachment_snapshot_fences_private_peer_activity_and_provider_run() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let levels = [
+        (
+            "peer-private",
+            crate::session::CollaborationLevel::Private,
+            false,
+        ),
+        (
+            "peer-transparent",
+            crate::session::CollaborationLevel::Transparent,
+            true,
+        ),
+        ("peer-full", crate::session::CollaborationLevel::Full, true),
+    ];
+    {
+        let mut sessions = app.sessions_mut();
+        let mut stored = sessions.get_session(session.id()).unwrap();
+        for (user, level, _) in levels {
+            stored.add_member(user, Some(DEFAULT_LOCAL_USER_ID.to_string()), level);
+        }
+        sessions.restore_session(stored);
+    }
+    let mut attachments = Vec::new();
+    for (user, _, visible) in levels {
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::for_user(
+                session.id(),
+                user,
+                ClientCapabilityLevel::FullTerminal,
+                user,
+            ))
+            .expect("collaborator should attach");
+        attachments.push((attachment, visible));
+    }
+    let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "owner-private-run",
+        session.id().to_string(),
+        Some(agent.id().to_string()),
+        "codex".into(),
+    );
+    run.mark_running();
+    app.sessions_mut()
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    app.update_provider_run_projection(run);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    for (attachment, visible) in attachments {
+        let projection = router
+            .session_snapshot_projection_for_attachment(session.id(), attachment.id(), 0)
+            .expect("attachment projection should resolve");
+        let roster_agent = projection
+            .session
+            .agents()
+            .iter()
+            .find(|a| a.id() == agent.id())
+            .expect("private roster still carries redacted identity");
+        assert_eq!(roster_agent.visible_in_freeform(), visible);
+        assert_eq!(
+            projection.agent_activity.contains_key(agent.id()),
+            visible,
+            "a redacted roster entry cannot grant private turn metadata"
+        );
+        assert_eq!(
+            projection.provider_run.is_some(),
+            visible,
+            "private provider runs must follow trace visibility"
+        );
+    }
+}

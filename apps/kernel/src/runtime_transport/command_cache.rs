@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -107,9 +107,18 @@ pub(crate) struct CommandFingerprint {
     session_id: Option<String>,
     attachment_id: Option<String>,
     request_hash: u64,
+    // MD-N3 / MP-11: browser/note receipts belong to the authenticated terminal identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_caller: Option<crate::runtime::command::KernelCaller>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_protection_revision: Option<u64>,
 }
 
 impl CommandFingerprint {
+    pub(crate) fn with_browser_protection_revision(mut self, revision: Option<u64>) -> Self {
+        self.browser_protection_revision = revision;
+        self
+    }
     pub(crate) fn from_command_and_request(
         command: &KernelCommand,
         request: &LocalDaemonRequest,
@@ -122,6 +131,12 @@ impl CommandFingerprint {
             session_id: command.session_id.clone(),
             attachment_id: command.attachment_id.clone(),
             request_hash: stable_hash64(&request_bytes),
+            browser_caller: matches!(
+                request,
+                LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+            )
+            .then(|| command.caller.clone()),
+            browser_protection_revision: None,
         }
     }
 }
@@ -133,6 +148,27 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    if matches!(request, LocalDaemonRequest::GetSliceDisplayEndpoint(request) if request.shared_display.is_some())
+    {
+        return false;
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::CaptureVisibleRegion(_)
+            | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+                    | crate::local::KernelBrowserCommand::DisplaySuspend { .. }
+                    | crate::local::KernelBrowserCommand::DisplayResume { .. }
+                    | crate::local::KernelBrowserCommand::DisplayAck { .. }
+                    | crate::local::KernelBrowserCommand::ListGrants
+                    | crate::local::KernelBrowserCommand::SubscribeGrants { .. }
+                    | crate::local::KernelBrowserCommand::GrantRoomComputer { .. }
+                    | crate::local::KernelBrowserCommand::RevokeGrants { .. }
+                    | crate::local::KernelBrowserCommand::MirrorNext { .. }
+            })
+    ) {
+        return false;
+    }
     // App requests and browser-import consent must reach owner authorization and
     // current durable state. Their own owner-scoped ledgers deduplicate retries;
     // this older transport fingerprint does not carry the caller, and cached
@@ -144,6 +180,10 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            | LocalDaemonRequest::ExtendKernelSudo(_)
+            // MP-11 A07: physical owner input carrying a value is never
+            // fingerprinted, cached or replayed.
+            | LocalDaemonRequest::RespondToHandoff(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -167,6 +207,13 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ListAppAutomations(_)
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)
+            | LocalDaemonRequest::OpenUserAppView(_)
+            | LocalDaemonRequest::ListUserAppViews(_)
+            | LocalDaemonRequest::CloseUserAppView(_)
+            | LocalDaemonRequest::GetUserAppViewFrontend(_)
+            | LocalDaemonRequest::CallUserAppView(_)
+            | LocalDaemonRequest::SubscribeUserAppViews(_)
+            | LocalDaemonRequest::AnswerUserDomainInteraction(_)
             | LocalDaemonRequest::OpenAppView(_)
             | LocalDaemonRequest::SetAppViewPanel(_)
             | LocalDaemonRequest::UninstallApp(_)
@@ -237,6 +284,8 @@ pub(crate) struct CommandResultCache {
     persistence: Option<CommandResultPersistence>,
     #[cfg(test)]
     fail_settlement_sync: AtomicBool,
+    #[cfg(test)]
+    dispatch_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl Default for CommandResultCache {
@@ -250,11 +299,32 @@ impl Default for CommandResultCache {
             persistence: None,
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
+            #[cfg(test)]
+            dispatch_pause: Mutex::new(None),
         }
     }
 }
 
 impl CommandResultCache {
+    #[cfg(test)]
+    pub(crate) async fn pause_next_dispatch_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered, reserved) = oneshot::channel();
+        let (release, resume) = oneshot::channel();
+        *self.dispatch_pause.lock().await = Some((entered, resume));
+        (reserved, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_dispatch_for_test(&self) {
+        let pause = self.dispatch_pause.lock().await.take();
+        if let Some((entered, resume)) = pause {
+            let _ = entered.send(());
+            let _ = resume.await;
+        }
+    }
+
     pub(crate) fn new_with_persistent_path(path: impl Into<PathBuf>) -> io::Result<Self> {
         Self::new_with_persistent_path_and_retention(
             path,
@@ -296,6 +366,8 @@ impl CommandResultCache {
             receipt_retention: Mutex::new(ReceiptRetention::default()),
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
+            #[cfg(test)]
+            dispatch_pause: Mutex::new(None),
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),
@@ -617,6 +689,20 @@ impl CommandResultCache {
     }
 
     #[cfg(test)]
+    pub(super) async fn completed_browser_caller(
+        &self,
+        command_id: &str,
+    ) -> Option<crate::runtime::command::KernelCaller> {
+        self.completed_results_snapshot()
+            .await
+            .into_iter()
+            .find(|entry| entry.command_id == command_id)?
+            .result
+            .fingerprint
+            .browser_caller
+    }
+
+    #[cfg(test)]
     pub(super) async fn insert_completed_for_test(
         &self,
         command_id: String,
@@ -659,6 +745,8 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(bytes),
+            browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 
@@ -670,6 +758,8 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(command_type.as_bytes()),
+            browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 
@@ -814,7 +904,7 @@ fn read_persistent_results_with_receipt_fence(
         if retention.at_most_once && supports_expiry && line == RECEIPT_EXPIRY_FENCE {
             continue;
         }
-        let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
+        let jsonl_bytes = line.len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             if retention.at_most_once {
                 return Err(io::Error::other("oversized at-most-once receipt"));
@@ -933,7 +1023,9 @@ fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<
 fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
-        "credential_enrollment.interaction.request"
+        "kernel_browser"
+            | "notes"
+            | "credential_enrollment.interaction.request"
             | "external_provider_session.list"
             | "interaction.respond"
             | "native_provider.interaction.request"
@@ -950,12 +1042,15 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
 }
 
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?,
+    );
     serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
-    file.write_all(b"\n")
+    file.write_all(b"\n")?;
+    file.flush()
 }
 
 fn rewrite_persistent_results(
@@ -966,7 +1061,7 @@ fn rewrite_persistent_results(
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("jsonl.tmp");
-    let mut file = fs::File::create(&tmp_path)?;
+    let mut file = BufWriter::new(fs::File::create(&tmp_path)?);
     // A downgraded kernel must not treat a missing expired identity as new.
     // Preserve this fail-closed fence through every payload compaction.
     match fs::metadata(ReceiptRetention::marker_path(path)) {
@@ -979,7 +1074,8 @@ fn rewrite_persistent_results(
         serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
     }
-    file.sync_all()?;
+    file.flush()?;
+    file.get_ref().sync_all()?;
     fs::rename(tmp_path, path)?;
     if let Some(parent) = path.parent() {
         fs::File::open(parent)?.sync_all()?;
@@ -989,3 +1085,6 @@ fn rewrite_persistent_results(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod notes_tests;

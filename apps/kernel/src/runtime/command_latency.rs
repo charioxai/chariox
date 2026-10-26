@@ -186,7 +186,12 @@ pub(crate) fn log_command_completed(
 pub(crate) fn is_quiet_success_command_type(command_type: &str) -> bool {
     matches!(
         command_type,
-        "relay.status" | "waiting_room.public_snapshot.get" | "slice.list" | "provider.catalog.get"
+        "relay.status"
+            | "local_browser_renew"
+            | "local_terminal_renew"
+            | "waiting_room.public_snapshot.get"
+            | "slice.list"
+            | "provider.catalog.get"
     )
 }
 
@@ -411,6 +416,52 @@ fn sampled(key: &str) -> bool {
     hasher.finish().is_multiple_of(sample_rate)
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: locate owner-control latency
+// without recording the objective, input, receipts or provider payloads.
+pub(crate) fn log_goal_control_phases(
+    task: &str,
+    action: &str,
+    lookup: std::time::Duration,
+    mutation: std::time::Duration,
+    effects: std::time::Duration,
+    projection: std::time::Duration,
+) {
+    if !sampled(task) {
+        return;
+    }
+    crate::logging::info_with_fields(
+        "daemon.goal_latency",
+        "goal control phases completed",
+        json!({
+            "action": action,
+            "lookup_ms": duration_ms(lookup),
+            "mutation_ms": duration_ms(mutation),
+            "effects_ms": duration_ms(effects),
+            "projection_ms": duration_ms(projection),
+        }),
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S02: measure the existing FULL-sync writer.
+pub(crate) fn log_goal_writer_phases(
+    key: &str,
+    action: &'static str,
+    queue: std::time::Duration,
+    begin: std::time::Duration,
+    apply: std::time::Duration,
+    commit: std::time::Duration,
+) {
+    if !sampled(key) {
+        return;
+    }
+    crate::logging::info_with_fields(
+        "daemon.goal_writer_latency",
+        "goal control writer phases completed",
+        json!({"action":action,"queue_ms":duration_ms(queue),"begin_ms":duration_ms(begin),
+            "apply_ms":duration_ms(apply),"commit_ms":duration_ms(commit)}),
+    );
+}
+
 fn elapsed_ms(start_ms: u64, end_ms: u64) -> u64 {
     end_ms.saturating_sub(start_ms)
 }
@@ -625,6 +676,11 @@ mod tests {
         assert_eq!(fields["lane_id"], "session-1");
         assert_eq!(fields["queue_wait_ms"], 15);
         assert_eq!(fields["submit_to_dispatch_ms"], 45);
+    }
+
+    #[test]
+    fn mp08_local_browser_renewals_are_quiet_on_success() {
+        assert!(is_quiet_success_command_type("local_browser_renew"));
     }
 
     #[test]

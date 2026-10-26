@@ -6,7 +6,9 @@ use crate::app::{
 };
 use crate::error::DaemonError;
 use crate::provider::ProviderRunState;
-use crate::session::{PromptAttachment, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
+use crate::session::{
+    PromptAttachment, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+};
 
 fn remote_workspace_live_sync_mode_for_submission(
     app: &crate::app::DaemonApp,
@@ -84,6 +86,7 @@ impl<'a> KernelAgentService<'a> {
             target_agent_id,
             prompt,
             hidden_system_context,
+            PromptOrigin::Chariox,
             attachments,
         )?;
         self.finish_compat_prompt_dispatch(dispatch)?;
@@ -92,7 +95,10 @@ impl<'a> KernelAgentService<'a> {
     }
 
     /// Admits a prompt like `submit_prompt_with_hidden_system_context`, but
-    /// returns its local provider dispatch instead of sending it.
+    /// returns its local provider dispatch instead of sending it. The admitted
+    /// origin must survive queueing so provider policy follows the home turn.
+    // Keep the shared prompt admission contract used by local and leased dispatchers.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn submit_prompt_holding_dispatch(
         &mut self,
         session_id: &str,
@@ -100,6 +106,7 @@ impl<'a> KernelAgentService<'a> {
         target_agent_id: Option<&str>,
         prompt: &str,
         hidden_system_context: &str,
+        prompt_origin: PromptOrigin,
         attachments: Vec<PromptAttachment>,
     ) -> Result<(PromptSubmissionOutcome, Option<KernelPromptDispatch>), DaemonError> {
         crate::app::KernelSessionReadService::new(self.app)
@@ -124,7 +131,8 @@ impl<'a> KernelAgentService<'a> {
             PromptStatus::Queued,
         )
         .with_attachments(attachments)
-        .with_hidden_system_context(hidden_system_context);
+        .with_hidden_system_context(hidden_system_context)
+        .with_prompt_origin(prompt_origin);
         let submitted = self.submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,
@@ -243,17 +251,17 @@ impl<'a> KernelAgentService<'a> {
 
     fn prepare_prompt_admission(
         &mut self,
-        prepared: KernelPreparedPromptSubmission,
+        mut prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptAdmission, DaemonError> {
+        if self.app.config().room_agent_tools {
+            prepared.prepare_task_prompt_identity(|| self.app.sessions().reserve_prompt_id())?;
+        }
         let session_id = prepared.session_id;
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
         let source_attachment = crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(&session_id, &attachment_id)?;
-        let prompt = prepared.prompt.with_source_attribution(
-            source_attachment.client_id(),
-            source_attachment.owner_user_id(),
-        );
+        let prompt = prepared.prompt.with_source_attachment(&source_attachment);
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         if target_agent.session_id() != session_id {
@@ -263,10 +271,18 @@ impl<'a> KernelAgentService<'a> {
             });
         }
         let remote_execution = target_agent.remote_execution().cloned();
-        if remote_execution.is_none() {
+        if remote_execution.is_none()
+            && self
+                .app
+                .reusable_leased_claude_run_for_agent(&session_id, &target_agent)?
+                .is_none()
+        {
+            let account_owner = self
+                .app
+                .provider_account_authority_owner_for_agent(&target_agent)?;
             self.app
-                .provider_account_profile_registry()
-                .require_agent_authenticated(&self.app.config, &target_agent, "submit prompt")?;
+                .provider_account_profiles
+                .require_agent_authenticated(&account_owner, &target_agent, "submit prompt")?;
         }
         let (provider_run_id, provider_run_is_starting) = if remote_execution.is_some() {
             (None, false)

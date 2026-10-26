@@ -1,10 +1,11 @@
+import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { existsSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { spawn, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
@@ -24,6 +25,9 @@ async function script(path, contents) {
   await chmod(path, 0o755)
 }
 
+const DESKTOP = ["Xvfb", "openbox", "bwrap", "dbus-daemon", "setxkbmap"]
+const PACKAGES = "python3-xlib python3-pil xvfb openbox bubblewrap dbus-daemon x11-xkb-utils libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2"
+
 async function harness() {
   const base = await mkdtemp(join(tmpdir(), "chariox-local-install-"))
   const root = join(base, "root")
@@ -40,6 +44,16 @@ async function harness() {
   await writeFile(join(root, "proc/sys/kernel/apparmor_restrict_unprivileged_userns"), "1\n")
   await writeFile(join(root, "sys/kernel/security/apparmor/profiles"), "")
   const passwd = Object.entries(users).map(([name, uid]) => `${name}:x:${uid}:${groups[name]}::/home/${name}:/bin/bash`)
+  await mkdir(join(root, "usr/bin"), { recursive: true })
+  await script(join(root, "usr/bin/python3"), `#!/bin/sh
+[ "\${HARNESS_NATIVE_PYTHON:-ready}" = ready ] || test -e "$HARNESS_STATE/native-python-ready"
+`)
+  for (const name of DESKTOP) await script(join(root, "usr/bin", name), "#!/bin/sh\n")
+  await script(join(root, "usr/bin/apt-get"), `#!/bin/sh
+echo "$*" >> "$HARNESS_STATE/native-apt"
+[ "\${HARNESS_NATIVE_APT_FAIL:-0}" = 0 ] || exit 42
+case "$1" in install) [ "\${HARNESS_NATIVE_STAYS_BROKEN:-0}" = 1 ] || { touch "$HARNESS_STATE/native-python-ready"; for b in ${DESKTOP.join(" ")}; do printf '#!/bin/sh\n' > "$HARNESS_ROOT/usr/bin/$b"; chmod 755 "$HARNESS_ROOT/usr/bin/$b"; done; } ;; esac
+`)
   await script(join(bin, "id"), `#!/bin/sh
 case "$*" in
   -u) echo "\${HARNESS_UID:-0}" ;;
@@ -77,7 +91,7 @@ esac
   await script(join(bin, "apparmor_parser"), `#!/bin/sh
 echo "$*" >> "$HARNESS_STATE/apparmor"
 profiles="$CHARIOX_LOCAL_INSTALL_ROOT/sys/kernel/security/apparmor/profiles"
-case "$1" in -r) printf "chariox-app-bwrap (unconfined)\\nchariox-app-domain-entry (unconfined)\\n" > "$profiles" ;; -R) : > "$profiles" ;; esac
+case "$1" in -r) printf "chariox-app-bwrap (unconfined)\\nchariox-app-domain-entry (unconfined)\\nchariox-browser-unshare (unconfined)\\nchariox-browser-chromium (unconfined)\\n" > "$profiles" ;; -R) : > "$profiles" ;; esac
 `)
   // Ownership is the only thing a non-root test cannot give; the rest is real install(1).
   await script(join(bin, "install"), `#!/bin/sh
@@ -102,7 +116,21 @@ printf '{"revision":1,"inventorySha256":"%s"}\\n' "$7" > "$CHARIOX_LOCAL_INSTALL
   await writeFile(join(runtime, "runtime-inventory.json"), inventory)
   await writeFile(join(runtime, "runtime-inventory.sig"), "b".repeat(128))
   const digest = createHash("sha256").update(inventory).digest("hex")
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_STATE: state }
+  // The pinned kernel Chromium: a small archive of the same layout, never the real download.
+  const archive = join(base, "chrome-linux64.zip")
+  const zipped = spawnSync("python3", ["-c", `import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+exe = zipfile.ZipInfo("chrome-linux64/chrome"); exe.external_attr = 0o100755 << 16
+z.writestr(exe, "#!/bin/sh\\necho chromium 1.2.3\\n")
+z.writestr("chrome-linux64/resources.pak", "data")
+z.close()`, archive])
+  assert.equal(zipped.status, 0, zipped.stderr?.toString())
+  const archiveBytes = await readFile(archive)
+  const browserLock = join(base, "kernel-browser-chromium.lock.json")
+  const browserPin = (sha256 = createHash("sha256").update(archiveBytes).digest("hex")) => writeFile(browserLock, JSON.stringify({ schema: "chariox.kernel-browser-chromium.v1", distribution: "fixture", version: "1.2.3",
+    linux64: { url: `file://${archive}`, sha256, size: archiveBytes.length, executable: "chrome-linux64/chrome" } }))
+  await browserPin()
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CHARIOX_LOCAL_INSTALL_ROOT: root, HARNESS_ROOT: root, HARNESS_STATE: state, CHARIOX_LOCAL_INSTALL_BROWSER_LOCK: browserLock }
   const run = (args, extra = {}) => {
     const result = spawnSync("bash", [installer, ...args], { env: { ...env, ...extra }, encoding: "utf8" })
     return { ...result, out: result.stdout + result.stderr }
@@ -112,7 +140,7 @@ printf '{"revision":1,"inventorySha256":"%s"}\\n' "$7" > "$CHARIOX_LOCAL_INSTALL
       "--runtime-key", KEY, "--runtime-digest", digest, ...extra], env)
   const log = async (name) => (existsSync(join(state, name)) ? readFile(join(state, name), "utf8") : "")
   const reset = (name) => rm(join(state, name), { force: true })
-  return { base, root, bin, pkg, runtime, digest, run, install, log, reset }
+  return { base, root, bin, pkg, runtime, digest, run, install, log, reset, browserPin }
 }
 
 const p = (h, path) => join(h.root, path)
@@ -188,7 +216,23 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
       await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor"), "utf8"))
     assert.equal(await readFile(p(h, "etc/systemd/system/chariox-app-storage.service"), "utf8"),
       await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"), "utf8"))
+    // MP-08/MP-11: a user's kernel (user@UID.service starts after systemd-user-sessions) stops before the
+    // storage helper at shutdown; the helper stopping first kills running Apps, which then come back Failed.
+    assert.match(await readFile(p(h, "etc/systemd/system/chariox-app-storage.service"), "utf8"), /^Before=.*\bsystemd-user-sessions\.service\b/m)
     assert.ok(existsSync(p(h, "var/lib/chariox-local-install/linger-1000")))
+    // MP-11: the kernel browser's private policy namespace launcher, the only
+    // unshare the AppArmor exception admits (Ubuntu >= 23.10 restricts userns).
+    const launcher = p(h, "usr/lib/chariox/browser/chariox-browser-unshare")
+    assert.equal((await stat(launcher)).mode & 0o777, 0o755)
+    assert.ok((await readFile(launcher)).equals(await readFile("/usr/bin/unshare")))
+    assert.match(await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor"), "utf8"),
+      /^profile chariox-browser-unshare \/usr\/lib\/chariox\/browser\/chariox-browser-unshare flags=\(unconfined\) \{\n  userns,\n\}$/m)
+    // Miguel 2026-10-14: the Setup downloads one pinned Chromium, verifies it, installs it read-only.
+    const chrome = p(h, "usr/lib/chariox/browser/chromium/1.2.3/chrome-linux64/chrome")
+    assert.equal((await stat(chrome)).mode & 0o777, 0o755)
+    assert.match(first.out, /install the pinned kernel Chromium 1\.2\.3/)
+    assert.match(await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor"), "utf8"),
+      /^profile chariox-browser-chromium \/usr\/lib\/chariox\/browser\/chromium\/\*\/chrome-linux64\/chrome flags=\(unconfined\) \{\n  userns,\n\}$/m)
 
     const admissionLocks = ["memory", "disk"].map((resource) => p(h, `tmp/chariox-docker-${resource}-admission.lock`))
     const admissionInodes = []
@@ -204,6 +248,7 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.equal(again.status, 0, again.out)
     assert.doesNotMatch(again.out, /\] (install|write|load|enable|start|restart) /)
     assert.match(again.out, /unchanged runtime [0-9a-f]{64} revision 1 \(re-verified\)/)
+    assert.match(again.out, /unchanged .*\/usr\/lib\/chariox\/browser\/chromium\/1\.2\.3/)
     assert.match(again.out, /unchanged .*app-storage\.json/)
     assert.match(again.out, /unchanged chariox-app-storage\.service \(running\)/)
     assert.doesNotMatch(await h.log("systemctl"), /restart|start /)
@@ -249,11 +294,11 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
     assert.ok(removed >= 0 && removed < alice.out.indexOf("write "), alice.out)
 
     // A kernel holding a runtime generation's shared lease blocks --all before any change.
-    const holder = spawn("flock", ["-s", "-o", p(h, `usr/lib/chariox/app-runtimes/${h.digest}/.runtime-lease`), "sh", "-c", "echo held; exec sleep 30"],
+    const holder = spawnOwned("flock", ["-s", "-o", p(h, `usr/lib/chariox/app-runtimes/${h.digest}/.runtime-lease`), "sh", "-c", "echo held; exec sleep 30"],
       { detached: true })
     await once(holder.stdout, "data")
     const inUse = h.run(["uninstall", "--all"])
-    process.kill(-holder.pid)
+    signalOwnedProcessGroup(holder)
     await once(holder, "exit")
     assert.equal(inUse.status, 1)
     assert.match(inUse.out, /runtime [0-9a-f]{64} is in use/)
@@ -281,6 +326,9 @@ test("local Linux kernel unit owns the delegated subtree the root install enroll
   // prepared from the supervisor subgroup: an ExecStartPre enabling controllers
   // makes systemd 259 fail the main process spawn, and a Post races the kernel.
   assert.doesNotMatch(unit, /^ExecStart(Pre|Post)=/m)
+  // A stop must reach the kernel before its App workers: a worker that systemd
+  // signals first exits as a failure and stays down after the restart.
+  assert.ok(unit.split("\n").includes("KillMode=mixed"), "chariox-kernel.service stops the kernel before its Apps")
   assert.match(start, /chariox-kernel\.service\/supervisor \]\]/)
   assert.ok(start.indexOf('mkdir "$unit/apps"') < start.indexOf('exec "$1"'))
   assert.match(root, /user@\$uid\.service\/app\.slice\/chariox-kernel\.service\/apps:\$home\/\.chariox\/state\/kernel\.db/)
@@ -289,7 +337,8 @@ test("local Linux kernel unit owns the delegated subtree the root install enroll
 test("local Linux root install refuses GID zero before changing shared enrollment", { skip: !linux }, async () => {
   const h = await harness()
   try {
-    assert.equal(h.install(["alice"]).status, 0)
+    const alice = h.install(["alice"])
+    assert.equal(alice.status, 0, alice.out)
     const enrollment = await readFile(p(h, "etc/chariox/app-storage.json"), "utf8")
     const logs = Object.fromEntries(await Promise.all(
       ["runtime-install", "systemctl", "loginctl", "apparmor"].map(async (name) => [name, await h.log(name)]),
@@ -429,5 +478,59 @@ test("unrestricted kernel unloads a previously loaded native-entry profile befor
     assert.equal(existsSync(profile), false)
   } finally {
     await rm(h.base, { recursive: true, force: true })
+  }
+})
+
+test("a pinned Chromium whose bytes differ from the pin is refused before anything is installed", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    await h.browserPin("0".repeat(64))
+    const refused = h.install(["alice"])
+    assert.equal(refused.status, 1, refused.out)
+    assert.match(refused.out, /has SHA-256 [0-9a-f]{64} \(\d+ bytes\), not the pinned 0{64}/)
+    assert.equal(existsSync(p(h, "usr/lib/chariox/browser/chromium/1.2.3")), false)
+    assert.equal(existsSync(p(h, "etc/chariox/app-storage.json")), false, "refused before the first change")
+  } finally {
+    await rm(h.base, { recursive: true, force: true })
+  }
+})
+
+// MP-08/MP-10/MP-11: native keyboard startup uses the SYSTEM Python, not a user venv.
+test("local Linux Setup installs and verifies missing native keyboard dependencies", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    const preview = h.install(["alice"], ["--dry-run"], { HARNESS_NATIVE_PYTHON: "missing" })
+    assert.equal(preview.status, 0, preview.out)
+    assert.equal(await h.log("native-apt"), "", "dry-run cannot install host packages")
+    const result = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing" })
+    assert.equal(result.status, 0, result.out)
+    assert.equal(await h.log("native-apt"), `update\ninstall -y --no-install-recommends ${PACKAGES}\n`)
+    await h.reset("native-apt")
+    const again = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing" })
+    assert.equal(again.status, 0, again.out)
+    assert.equal(await h.log("native-apt"), "", "already-importable system modules need no package operation")
+  } finally { await rm(h.base, { recursive: true, force: true }) }
+})
+
+// MP-08/MP-10/MP-11: a stock Ubuntu 26.04 host has no openbox; the kernel's owned desktop refused to start.
+test("local Linux Setup installs the owned desktop's missing system executables", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    await rm(p(h, "usr/bin/openbox"))
+    const result = h.install(["alice"])
+    assert.equal(result.status, 0, result.out)
+    assert.equal(await h.log("native-apt"), `update\ninstall -y --no-install-recommends ${PACKAGES}\n`)
+    assert.equal(existsSync(p(h, "usr/bin/openbox")), true)
+  } finally { await rm(h.base, { recursive: true, force: true }) }
+})
+
+test("local Linux Setup refuses failed or unverifiable native dependencies", { skip: !linux }, async () => {
+  for (const failure of [{ HARNESS_NATIVE_APT_FAIL: "1" }, { HARNESS_NATIVE_STAYS_BROKEN: "1" }]) {
+    const h = await harness()
+    try {
+      const result = h.install(["alice"], [], { HARNESS_NATIVE_PYTHON: "missing", ...failure })
+      assert.notEqual(result.status, 0, result.out)
+      assert.match(result.out, /browser dependenc/i)
+    } finally { await rm(h.base, { recursive: true, force: true }) }
   }
 })

@@ -52,7 +52,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operatio
                     ));
                 }
                 reservation_ranges
-                    .entry(path.clone())
+                    .entry(path.to_path_buf())
                     .or_default()
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(path, Some(content));
@@ -89,7 +89,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operatio
                     ));
                 };
                 reservation_ranges
-                    .entry(path.clone())
+                    .entry(path.to_path_buf())
                     .or_default()
                     .push(range);
                 final_states.insert(path, Some(updated));
@@ -112,7 +112,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operatio
                     ));
                 }
                 reservation_ranges
-                    .entry(path.clone())
+                    .entry(path.to_path_buf())
                     .or_default()
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(path, None);
@@ -173,11 +173,11 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operatio
                     source = updated;
                 }
                 reservation_ranges
-                    .entry(from_path.clone())
+                    .entry(from_path.to_path_buf())
                     .or_default()
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 reservation_ranges
-                    .entry(to_path.clone())
+                    .entry(to_path.to_path_buf())
                     .or_default()
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(from_path, None);
@@ -211,7 +211,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operatio
             Some(text) => {
                 coordinator.read_artifact(crate::io::ArtifactReadRequest {
                     workspace_identity: workspace_identity.clone(),
-                    path: path.clone(),
+                    path: path.to_path_buf(),
                     domain,
                     content: crate::io::ArtifactContent::Text(text.clone()),
                 });
@@ -242,7 +242,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operatio
         add_workspace_live_sync_change_payload(
             &mut change_payload,
             WorkspaceLiveSyncChangeContext {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 before,
                 after: after_snapshot,
             },
@@ -276,7 +276,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_patch_operatio
 
 fn remote_workspace_live_sync_patch_state(
     artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
-    path: &PathBuf,
+    path: &Path,
     before_states: &mut BTreeMap<PathBuf, Option<String>>,
     final_states: &mut BTreeMap<PathBuf, Option<String>>,
 ) -> Result<Option<String>, DaemonError> {
@@ -295,8 +295,8 @@ fn remote_workspace_live_sync_patch_state(
         })?;
     let current = state.content_text.clone();
     before_states
-        .entry(path.clone())
+        .entry(path.to_path_buf())
         .or_insert_with(|| current.clone());
-    final_states.insert(path.clone(), current.clone());
+    final_states.insert(path.to_path_buf(), current.clone());
     Ok(current)
 }

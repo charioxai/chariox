@@ -1,3 +1,4 @@
+import { adoptLoadedLiveToolRows } from "@chariox/kernel-client/session-history-transcript"
 import type {
   AgentInstance,
   RuntimeSession,
@@ -163,7 +164,10 @@ export function createAgentPaneRefreshController(
     )
     const mergedPaneEntries = {
       ...currentPaneEntries,
-      ...nextPaneState.paneEntries,
+      ...Object.fromEntries(Object.entries(nextPaneState.paneEntries).map(([agentId, entries]) => [
+        agentId,
+        adoptLoadedLiveToolRows(entries ?? [], currentPaneEntries[agentId] ?? []),
+      ])),
     }
     const mergedPreviews = Object.fromEntries(
       session.agents.map((agent) => [agent.id, formatTranscriptPreview(mergedPaneEntries[agent.id] ?? [])]),

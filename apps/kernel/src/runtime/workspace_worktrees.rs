@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::error::DaemonError;
 use crate::local::WorkspaceWorktreeRecord;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, git_ref_exists, resolve_repo_root, run_git, same_fs_path,
+    detect_git_branch, find_repo_root, git_ref_exists, resolve_repo_root, run_git, same_fs_path,
     worktree_display_label,
 };
 use crate::runtime::workspace_search::expand_workspace_query_path;
@@ -14,6 +14,11 @@ pub(crate) fn list_workspace_worktrees(
     workspace_id: &str,
     current_worktree: Option<&str>,
 ) -> Result<Vec<WorkspaceWorktreeRecord>, DaemonError> {
+    if find_repo_root(workspace_id)?.is_none()
+        || !git_ref_exists(Path::new(workspace_id), "HEAD^{commit}")?
+    {
+        return Ok(Vec::new());
+    }
     let workspace_path = PathBuf::from(workspace_id);
     let output = std::process::Command::new("git")
         .args(["worktree", "list", "--porcelain"])
@@ -52,6 +57,13 @@ pub(crate) fn create_waiting_room_worktree(
     label_workspace_path: Option<&str>,
 ) -> Result<WorkspaceWorktreeRecord, DaemonError> {
     let repo_root = resolve_repo_root(workspace_path)?;
+    if !git_ref_exists(&repo_root, "HEAD^{commit}")? {
+        return Err(DaemonError::LocalTransport {
+            operation: "create workspace worktree",
+            message: "This repository has no commits — create a commit to enable worktrees"
+                .to_string(),
+        });
+    }
     let base_ref = requested_base_ref
         .map(str::trim)
         .filter(|value| !value.is_empty())

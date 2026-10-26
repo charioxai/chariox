@@ -6,6 +6,115 @@ use crate::provider::{
 
 pub(super) const PASSKEY: &str = "sudo fixture passkey";
 
+// MP-08/MP-11: even an owner-authorized sudo turn cannot perform owner review.
+#[tokio::test]
+async fn mp08_mp11_owner_context_review_rejects_sudo_agent_approval() {
+    owner_context_review_rejects_sudo(false).await;
+}
+
+#[tokio::test]
+async fn mp08_mp11_source_project_owner_review_rejects_sudo_agent_approval() {
+    owner_context_review_rejects_sudo(true).await;
+}
+
+async fn owner_context_review_rejects_sudo(source_project: bool) {
+    let f = fixture();
+    let turn = running(&f);
+    let worktree = crate::test_support::TestWorktree::new("sudo-owner-context-review");
+    let (session, _) = crate::app::KernelSessionService::new(&mut *f.app.lock().await)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: session.owner_user_id().into(),
+        ..Default::default()
+    });
+    f.state.owned.config_projection.update(config);
+    let development = if source_project {
+        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            project_id: session.project_id().into(),
+            repositories: vec![
+                crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                    workspace_id: session.workspace_id().into(),
+                    worktree_id: None,
+                },
+            ],
+        }
+    } else {
+        crate::managed_context::package::ManagedContextDevelopmentSelection::Empty
+    };
+    let reviewer = f.state.clone();
+    let task = tokio::spawn(async move {
+        reviewer
+            .review_credential_free_owner_context(
+                &development,
+                "sudo-owner-review",
+                "Owner target machine",
+            )
+            .await
+    });
+    let id = "owner-context:sudo-owner-review";
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if f.state
+                .session_snapshot(session.id())
+                .await
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|i| i.id() == id)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        f.state
+            .authorize_sudo_request(
+                &turn.entry_id,
+                &LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+                    session_id: session.id().into(),
+                    interaction_id: id.into(),
+                    choice_id: "continue".into(),
+                    custom_reply: None,
+                    passkey: None,
+                    passkey_remember_minutes: None,
+                })
+            )
+            .is_err(),
+        "MP-11 sudo agent must not approve source owner review"
+    );
+    // MP-11: an owner ID and verified flag alone are not a terminal answer.
+    assert!(f
+        .state
+        .owned
+        .resolve_runtime_interaction(
+            session.id(),
+            id,
+            "continue",
+            None,
+            Some(session.owner_user_id()),
+            true,
+        )
+        .is_err());
+    assert!(!task.is_finished());
+    f.state
+        .resolve_terminal_runtime_interaction(
+            session.id(),
+            id,
+            "cancel",
+            None,
+            Some(session.owner_user_id()),
+        )
+        .await
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+}
+
 pub(super) struct Fixture {
     _worktree: crate::test_support::TestWorktree,
     pub(super) state: KernelRuntimeState,
@@ -15,15 +124,45 @@ pub(super) struct Fixture {
     pub(super) run: RuntimeProviderRun,
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     fixture_with_provider(None)
 }
 
 pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
+    fixture_with_options(script, false)
+}
+
+pub(super) fn fixture_with_options(script: Option<&str>, room_tools: bool) -> Fixture {
+    fixture_with_run_profile(script, room_tools, "dev-stub", "dev-stub")
+}
+
+// MP-08/MP-10/MP-11: metadata-only warm catalog-caching run. Its agent
+// remains dev-stub; no real provider credentials or processes are used.
+pub(super) fn fixture_with_catalog_reload() -> Fixture {
+    fixture_with_run_profile(None, true, "codex", "sudo-relaunch-fixture")
+}
+
+pub(super) fn fixture_with_run_profile(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+) -> Fixture {
+    fixture_with_run_endpoint(script, room_tools, adapter, provider, None)
+}
+
+pub(super) fn fixture_with_run_endpoint(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+    endpoint: Option<String>,
+) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
     let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = room_tools;
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::CharioxEncrypted;
     config.user_config.credential_vault.path = vault.display().to_string();
@@ -38,9 +177,8 @@ pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
             ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
-    let launch =
-        LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "default")
-            .with_agent_id(agent.id());
+    let launch = LaunchProviderRequest::new(session.id(), adapter, provider, "default", "default")
+        .with_agent_id(agent.id());
     let mut run = RuntimeProviderRun::new(
         "sudo-fixture-run",
         &launch,
@@ -59,17 +197,20 @@ pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
             pty_env: Default::default(),
             pty_env_remove: vec![],
             working_directory: Some(worktree.path().to_owned()),
-            structured_endpoint: None,
+            structured_endpoint: endpoint.clone(),
         },
     );
-    run.mark_running();
+    if endpoint.is_none() {
+        run.mark_running();
+    }
     run.set_runtime_mcp_auth_token(Some("sudo-fixture-bearer".into()));
+    // The kernel must admit the current run before its process can launch.
+    app.providers_mut().insert_run_for_test(run.clone());
     if script.is_some() {
         crate::app::ProviderLaunchProcessRuntime::new(&mut app)
             .spawn_for_launch(&run)
             .unwrap();
     }
-    app.providers_mut().insert_run_for_test(run.clone());
     app.agents_mut()
         .set_agent_runtime_profile_with_account_profile(
             agent.id(),
@@ -101,6 +242,124 @@ pub(super) fn fixture_with_provider(script: Option<&str>) -> Fixture {
     }
 }
 
+// MP-08 / MP-11, P2: exercise the actual MCP router with room tools enabled.
+#[tokio::test]
+async fn sudo_room_tools_preserve_host_authority_and_revocation() {
+    let f = fixture_with_options(None, true);
+    assert!(
+        f.router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":{"ListSessions":null}}),
+            )
+            .await
+            .is_err(),
+        "room tools alone must not confer sudo authority"
+    );
+    let turn = running(&f);
+    let other =
+        crate::session::RuntimeSession::new("sudo-room-tools-other", None, "w", "wt", "m", "k");
+    f.state
+        .owned
+        .session_store
+        .write()
+        .restore_session(other.clone());
+    let responder = f
+        .state
+        .create_kernel_operation_interaction(
+            other.id(),
+            "local",
+            RuntimeInteraction::for_kernel_operation(
+                "sudo-room-tools-critical",
+                "payment",
+                "Payment",
+                "Fixture only",
+                vec![
+                    RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                        .requiring_passkey(),
+                ],
+            ),
+        )
+        .await
+        .unwrap();
+    let answer = serde_json::json!({"RespondToInteraction": {
+        "session_id":other.id(), "interaction_id":"sudo-room-tools-critical",
+        "choice_id":"approve", "custom_reply":null, "passkey":null,
+        "passkey_remember_minutes":null,
+    }});
+    assert!(
+        f.router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":answer}),
+            )
+            .await
+            .is_err(),
+        "approvals belong to the user, even for an elevated agent"
+    );
+    drop(responder);
+    let peer = {
+        let mut app = f.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(&turn.session_id, "dev-stub")
+                    .with_alias("sudo-room-peer"),
+            )
+            .unwrap()
+    };
+    for request in [
+        serde_json::json!({"AliasAgent":{"session_id":turn.session_id,
+            "agent_id":peer.id(),"alias":"sudo-renamed-peer"}}),
+        serde_json::json!({"DestroyAgent":{"session_id":turn.session_id,
+            "agent_id":peer.id()}}),
+        serde_json::json!({"EndSession":{"session_id":other.id()}}),
+    ] {
+        assert!(
+            f.router
+                .dispatch_authenticated_runtime_tool_call(
+                    "sudo-fixture-bearer",
+                    "chariox_kernel_request",
+                    serde_json::json!({"request":request}),
+                )
+                .await
+                .is_err(),
+            "sudo cannot take another creator's agents or tear down unrelated sessions"
+        );
+    }
+    // Room tools do not remove the sudo forbidden-operation policy.
+    for request in [
+        serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":null}}),
+        serde_json::json!({"SubmitPrompt":f.request}),
+    ] {
+        assert!(f
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":request}),
+            )
+            .await
+            .is_err());
+    }
+    f.state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+        .unwrap();
+    assert!(
+        f.router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request":{"ListSessions":null}}),
+            )
+            .await
+            .is_err(),
+        "room flag must not revive revoked sudo"
+    );
+}
+
 pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
     let agent = f.request.target_agent_id.as_deref().unwrap();
     let session = f
@@ -130,6 +389,13 @@ pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
         requester: None,
         prompt_id: Some("sudo-exact-turn".into()),
         provider_run_id: Some(f.run.id().into()),
+        task_id: None,
+        duration_minutes: 60,
+        expires_at_ms: Some(crate::session::unix_epoch_ms() + 3_600_000),
+        revision: 1,
+        warning_sent: false,
+        deadline: Some(std::time::Instant::now() + Duration::from_secs(3600)),
+        placement: None,
     };
     assert!(f.state.owned.prompt_state_owner.bind_sudo_turn(
         &session,
@@ -137,10 +403,6 @@ pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
         "sudo-exact-turn",
         &turn.entry_id
     ));
-    f.state.owned.sudo_process_cutoffs.lock().unwrap().insert(
-        turn.entry_id.clone(),
-        crate::runtime::kernel_access::process::birth_cutoff().unwrap(),
-    );
     f.state
         .owned
         .sudo_turns
@@ -176,7 +438,7 @@ pub(super) async fn popup(state: &KernelRuntimeState) -> PasskeyPrompt {
 }
 
 #[tokio::test]
-async fn sudo_exact_turn_ends_at_yield_without_time_expiry_or_inheritance() {
+async fn sudo_without_durable_tasks_ends_with_its_turn() {
     let f = fixture();
     let turn = running(&f);
     assert_eq!(
@@ -223,79 +485,6 @@ async fn sudo_exact_turn_ends_at_yield_without_time_expiry_or_inheritance() {
         )
         .is_err());
     assert!(f.state.list_sudo_turns("local").is_empty());
-}
-
-#[tokio::test]
-async fn sudo_critical_receipt_names_human_entry_and_exact_turn_across_sessions() {
-    let f = fixture();
-    let turn = running(&f);
-    let mut other =
-        crate::session::RuntimeSession::new("sudo-other-session", None, "w", "wt", "m", "k");
-    // Same host, separate session: sudo has kernel-wide authority.
-    other.set_alias(Some("other".into()));
-    f.state
-        .owned
-        .session_store
-        .write()
-        .restore_session(other.clone());
-    let responder = f
-        .state
-        .create_kernel_operation_interaction(
-            other.id(),
-            "local",
-            RuntimeInteraction::for_kernel_operation(
-                "sudo-critical",
-                "payment",
-                "Payment",
-                "Fixture only",
-                vec![
-                    RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
-                    RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
-                        .requiring_passkey(),
-                ],
-            ),
-        )
-        .await
-        .unwrap();
-    let answer = RespondToInteractionRequest {
-        session_id: other.id().into(),
-        interaction_id: "sudo-critical".into(),
-        choice_id: "approve".into(),
-        custom_reply: None,
-        passkey: None,
-        passkey_remember_minutes: None,
-    };
-    let grant = f.state.insert_access_grant_for_test(other.id());
-    assert!(f
-        .state
-        .authorize_external_request(
-            &grant,
-            &LocalDaemonRequest::RespondToInteraction(answer.clone())
-        )
-        .is_err());
-    f.state
-        .answer_sudo_interaction(&turn.entry_id, answer.clone())
-        .await
-        .unwrap();
-    assert_eq!(
-        responder.await.unwrap().choice_id.as_deref(),
-        Some("approve")
-    );
-    assert!(f
-        .state
-        .answer_sudo_interaction(&turn.entry_id, answer)
-        .await
-        .is_err());
-    let receipts = f
-        .state
-        .owned
-        .durable_state_store
-        .load_events_by_kind("kernel_access.sudo_approval")
-        .unwrap();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].payload["turn"]["entry_id"], turn.entry_id);
-    assert_eq!(receipts[0].payload["turn"]["prompt_id"], "sudo-exact-turn");
-    assert_eq!(receipts[0].payload["turn"]["terminal_id"], "sudo-terminal");
 }
 
 #[tokio::test]
@@ -347,8 +536,10 @@ async fn sudo_cannot_mint_authority_answer_sudo_popup_or_submit_passkeys() {
     };
     assert!(f
         .state
-        .answer_sudo_interaction(&turn.entry_id, answer)
-        .await
+        .authorize_sudo_request(
+            &turn.entry_id,
+            &LocalDaemonRequest::RespondToInteraction(answer)
+        )
         .is_err());
 }
 
@@ -409,8 +600,21 @@ async fn sudo_busy_authorization_is_memory_only_and_revoke_all_prevents_dispatch
             .await
     });
     let prompt = popup(&f.state).await;
-    assert!(prompt.message.contains("protected task"));
-    assert!(prompt.message.contains(&running_turn.agent_id));
+    let presentation = prompt
+        .sudo_request
+        .as_ref()
+        .expect("typed sudo presentation");
+    assert_eq!(presentation.task, "protected task");
+    let target = f
+        .state
+        .owned
+        .agent_store
+        .get_agent(&running_turn.agent_id)
+        .unwrap();
+    assert_eq!(
+        presentation.agent_name,
+        target.alias().unwrap_or(target.agent_ref())
+    );
     assert!(f
         .state
         .answer_terminal_runtime_interaction(
@@ -647,8 +851,15 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
         requester: None,
         prompt_id: None,
         provider_run_id: None,
+        task_id: None,
+        duration_minutes: 60,
+        expires_at_ms: None,
+        revision: 1,
+        warning_sent: false,
+        deadline: None,
+        placement: None,
     };
-    f.state.audit_sudo(&entry, "authorized").unwrap();
+    f.state.audit_sudo(&entry, "extended").unwrap();
     // Recover only the audit stream, as a new kernel does. It never creates
     // a live authorization or persists the queued prompt's text.
     f.state.recover_sudo_notices();
@@ -668,8 +879,31 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
 }
 
 #[tokio::test]
-async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
+async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() {
     let f = fixture();
+    // MP-08/MP-11: window admission refreshes official-harness discovery.
+    // Main advertises stable interfaces before native harnesses cache discovery.
+    // MP-08/MP-10/MP-11: only a live authorized turn grants authority.
+    let initial_catalog = f
+        .router
+        .runtime_tool_specs_for_auth_token("sudo-fixture-bearer");
+    assert!(!f
+        .router
+        .runtime_tool_specs_for_auth_token("unknown-token")
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(initial_catalog
+        .iter()
+        .any(|spec| spec.name == "chariox_kernel_request"));
+    assert!(f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request": {"ListSessions": null}})
+        )
+        .await
+        .is_err());
     let turn = running(&f);
     assert!(f
         .router
@@ -695,7 +929,30 @@ async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
         .session_store
         .write()
         .restore_session(other.clone());
-    let resolved = f.router.dispatch_authenticated_runtime_tool_call("sudo-fixture-bearer", "chariox_kernel_request", serde_json::json!({"request":{"ResolveSession":{"session_ref":"sudo-other-alias", "workspace_id":null}}})).await.unwrap();
+    let router = f.router.clone();
+    let resolving = tokio::spawn(async move {
+        router.dispatch_authenticated_runtime_tool_call("sudo-fixture-bearer", "chariox_kernel_request", serde_json::json!({"request":{"ResolveSession":{"session_ref":"sudo-other-alias", "workspace_id":null}}})).await
+    });
+    let scope_prompt = popup(&f.state).await;
+    assert!(scope_prompt.interaction_id.contains(":scope:"));
+    f.state
+        .answer_terminal_runtime_interaction(
+            &turn.session_id,
+            &scope_prompt.interaction_id,
+            "approve",
+            None,
+            Some("local"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    let resolved = tokio::time::timeout(Duration::from_secs(5), resolving)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_eq!(
         resolved.payload["SessionResolved"]["session"]["id"],
         other.id()
@@ -718,16 +975,18 @@ async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
             )
             .is_err());
     }
-    assert!(f
-        .state
-        .authorize_sudo_request(
-            &turn.entry_id,
-            &LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
-                path: "workflow.session_default_max_agents".into(),
-                value: "16".into()
-            })
-        )
-        .is_ok());
+    assert!(
+        f.state
+            .authorize_sudo_request(
+                &turn.entry_id,
+                &LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
+                    path: "workflow.session_default_max_agents".into(),
+                    value: "16".into()
+                })
+            )
+            .is_err(),
+        "an unclassified host mutation needs explicit owner scope authorization"
+    );
     let session = f
         .state
         .owned
@@ -739,7 +998,7 @@ async fn sudo_runtime_mcp_uses_shared_router_and_removes_tool_at_yield() {
         .prompt_state_owner
         .cancel_active_prompt_only(&session, &turn.agent_id)
         .unwrap();
-    assert!(!f
+    assert!(f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
         .iter()
@@ -816,8 +1075,108 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
 fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
     RequestKernelSudoRequest {
         agent_id: f.request.target_agent_id.clone().unwrap(),
-        prompt: "external first line\nfull second line".into(),
+        prompt: "  external first line\nfull second line\t  \n".into(),
     }
+}
+
+#[test]
+fn sudo_command_parser_shares_router_whitespace_and_token_boundaries() {
+    for (text, expected) in [
+        ("  /sudo task  ", Some("task")),
+        ("/sudo\ntask", Some("task")),
+        ("/sudo\ttask", Some("task")),
+        ("\n/sudo\u{2003}task", Some("task")),
+        ("/sudo", Some("")),
+        ("/sudo \t\n", Some("")),
+        ("/sudo-task", None),
+        ("/sudotask", None),
+        ("please /sudo task", None),
+    ] {
+        assert_eq!(policy::parse_sudo_prompt(text), expected, "{text:?}");
+        assert_eq!(is_sudo_prompt(text), expected.is_some(), "{text:?}");
+    }
+}
+
+async fn external_sudo_submit_prompt_whitespace_is_refusable(text: &str) {
+    let f = fixture();
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let mut request = f.request.clone();
+    request.prompt = text.into();
+    let request = LocalDaemonRequest::SubmitPrompt(request);
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "external-sudo-whitespace",
+        None,
+        None,
+        &request,
+    );
+    command.caller.connection_class = Some(KernelConnectionClass::ExternalAgent);
+    command.caller.caller_id = grant_id;
+    let router = f.router.clone();
+    let task = tokio::spawn(async move { router.dispatch(command, request).await });
+    let prompt = popup(&f.state).await;
+    let presentation = prompt
+        .sudo_request
+        .as_ref()
+        .expect("typed external sudo presentation");
+    assert_eq!(presentation.task, "protected task\nfull second line");
+    assert_eq!(presentation.requester_name, "An external agent");
+    f.state
+        .answer_sudo_entry_from_terminal(
+            "local",
+            "sudo-terminal",
+            &RespondToInteractionRequest {
+                session_id: prompt.session_id.clone(),
+                interaction_id: prompt.interaction_id.clone(),
+                choice_id: "refuse".into(),
+                custom_reply: None,
+                passkey: None,
+                passkey_remember_minutes: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("sudo request refused"));
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+    assert!(f.state.list_sudo_turns("local").is_empty());
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    let (active, queued) = f
+        .state
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, f.request.target_agent_id.as_deref().unwrap());
+    assert!(active.is_none());
+    assert!(queued.is_empty());
+}
+
+#[tokio::test]
+async fn external_sudo_submit_prompt_accepts_leading_whitespace() {
+    external_sudo_submit_prompt_whitespace_is_refusable(
+        "  /sudo protected task\nfull second line  ",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn external_sudo_submit_prompt_accepts_newline_separator() {
+    external_sudo_submit_prompt_whitespace_is_refusable("/sudo\nprotected task\nfull second line")
+        .await;
+}
+
+#[tokio::test]
+async fn external_sudo_submit_prompt_accepts_tab_separator() {
+    external_sudo_submit_prompt_whitespace_is_refusable("/sudo\tprotected task\nfull second line")
+        .await;
 }
 
 #[tokio::test]
@@ -829,23 +1188,43 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
     let id = grant_id.clone();
     let task = tokio::spawn(async move { state.request_kernel_sudo(&id, request).await });
     let prompt = popup(&f.state).await;
-    assert!(prompt.message.contains("External agent"));
-    assert!(prompt
+    // MP-08 / MP-10 / MP-11: legacy browsers retain only these fields.
+    let value = serde_json::to_value(&prompt).unwrap();
+    assert_eq!(
+        value["sudo_request"]["task"],
+        "  external first line\nfull second line\t  \n"
+    );
+    assert_eq!(
+        value["sudo_request"]["task_summary"],
+        "external first line full second line"
+    );
+    assert!(!value["sudo_request"]["agent_name"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert!(!value["sudo_request"]["session_name"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    assert_eq!(value["sudo_request"]["grant_id"], grant_id);
+    assert_eq!(value["requester"]["pid"], std::process::id());
+    assert!(!prompt.message.contains(&f.request.session_id));
+    assert!(!prompt.message.contains("OS pid"));
+    #[derive(serde::Deserialize)]
+    struct LegacyBrowserPrompt {
+        message: String,
+    }
+    let legacy: LegacyBrowserPrompt = serde_json::from_value(value.clone()).unwrap();
+    assert!(legacy
         .message
-        .contains(&format!("OS pid {}", std::process::id())));
-    assert!(prompt.message.contains(
-        &crate::runtime::kernel_access::process::inspect(std::process::id())
-            .unwrap()
-            .0
-            .executable
-    ));
-    assert!(prompt
+        .contains("external first line full second line"));
+    let presentation = prompt.sudo_request.as_ref().unwrap();
+    assert!(legacy
         .message
-        .contains(f.request.target_agent_id.as_deref().unwrap()));
-    assert!(prompt.message.contains(&f.request.session_id));
-    assert!(prompt
+        .contains(&format!("Agent: {}", presentation.agent_name)));
+    assert!(legacy
         .message
-        .contains("Requester-supplied prompt:\nexternal first line\nfull second line"));
+        .contains(&format!("Session: {}", presentation.session_name)));
     assert!(f.state.passkey_prompts_for("guest").is_empty());
     let mut answer = RespondToInteractionRequest {
         session_id: prompt.session_id.clone(),
@@ -885,6 +1264,21 @@ async fn external_sudo_popup_names_os_requester_target_session_and_full_prompt()
         result,
         LocalDaemonResponse::KernelSudoRequested { .. }
     ));
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    let (active, _) = f
+        .state
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, f.request.target_agent_id.as_deref().unwrap());
+    assert_eq!(
+        active.unwrap().prompt(),
+        "  external first line\nfull second line\t  \n"
+    );
     let events = f
         .state
         .owned
@@ -984,7 +1378,7 @@ async fn external_sudo_revoked_holder_cancels_popup_and_busy_queue() {
 }
 
 #[tokio::test]
-async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_request() {
+async fn external_sudo_cross_session_request_is_allowed_and_terminal_cannot_request() {
     let f = fixture();
     let request = external_request(&f);
     assert!(f
@@ -995,15 +1389,13 @@ async fn external_sudo_only_granted_target_is_allowed_and_terminal_cannot_reques
     let other = crate::session::RuntimeSession::new("ungranted", None, "w", "wt", "m", "k");
     f.state.owned.session_store.write().restore_session(other);
     let grant = f.state.insert_access_grant_for_test("ungranted");
-    assert!(!f.state.external_request_in_session(
-        "ungranted",
-        &LocalDaemonRequest::RequestKernelSudo(request.clone())
-    ));
     assert!(f
         .state
-        .request_kernel_sudo(&grant, request.clone())
-        .await
-        .is_err());
+        .authorize_external_request(
+            &grant,
+            &LocalDaemonRequest::RequestKernelSudo(request.clone())
+        )
+        .is_ok());
     let request = LocalDaemonRequest::RequestKernelSudo(request);
     let mut command = crate::runtime::command::KernelCommand::from_local_request(
         "external-sudo-tcp",
@@ -1119,7 +1511,7 @@ async fn external_sudo_source_cannot_reopen_a_session_ended_before_attach() {
 }
 
 #[tokio::test]
-async fn sudo_admission_waiting_for_grants_does_not_block_a_critical_receipt() {
+async fn sudo_admission_waiting_for_grants_does_not_block_an_owner_decision() {
     let f = fixture();
     let running_turn = running(&f);
     let responder = f
@@ -1182,8 +1574,8 @@ async fn sudo_admission_waiting_for_grants_does_not_block_a_critical_receipt() {
             None,
             Some("local"),
             true,
-            Some(&turn),
             None,
+            false,
             false,
         );
         completed.send(result).unwrap();
@@ -1195,7 +1587,7 @@ async fn sudo_admission_waiting_for_grants_does_not_block_a_critical_receipt() {
     admission.join().unwrap().unwrap();
     approval.join().unwrap();
     answered_while_grants_busy
-        .expect("grant contention blocked a critical sudo receipt")
+        .expect("grant contention blocked an owner decision")
         .unwrap();
     assert_eq!(
         responder.await.unwrap().choice_id.as_deref(),
@@ -1375,13 +1767,6 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
         "the caller must see a failed durable receipt"
     );
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
-    assert!(f
-        .state
-        .owned
-        .sudo_process_cutoffs
-        .lock()
-        .unwrap()
-        .is_empty());
     assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
     database
         .execute_batch("DROP TRIGGER reject_sudo_end;")
@@ -1394,4 +1779,160 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
         .load_subject_events_by_kind(&turn.entry_id, "kernel_access.sudo", 10)
         .unwrap();
     assert_eq!(events.last().unwrap().payload["outcome"], "restart_dropped");
+}
+
+// MP-08/MP-10/MP-11: requester identity stays separate from display prose.
+#[tokio::test]
+async fn sudo_review_uses_verified_requester_instead_of_summary_path() {
+    let f = fixture();
+    let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let path = "/workspace/provider\nlabel\tend";
+    f.state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .get_mut(&grant_id)
+        .unwrap()
+        .summary
+        .holder_executable = path.into();
+    let verified_executable = f
+        .state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .get(&grant_id)
+        .unwrap()
+        .holder
+        .executable
+        .clone();
+    let state = f.state.clone();
+    let request = external_request(&f);
+    let task = tokio::spawn(async move { state.request_kernel_sudo(&grant_id, request).await });
+    let prompt = popup(&f.state).await;
+    let requester = prompt.requester.as_ref().unwrap();
+    assert_eq!(requester.executable, verified_executable);
+    let clean = !prompt.message.contains(path) && !prompt.message.contains(['\r', '\t']);
+    f.state
+        .revoke_sudo(Some("local"), None, "fixture_cleanup")
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+    assert!(clean, "requester executable must stay out of display prose");
+}
+
+// MP-08/MP-10/MP-11 F6: auth and enrollment never reach scope approval.
+#[test]
+fn sudo_review_auth_and_credential_enrollment_are_forbidden() {
+    for value in [
+        serde_json::json!({"StartProviderLogin":{"provider":"codex","account_profile":"default"}}),
+        serde_json::json!({"SendProviderLoginInput":{"login_id":"fixture","data_base64":""}}),
+        serde_json::json!({"StartSliceProviderLogin":{"slice_ref":"fixture","provider":"codex","account_profile":"default"}}),
+        serde_json::json!({"ImportSliceProviderAuth":{"slice_ref":"fixture","provider":"codex","account_profile":"default"}}),
+        serde_json::json!({"RequestCredentialEnrollmentInteraction":{"session_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1,"provider_authorization_url":"https://example.com"}}),
+        serde_json::json!({"ArmDeploymentCredentialEnrollment":{"session_id":"fixture","attachment_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1}}),
+        serde_json::json!({"PrepareManagedEnvironmentGitCredentialEnrollment":{"environmentId":"fixture","sourceTargetId":"fixture","gitCredentials":{"kind":"none"}}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        assert!(
+            super::policy::sudo_request_forbidden(&request),
+            "credential operation must be forbidden"
+        );
+    }
+}
+
+// MP-08/MP-10/MP-11 F7: controls cannot open an authorization window.
+#[tokio::test]
+async fn sudo_review_controls_are_not_elevation_prompts() {
+    for text in [
+        "/sudo status",
+        "/sudo extend",
+        "/sudo revoke",
+        "/sudo status sudo:00af",
+        " /sudo\trevoke sudo:00af",
+    ] {
+        let f = fixture();
+        let mut request = f.request.clone();
+        request.prompt = text.into();
+        assert!(
+            !is_sudo_prompt(text),
+            "control classified as prompt: {text}"
+        );
+        assert!(f
+            .state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+            .is_err());
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+    }
+    assert!(is_sudo_prompt("/sudo deploy the app"));
+    assert!(!is_sudo_prompt("/sudoers"));
+}
+
+// MP-08/MP-10/MP-11 P2: control verbs inside task text still require approval.
+#[tokio::test]
+async fn sudo_review_control_verbs_in_tasks_reach_authorization() {
+    for text in [
+        "/sudo extend the database schema",
+        "/sudo status of prod please",
+        "/sudo revoke the obsolete deployment",
+        "/sudo status all",
+        "/sudo extend sudo:00af extra task text",
+        "/sudo status sudo:NOT_HEX",
+    ] {
+        assert!(is_sudo_prompt(text), "task classified as control: {text}");
+        let f = fixture();
+        let mut request = f.request.clone();
+        request.prompt = text.into();
+        let state = f.state.clone();
+        let task = tokio::spawn(async move {
+            state
+                .submit_sudo_prompt(request, "local", "sudo-terminal")
+                .await
+        });
+        let approval = popup(&f.state).await;
+        assert!(approval.message.contains(text.trim_start_matches("/sudo ")));
+        f.state.end_session(&f.request.session_id).await.unwrap();
+        assert!(task.await.unwrap().is_err());
+    }
+}
+
+// MP-08 / MP-10 / MP-11: the legacy fallback must not lose the end of a task.
+#[tokio::test]
+async fn legacy_sudo_message_keeps_full_task_beyond_structured_summary() {
+    let f = fixture();
+    let grant = f.state.insert_access_grant_for_test(&f.request.session_id);
+    let mut request = external_request(&f);
+    request.prompt = format!("{}\nlast authorized operation", "review build ".repeat(20));
+    let expected = request
+        .prompt
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let state = f.state.clone();
+    let waiting = tokio::spawn(async move { state.request_kernel_sudo(&grant, request).await });
+    let prompt = popup(&f.state).await;
+    assert!(prompt.message.contains(&expected));
+    assert!(!prompt
+        .sudo_request
+        .as_ref()
+        .unwrap()
+        .task_summary
+        .contains("last authorized operation"));
+    f.state
+        .answer_terminal_runtime_interaction(
+            &prompt.session_id,
+            &prompt.interaction_id,
+            "refuse",
+            None,
+            Some("local"),
+            None,
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    assert!(waiting.await.unwrap().is_err());
 }

@@ -13,6 +13,7 @@ use chariox_kernel::history_archive::{
 const _: () = chariox_app_runtime::assert_production_build();
 
 fn main() -> ExitCode {
+    let _process_logs = chariox_kernel::logging::ProcessLogGuard;
     let _ = chariox_kernel::logging::init_process_logger("history-archive-flush");
     match run() {
         Ok(()) => ExitCode::SUCCESS,

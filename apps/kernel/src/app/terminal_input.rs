@@ -105,6 +105,19 @@ impl DaemonApp {
         self.pty.input_writer(provider_run_id)?.enqueue_input(bytes)
     }
 
+    pub(crate) fn abort_provider_pty_input_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        let writer = self.pty.input_writer(provider_run_id)?;
+        if bytes == b"\x03\x15" {
+            writer.enqueue_owned_composer_abort(bytes)
+        } else {
+            writer.enqueue_input(bytes)
+        }
+    }
+
     pub(crate) fn drain_provider_pty_output_for_runtime(
         &mut self,
         provider_run_id: &str,

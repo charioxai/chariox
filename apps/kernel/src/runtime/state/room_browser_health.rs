@@ -1,12 +1,21 @@
 //! Browser health belongs to the kernel, including Rooms with no attached UI.
-use super::KernelRuntimeState;
+use super::{
+    browser_controller_runtime_state::ControllerGenerationObservation, KernelRuntimeState,
+};
 use crate::session::{EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentLifecycle};
 use crate::transport::room_browser_controller::RoomBrowserControllerResult as Response;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{atomic::Ordering, Arc, Mutex},
     time::Duration,
 };
+
+// Internal admission only; this does not add a serialized protocol contract.
+#[derive(Clone, Copy)]
+pub(crate) struct RoomBrowserHealthAdmission {
+    room_generation: u64,
+    controller_observation: Option<ControllerGenerationObservation>,
+}
 
 struct InflightProbe {
     rooms: Arc<Mutex<BTreeSet<String>>>,
@@ -91,6 +100,9 @@ impl KernelRuntimeState {
         {
             return;
         }
+        let Some(admission) = self.admit_room_browser_health_probe(session_id, generation) else {
+            return;
+        };
         // Reconcile proves debugger and page availability, but a health probe
         // does not project tab identities or change the viewport owner.
         // A timed-out caller cannot cancel a sent relay request or spawn_blocking
@@ -112,19 +124,55 @@ impl KernelRuntimeState {
         else {
             return;
         };
-        self.observe_room_browser_health_receipt(session_id, generation, result);
+        self.observe_room_browser_health_receipt(session_id, admission, result);
+    }
+
+    pub(crate) fn admit_room_browser_health_probe(
+        &self,
+        session_id: &str,
+        room_generation: u64,
+    ) -> Option<RoomBrowserHealthAdmission> {
+        let generations = self.owned.browser_controller_generations.lock().ok()?;
+        let snapshot = self.room_environment_snapshot(session_id).ok()?;
+        (snapshot.runtime_generation == room_generation
+            && matches!(
+                snapshot.lifecycle,
+                EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+            ))
+        .then(|| RoomBrowserHealthAdmission {
+            room_generation,
+            controller_observation: generations.get(session_id).copied(),
+        })
     }
 
     pub(crate) fn observe_room_browser_health_receipt(
         &self,
         session_id: &str,
-        generation: u64,
+        admission: RoomBrowserHealthAdmission,
         result: Result<Response, crate::error::DaemonError>,
     ) {
+        // MP-08 / MP-10: Comparison and health mutation share the foreground
+        // observer's lock. This fences success and loss receipts alike.
+        let Ok(mut generations) = self.owned.browser_controller_generations.lock() else {
+            return;
+        };
+        if generations.get(session_id).copied() != admission.controller_observation {
+            return;
+        }
         let diagnostic = match result {
             Ok(Response::Reconciled {
-                reconciliation: Some(_),
-            }) => None,
+                reconciliation: Some(reconciliation),
+            }) => {
+                if self.observe_room_controller_health_generation(
+                    session_id,
+                    admission.room_generation,
+                    reconciliation.process.runtime_generation,
+                    &mut generations,
+                ) {
+                    return;
+                }
+                None
+            }
             Err(error) if error.to_string().contains("browser_debugger_unavailable") => {
                 Some("browser_debugger_unavailable")
             }
@@ -154,7 +202,81 @@ impl KernelRuntimeState {
             // loss changes health.
             Ok(_) | Err(_) => return,
         };
-        self.observe_room_browser_health(session_id, generation, diagnostic);
+        self.observe_room_browser_health(session_id, admission.room_generation, diagnostic);
+    }
+
+    /// Attribute a restarted controller through the normal recovery fence. A
+    /// background receipt may cross a foreground mutation, so it cannot project
+    /// its tabs or complete recovery. The next normal reconcile owns that work.
+    fn observe_room_controller_health_generation(
+        &self,
+        session_id: &str,
+        room_generation: u64,
+        controller_generation: u64,
+        generations: &mut BTreeMap<String, ControllerGenerationObservation>,
+    ) -> bool {
+        // The caller holds the foreground observation lock. Fence the Room and
+        // update the generation under the same session-owner write lease.
+        let mut sessions = self.owned.session_store.write();
+        let Ok(snapshot) = sessions.room_environment_snapshot(session_id) else {
+            return true;
+        };
+        if snapshot.runtime_generation != room_generation
+            || !matches!(
+                snapshot.lifecycle,
+                EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+            )
+        {
+            return true;
+        }
+        match generations.get(session_id) {
+            Some(observation) if observation.generation == controller_generation => {
+                return observation.recovery_pending
+            }
+            None => {
+                generations.insert(
+                    session_id.to_owned(),
+                    ControllerGenerationObservation {
+                        generation: controller_generation,
+                        recovery_pending: false,
+                        revision: 1,
+                    },
+                );
+                return false;
+            }
+            Some(_) => {}
+        }
+        if sessions
+            .begin_room_environment_browser_controller_recovery(session_id)
+            .is_err()
+        {
+            return true;
+        }
+        let revision = generations
+            .get(session_id)
+            .map_or(1, |observation| observation.revision + 1);
+        generations.insert(
+            session_id.to_owned(),
+            ControllerGenerationObservation {
+                generation: controller_generation,
+                recovery_pending: true,
+                revision,
+            },
+        );
+        let _ = sessions.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponentHealthState::Starting,
+            Some("controller_restarted"),
+        );
+        let _ = sessions.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::Browser,
+            EnvironmentComponentHealthState::Starting,
+            None,
+        );
+        let _ = sessions.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
+        true
     }
 
     pub(crate) fn observe_room_browser_health(

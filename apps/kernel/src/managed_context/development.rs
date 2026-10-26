@@ -14,24 +14,16 @@ use crate::error::DaemonError;
 const DEVELOPMENT_CONTEXT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_CONTEXT_SCHEMA_VERSION: u32 = 3;
 const ENVIRONMENT_CONTEXT_SCHEMA_VERSION: u32 = 4;
-const MAX_REPOSITORIES: usize = 32;
-const MAX_OVERLAY_FILES_PER_REPOSITORY: usize = 20_000;
+const VAULT_CONTEXT_SCHEMA_VERSION: u32 = 5;
 const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_OVERLAY_BYTES_PER_REPOSITORY: u64 = 256 * 1024 * 1024;
-const MAX_BUNDLE_BYTES_PER_REPOSITORY: u64 = 512 * 1024 * 1024;
-pub(crate) const MAX_PACKAGE_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_DECOMPRESSED_ARCHIVE_BYTES: u64 =
-    MAX_PACKAGE_BYTES + MAX_MANIFEST_BYTES as u64 + 256 * 1024 * 1024;
+/// Size totals are admitted against real disk and memory (`managed_context::limits`), never a constant;
+/// per-file and parser bounds stay with their parsers.
+const UNBOUNDED_BYTES: u64 = u64::MAX;
 const MAX_ARCHIVE_PATH_BYTES: usize = 4096;
 const MAX_GIT_BUNDLE_HEADER_BYTES: usize = 1024 * 1024;
 const MAX_GIT_BUNDLE_HEADER_RECORDS: usize = 4096;
-const MAX_CHECKOUT_BYTES_PER_REPOSITORY: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_CHECKOUT_BYTES_PER_PROJECT: u64 = 4 * 1024 * 1024 * 1024;
-const MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY: u64 = 100_000;
-const MAX_MATERIALIZED_ENTRIES_PER_PROJECT: u64 = 250_000;
 const MAX_CONTEXT_IDENTIFIER_BYTES: usize = 4096;
 const MAX_TARGET_DIRECTORY_BASE_BYTES: usize = 200;
-const MAX_REPOSITORY_TREE_ENTRIES: usize = 500_000;
 const MAX_GIT_NUL_RECORD_BYTES: usize = 64 * 1024;
 const MAX_CONTEXT_IGNORE_BYTES: u64 = 256 * 1024;
 const MAX_CONTEXT_IGNORE_PATTERNS: usize = 1024;
@@ -93,6 +85,8 @@ pub struct DevelopmentContextManifest {
     pub repositories: Vec<DevelopmentRepositoryManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_environment: Option<DevelopmentProjectEnvironment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vault_artifacts: Vec<vault_artifacts::VaultArtifact>,
 }
 
 /// MP-08: Metadata and selected target-sealed values travel with the M28 development layer.
@@ -232,14 +226,15 @@ impl ManifestMemoryBudget {
 }
 
 mod archive;
-mod directory;
+pub(crate) mod directory;
 mod export;
 mod git;
 mod import;
 mod import_archive;
 mod import_materialize;
 mod overlay;
-pub(crate) use export::publish_archive_no_clobber;
+pub(crate) mod vault_artifacts;
+pub(crate) use export::{export_development_context_with_vault, publish_archive_no_clobber};
 
 use archive::write_archive;
 pub use export::{export_development_context, export_development_context_with_environment};
@@ -264,6 +259,25 @@ pub(crate) use import::{
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};
 use overlay::{export_overlay, validate_relative_path};
+
+/// MP-08 / MP-11: credential admission inspects exactly the artifacts import
+/// accepts: complete multi-member decoding, strict tar and manifest binding.
+pub(crate) fn extract_verified_development_archive(
+    archive_path: &Path,
+    expected_project_id: &str,
+    expected_source_repositories: Option<&[DevelopmentSourceRepositoryBinding]>,
+    artifacts_root: &Path,
+) -> Result<DevelopmentContextManifest, DaemonError> {
+    let archive = File::open(archive_path)
+        .map_err(|error| context_io_error("open development context archive", error))?;
+    create_private_directory(artifacts_root)?;
+    extract_and_verify_archive(
+        archive,
+        expected_project_id,
+        expected_source_repositories,
+        artifacts_root,
+    )
+}
 
 fn create_private_directory(path: &Path) -> Result<(), DaemonError> {
     fs::create_dir_all(path)

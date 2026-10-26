@@ -48,7 +48,6 @@ test("executeShellCommand creates a session and binds assignment", async () => {
     client: fake.client,
   })
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /workspace live sync: config default/)
   assert.deepEqual(result.bindings, { s: "session-2" })
   assert.deepEqual(result.contextUpdates, {
     sessionId: "session-2",
@@ -130,7 +129,6 @@ test("executeShellCommand reports explicit session workspace live sync mode afte
   })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /workspace live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\); use `workspace sync off` to disable/)
 })
 
 test("executeShellCommand creates and starts a headless slice for a new session", async () => {

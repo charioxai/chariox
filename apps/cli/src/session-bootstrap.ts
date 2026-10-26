@@ -1,3 +1,8 @@
+import { requestInitialSessionView } from "./initial-session-view.js"
+import { reconcileComposerCatalogs } from "./composer-catalog-reconciliation.js"
+import { createComposerInventoryLoader } from "./composer-inventory-loader.js"
+import { getRelayStatus, getKernelCloudRelayProfile } from "./relay-api.js"
+import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import type { CharioxLogger } from "./logging.js"
 import type { CharioxPreferences } from "./preferences.js"
 import type { TerminalCommandCatalog } from "@chariox/kernel-client/kernel-types"
@@ -9,6 +14,8 @@ import { settleAttachProviderRun } from "./attach-provider-run.js"
 import { sessionHistoryCursorForVisibleAgent } from "@chariox/kernel-client/session-history-outline"
 
 import type {
+  AttachLaunch,
+  ComposerInventory,
   CliOptions,
   BootstrapState,
   PromptInputHistoryEntry,
@@ -20,8 +27,13 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
+import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider-accounts.js"
 
-type BootstrapDeps = {
+export type BootstrapDeps = {
+  getClientCatalogRevisions?: typeof import("./client-catalog-api.js").getClientCatalogRevisions
+  deferProviderLaunch?: boolean
+  listProviderAccountProfiles?: (client: LocalIpcClient) => Promise<ProviderAccountProfile[]>
   logger?: CharioxLogger | null
   getConfiguredProviderLaunchDefaults?: (client: LocalIpcClient) => Promise<{
     provider?: string
@@ -29,8 +41,8 @@ type BootstrapDeps = {
     effort?: string
   }>
   listSessions: (client: LocalIpcClient) => Promise<RuntimeSession[]>
-  getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCatalog>
-  getProviderCommandCatalogs: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCommandCatalogs>
+  getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null, options?: Parameters<typeof import("./provider-api.js").getProviderCatalog>[2], fallbackOnError?: boolean) => Promise<ProviderCatalog>
+  getProviderCommandCatalogs: (client: LocalIpcClient, logger?: CharioxLogger | null, fallbackOnError?: boolean) => Promise<ProviderCommandCatalogs>
   getTerminalCommandCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<TerminalCommandCatalog>
   createSession: (
     client: LocalIpcClient,
@@ -41,7 +53,11 @@ type BootstrapDeps = {
   ) => Promise<RuntimeSession>
   resolveSession: (client: LocalIpcClient, sessionRef: string, workspace: string) => Promise<RuntimeSession>
   attachToSession: (client: LocalIpcClient, sessionId: string, clientId: string) => Promise<RuntimeAttachment>
+  attachSessionView?: (client: LocalIpcClient, sessionId: string, clientId: string, preferredAgentId: string | null) => Promise<{
+    attachment: RuntimeAttachment; session: RuntimeSession; history: SessionHistoryOutline
+  }>
   getSessionState: (client: LocalIpcClient, sessionId: string) => Promise<RuntimeSession>
+  getCredentialVaultStatus?: (client: LocalIpcClient) => Promise<Record<string, unknown>>
   launchProviderRun: (
     client: LocalIpcClient,
     sessionId: string,
@@ -84,23 +100,33 @@ export async function bootstrapSession(
   preferences: CharioxPreferences,
   deps: BootstrapDeps,
 ): Promise<BootstrapState> {
+  if (decideBootstrapAction(options, [], workspace, worktree).action === "none") {
+    return bootstrapWaitingRoom(client, options, preferences, deps)
+  }
   let createdSession = false
   let session: RuntimeSession | null = null
 
-  if (!options.provider || options.model === "default" || !options.effort.trim()) {
-    const configured = await deps.getConfiguredProviderLaunchDefaults?.(client) ?? {}
-    if (!options.provider && configured.provider) {
-      options.provider = configured.provider
-    }
-    if (options.model === "default" && configured.model) {
-      options.model = configured.model
-    }
-    if (!options.effort.trim() && configured.effort) {
-      options.effort = configured.effort
-    }
-  }
+  // MP-08 / MP-10 / MP-11: an explicit attach observes its existing
+  // agent selection. Waiting-room inventory and new-session launch defaults
+  // cannot affect its target and must not hold its first screen hostage.
+  const explicitAttach = Boolean(options.sessionId && !options.createSession)
+  const configuredPromise: Promise<{ provider?: string; model?: string; effort?: string }> = !explicitAttach && (!options.provider || options.model === "default" || !options.effort.trim())
+    ? deps.getConfiguredProviderLaunchDefaults?.(client) ?? Promise.resolve({})
+    : Promise.resolve({})
+  const sessionsPromise = explicitAttach ? Promise.resolve([]) : deps.listSessions(client)
+  const requestedView = explicitAttach ? requestInitialSessionView(client, options, preferences, deps.attachSessionView) : null
+  const resolvedSessionPromise = explicitAttach
+    ? requestedView ? requestedView.then(view => view?.session ?? deps.resolveSession(client, options.sessionId!, workspace))
+      : deps.resolveSession(client, options.sessionId!, workspace)
+    : Promise.resolve(null)
+  const [configured, discoveredSessions, resolvedSession] = await Promise.all([
+    configuredPromise, sessionsPromise, resolvedSessionPromise,
+  ])
+  const sessions = resolvedSession ? [resolvedSession] : discoveredSessions
+  if (!options.provider && configured.provider) options.provider = configured.provider
+  if (options.model === "default" && configured.model) options.model = configured.model
+  if (!options.effort.trim() && configured.effort) options.effort = configured.effort
 
-  const sessions = await deps.listSessions(client)
   const decision = decideBootstrapAction(options, sessions, workspace, worktree)
   const requestedAgentDefaults = options.provider
     ? {
@@ -110,17 +136,25 @@ export async function bootstrapSession(
         account_profile: options.accountProfile,
       }
     : undefined
+  const validateNewSessionAccount = async (): Promise<void> => {
+    if (!deps.listProviderAccountProfiles || !options.provider) return
+    const profiles = await deps.listProviderAccountProfiles(client)
+    const reason = selectedProviderAccountStartBlockReason(profiles, options.provider, options.accountProfile, null, options.model)
+    if (reason) throw new Error(reason)
+  }
   switch (decision.action) {
     case "create":
+      await validateNewSessionAccount()
       session = await deps.createSession(client, workspace, worktree, options.alias, requestedAgentDefaults)
       createdSession = true
       break
     case "resolve":
-      session = await deps.resolveSession(client, decision.sessionRef, workspace)
+      session = resolvedSession ?? await deps.resolveSession(client, decision.sessionRef, workspace)
       break
     case "attach_existing": {
       const existing = selectAttachableSession(sessions, workspace, worktree)
       if (!existing) {
+        await validateNewSessionAccount()
         session = await deps.createSession(client, workspace, worktree, options.alias, requestedAgentDefaults)
         createdSession = true
         break
@@ -165,8 +199,82 @@ export async function bootstrapSession(
     }
   }
 
-  const attachment = await deps.attachToSession(client, session.id, options.clientId)
-  let attachedSession = await deps.getSessionState(client, session.id)
+  const initialView = (requestedView ? await requestedView : null) ?? await deps.attachSessionView?.(client, session.id, options.clientId, deps.resolveVisibleAgentId(session, preferences))
+  const attachment = initialView?.attachment ?? await deps.attachToSession(client, session.id, options.clientId)
+  const attachedSession = initialView?.session ?? await deps.getSessionState(client, session.id)
+  // MP-08 / MP-10 PANE-03: with a bundled initial view the transcript needs no
+  // launch result, so the attach-time launch runs beside the first paint.
+  const launching = settleAttachLaunch(client, session, attachedSession, attachment.id, createdSession, Boolean(initialView), options, deps)
+  launching.catch(() => {})
+  const settled = deps.deferProviderLaunch ? await launching : initialView ? null : await launching
+  const hydratedSession = settled?.session ?? attachedSession
+  const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
+  // MP-08 / MP-10: composer inventories are user requested, never attach work.
+  const refreshComposer = async (cached?: ComposerInventory): Promise<ComposerInventory> => {
+    const catalogOptions = { provider: options.provider ?? null, accountProfile: options.accountProfile }
+    const catalogs = await reconcileComposerCatalogs(cached, {
+      revisions: async () => deps.getClientCatalogRevisions?.(client, catalogOptions),
+      provider: () => deps.getProviderCatalog(client, deps.logger, catalogOptions, false),
+      providerCommands: () => deps.getProviderCommandCatalogs(client, deps.logger, false),
+      terminalCommands: () => deps.getTerminalCommandCatalog(client, deps.logger),
+    })
+    return { sessionId: session.id, ...catalogs, promptHistoryEntries: [] }
+  }
+  const cachedComposer = createComposerInventoryLoader(async () => {
+    const profile = options.targetDaemonId ? preferences.relay?.cloud : await getKernelCloudRelayProfile(client)
+    const owner = profile ? JSON.stringify([profile.apiUrl, profile.userId, profile.accountId, profile.realmId]) : "local"
+    const kernel = options.targetDaemonId ?? (await getRelayStatus(client)).daemon_id
+    return { owner, key: JSON.stringify([owner, kernel, options.provider, options.accountProfile]) }
+  }, refreshComposer, () => JSON.stringify([options.provider, options.accountProfile]))
+  const loadComposer = () => cachedComposer().then(value => ({ ...value, sessionId: session.id }))
+  const attachedHistoryPromise = hydrateAttachedHistory(
+    client,
+    session.id,
+    visibleAgentId,
+    hydratedSession,
+    deps,
+    initialView?.history,
+    true,
+  )
+
+  return {
+    client,
+    binding: {
+      session: hydratedSession,
+      attachment,
+      providerRun: settled?.providerRun ?? null,
+      createdSession,
+      historyEntries: [],
+      promptHistoryEntries: [],
+      nextHistoryCursor: null,
+    },
+    sessions,
+    providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs({ catalogSource: "local_fallback" }),
+    terminalCommandCatalog: null,
+    options,
+    preferences,
+    deferred: {
+      loadComposer,
+      composerScopeKey: () => JSON.stringify([options.provider, options.accountProfile]),
+      loadPromptInputHistory: (sessionId: string) => loadSessionPromptHistory(client, sessionId, deps).then(entries => ({ sessionId, entries })),
+      attachedHistory: attachedHistoryPromise,
+      ...(settled?.providerLaunch ? { providerLaunch: settled.providerLaunch } : {}),
+      ...(initialView && !deps.deferProviderLaunch ? { attachLaunch: launching, historyIsBundled: true as const } : {}),
+    },
+  }
+}
+
+async function settleAttachLaunch(
+  client: LocalIpcClient,
+  session: RuntimeSession,
+  attachedSession: RuntimeSession,
+  attachmentId: string,
+  createdSession: boolean,
+  hasInitialView: boolean,
+  options: CliOptions,
+  deps: BootstrapDeps,
+): Promise<AttachLaunch> {
   const providerSettlement = await settleAttachProviderRun(
     attachedSession,
     {
@@ -177,14 +285,22 @@ export async function bootstrapSession(
     options.accountProfile,
     createdSession,
     {
+      ...(deps.getCredentialVaultStatus
+        ? { getCredentialVaultStatus: () => deps.getCredentialVaultStatus!(client) }
+        : {}),
+      deferLaunch: deps.deferProviderLaunch === true,
       launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
         deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
       getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
       tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
     },
   )
-  attachedSession = providerSettlement.session
-  const providerRun: RuntimeProviderRun | null = providerSettlement.providerRun
+  if (providerSettlement.action === "deferred") {
+    return { sessionId: session.id, session: null, providerRun: null, issue: null,
+      providerLaunch: { sessionId: session.id, agentId: providerSettlement.targetAgentId,
+        isPending: providerSettlement.isPending, start: providerSettlement.start } }
+  }
+  const settledSession = providerSettlement.session
   if (providerSettlement.action === "skipped") {
     if (providerSettlement.recoveredRemotePlacement) {
       deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
@@ -195,12 +311,12 @@ export async function bootstrapSession(
     } else if (providerSettlement.reason === "no_visible_agents") {
       deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
         session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
+        focused_agent_id: settledSession.focused_agent_id,
       })
     } else if (providerSettlement.reason === "missing_focused_agent") {
       deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
         session_id: session.id,
-        focused_agent_id: attachedSession.focused_agent_id,
+        focused_agent_id: settledSession.focused_agent_id,
       })
     } else if (providerSettlement.reason === "remote_backed_agent") {
       deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
@@ -215,47 +331,19 @@ export async function bootstrapSession(
       })
     }
   }
-  await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)
-  const hydratedSession = await deps.getSessionState(client, session.id)
-  const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
-  const providerCatalogPromise = deps.getProviderCatalog(client, deps.logger)
-  const providerCommandCatalogsPromise = deps.getProviderCommandCatalogs(client, deps.logger)
-  const terminalCommandCatalogPromise = deps.getTerminalCommandCatalog(client, deps.logger)
-  const attachedHistoryPromise = hydrateAttachedHistory(
-    client,
-    session.id,
-    visibleAgentId,
-    hydratedSession,
-    deps,
-  )
-
+  // The new attachment already buffers output after its history read. Let the
+  // live runtime drain it; catch-up would discard rows absent from this view.
+  if (!hasInitialView) await deps.catchUpAttachedSession(client, session.id, attachmentId, settledSession, deps.logger)
   return {
-    client,
-    binding: {
-      session: hydratedSession,
-      attachment,
-      providerRun,
-      providerLaunchIssue: providerSettlement.action === "skipped"
-        && providerSettlement.reason === "credential_vault_locked"
-        ? "credential_vault_locked"
-        : null,
-      createdSession,
-      historyEntries: [],
-      promptHistoryEntries: [],
-      nextHistoryCursor: null,
-    },
-    sessions,
-    providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
-    providerCommandCatalogs: fallbackProviderCommandCatalogs({ catalogSource: "local_fallback" }),
-    terminalCommandCatalog: null,
-    options,
-    preferences,
-    deferred: {
-      providerCatalog: providerCatalogPromise,
-      providerCommandCatalogs: providerCommandCatalogsPromise,
-      terminalCommandCatalog: terminalCommandCatalogPromise,
-      attachedHistory: attachedHistoryPromise,
-    },
+    sessionId: session.id,
+    // Only a state read after the launch (or a recovered placement) may replace
+    // the live session; the bundled view is already what the client shows.
+    session: !hasInitialView || providerSettlement.action === "launched"
+      ? await deps.getSessionState(client, session.id)
+      : settledSession === attachedSession ? null : settledSession,
+    providerRun: providerSettlement.providerRun,
+    issue: providerSettlement.action === "skipped" && providerSettlement.reason === "credential_vault_locked"
+      ? "credential_vault_locked" : null,
   }
 }
 
@@ -265,14 +353,18 @@ async function hydrateAttachedHistory(
   visibleAgentId: string | null,
   session: RuntimeSession,
   deps: Pick<BootstrapDeps, "getSessionHistoryOutline" | "getPromptInputHistory" | "prepareHistoryOutlineAgent">,
+  initialOutline?: SessionHistoryOutline,
+  deferPromptHistory = false,
 ) {
   const agentIds = session.agents.map((agent) => agent.id)
-  const outlinePromise = agentIds.length > 0
+  const outlinePromise = initialOutline
+    ? Promise.resolve(initialOutline)
+    : agentIds.length > 0
     ? deps.getSessionHistoryOutline(client, sessionId, agentIds)
     : Promise.resolve({ agents: [] })
   const [outline, promptHistoryEntries] = await Promise.all([
     outlinePromise,
-    loadSessionPromptHistory(client, sessionId, deps),
+    deferPromptHistory ? Promise.resolve([]) : loadSessionPromptHistory(client, sessionId, deps),
   ])
   const agentEntries = Object.fromEntries(outline.agents.map((agent) => [
     agent.agent_id,
@@ -285,6 +377,7 @@ async function hydrateAttachedHistory(
     agentEntries,
     historyEntries,
     promptHistoryEntries,
+    includesPromptHistory: !deferPromptHistory,
     nextHistoryCursor: sessionHistoryCursorForVisibleAgent(outline, visibleAgentId),
   }
 }

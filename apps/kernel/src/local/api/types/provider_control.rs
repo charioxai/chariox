@@ -29,7 +29,7 @@ pub struct ProviderRunBatchLaunchResult {
     pub index: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    pub provider_run: RuntimeProviderRun,
+    pub provider_run: PublicProviderRun,
     #[serde(default)]
     pub reused: bool,
 }
@@ -360,4 +360,35 @@ pub struct TeardownProviderProcessesRequest {
     pub provider: Option<String>,
     #[serde(default)]
     pub force: bool,
+}
+
+/// MP-08 / MP-10 / MP-11: public hashes for rare client inventory reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientCatalogRevisions {
+    pub provider_accounts: String,
+    pub provider_catalog: String,
+    pub provider_commands: String,
+    pub terminal_commands: String,
+}
+
+/// MP-08 / MP-10: only catalogs whose content hash differs are returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetClientCatalogSnapshotRequest {
+    #[serde(default)]
+    pub scope: GetProviderCatalogRequest,
+    pub known: Option<ClientCatalogRevisions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClientCatalogSnapshot {
+    pub revisions: ClientCatalogRevisions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_accounts: Option<Vec<crate::account_profile::ProviderAccountProfile>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_catalog: Option<crate::provider::OpenCodeProviderCatalog>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_commands:
+        Option<std::collections::BTreeMap<String, crate::provider::ProviderCommandCatalog>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_commands: Option<super::TerminalCommandCatalog>,
 }

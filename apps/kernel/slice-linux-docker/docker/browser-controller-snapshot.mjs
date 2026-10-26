@@ -66,7 +66,9 @@ export async function captureBrowserSnapshot({
   };
 }
 
-export function redactObservation(value, protectedValues) {
+// MD-N2 / MP-08/MP-10/MP-11: one variant policy for raw span protection
+// and ordinary observation redaction, including kernel-replayed retired values.
+export function observationProtectedVariants(protectedValues) {
   const variants = new Set();
   for (const secret of protectedValues) {
     if (typeof secret !== "string" || !secret) continue;
@@ -79,7 +81,11 @@ export function redactObservation(value, protectedValues) {
       variants.add(variant);
     }
   }
-  const ordered = [...variants].sort((a, b) => b.length - a.length);
+  return [...variants].sort((a, b) => b.length - a.length);
+}
+
+export function redactObservation(value, protectedValues) {
+  const ordered = observationProtectedVariants(protectedValues);
   const scrub = (input) => {
     if (typeof input === "string") {
       for (const variant of ordered) input = input.replaceAll(variant, "[redacted]");

@@ -11,7 +11,7 @@ import type { TerminalOutputRecord } from "./cli-types.js"
 import { createProviderActivityController } from "./provider-activity-controller.js"
 import { turnCompletionDelayMs } from "@chariox/kernel-client/session-runtime-transition"
 import { sessionHasTurnWork } from "@chariox/kernel-client/session-prompt-work"
-import { getSessionHistoryBlobContent } from "./session-history-api.js"
+import { getSessionHistoryBlobContent, getSessionHistoryBlobContents } from "./session-history-api.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import { createTerminalOutputRecordQueue } from "./terminal-output-record-queue.js"
 import { createTranscriptEventController } from "./transcript-event-controller.js"
@@ -114,6 +114,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
   })
   const terminalOutputRecordQueue = createTerminalOutputRecordQueue<ReturnType<typeof deps.scheduleTimer>, TerminalOutputRecord>({
     delayMs: STREAM_BATCH_WINDOW_MS,
+    nowMs: () => performance.now(),
     maxRecordsPerFlush: STREAM_RECORDS_PER_FLUSH,
     maxPendingRecords: STREAM_RECORDS_PER_FLUSH * 4,
     scheduleTimer: deps.scheduleTimer,
@@ -204,6 +205,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     reconcileMountedTranscript: deps.reconcileMountedTranscript,
     retainPromptFocus: deps.retainPromptFocus,
     enforceTranscriptRetention,
+    loadHistoryBlobContents: (agentId, ids) => getSessionHistoryBlobContents(deps.client, deps.sessionState().id, agentId, ids, true),
     loadHistoryBlobContent: (agentId, blobId) => getSessionHistoryBlobContent(
       deps.client,
       deps.sessionState().id,
@@ -215,6 +217,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
   const applyVisibleTranscriptState = transcriptStateController.applyVisibleState
   const toggleTurn = transcriptStateController.toggleTurn
   const toggleBlob = transcriptStateController.toggleBlob
+  const toggleAllBlobs = transcriptStateController.toggleAllBlobs
   const appendEntry = transcriptStateController.appendEntry
 
   const transcriptViewportController = createTranscriptViewportController({
@@ -342,6 +345,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     applyCollapsedTurns,
     toggleTurn,
     toggleBlob,
+    toggleAllBlobs,
     appendEntry,
     appendUserPrompt,
     appendSteeredPrompt,

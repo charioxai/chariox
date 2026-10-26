@@ -121,7 +121,9 @@ impl Drop for TestState {
 
 async fn dispatch_json(router: &CommandRouter, request: Value) -> Result<Value, DaemonError> {
     let request: LocalDaemonRequest = serde_json::from_value(request).expect("public request");
-    let command = KernelCommand::from_local_request("placement", None, None, &request);
+    let mut command = KernelCommand::from_local_request("placement", None, None, &request);
+    // MP-08/MP-10/MP-11: fixture setup models the owner terminal, not an agent.
+    command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     router
         .dispatch(command, request)
         .await

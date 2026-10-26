@@ -129,6 +129,7 @@ impl KernelRuntimeState {
         let mut suppressed_count = 0usize;
         let mut matched = false;
         loop {
+            self.authorize_current_external_command()?;
             let batch = self.meta_drain_trace_batch(session.id(), &subscription, mode, limit);
             drained_count += batch.drained_count;
             suppressed_count += batch.suppressed_count;
@@ -201,6 +202,10 @@ impl KernelRuntimeState {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing meta_trace_supervision_summary operation signature and explicit context arguments"
+    )]
     fn meta_trace_supervision_summary(
         &self,
         session: &crate::session::RuntimeSession,
@@ -689,7 +694,11 @@ fn event_kind_suggestion_score(input: &str, candidate: &str) -> u8 {
         .zip(candidate.chars())
         .take_while(|(left, right)| left == right)
         .count();
-    (common_prefix >= 5).then_some(20).unwrap_or(0)
+    if common_prefix >= 5 {
+        20
+    } else {
+        0
+    }
 }
 
 fn event_kind_tokens(normalized: &str) -> Vec<&str> {

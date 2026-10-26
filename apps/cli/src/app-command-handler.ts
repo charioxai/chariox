@@ -12,6 +12,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import type { AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 
 export type AppCommandHandlerDeps = {
+  userAppViews?: { handle(args: string[]): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   appHostTerminal?: AppHostTerminal
   currentAppHostOperationIds?: () => string[]
   lastViewedAppHostOperationId?: () => string | undefined
@@ -77,12 +78,27 @@ export async function handleAppSlashCommand(
     deps.flashFooter("Apps are unavailable in this kernel", "error")
     return
   }
+  const args = appSlashArgs(command.raw)
+  if (deps.userAppViews && await deps.userAppViews.handle(args)) return
+  if (args[0] === "view" || args[0] === "views") {
+    throw new Error("Enable CHARIOX_USER_APP_VIEWS_PROTOTYPE=1 to use the App text prototype")
+  }
   if (command.args[0] === "host") {
     const [, action, explicitOperation, ...extra] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
     if (action !== "accept" || extra.length) throw new Error("usage: /app host accept [OPERATION]")
     const session = deps.currentAppSessionId?.()
+    const sessionOffers = deps.currentAppHostOperationIds?.() ?? []
+    // MP-08/MP-10/MP-11: an offer from a user-domain App Tab is a detached owner
+    // decision outside any session; it is taken by its explicit operation.
+    const outsideSession = explicitOperation ? !sessionOffers.includes(explicitOperation) : !sessionOffers.length
+    const detached = outsideSession ? await deps.userAppViews?.hostOfferIds?.().catch(() => []) ?? [] : []
+    if (explicitOperation && detached.includes(explicitOperation)) {
+      await acceptAppHostOffer("", explicitOperation, deps.sendAppRequest, deps.appendNotice, deps.appHostTerminal)
+      return
+    }
+    if (!explicitOperation && detached.length) throw new Error("This App host request comes from an App Tab outside the session; review it with /app view approvals, then use /app host accept OPERATION")
     if (!session) throw new Error("Attach to the session showing the App host request")
-    const candidates = explicitOperation ? [explicitOperation] : deps.currentAppHostOperationIds?.() ?? []
+    const candidates = explicitOperation ? [explicitOperation] : sessionOffers
     if (candidates.length !== 1) throw new Error(candidates.length ? "Several App host requests are pending; use /app host accept OPERATION" : "No App host request is pending in this session")
     if (!explicitOperation && candidates[0] !== deps.lastViewedAppHostOperationId?.()) throw new Error("Open kernel approvals (F8), review the App host offer, close the panel (Esc), then use /app host accept")
     await acceptAppHostOffer(session, candidates[0]!, deps.sendAppRequest, deps.appendNotice, deps.appHostTerminal)

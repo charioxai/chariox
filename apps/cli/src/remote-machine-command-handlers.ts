@@ -36,8 +36,9 @@ type RemoteMachineKernelSummary = {
 }
 
 export type RemoteMachineCommandHandlerDeps = {
-  flashFooter: (message: string, tone: FooterTone) => void
-  appendNotice: (message: string) => void
+  addSshMachine?: (host: string, options: { install_id?: string; port?: number; release?: string }) => Promise<import("./remote-machine-api.js").SshMachineResult>
+  removeSshMachine?: (installId: string) => Promise<import("./remote-machine-api.js").SshMachineResult>
+  flashFooter: (message: string, tone: FooterTone, display?: "toast") => void
   refreshWaitingRoomData?: () => Promise<void>
   getRemoteMachines?: () => RemoteMachineSummary[]
   setRemoteMachines?: (machines: RemoteMachineSummary[]) => void
@@ -59,6 +60,10 @@ export async function handleRemoteMachineSlashCommand(
 ): Promise<void> {
   const args = command.args
   const subcommand = args[0]
+  if (subcommand === "add" || subcommand === "remove") {
+    await sshMachineCommand(deps, args)
+    return
+  }
   if (subcommand === "list") {
     await listRemoteMachines(deps)
     return
@@ -83,7 +88,7 @@ export async function handleRemoteMachineSlashCommand(
     await reimageManagedEnvironment(deps, args[1], args[2], args.length)
     return
   }
-  deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias> | /machine reimage <environment-id> [confirm|cancel]", "error")
+  deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
 }
 
 async function reimageManagedEnvironment(
@@ -93,25 +98,24 @@ async function reimageManagedEnvironment(
   argumentCount: number,
 ): Promise<void> {
   if (!deps.reimageManagedEnvironment) {
-    deps.flashFooter("managed-machine reimage is unavailable in this build", "error")
+    deps.flashFooter("managed-machine reimage is unavailable in this build", "error", "toast")
     return
   }
   const action = rawAction ?? "prepare"
   if (!environmentId || argumentCount > 3 || !["prepare", "confirm", "cancel"].includes(action)) {
-    deps.flashFooter("usage: /machine reimage <environment-id> [confirm|cancel]", "error")
+    deps.flashFooter("usage: /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
     return
   }
   const result = await deps.reimageManagedEnvironment(
     environmentId,
     action as "prepare" | "confirm" | "cancel",
   )
-  deps.appendNotice(result.message)
-  deps.flashFooter(result.message, result.tone)
+  deps.flashFooter(result.message, result.tone, "toast")
 }
 
 async function listRemoteMachines(deps: RemoteMachineCommandHandlerDeps): Promise<void> {
   if (!deps.listRemoteMachines) {
-    deps.flashFooter("remote machine discovery is unavailable in this build", "error")
+    deps.flashFooter("remote machine discovery is unavailable in this build", "error", "toast")
     return
   }
   const machines = await deps.listRemoteMachines()
@@ -119,8 +123,7 @@ async function listRemoteMachines(deps: RemoteMachineCommandHandlerDeps): Promis
     deps.flashFooter("no live remote machines available through relay", "info")
     return
   }
-  deps.appendNotice(machines.map(formatRemoteMachineSummary).join("\n"))
-  deps.flashFooter(`listed ${machines.length} live remote machine(s)`, "info")
+  deps.flashFooter(machines.map(formatRemoteMachineSummary).join("\n"), "info", "toast")
 }
 
 function formatRemoteMachineSummary(machine: RemoteMachineSummary): string {
@@ -133,11 +136,11 @@ async function listRemoteMachineKernels(
   machineRef: string | undefined,
 ): Promise<void> {
   if (!deps.listRemoteMachineKernels) {
-    deps.flashFooter("remote machine discovery is unavailable in this build", "error")
+    deps.flashFooter("remote machine discovery is unavailable in this build", "error", "toast")
     return
   }
   if (!machineRef) {
-    deps.flashFooter("usage: /machine kernels <machine-ref>", "error")
+    deps.flashFooter("usage: /machine kernels <machine-ref>", "error", "toast")
     return
   }
   const kernels = await deps.listRemoteMachineKernels(machineRef)
@@ -145,8 +148,7 @@ async function listRemoteMachineKernels(
     deps.flashFooter(`no live kernels found for machine ${machineRef}`, "info")
     return
   }
-  deps.appendNotice(kernels.map(formatRemoteMachineKernelSummary).join("\n"))
-  deps.flashFooter(`listed ${kernels.length} live kernel(s) for ${machineRef}`, "info")
+  deps.flashFooter(kernels.map(formatRemoteMachineKernelSummary).join("\n"), "info", "toast")
 }
 
 function formatRemoteMachineKernelSummary(kernel: RemoteMachineKernelSummary): string {
@@ -210,11 +212,11 @@ async function approveRemoteMachine(
   machineRef: string | undefined,
 ): Promise<void> {
   if (!deps.approveRemoteMachine) {
-    deps.flashFooter("remote machine registration is unavailable in this build", "error")
+    deps.flashFooter("remote machine registration is unavailable in this build", "error", "toast")
     return
   }
   if (!machineRef) {
-    deps.flashFooter("usage: /machine approve <machine-ref>", "error")
+    deps.flashFooter("usage: /machine approve <machine-ref>", "error", "toast")
     return
   }
   const machine = await deps.approveRemoteMachine(machineRef)
@@ -227,11 +229,11 @@ async function forgetRemoteMachine(
   machineRef: string | undefined,
 ): Promise<void> {
   if (!deps.forgetRemoteMachine) {
-    deps.flashFooter("remote machine registration is unavailable in this build", "error")
+    deps.flashFooter("remote machine registration is unavailable in this build", "error", "toast")
     return
   }
   if (!machineRef) {
-    deps.flashFooter("usage: /machine forget <machine-ref>", "error")
+    deps.flashFooter("usage: /machine forget <machine-ref>", "error", "toast")
     return
   }
   const machine = await deps.forgetRemoteMachine(machineRef)
@@ -245,11 +247,11 @@ async function renameRemoteMachine(
   alias: string,
 ): Promise<void> {
   if (!deps.renameRemoteMachine) {
-    deps.flashFooter("remote machine registration is unavailable in this build", "error")
+    deps.flashFooter("remote machine registration is unavailable in this build", "error", "toast")
     return
   }
   if (!machineRef || !alias) {
-    deps.flashFooter("usage: /machine rename <machine-ref> <alias>", "error")
+    deps.flashFooter("usage: /machine rename <machine-ref> <alias>", "error", "toast")
     return
   }
   const machine = await deps.renameRemoteMachine(machineRef, alias)
@@ -289,4 +291,36 @@ function upsertRemoteMachine(
   return current.map((candidate, candidateIndex) =>
     candidateIndex === index ? { ...candidate, ...machine } : candidate
   )
+}
+
+// MP-07 / MP-08 / MP-11: rendering and input only; kernel owns all deployment policy.
+async function sshMachineCommand(deps: RemoteMachineCommandHandlerDeps, args: string[]): Promise<void> {
+  const usage = "usage: /machine add ssh <host> [--id <install-id>] [--port <port>] [--release <approved-release>] | /machine remove <install-id>"
+  try {
+    if (args[0] === "remove") {
+      if (args.length !== 2 || !deps.removeSshMachine) { deps.flashFooter(usage, "error", "toast"); return }
+      const result = await deps.removeSshMachine(args[1]!)
+      deps.flashFooter(`removed SSH install ${result.install_id}; private kernel state retained`, "info", "toast")
+      return
+    }
+    if (args[1] !== "ssh" || !args[2] || !deps.addSshMachine) { deps.flashFooter(usage, "error", "toast"); return }
+    const options: { install_id?: string; port?: number; release?: string } = {}
+    const seen = new Set<string>()
+    for (let i = 3; i < args.length; i += 2) {
+      const flag = args[i]!, value = args[i + 1]
+      if (!value || !["--id", "--port", "--release"].includes(flag) || seen.has(flag)) { deps.flashFooter(usage, "error", "toast"); return }
+      seen.add(flag)
+      if (flag === "--id") options.install_id = value
+      if (flag === "--release") options.release = value
+      if (flag === "--port") {
+        const port = Number(value)
+        if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 1024 || port > 65534 || [43118, 43119, 43120].includes(port)) { deps.flashFooter(usage, "error", "toast"); return }
+        options.port = port
+      }
+    }
+    deps.flashFooter(`installing Chariox on ${args[2]} over SSH`, "info")
+    const result = await deps.addSshMachine(args[2], options)
+    deps.flashFooter(`SSH install ${result.install_id} ${result.status}; kernel=${result.kernel_id ?? "-"} machine=${result.machine_id ?? "-"} release=${result.release_digest}. Select this Machine for project/context transfer; provider login stays on the target.`, "info", "toast")
+    await deps.refreshWaitingRoomData?.()
+  } catch (error) { deps.flashFooter(error instanceof Error ? error.message : "SSH machine operation failed", "error", "toast") }
 }

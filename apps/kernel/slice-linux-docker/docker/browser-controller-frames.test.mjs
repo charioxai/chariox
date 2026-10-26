@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BrowserFrameSessions, BrowserFrameTargets } from "./browser-controller-frames.mjs";
+import { BrowserFrameSessions, BrowserFrameTargets, registerBrowserFrameTargets, withBrowserFrames } from "./browser-controller-frames.mjs";
 
 const tree = (id, parentId, childFrames = []) => ({ frame: { id, parentId }, childFrames });
 
@@ -143,3 +143,16 @@ test("frame retention has a per-tab bound and releases capacity on removal", () 
   registry.replace("b", [tree("root-b")]);
   assert.equal(registry.get("root-b"), "b");
 });
+
+// MP-08/MP-10/MP-11: BBC advertising frames must not turn state/input preflight
+// into a structured snapshot or grant unbounded download attribution.
+test('ordinary frame registration stays bounded and preserves live isolated descendants without global snapshot admission',async()=>{
+ const registry=new BrowserFrameTargets();registry.replace('tab',[tree('root',undefined,[tree('isolated','root')])]);registry.merge('tab',[tree('isolated','root',[tree('nested','isolated')])]);registry.replace('other',[tree('foreign')]);
+ const root={frame:{id:'root',loaderId:'doc'},childFrames:[tree('isolated','root'),...Array.from({length:80},(_,i)=>tree('ad-'+i,'root'))]};const calls=[];
+ const connection={async send(method){calls.push(method);if(method==='Page.getFrameTree')return {frameTree:root};if(method==='Target.getTargets')return {targetInfos:Array.from({length:80},(_,i)=>({type:'iframe',targetId:'foreign-'+i}))};throw Error('registration must not attach foreign targets')}};
+ await registerBrowserFrameTargets(connection,'session','tab','doc',registry);
+ assert.equal(registry.get('nested'),'tab');assert.equal(registry.get('foreign'),'other');assert.equal([...registry.frames.values()].filter(f=>f.targetId==='tab').length,64);assert.deepEqual(calls,['Page.getFrameTree']);
+ registry.record({method:'Page.frameDetached',params:{frameId:'isolated',reason:'remove'}},'tab');assert.equal(registry.get('nested'),undefined);
+ await assert.rejects(registerBrowserFrameTargets(connection,'session','tab','old-doc',registry),{code:'stale_document_reference'});
+ await assert.rejects(withBrowserFrames(connection,'session','tab','doc',registry=>registry),{code:'snapshot_frame_limit'},'structured snapshots still refuse the existing global isolated-frame bound');
+})

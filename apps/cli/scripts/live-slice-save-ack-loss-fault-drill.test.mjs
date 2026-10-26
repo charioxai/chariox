@@ -6,11 +6,29 @@ import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import { runInNewContext } from "node:vm"
 
 import { createRunner } from "./lib/local-rust-fault-drill-runtime.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-slice-save-ack-loss-fault-drill.mjs", import.meta.url))
+
+test("MP-08/MP-10/MP-11 fault-drill termination refuses critical and invalid process IDs", async () => {
+  const source = await readFile(new URL("./lib/local-rust-fault-drill-runtime.mjs", import.meta.url), "utf8")
+  const start = source.indexOf("function terminateGroup(")
+  const end = source.indexOf("\nasync function resourceSnapshot(", start)
+  assert(start >= 0 && end > start)
+  const terminate = runInNewContext(`(${source.slice(start, end)})`, {
+    signalOwnedProcessGroup() { throw new Error("process inspection unavailable") },
+  })
+  const calls = []
+  for (const pid of [undefined, NaN, 0, 1, -1]) {
+    terminate({ pid, exitCode: null, kill: signal => calls.push({ pid, signal }) }, "SIGTERM")
+  }
+  assert.deepEqual(calls, [])
+  terminate({ pid: 2, exitCode: null, kill: signal => calls.push({ pid: 2, signal }) }, "SIGTERM")
+  assert.deepEqual(calls, [{ pid: 2, signal: "SIGTERM" }])
+})
 
 test("slice save acknowledgement-loss dry-run records an exact serial kernel command externally", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-slice-save-ack-loss-"))
@@ -61,7 +79,6 @@ test("fault-drill failed child preserves status and an early diagnostic after lo
       "  echo 'warning: intentionally long compiler warning output for bounded evidence' >&2",
       "  i=$((i + 1))",
       "done",
-      "sleep 0.2",
       "exit 7",
       "",
     ].join("\n"))

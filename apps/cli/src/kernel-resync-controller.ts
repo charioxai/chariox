@@ -64,11 +64,15 @@ export function createKernelResyncController(options: KernelResyncControllerOpti
           return
         }
         const sessionId = options.getSessionId()
+        const bindingStillCurrent = () => options.isAttached()
+          && options.getSessionId() === sessionId
+          && options.getAttachment()?.id === attachment.id
         options.onResyncStart(sessionId, attachment.id, reason)
         await options.catchUpAttachedSession(sessionId, attachment.id, options.getSessionStateSnapshot())
+        if (!bindingStillCurrent()) return
         const previousSession = options.getSessionStateSnapshot()
         const nextSession = await options.getSessionState(sessionId)
-        if (!options.isAttached() || options.getSessionId() !== sessionId) {
+        if (!bindingStillCurrent()) {
           return
         }
 
@@ -93,6 +97,7 @@ export function createKernelResyncController(options: KernelResyncControllerOpti
         } else {
           const activeRun = options.getProviderRunState()
           const run = await options.tryGetProviderRun(nextProviderRunId)
+          if (!bindingStillCurrent()) return
           if (run && (!activeRun || !options.sameProviderRun(activeRun, run))) {
             options.onProviderRunRefreshed(
               run,
@@ -108,6 +113,7 @@ export function createKernelResyncController(options: KernelResyncControllerOpti
         if (refreshTransition.shouldRefreshAgentPanes) {
           await options.refreshAgentPanes(options.getSessionStateSnapshot())
         }
+        if (!bindingStillCurrent()) return
         options.clearLocalBusyStateForAuthoritativeIdle(options.getSessionStateSnapshot())
         options.onResyncComplete(reason)
       })().catch((error) => {

@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
+import { spawnRemoteEnv, privateClientEnvironment, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -202,7 +202,9 @@ async function terminateChild(child, signal = 'SIGTERM') {
 }
 
 function spawnObserved(label, command, args, options) {
-  const child = spawn(command, args, options)
+  return observeSpawned(label, spawn(command, args, options))
+}
+function observeSpawned(label, child) {
   const startupError = new Promise((_, reject) => {
     child.once('error', (error) => {
       reject(new Error(`${label} failed to start: ${error.message}`))
@@ -307,12 +309,10 @@ function startCli({ cliPath, env, relayUrl, relayToken, daemonAlias, socketPath,
   const args = [
     '-q',
     '/dev/null',
-    'env',
-    ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
     'bun',
     cliPath,
     '--relay-url', relayUrl,
-    '--relay-token', relayToken,
+    '--relay-token-env', 'CHARIOX_DRILL_CLI_RELAY_TOKEN',
     '--target-daemon-alias', daemonAlias,
     '--automation-socket', socketPath,
     '--workspace', workspace,
@@ -324,7 +324,7 @@ function startCli({ cliPath, env, relayUrl, relayToken, daemonAlias, socketPath,
   }
   if (createSession) args.push('--create-session')
   if (sessionId) args.push('--session', sessionId)
-  const { child, startupError } = spawnObserved('cli', 'script', args, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const { child, startupError } = spawnObserved('cli', 'script', args, { cwd: repoRoot, env: privateClientEnvironment({...env, CHARIOX_DRILL_CLI_RELAY_TOKEN:relayToken}), stdio: ['ignore', 'pipe', 'pipe'] })
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
@@ -430,15 +430,15 @@ async function main() {
       if (remoteRelayCheck.code !== 0) {
         throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
       }
-      const relayProcess = spawnObserved('hetzner relay', 'ssh', sshArgs(options, remoteEnvCommand({
+      const relayProcess = observeSpawned('hetzner relay', spawnRemoteEnv(options, {
         CHARIOX_REMOTE_REPO: options.hetznerRepo,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
         CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
-      }, './apps/relay/target/debug/chariox-relay')), {
+      }, './apps/relay/target/debug/chariox-relay', {
         stdio: ['ignore', 'ignore', 'inherit'],
-      })
+      }))
       relay = relayProcess.child
       startupChecks.push(relayProcess.startupError)
       const tunnelProcess = spawnObserved('relay tunnel', 'ssh', [

@@ -1,8 +1,11 @@
+import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from "./provider-mcp-fixture.mjs"
+import { publicRuntimeDiagnostic, publicProviderRun } from "../../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import http from "node:http"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { runNodeDrillChild } from "./drill-child-process.mjs"
+import { createHostedCommandDeps } from "./live-hosted-cloud-relay-drill-helpers.mjs"
 import { withDevStubProviderInventory } from "./drill-runtime-helpers.mjs"
 import {
   callRuntimeMcp,
@@ -11,7 +14,7 @@ import {
   waitForRuntimeTool,
 } from "./hosted-cloud-runtime-helpers.mjs"
 
-export const HOSTED_HOME_PROXY_MODEL = "native-tui-idle"
+export const HOSTED_HOME_PROXY_MODEL = PROVIDER_MCP_FIXTURE_MODEL
 
 export function withHostedKernelIsolation(env, {
   homeDir,
@@ -89,11 +92,11 @@ export async function startHostedRemoteProviderRun({
       const response = await client.send(requests.getProviderRunRequest(projectedRunId)).catch(() => null)
       const run = response?.ProviderRun?.provider_run ?? response?.provider_run ?? null
       lastRun = run
-      if (run?.runtime_mcp_server_url && run?.runtime_mcp_auth_token) return run
+      if (run?.state === "Running") return bindProviderMcpFixture(run, { client, requests, sessionId, attachmentId })
     }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for hosted remote provider run for ${agentId}: agent=${JSON.stringify(lastAgent)} run=${JSON.stringify(lastRun)}`)
+  throw new Error(`timed out waiting for hosted remote provider run for ${agentId}: agent=${publicRuntimeDiagnostic(lastAgent)} run=${publicRuntimeDiagnostic(lastRun)}`)
 }
 
 async function prepareHostedWorkspaceLiveSyncFixture({
@@ -142,15 +145,15 @@ async function assertHostedWorkspaceLiveSyncProxy({
   log,
   unwrap,
 }) {
-  if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
-    throw new Error(`launched run lacks runtime MCP binding for workspace live sync: ${JSON.stringify(launch)}`)
+  if (!launch.fixtureMcp) {
+    throw new Error(`launched run lacks runtime MCP binding for workspace live sync: ${publicRuntimeDiagnostic(launch)}`)
   }
   log("second-kernel-workspace-live-sync-tool-wait", { tool: "chariox.write_artifact" })
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "chariox.write_artifact", true)
+  await waitForRuntimeTool(launch.fixtureMcp, null, "chariox.write_artifact", true)
   const relativePath = `outputs/hosted-managed-live-sync-${label}.txt`
   const expected = `HOSTED_MANAGED_WORKSPACE_LIVE_SYNC_${label.toUpperCase()}_OK\n`
   log("second-kernel-workspace-live-sync-write-start", { label, relativePath })
-  const write = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const write = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
     name: "chariox.write_artifact",
     arguments: { path: relativePath, content_text: expected },
   })
@@ -161,7 +164,7 @@ async function assertHostedWorkspaceLiveSyncProxy({
 
   const ignoredPath = `ignored/hosted-managed-live-sync-${label}.txt`
   log("second-kernel-workspace-live-sync-ignore-check", { label, path: ignoredPath })
-  const ignored = await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const ignored = await expectRuntimeMcpReject(launch.fixtureMcp, null, "tools/call", {
     name: "chariox.write_artifact",
     arguments: { path: ignoredPath, content_text: "SHOULD_NOT_WRITE\n" },
   })
@@ -418,12 +421,12 @@ async function assertHostedHomeExtensionProxy({
   fixtures,
   label = "hosted",
 }) {
-  if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
-    throw new Error(`launched run lacks runtime MCP binding: ${JSON.stringify(launch)}`)
+  if (!launch.fixtureMcp) {
+    throw new Error(`launched run lacks runtime MCP binding: ${publicRuntimeDiagnostic(launch)}`)
   }
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", true)
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_only_lookup", true)
   const scriptQuery = `${label}-remote-agent`
-  const scriptCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const scriptCall = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_only_lookup",
     arguments: { query: scriptQuery },
   })
@@ -433,13 +436,13 @@ async function assertHostedHomeExtensionProxy({
     throw new Error(`hosted home script marker mismatch: ${JSON.stringify(scriptMarker)}`)
   }
 
-  const proxyUrl = launch.runtime_mcp_server_url.replace(/\/mcp\/?$/, "/mcp/proxy/hosted_home_echo_mcp")
-  const mcpTools = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, "tools/list")
+  const proxyUrl = launch.fixtureMcp.proxy("hosted_home_echo_mcp")
+  const mcpTools = await callRuntimeMcp(proxyUrl, null, "tools/list")
   if (!mcpTools.tools.some((tool) => tool.name === "hosted_home_echo")) {
     throw new Error(`hosted home MCP tool not listed: ${JSON.stringify(mcpTools)}`)
   }
   const mcpText = `${label}-remote-mcp`
-  const mcpCall = await callRuntimeMcp(proxyUrl, launch.runtime_mcp_auth_token, "tools/call", {
+  const mcpCall = await callRuntimeMcp(proxyUrl, null, "tools/call", {
     name: "hosted_home_echo",
     arguments: { text: mcpText },
   })
@@ -449,9 +452,9 @@ async function assertHostedHomeExtensionProxy({
     throw new Error(`hosted home MCP marker mismatch: ${JSON.stringify(mcpMarker)}`)
   }
 
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_local_api_public_echo", true)
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_local_api_public_echo", true)
   const connectorQuery = `${label}-remote-connector`
-  const connectorCall = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  const connectorCall = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_local_api_public_echo",
     arguments: { q: connectorQuery },
   })
@@ -462,23 +465,23 @@ async function assertHostedHomeExtensionProxy({
   }
 
   await client.send(requests.revokeAgentExtensionRequest(agentId, "script", "hosted_home_only_lookup"))
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_only_lookup", false)
-  await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_only_lookup", false)
+  await expectRuntimeMcpReject(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_only_lookup",
     arguments: { query: "hosted-after-revoke" },
   })
   const afterRevokeMarker = await readFile(fixtures.homeMarker, "utf8")
   if (afterRevokeMarker !== scriptMarker) throw new Error("revoked hosted home-proxy script executed after revoke")
   await client.send(requests.revokeAgentExtensionRequest(agentId, "mcp", "hosted_home_echo_mcp"))
-  await expectRuntimeMcpReject(proxyUrl, launch.runtime_mcp_auth_token, "tools/call", {
+  await expectRuntimeMcpReject(proxyUrl, null, "tools/call", {
     name: "hosted_home_echo",
     arguments: { text: "hosted-after-mcp-revoke" },
   })
   const afterMcpRevokeMarker = await readFile(fixtures.homeMcpMarker, "utf8")
   if (afterMcpRevokeMarker !== mcpMarker) throw new Error("revoked hosted home-proxy MCP executed after revoke")
   await client.send(requests.revokeAgentExtensionRequest(agentId, "connector", "hosted_home_local_api"))
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "hosted_home_local_api_public_echo", false)
-  await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+  await waitForRuntimeTool(launch.fixtureMcp, null, "hosted_home_local_api_public_echo", false)
+  await expectRuntimeMcpReject(launch.fixtureMcp, null, "tools/call", {
     name: "hosted_home_local_api_public_echo",
     arguments: { q: "hosted-after-connector-revoke" },
   })
@@ -489,12 +492,15 @@ async function assertHostedHomeExtensionProxy({
 }
 
 async function assertHostedCollaboratorHomeExtensions({
-  LocalIpcClient,
   requests,
   homeClient,
   ownerProfile,
-  ownerClientId,
-  homeDaemonAlias,
+  ownerTerminal,
+  modules,
+  stateRoot,
+  homeDaemonId,
+  connectSessionScopedCloudClient,
+  cleanupHostedCloudTerminal,
   workspace,
   workerWorkspace,
   liveSyncFixture = null,
@@ -502,83 +508,38 @@ async function assertHostedCollaboratorHomeExtensions({
   workerDaemonId,
   env,
   fixtures,
-  apiUrl,
   log,
   assert,
   unwrap,
-  postJson,
-  issueSessionScopedClientToken,
   pollTimeoutMs,
-  devBrowserCloudLogin,
+  manualCloudDeviceLogin,
   installSendRetry,
   expectReject,
-  cleanupHostedCloudIdentity,
 }) {
   log("second-kernel-collab-extension-start", { sessionId: session.id })
   const localInvite = unwrap(
     await homeClient.send(requests.createSessionInviteRequest(session.id, null, 1, "full")),
     "SessionInviteCreated",
   )
-  const cloudInvite = unwrap(
-    await homeClient.send(requests.createCloudSessionInviteRequest(session.id, {
-      displayName: "Hosted home extension collab drill",
-      maxUses: 1,
-    })),
-    "CloudSessionInviteCreated",
-  )
+  // MP-08 / MP-10 / MP-11: the extension collaborator also uses CLIENT login.
+  const cloudInvite = await ownerTerminal.client.collaboration.createSessionInvite(session.id, {
+    displayName: "Hosted home extension collab drill", maxUses: 1,
+  })
   const localInviteToken = localInvite.invite?.invite_token
   const cloudInviteToken = cloudInvite.invite?.invite_token
-  assert(localInviteToken, "hosted extension collab local invite token should be returned", localInvite)
-  assert(cloudInviteToken, "hosted extension collab cloud invite token should be returned", cloudInvite)
-
-  const peerClientId = `${ownerClientId}-extension-peer-${Date.now()}`
-  const ownerScopedToken = await issueSessionScopedClientToken(apiUrl, {
-    sessionToken: ownerProfile.cloudSessionToken,
-    accountId: ownerProfile.accountId,
-    realmId: ownerProfile.realmId,
-    subject: ownerClientId,
-    userId: ownerProfile.userId,
-    clientId: ownerClientId,
-    sessionId: session.id,
-    targetDaemonAlias: homeDaemonAlias,
-  })
-  const ownerScopedClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
-    relayAuthToken: ownerScopedToken,
-    targetDaemonAlias: homeDaemonAlias,
-    kernelPingIntervalMs: 60_000,
-    kernelMaxMissedPongs: 10,
-  }), "extension-owner-relay")
-  let peerRemoteClient = null
-  let peerLogin = null
+  assert(localInviteToken, "hosted extension collab local invite token should be returned")
+  assert(cloudInviteToken, "hosted extension collab cloud invite token should be returned")
+  const scope = {accountId: ownerProfile.accountId, realmId: ownerProfile.realmId, sessionId: session.id, targetDaemonId: homeDaemonId}
+  let ownerScopedClient = null, peerRemoteClient = null, peerLogin = null
   let scenarioFailure = null
   try {
-    peerLogin = await devBrowserCloudLogin({ role: "extension-peer" })
+    ownerScopedClient = installSendRetry(await connectSessionScopedCloudClient(modules, ownerTerminal, scope), "extension-owner-relay")
+    peerLogin = await manualCloudDeviceLogin({role: "extension-peer", stateRoot, modules})
     const peerProfile = peerLogin.profile
-    assert(peerProfile.userId !== ownerProfile.userId, "extension peer login must use a different cloud user", {
-      ownerUserId: ownerProfile.userId,
-      peerUserId: peerProfile.userId,
-    })
-    const peerAcceptance = await postJson(`${apiUrl}/sessions/invites/${encodeURIComponent(cloudInviteToken)}/accept`, {
-      sessionToken: peerLogin.cloudSessionToken,
-    })
-    assert(peerAcceptance.userId === peerProfile.userId, "extension peer should accept cloud invite as itself", peerAcceptance)
-    const peerRelayToken = await issueSessionScopedClientToken(apiUrl, {
-      sessionToken: peerLogin.cloudSessionToken,
-      accountId: ownerProfile.accountId,
-      realmId: ownerProfile.realmId,
-      subject: `browser:${peerProfile.userId}:${Date.now()}`,
-      userId: peerProfile.userId,
-      clientId: peerClientId,
-      sessionId: session.id,
-      targetDaemonAlias: homeDaemonAlias,
-      allowUnpairedClientSubject: true,
-    })
-    peerRemoteClient = installSendRetry(new LocalIpcClient(ownerProfile.relayUrl, {
-      relayAuthToken: peerRelayToken,
-      targetDaemonAlias: homeDaemonAlias,
-      kernelPingIntervalMs: 60_000,
-      kernelMaxMissedPongs: 10,
-    }), "extension-peer-relay")
+    assert(peerProfile.userId !== ownerProfile.userId, "extension peer login must use a different cloud user")
+    const peerAcceptance = await peerLogin.client.collaboration.acceptSessionInvite(cloudInviteToken)
+    assert(peerAcceptance.acceptance.user_id === peerProfile.userId, "extension peer should accept cloud invite as itself")
+    peerRemoteClient = installSendRetry(await connectSessionScopedCloudClient(modules, peerLogin, scope), "extension-peer-relay")
     await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
     const peerAttachment = unwrap(
       await peerRemoteClient.send(requests.attachToSessionRequest(session.id, `hosted-extension-peer-${Date.now()}`)),
@@ -620,7 +581,7 @@ async function assertHostedCollaboratorHomeExtensions({
       prompt: "Initialize the hosted collaborator home-proxy extension runtime.",
       timeoutMs: pollTimeoutMs,
     })
-    const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
+    const deniedRequest = await callRuntimeMcp(launch.fixtureMcp, null, "tools/call", {
       name: "chariox.request_extension",
       arguments: { kind: "script", name: "hosted_home_only_lookup", environment: env.name },
     }, { retryTransient: true })
@@ -673,11 +634,9 @@ async function assertHostedCollaboratorHomeExtensions({
     throw error
   } finally {
     await peerRemoteClient?.close().catch(() => {})
-    await ownerScopedClient.close().catch(() => {})
+    await ownerScopedClient?.close().catch(() => {})
     if (peerLogin) {
-      await cleanupHostedCloudIdentity({
-        profile: peerLogin.profile,
-        cloudSessionToken: peerLogin.cloudSessionToken,
+      await cleanupHostedCloudTerminal(peerLogin, {
         reason: "hosted Cloud extension collaborator cleanup",
       }).catch((error) => {
         log("second-kernel-collab-cleanup-failed", {
@@ -706,10 +665,14 @@ export async function runHostedSecondKernelAssertions({
   trackedWorkspaceLiveSync = false,
   trackedWorkspaceLiveSyncProvider = "codex",
   trackedWorkspaceLiveSyncModel = "gpt-5.2",
-  homeDaemonAlias,
   homeClient,
   ownerProfile,
-  ownerClientId,
+  ownerTerminal,
+  modules,
+  stateRoot,
+  homeDaemonId,
+  connectSessionScopedCloudClient,
+  cleanupHostedCloudTerminal,
   apiUrl,
   repoRoot,
   pollTimeoutMs,
@@ -717,17 +680,12 @@ export async function runHostedSecondKernelAssertions({
   assert,
   unwrap,
   makeWorkerPorts,
-  pairCloudMachineDirect,
-  issueMachineRelayToken,
-  issueSessionScopedClientToken,
-  postJson,
   manualCloudDeviceLogin,
-  devBrowserCloudLogin,
   installSendRetry,
   expectReject,
   waitForLocalDaemon,
   allowDevStubProvider,
-  waitForRelayTarget,
+  waitForCloudRelayTarget,
   waitForRemoteMachine,
   waitForCompletion,
   closeClient,
@@ -747,21 +705,10 @@ export async function runHostedSecondKernelAssertions({
   let worker = null
   let workerClient = null
   let fixtures = null
-  let workerMachinePaired = false
+  const workerProfileRef = {current: null}
   let scenarioFailure = null
   const eventLog = []
   try {
-    log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
-    await pairCloudMachineDirect({
-      profile: ownerProfile,
-      machineId: workerDaemonId,
-      alias: workerAlias,
-    })
-    workerMachinePaired = true
-    const workerRelayToken = await issueMachineRelayToken({
-      profile: ownerProfile,
-      machineId: workerDaemonId,
-    })
     await mkdir(workerCharioxHome, { recursive: true })
     await mkdir(workerWorkspace, { recursive: true })
     const workerEnv = withDevStubProviderInventory({
@@ -772,8 +719,6 @@ export async function runHostedSecondKernelAssertions({
       CHARIOX_MCP_PORT: String(workerPorts.mcpPort),
       CHARIOX_OPENCODE_PORT: String(workerPorts.opencodePort),
       CHARIOX_CODEX_PORT: String(workerPorts.codexPort),
-      CHARIOX_RELAY_URL: ownerProfile.relayUrl,
-      CHARIOX_RELAY_TOKEN: workerRelayToken,
       CHARIOX_DAEMON_ID: workerDaemonId,
       CHARIOX_DAEMON_ALIAS: workerAlias,
       CHARIOX_MACHINE_ID: workerDaemonId,
@@ -796,6 +741,15 @@ export async function runHostedSecondKernelAssertions({
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
+    // Each kernel enrolls itself once through the normal product path. Human
+    // CLIENT authority is never used as a worker's transport credential.
+    const workerHandlers = modules.createCommandActionHandlers(createHostedCommandDeps({
+      workspace: workerWorkspace, localClient: workerClient, modules, terminal: ownerTerminal,
+      profileRef: workerProfileRef, notices: [], ownerAccountSlug: ownerProfile.accountSlug, baseUrl: apiUrl,
+    }))
+    await workerHandlers.handleCloudCommand({kind: "cloud", raw: "/cloud link", args: ["link"]})
+    assert(workerProfileRef.current?.kernelEnrolled && workerProfileRef.current.kernelId === workerDaemonId, "second kernel should enroll itself")
+    assert(workerProfileRef.current.accountId === ownerProfile.accountId, "second kernel must enroll in the owner's account")
     await allowDevStubProvider(homeClient, requests, "second-kernel-home")
     await allowDevStubProvider(workerClient, requests, "second-kernel-worker")
     const env = await registerHostedHomeExtensions({
@@ -808,26 +762,8 @@ export async function runHostedSecondKernelAssertions({
       unwrap,
     })
 
-    log("second-kernel-client-token-request", { workerAlias })
-    const workerClientToken = await issueSessionScopedClientToken(apiUrl, {
-      sessionToken: ownerProfile.cloudSessionToken,
-      accountId: ownerProfile.accountId,
-      realmId: ownerProfile.realmId,
-      subject: ownerClientId,
-      userId: ownerProfile.userId,
-      clientId: ownerClientId,
-      targetDaemonAlias: workerAlias,
-    })
-    log("second-kernel-client-token-issued", { workerAlias })
-    log("second-kernel-relay-target-probe", { workerAlias })
-    await waitForRelayTarget(
-      LocalIpcClient,
-      requests,
-      ownerProfile.relayUrl,
-      workerClientToken,
-      workerAlias,
-    )
-    log("second-kernel-relay-target-ready", { workerAlias })
+    log("second-kernel-relay-target-probe", {workerAlias})
+    await waitForCloudRelayTarget(ownerTerminal.client, {daemonId: workerDaemonId, status: "ONLINE"})
 
     await waitForRemoteMachine(homeClient, requests, workerDaemonId)
     const ownsSession = existingSession == null
@@ -930,30 +866,11 @@ export async function runHostedSecondKernelAssertions({
     await waitForCompletion(eventLog, pollTimeoutMs, 0)
     if (collabExtensions) {
       await assertHostedCollaboratorHomeExtensions({
-        LocalIpcClient,
-        requests,
-        homeClient,
-        ownerProfile,
-        ownerClientId,
-        homeDaemonAlias,
-        workspace,
-        workerWorkspace,
-        liveSyncFixture,
-        session,
-        workerDaemonId,
-        env,
-        fixtures,
-        apiUrl,
-        log,
-        assert,
-        unwrap,
-        postJson,
-        issueSessionScopedClientToken,
-        pollTimeoutMs,
-        devBrowserCloudLogin,
-        installSendRetry,
-        expectReject,
-        cleanupHostedCloudIdentity,
+        requests, homeClient, ownerProfile, ownerTerminal, modules, stateRoot,
+        homeDaemonId, connectSessionScopedCloudClient, cleanupHostedCloudTerminal,
+        workspace, workerWorkspace, liveSyncFixture, session, workerDaemonId,
+        env, fixtures, log, assert, unwrap, pollTimeoutMs, manualCloudDeviceLogin,
+        installSendRetry, expectReject,
       })
     }
     if (trackedWorkspaceLiveSync) {
@@ -989,22 +906,28 @@ export async function runHostedSecondKernelAssertions({
     scenarioFailure = error
     throw error
   } finally {
+    const cleanupErrors = []
     await fixtures?.close?.().catch(() => {})
-    await closeClient(workerClient, "worker")
-    await terminateChild(worker)
-    if (workerMachinePaired) {
-      await cleanupHostedCloudIdentity({
-        profile: ownerProfile,
-        machineIds: [workerDaemonId],
-        reason: "hosted Cloud worker drill cleanup",
-        logout: false,
-      }).catch((error) => {
-        log("second-kernel-cloud-cleanup-failed", {
-          error: error instanceof Error ? error.message : String(error),
-        })
-        if (!scenarioFailure) throw error
+    if (workerClient && workerProfileRef.current?.kernelEnrolled) {
+      await modules.relayApi.logoutCloudRelay(workerClient).catch(error => {
+        cleanupErrors.push(error)
+        log("second-kernel-cloud-cleanup-failed", {error: error instanceof Error ? error.message : String(error)})
       })
     }
+    await closeClient(workerClient, "worker")
+    await terminateChild(worker)
+    if (workerProfileRef.current?.machineId) {
+      const credential = await ownerTerminal.client.store.session(ownerTerminal.identity.publicKeyThumbprint)
+      await cleanupHostedCloudIdentity({
+        profile: credential.profile, cloudSessionToken: credential.accessToken,
+        machineIds: [workerProfileRef.current.machineId], logout: false,
+        reason: "hosted Cloud worker drill cleanup",
+      }).catch(error => {
+        cleanupErrors.push(error)
+        log("second-kernel-cloud-cleanup-failed", {error: error instanceof Error ? error.message : String(error)})
+      })
+    }
+    if (cleanupErrors.length && !scenarioFailure) throw new AggregateError(cleanupErrors, "hosted second kernel cleanup failed")
   }
 }
 

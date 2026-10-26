@@ -25,12 +25,20 @@ COPY packages packages
 COPY apps/server/package.json apps/server/package.json
 RUN pnpm install --frozen-lockfile
 COPY apps/server apps/server
+# The server build runs the protocol pin check, which reads these files.
+COPY scripts/generate-protocol-versions.mjs scripts/generate-protocol-versions.mjs
+COPY scripts/lib/protocol-versions.mjs scripts/lib/protocol-versions.mjs
+COPY fixtures/protocol-versions.json fixtures/historical-workflow-protocol.json fixtures/
+COPY apps/kernel/managed-upgrade-protocol-transitions.json apps/kernel/managed-upgrade-protocol-transitions.json
+COPY apps/kernel/src/local/api/types.rs apps/kernel/src/local/api/types.rs
+COPY apps/kernel/src/transport/relay_peer.rs apps/kernel/src/transport/relay_peer.rs
+COPY docker/publication/Dockerfile docker/publication/Dockerfile
 RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
 ARG CARGO_BUILD_JOBS=1
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=416
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=567
 WORKDIR /opt/chariox
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
@@ -51,6 +59,9 @@ COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
 COPY packages/app-sdk packages/app-sdk
 COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
+COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/extract-release.py
+COPY deploy/managed-kernel/verify-image-release.mjs deploy/managed-kernel/verify-image-release.mjs
+COPY deploy/managed-kernel/path1-service-policy.mjs deploy/managed-kernel/path1-service-policy.mjs
 COPY packages/event-protocol packages/event-protocol
 RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
@@ -61,9 +72,9 @@ LABEL org.opencontainers.image.description="Standalone Chariox kernel plus workf
 LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 
 ARG CHARIOX_CODEX_VERSION=0.159.3
-ARG CHARIOX_OPENCODE_VERSION=1.18.23
+ARG CHARIOX_OPENCODE_VERSION=1.19.0
 ARG CHARIOX_CLAUDE_VERSION=2.1.212
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=416
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=567
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

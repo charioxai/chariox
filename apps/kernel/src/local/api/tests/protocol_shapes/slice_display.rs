@@ -2,7 +2,10 @@ use super::*;
 
 #[test]
 fn slice_creation_uses_selkies_as_the_omitted_wire_default() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
         "CreateSlice": {
             "name": "headed", "display_mode": "headed", "display_backend": "selkies"
@@ -44,7 +47,10 @@ fn omitted_slice_backend_defaults_to_selkies_and_explicit_novnc_is_preserved() {
 
 #[test]
 fn local_daemon_protocol_selkies_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let response = LocalDaemonResponse::SliceDisplayEndpoint {
         endpoint: crate::slice::SliceDisplayEndpoint {
             slice_id: "slice-1".to_string(),
@@ -59,6 +65,7 @@ fn local_daemon_protocol_selkies_endpoint_shape_is_versioned() {
             stream_protocol: None,
             stream_id: None,
             peer_public_key: None,
+            shared_display: None,
         },
     };
     let value = serde_json::to_value(response).expect("endpoint should encode");
@@ -81,7 +88,10 @@ fn encrypted_display_fragment_contract_is_versioned() {
     use crate::transport::relay_crypto;
     use crate::transport::secure_display::{DisplayMessageKind, DisplayPeer, SecureDisplayChannel};
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let kernel_key = relay_crypto::generate_private_key_base64();
     let viewer_key = relay_crypto::generate_private_key_base64();
     let viewer_public = relay_crypto::public_key_from_private_key_base64(&viewer_key).unwrap();
@@ -110,7 +120,10 @@ fn encrypted_display_fragment_contract_is_versioned() {
 
 #[test]
 fn room_selkies_viewer_admission_contract_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 416);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
         "GetSliceDisplayEndpoint": {
             "slice_ref": "slice-1",
@@ -150,6 +163,7 @@ fn room_selkies_viewer_admission_contract_is_versioned() {
         stream_protocol: Some("chariox-display-v1".to_string()),
         stream_id: Some("display-1".to_string()),
         peer_public_key: Some("worker-public-key".to_string()),
+        shared_display: None,
     };
     let value = serde_json::to_value(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
         .expect("viewer endpoint should encode");
@@ -173,7 +187,10 @@ fn room_selkies_worker_admission_contract_is_versioned() {
         RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
     };
 
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 70);
+    assert_eq!(
+        RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
     let endpoint = crate::slice::SliceDisplayEndpoint {
         slice_id: "slice-1".to_string(),
         kind: crate::slice::SliceDisplayEndpointKind::Selkies,
@@ -184,6 +201,7 @@ fn room_selkies_worker_admission_contract_is_versioned() {
         stream_protocol: Some("chariox-display-v1".to_string()),
         stream_id: Some("display-1".to_string()),
         peer_public_key: Some("worker-public-key".to_string()),
+        shared_display: None,
     };
     assert_eq!(
         serde_json::to_value((
@@ -223,5 +241,23 @@ fn room_selkies_worker_admission_contract_is_versioned() {
                 }
             }
         ])
+    );
+}
+
+#[test]
+fn mp08_mp10_mp11_room_shared_display_offer_survives_the_wire() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let value = serde_json::json!({"GetSliceDisplayEndpoint":{
+      "slice_ref":"slice-1","session_id":"room-1","attachment_id":"attachment-1","viewer_public_key":"viewer-key",
+      "shared_display":{"codecs":["avc1.420033","png","chariox-relay-binary-v96"],"bitrate":8000000,"device_scale_factor":2,"resume_hint":"room-display-old"}
+    }});
+    let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        value,
+        "MP-08: the kernel must negotiate the shared producer instead of silently opening Selkies"
     );
 }

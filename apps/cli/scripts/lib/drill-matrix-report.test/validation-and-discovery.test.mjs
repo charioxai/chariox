@@ -251,7 +251,7 @@ test("rejects inconsistent matrix aggregates", () => {
       ...aggregate.failedScenarios[0],
       artifactHints: ["Bearer abcdefghijklmnopqrstuvwxyz"],
     }],
-  }), /failedScenarios\[0\] includes secret-looking artifactHints/)
+  }), /credential material/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     status: "passed",
@@ -310,7 +310,7 @@ test("accepts Cloud contextual matrix diagnostics without weakening OSS reports"
         plannedNextAction: "Bearer abcdefghijklmnopqrstuvwxyz",
       }],
     }),
-    /scenarios\[0\] has invalid plannedNextAction/,
+    /credential material/,
   )
 })
 
@@ -464,7 +464,7 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport({
       scenarios: [scenario("remote", "passed", { deployment: "Bearer abcdefghijklmnop" })],
     }),
-  }), /scenarios\[0\] has invalid deployment/)
+  }), /credential material/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
@@ -557,12 +557,12 @@ test("rejects malformed matrix reports", () => {
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), artifactHints: ["/tmp/chariox-drill-sk-this-should-not-persist"] }],
-  }), /scenarios\[0\] includes secret-looking artifactHints/)
+  }), /credential material/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), artifactHints: [{ kind: "manifest", path: "Bearer abcdefghijklmnopqrstuvwxyz" }] }],
-  }), /scenarios\[0\] includes secret-looking artifactHints/)
+  }), /credential material/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
@@ -658,7 +658,7 @@ test("rejects malformed matrix reports", () => {
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
     metadata: { provider: "Bearer abcdefghijklmnopqrstuvwxyz" },
-  }), /secret-looking metadata value/)
+  }), /credential material/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
@@ -719,4 +719,22 @@ test("rejects malformed matrix reports", () => {
     ...aggregate,
     providers: { cdoex: 1 },
   }), /aggregate\.providers\[0\] has unknown provider "cdoex"/)
+})
+
+test('MP-11 F27 rejects credential sentinels in every free-text report surface', () => {
+  for (const sentinel of ['Bearer synthetic_private_value_123456789', 'chariox-scoped-v1.c3ludGhldGlj.c2VjcmV0']) {
+    for (const field of ['reason', 'description', 'args']) {
+      const report = matrixReport({ scenarios: [scenario('local', 'failed', {
+        classification: 'provider-auth', reason: 'public failure',
+        [field]: field === 'args' ? [sentinel] : sentinel,
+      })] })
+      assert.throws(() => validateDrillMatrixReport(report), error => /credential material/.test(error.message) && !error.message.includes(sentinel))
+      assert.throws(() => summarizeDrillMatrixReport(report), /credential material/)
+      assert.throws(() => formatDrillMatrixReportSummary(report), /credential material/)
+    }
+    const aggregate = summarizeDrillMatrixReports([matrixReport({ scenarios: [scenario('local', 'passed')] })])
+    aggregate.additionalDiagnostics = { reason: sentinel }
+    assert.throws(() => validateDrillMatrixAggregate(aggregate), /credential material/)
+    assert.throws(() => formatDrillMatrixAggregateSummary(aggregate), /credential material/)
+  }
 })

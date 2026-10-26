@@ -21,6 +21,21 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         timeout: std::time::Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let timing = if matches!(
+            &request,
+            RelayPeerRequest::RoomSharedDisplay {
+                command: crate::transport::room_shared_display::RoomDisplayCommand::Resume {}
+                    | crate::transport::room_shared_display::RoomDisplayCommand::ResumeAttach {},
+                ..
+            }
+        ) {
+            super::room_shared_display::timing::ResumeTiming::start()
+        } else {
+            None
+        };
+        if let Some(timing) = &timing {
+            timing.mark("peer_entered");
+        }
         // All Room display/observation routes share worker revocation admission.
         let slice_id = match &request {
             RelayPeerRequest::RoomBrowserController {
@@ -29,14 +44,24 @@ impl KernelRuntimeState {
             RelayPeerRequest::ObserveRoomComputer { slice_id, .. }
             | RelayPeerRequest::CaptureRoomScreenshot { slice_id, .. }
             | RelayPeerRequest::ReadRoomScreenshotChunk { slice_id, .. }
-            | RelayPeerRequest::OpenRoomDisplay { slice_id, .. } => Some(slice_id),
+            | RelayPeerRequest::OpenRoomDisplay { slice_id, .. }
+            | RelayPeerRequest::OpenRoomSharedDisplay { slice_id, .. }
+            | RelayPeerRequest::RoomSharedDisplay { slice_id, .. } => Some(slice_id),
             _ => None,
         };
         if let Some(slice_id) = slice_id {
             self.settle_slice_observation_revocations(slice_id).await?;
         }
-        self.send_room_slice_peer_request_unchecked(config, target, request, timeout)
-            .await
+        if let Some(timing) = &timing {
+            timing.mark("revocations_ready");
+        }
+        let result = self
+            .send_room_slice_peer_request_unchecked(config, target, request, timeout)
+            .await;
+        if let Some(timing) = &timing {
+            timing.mark("relay_returned");
+        }
+        result
     }
 
     pub(super) async fn send_room_slice_peer_request_unchecked(
@@ -280,7 +305,8 @@ impl KernelRuntimeState {
         background_probe: bool,
         admission_deadline: Option<tokio::time::Instant>,
     ) -> Result<Response, DaemonError> {
-        let (slice, _guard) = self
+        let route_started = crate::session::unix_epoch_ms();
+        let (slice, mut guard) = self
             .admit_room_browser_controller_route(
                 session_id,
                 &slice.id,
@@ -289,6 +315,12 @@ impl KernelRuntimeState {
                 admission_deadline,
             )
             .await?;
+        let _route_trace = RouteTrace::start(&command, route_started);
+        // MP-08/MP-10/MP-11: release queue ownership before peer I/O; the
+        // retained operation marker still orders input and excludes lifecycle.
+        if let Some(guard) = guard.as_mut() {
+            guard.release_queue();
+        }
         if matches!(command, Command::ClearSecretObservation { .. }) {
             self.settle_slice_observation_revocations(&slice.id).await?;
             return Ok(Response::SecretObservationCleared);
@@ -308,6 +340,29 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
+        if matches!(command, Command::NoteObservation { .. }) {
+            // MD-N2: Ping is understood by old workers; only send the new variant
+            // after a current, authenticated response from this exact target.
+            let value = format!("md-notes-protocol:{:016x}", rand::random::<u64>());
+            let response = Box::pin(self.send_room_slice_peer_request(
+                &config,
+                target.clone(),
+                RelayPeerRequest::Ping {
+                    value: value.clone(),
+                },
+                Duration::from_secs(15),
+            ))
+            .await?;
+            let version = match response {
+                RelayPeerResponse::Pong {
+                    value: received,
+                    relay_peer_protocol_version,
+                    ..
+                } if received == value => relay_peer_protocol_version,
+                _ => None,
+            };
+            super::room_browser_controller_admission::require_notes_worker_protocol(version)?;
+        }
         let recovery = receipt_recovery_command(&command);
         let request = |command| RelayPeerRequest::RoomBrowserController {
             session_id: session_id.to_string(),
@@ -330,6 +385,10 @@ impl KernelRuntimeState {
                 } => Duration::from_millis(
                     crate::runtime::computer_input_action::keyboard_text_timeout_ms(input.as_str()) + 10_000,
                 ),
+                Command::ComputerInput { action:
+                    crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardHold { duration_ms, .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::PointerHold { duration_ms, .. }, ..
+                } => Duration::from_millis(u64::from(*duration_ms) + 15_000),
                 _ => Duration::from_secs(15),
             };
             self.send_room_slice_peer_request(&config, target, request(command), timeout)
@@ -408,6 +467,9 @@ impl KernelRuntimeState {
         } else {
             None
         };
+        if matches!(&command, Command::Artifact { .. }) {
+            protection.require(session_id, true)?;
+        }
         protection.register_command(session_id, &command)?;
         if !matches!(
             &command,
@@ -620,8 +682,21 @@ async fn execute_local(
             }
             let cancellation = execution
                 .cancellation()
-                .with_authorizer(authorize_input.clone());
+                .with_authorizer(authorize_input.clone())
+                .with_agent_input(actor_id.starts_with("agent:"));
             let input_result = match action {
+                crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { tree_revision, target_id, action } => {
+                    let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
+                    let policy: serde_json::Value = serde_json::from_str(&policy).map_err(|_| controller_route_error("protection unavailable"))?;
+                    let controller = processes.clone();
+                    let room = session_id.to_string();
+                    let authorize = authorize_input.clone();
+                    tokio::task::spawn_blocking(move || {
+                        authorize().map_err(|e| crate::error::HostFailure::Other(e.to_string()))?;
+                        controller.room_computer_action(&room, serde_json::json!({"observer":actor_id,"tree_revision":tree_revision,"target_id":target_id,"action":action,"policy":policy}), move || cancellation.requested() || cancellation.authorize().is_err())
+                    }).await.map_err(|_| controller_route_error("accessibility action task failed"))?
+                        .map(|_| ()).map_err(|error| error.into_daemon("room_computer"))
+                }
                 crate::transport::room_browser_controller::RoomComputerInputAction::PointerMove {
                     x,
                     y,
@@ -677,6 +752,10 @@ async fn execute_local(
                     repeat,
                 } => {
                     super::tool_dispatch::run_room_keyboard_key(input, repeat, cancellation).await
+                }
+                action @ (crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardHold { .. }
+                    | crate::transport::room_browser_controller::RoomComputerInputAction::PointerHold { .. }) => {
+                    super::tool_dispatch::run_room_computer_hold(action, desktop_pixel_width, desktop_pixel_height, cancellation).await
                 }
                 crate::transport::room_browser_controller::RoomComputerInputAction::ClipboardWrite {
                     text,
@@ -761,6 +840,15 @@ async fn execute_local(
         } => processes
             .reconcile_browser(&session_id, &viewport, browser_bar_visible)
             .map(|reconciliation| Response::Reconciled { reconciliation }),
+        Command::Artifact { request } => processes
+            .browser_artifact(&session_id, &request)
+            .map(|capture| Response::Artifact { capture }),
+        Command::NoteObservation {
+            target_id,
+            document_id,
+        } => processes
+            .note_observation(&session_id, &target_id, &document_id)
+            .map(|observation| Response::NoteObservation { observation }),
         Command::Snapshot {
             target_id,
             document_id,
@@ -1062,6 +1150,35 @@ pub(super) fn controller_route_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "browser_controller.route",
         message: message.to_string(),
+    }
+}
+
+/// MP-10: numeric timing of controller routes that hold the route marker.
+struct RouteTrace(Option<(String, u64, u64)>);
+
+impl RouteTrace {
+    fn start(command: &Command, requested_ms: u64) -> Self {
+        if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() != Ok("1") {
+            return Self(None);
+        }
+        let debug = format!("{command:?}");
+        let kind = debug
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        Self(Some((kind, requested_ms, crate::session::unix_epoch_ms())))
+    }
+}
+
+impl Drop for RouteTrace {
+    fn drop(&mut self) {
+        if let Some((kind, requested_ms, admitted_ms)) = self.0.take() {
+            eprintln!(
+                "[chariox.browser_route] {kind} requested={requested_ms} admitted={admitted_ms} ended={}",
+                crate::session::unix_epoch_ms()
+            );
+        }
     }
 }
 

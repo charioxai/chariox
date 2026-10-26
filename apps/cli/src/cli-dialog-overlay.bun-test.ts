@@ -5,7 +5,40 @@ import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 
 import { renderCliDialogOverlay } from "./cli-dialog-overlay.js"
+import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
 import { sessionBrowserFixture } from "./session-browser-card.test-fixture.js"
+
+for (const [width, height, count] of [[80, 24, 16], [140, 48, 35], [140, 100, 76]] as const) {
+  test(`MP-08/MP-10: Environment keeps every page row visible at ${width}x${height}`, async () => {
+    assert.equal(projectEnvironmentPageSize(height), count)
+    const harness = await createTestRenderer({ width, height, useThread: false })
+    const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
+    harness.renderer.root.add(overlayBox)
+    const lines = Array.from({ length: count }, (_, index) => `ROW_${String(index + 1).padStart(3, "0")} · Not checked`)
+    try {
+      renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentLines: lines })
+      await harness.renderOnce()
+      const frame = harness.captureCharFrame()
+      for (const line of lines) assert(frame.includes(line), `page clipped ${line}`)
+    } finally { harness.renderer.destroy() }
+  })
+}
+
+for (const [width, height] of [[80, 24], [60, 24], [40, 24]] as const) {
+  test(`MP-08/MP-10/MP-11: Environment explanation is fully visible at ${width}x${height}`, async () => {
+    const harness = await createTestRenderer({ width, height, useThread: false })
+    const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
+    harness.renderer.root.add(overlayBox)
+    const controller = createProjectEnvironmentReadController({ send: async () => { throw new Error("not available") }, render() {}, pageSize: () => projectEnvironmentPageSize(height), textWidth: () => projectEnvironmentTextWidth(width) })
+    try {
+      await controller.open("project")
+      renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentLines: controller.visibleLines() })
+      await harness.renderOnce()
+      const frame = harness.captureCharFrame().split("\n").map(row => row.trim()).join(" ").replace(/\s+/g, " ")
+      for (const phrase of ["cannot check or change", "them here.", "After the next release"]) assert(frame.includes(phrase), `clipped ${phrase}: ${frame}`)
+    } finally { harness.renderer.destroy() }
+  })
+}
 
 test("session browser keeps nonzero ERROR visible at 80 columns", async () => {
   const harness = await createTestRenderer({ width: 80, height: 24, useThread: false })

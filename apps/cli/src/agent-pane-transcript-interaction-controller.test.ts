@@ -8,13 +8,13 @@ test("agent pane transcript interaction controller toggles turns", () => {
   const harness = interactionHarness({
     "agent-1": [
       entry(1, "user", "prompt", { turnId: 1 }),
-      entry(4, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
+      entry(-1, "turn_toggle", "click to expand", { turnId: 1, toggleMode: "expand" }),
       entry(2, "reasoning", "thinking", { turnId: 1, hidden: true, blobCollapsible: true }),
       entry(3, "assistant", "summary", { turnId: 1 }),
     ],
   }, { "agent-1": [1] })
 
-  harness.controller.toggleTurn("agent-1", 1, 4)
+  harness.controller.toggleTurn("agent-1", 1, -1)
 
   assert.deepEqual(harness.expandedTurnUpdates, [{
     agentId: "agent-1",
@@ -26,7 +26,7 @@ test("agent pane transcript interaction controller toggles turns", () => {
     harness.committed[0]?.entries.map((candidate) => [candidate.id, candidate.role, candidate.hidden ?? false, candidate.toggleMode ?? null]),
     [
       [1, "user", false, null],
-      [4, "turn_toggle", false, "collapse"],
+      [-1, "turn_toggle", false, "collapse"],
       [2, "reasoning", false, null],
       [3, "assistant", false, null],
     ],
@@ -39,13 +39,13 @@ test("agent pane transcript interaction controller toggles serialized zero turn 
   const harness = interactionHarness({
     "agent-1": [
       entry(1, "user", "prompt", { turnId: 0 }),
-      entry(4, "turn_toggle", "click to expand", { turnId: 0, toggleMode: "expand" }),
+      entry(0, "turn_toggle", "click to expand", { turnId: 0, toggleMode: "expand" }),
       entry(2, "reasoning", "thinking", { turnId: 0, hidden: true, blobCollapsible: true }),
       entry(3, "assistant", "summary", { turnId: 0 }),
     ],
   }, { "agent-1": [0] })
 
-  harness.controller.toggleTurn("agent-1", 0, 4)
+  harness.controller.toggleTurn("agent-1", 0, 0)
 
   assert.deepEqual(harness.expandedTurnUpdates, [{
     agentId: "agent-1",

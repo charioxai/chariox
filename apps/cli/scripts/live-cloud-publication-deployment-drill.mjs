@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
 import path from 'node:path'
 import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
@@ -166,7 +167,7 @@ function parseArgs(argv) {
     realDashboard: false,
     agentAppShopping: false,
     agentAppSessionIsolation: false,
-    artifactsDir: path.join(repoRoot, '.artifacts', 'cloud-publication-deployments'),
+    artifactsDir: path.join(process.env.HOME, '.codex', 'evidence', 'cloud-publication-deployments'),
     browserScreenshot: false,
     keepTmp: false,
     holdMs: 0,
@@ -270,18 +271,18 @@ function tail(value, max = 4000) {
   return typeof value === 'string' ? value.slice(-max) : ''
 }
 
-async function main() {
+async function runDrill(privateRoot) {
   const options = parseArgs(process.argv.slice(2))
   await mkdir(options.artifactsDir, { recursive: true })
-  const root = path.join(repoRoot, '.artifacts', 'live-cloud-publication-deployment-drill', `chariox-cloud-publication-drill-${nowStamp()}`)
+  const root = path.join(options.artifactsDir, `chariox-cloud-publication-drill-${nowStamp()}`)
   await prepareDrillArtifacts(root)
-  const workspace = path.join(root, 'workspace')
-  const exportDir = path.join(root, 'exported')
-  const packageDir = path.join(root, 'package')
-  const configHome = path.join(root, 'config')
-  const serverConfigHome = path.join(root, 'server-config')
-  const stateHome = path.join(root, 'state')
-  const charioxHome = path.join(root, 'chariox-home')
+  const workspace = path.join(privateRoot, 'workspace')
+  const exportDir = path.join(privateRoot, 'exported')
+  const packageDir = path.join(privateRoot, 'package')
+  const configHome = path.join(privateRoot, 'config')
+  const serverConfigHome = path.join(privateRoot, 'server-config')
+  const stateHome = path.join(privateRoot, 'state')
+  const charioxHome = path.join(privateRoot, 'chariox-home')
   const kernelPort = options.kernelPort ?? await freePort()
   const relayPort = options.relayPort ?? await freePort()
   const mcpPort = await freePort()
@@ -303,8 +304,8 @@ async function main() {
     CHARIOX_CODEX_PORT: String(codexPort),
     CHARIOX_DAEMON_ID: daemonAlias,
     CHARIOX_DAEMON_ALIAS: daemonAlias,
-    CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-    CHARIOX_SESSION_HISTORY_DIR: path.join(root, 'history'),
+    CHARIOX_DAEMON_SOCKET: path.join(privateRoot, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(privateRoot, 'history'),
     ...(useLocalRelay ? {
       CHARIOX_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
       CHARIOX_RELAY_TOKEN: relayToken,
@@ -1089,6 +1090,8 @@ function shoppingAgentAppConfig(publicationId, actionPort) {
   }
 }
 
+
+function main() {return withPrivateDrillRuntime("publication-runtime",runDrill)}
 
 main().catch((error) => {
   console.error(`[cloud-publication-drill] failed: ${error.stack ?? error.message}`)

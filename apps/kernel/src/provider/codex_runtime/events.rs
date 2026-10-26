@@ -11,10 +11,10 @@ use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
 use super::transcript::{
-    append_text_delta, append_tool_output_delta, append_tool_progress, codex_exec_command_item,
-    decode_codex_output_delta_chunk, normalize_codex_item_type, sync_completed_text_item,
-    sync_tool_item_with_manifest, text_from_content_value, CodexTextTranscriptState,
-    CodexToolTranscriptState,
+    append_legacy_tool_output_delta, append_text_delta, append_tool_output_delta,
+    append_tool_progress, codex_exec_command_item, decode_codex_output_delta_chunk,
+    normalize_codex_item_type, sync_completed_text_item, sync_tool_item_with_manifest,
+    text_from_content_value, CodexTextTranscriptState, CodexToolTranscriptState,
 };
 use super::turn::{
     note_assistant_item_completed, note_tool_item_completed, note_tool_item_started,
@@ -23,6 +23,10 @@ use super::turn::{
 use super::{CodexAssistantCompletion, CodexOutputChunk, CodexRuntimeState};
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing apply_notification operation signature and explicit context arguments"
+)]
 pub(super) fn apply_notification(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
@@ -52,6 +56,10 @@ pub(super) fn apply_notification(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing apply_notification_with_manifest operation signature and explicit context arguments"
+)]
 pub(super) fn apply_notification_with_manifest(
     notification: CodexNotification,
     active_turn_id: &mut Option<String>,
@@ -66,6 +74,7 @@ pub(super) fn apply_notification_with_manifest(
     resolved_usage: &mut Option<ProviderRunTokenUsage>,
     remote_extension_manifest: &RemoteExtensionManifest,
 ) {
+    turn_tracker.observe_provider_turn(&notification);
     match notification {
         CodexNotification::TurnScoped {
             turn_id,
@@ -204,7 +213,7 @@ pub(super) fn apply_notification_with_manifest(
             turn_tracker.note_activity();
             let delta = decode_codex_output_delta_chunk(&chunk);
             if let Some(chunk) =
-                append_tool_output_delta(tool_items, &call_id, "commandExecution", &delta)
+                append_legacy_tool_output_delta(tool_items, &call_id, "commandExecution", &delta)
             {
                 chunks.push(chunk);
             }
@@ -389,6 +398,10 @@ fn codex_retry_progress(message: &str) -> Option<(u32, u32)> {
     (limit > 0 && attempt > 0 && attempt <= limit).then_some((attempt, limit))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing backfill_completed_turn operation signature and explicit context arguments"
+)]
 pub(super) fn backfill_completed_turn(
     client: &CodexClient,
     state: &mut CodexRuntimeState,

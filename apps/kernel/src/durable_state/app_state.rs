@@ -102,6 +102,10 @@ impl std::fmt::Debug for AppStateOperation {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing AppStateOutcome typed actor payload layout"
+)]
 pub(crate) enum AppStateOutcome {
     Value(Option<StateRecord>),
     Transaction {
@@ -479,6 +483,19 @@ pub(crate) fn fixture_tool_catalog(store: &DurableKernelStateStore) -> Arc<Event
 #[cfg(test)]
 pub(crate) fn fixture_tool_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::tool_package()
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_browser_tool_package(
+    store: &DurableKernelStateStore,
+) -> (
+    Arc<EventCatalog>,
+    Vec<u8>,
+    chariox_app_package::TrustedPublisher,
+) {
+    let (bytes, publisher) = tests::browser_tool_package();
+    let catalog = tests::catalog_for_owner(store, "alice", (bytes.clone(), publisher.clone()));
+    (catalog, bytes, publisher)
 }
 
 /// Stages the tool fixture's release again as an update of `installation`

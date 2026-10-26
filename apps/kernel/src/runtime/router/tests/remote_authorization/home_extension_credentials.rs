@@ -33,7 +33,10 @@ async fn forwarded_home_credential_secret_rejects_stale_worker_provider_run() {
         .expect("agent should be remote-backed");
 
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id,
         home_session_id: session_id,
@@ -139,7 +142,10 @@ async fn home_extension_invocation_cancellation_is_authorized_and_audited() {
         .expect("agent should be remote-backed");
 
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
         "provider-run-1",
         "home-only",
@@ -282,7 +288,10 @@ async fn home_extension_invocation_rejects_wrong_worker_provider_run() {
         .expect("agent should be remote-backed");
 
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4)
+        .with_relay_peer_authority(crate::runtime::relay_peer_authority::test_peer_authority(
+            "worker-kernel",
+        ));
     let metadata = crate::extension::RemoteExtensionInvocationMetadata::new(
         "provider-run-2",
         "home-only",

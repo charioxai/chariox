@@ -14,6 +14,11 @@ use super::workflow_turns::WorkflowRunStatus;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowRun {
     id: String,
+    /// MP-08/MP-10/MP-11: owner-only historical read projection, never control authority.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    created_before_ownership_tracking: bool,
+    #[serde(default)]
+    created_by_agent_id: Option<String>,
     workflow_id: String,
     #[serde(default)]
     workflow_revision: u64,
@@ -58,6 +63,25 @@ pub struct WorkflowRun {
 }
 
 impl WorkflowRun {
+    pub fn created_before_ownership_tracking(&self) -> bool {
+        self.created_before_ownership_tracking
+    }
+    pub(crate) fn mark_created_before_ownership_tracking(&mut self) {
+        self.created_before_ownership_tracking = true;
+    }
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
+    }
+    pub(crate) fn with_creator(mut self, creator: Option<String>) -> Self {
+        assert!(self.created_by_agent_id.is_none());
+        self.created_by_agent_id = creator;
+        self
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing new operation signature and explicit context arguments"
+    )]
     pub fn new(
         id: impl Into<String>,
         workflow_id: impl Into<String>,
@@ -75,6 +99,8 @@ impl WorkflowRun {
             .and_then(|invocation| invocation.queue_ref.clone());
         Self {
             id: id.into(),
+            created_before_ownership_tracking: false,
+            created_by_agent_id: None,
             workflow_id: workflow_id.into(),
             workflow_revision: 0,
             endpoint_id: endpoint_id.into(),

@@ -30,9 +30,8 @@ export type CloudRelayProfile = {
   client_alias?: string | null
   machine_id?: string | null
   machine_alias?: string | null
-  machine_credential?: string | null
-  cloud_session_token?: string | null
-  cloud_session_expires_at_ms?: number | null
+  kernel_id?: string | null
+  kernel_enrolled?: boolean
   token_expires_at_ms?: number | null
 }
 
@@ -46,7 +45,7 @@ export type CloudRelayLoginStart = {
 }
 
 export type CloudRelayLoginPoll = {
-  status: "authorization_pending" | "expired_token" | "approved"
+  status: "authorization_pending" | "expired_token" | "access_denied" | "approved"
   interval_seconds?: number | null
   expires_at?: string | null
   profile?: CloudRelayProfile | null
@@ -253,7 +252,7 @@ export type SliceDisplayBackend = "novnc" | "selkies"
 
 export type SliceDisplayEndpoint = {
   slice_id: string
-  kind: SliceDisplayBackend | "chariox_viewer" | "external"
+  kind: SliceDisplayBackend | "chariox_viewer" | "external" | "shared"
   url: string
   access: "local" | "tunnel" | "public"
   expires_at_ms?: number | null
@@ -261,6 +260,7 @@ export type SliceDisplayEndpoint = {
   stream_protocol?: string | null
   stream_id?: string | null
   peer_public_key?: string | null
+  shared_display?: RoomDisplayBinding | null
 }
 
 export type PairedClientRecord = {
@@ -321,6 +321,7 @@ export type TerminalPairingLinkJoined = {
   terminal: TerminalRecord
   pairing: PairingJoinRecord
   relay_token?: string | null
+  kernel_pairing?: boolean
 }
 
 export type RelayKernelPresence = {
@@ -366,6 +367,7 @@ export type WaitingRoomInventorySnapshot = {
   remote_kernels?: RelayKernelPresence[]
   terminals?: TerminalRecord[]
   launch_target?: {
+    repository_state?: "ready" | "not-repository" | "unborn" | null
     workspace_id: string
     worktree_id: string
     workspace_label?: string | null
@@ -486,3 +488,7 @@ export type WorkspacePullRequestRecord = {
   draft: boolean
   generated_at_ms: number
 }
+
+// MP-08/MP-10/MP-11: protocol 525 Room viewer, no input authority.
+export type RoomDisplayBinding={generation:number;subscription_id:string;codec:string;bitrate:number;device_scale_factor:1|2;source:{kind:"desktop";surface_id:string;generation:string;width:number;height:number};resumed?:boolean}
+export type RoomDisplayOffer={codecs:readonly string[];bitrate:number;device_scale_factor:1|2;resume_hint?:string}

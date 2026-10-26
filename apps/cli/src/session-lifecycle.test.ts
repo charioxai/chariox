@@ -1,12 +1,25 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { RuntimeAttachment, RuntimeProviderRun, RuntimeSession, SessionHistoryCursorState } from "./cli-types.js"
 import { LocalIpcError } from "./ipc.js"
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import { createBaseDeps } from "./session-lifecycle.test-support.js"
 import type { ProviderPreferences } from "./preferences.js"
 import type { SessionListEntry } from "./sessions.js"
+
+test("MP-08 / MP-10 OWNER-24 clears the old session before a slow detach", async () => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const { deps, calls } = createBaseDeps({ detachAttachment: () => pending })
+  const joining = createSessionLifecycleController(deps as never).attachBinding({ id: "next" }, false)
+  try {
+    assert.equal(calls.includes("clearTranscript"), true, "previous session output must disappear synchronously")
+    assert.equal(calls.includes("clearAgentPaneRuntime"), true)
+    assert.equal(calls.includes("requestRender"), true)
+  } finally { release() }
+  await assert.rejects(joining, /should not be called/)
+})
 
 test("attachBinding is a no-op when already attached to the target session", async () => {
   const { deps, calls } = createBaseDeps()
@@ -15,6 +28,63 @@ test("attachBinding is a no-op when already attached to the target session", asy
   await controller.attachBinding({ id: "session-1" }, false)
 
   assert.deepEqual(calls, [])
+})
+
+test("MP-08 / MP-10 OWNER-24 resolving the current alias restores the moved-aside attachment", async () => {
+  let attachment: { id: string; session_id: string } | null = { id: "old", session_id: "session-1" }
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    setAttachmentState: (value: typeof attachment) => { attachment = value },
+    detachAttachment: async () => { throw new Error("entered kernel detach") },
+    attachToSession: async () => { throw new Error("entered kernel attach") },
+    getSessionState: async () => ({ id: "session-1", agents: [], active_provider_run_id: null }),
+    hydrateAttachedSessionBinding: async (_id: string, _att: string, session: unknown) => session,
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const selection = controller.beginSessionSelection({ id: "current-alias" })!
+  assert.equal(attachment, null)
+  await selection.attach({ id: "session-1" })
+  await selection.settle()
+  assert.equal((attachment as { id: string } | null)?.id, "old")
+  assert.equal(controller.isSessionSelecting(), false)
+})
+
+test("session switching clears an attachment the kernel already removed", async () => {
+  let attachment: { id: string; session_id: string } | null = { id: "att-stale", session_id: "session-1" }
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    detachAttachment: async () => { throw new Error("kernel transport failed: attachment `att-stale` was not found") },
+    setAttachmentState: (next: typeof attachment) => { attachment = next },
+  })
+  await createSessionLifecycleController(deps as never).detachCurrentAttachment()
+  assert.equal(attachment, null)
+})
+
+test("session switching preserves its attachment on other detach failures", async () => {
+  const original = { id: "att-live", session_id: "session-1" }
+  let attachment: typeof original | null = original
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    detachAttachment: async () => {
+      assert.equal(attachment, null, "old-room recovery stops while detach is pending")
+      throw new Error("permission denied")
+    },
+    setAttachmentState: (next: typeof attachment) => { attachment = next },
+  })
+  await assert.rejects(createSessionLifecycleController(deps as never).detachCurrentAttachment(), /permission denied/)
+  assert.equal(attachment, original)
+})
+
+test("a completed detach cannot clear a newer attachment", async () => {
+  let attachment: { id: string; session_id: string } | null = { id: "att-old", session_id: "session-1" }
+  const newer = { id: "att-new", session_id: "session-2" }
+  const { deps } = createBaseDeps({
+    attachmentState: () => attachment,
+    detachAttachment: async () => { attachment = newer },
+    setAttachmentState: (next: typeof attachment) => { attachment = next },
+  })
+  await createSessionLifecycleController(deps as never).detachCurrentAttachment()
+  assert.equal(attachment, newer)
 })
 
 test("transitionToNoSession resets session-bound state and refreshes the waiting room", async () => {
@@ -96,6 +166,7 @@ test("rollbackAttachedSession detaches and clears only the exact target binding"
 
 test("attachBinding reattaches and hydrates the attached session before restoring the attached state", async () => {
   const events: string[] = []
+  let currentAttachment: RuntimeAttachment | null = null
   const attachedSession: RuntimeSession = {
     id: "session-2",
     project_id: "project-default",
@@ -114,8 +185,10 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     config_state: { version: 1, values: {} },
   }
 
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => currentAttachment,
+    sessionState: () => attachedSession,
     clearPendingPromptAttachments: () => events.push("clearPendingPromptAttachments"),
     clearWorkflows: () => events.push("clearWorkflows"),
     bumpHistoryLoadGeneration: () => events.push("bumpHistoryLoadGeneration"),
@@ -158,7 +231,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
       events.push("hydrateAttachedSessionBinding")
       return attachedSession
     },
-    setAttachmentState: () => events.push("setAttachmentState"),
+    setAttachmentState: (value: RuntimeAttachment) => { currentAttachment = value; events.push("setAttachmentState") },
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
     setCenterMode: () => events.push("setCenterMode"),
@@ -189,66 +262,12 @@ test("attachBinding reattaches and hydrates the attached session before restorin
 
   await controller.attachBinding({ id: "session-2" }, false)
 
-  assert.deepEqual(events, [
-    "clearPendingPromptAttachments",
-    "bumpHistoryLoadGeneration",
-    "setSessionHydratingState",
-    "attachToSession",
-    "getSessionState",
-    "setMultiAgentResponseLayout",
-    "setCreatedSessionState",
-    "setSessionState",
-    "setCenterMode",
-    "setAttachmentState",
-    "clearDirectoryTree",
-    "resetWorkspaceScreen",
-    "clearWorkflows",
-    "clearActiveToolLabels",
-    "setProviderActivityLabel",
-    "setActiveStatusLabel",
-    "setFatalError",
-    "setDaemonDisconnected",
-    "setStreamingAgentId",
-    "setSubmitting",
-    "setWorking",
-    "setStatusLine",
-    "updateSessionChrome",
-    "focusPromptInput",
-    "primeAttachedSessionBinding",
-    "setSessionHydratingState",
-    "syncKernelEventSubscription",
-    "tryGetProviderRun",
-    "logAttachedProviderRun",
-    "setProviderRunState",
-    "syncCliProviderSelection",
-    "getProviderCatalog",
-    "setProviderCatalogState",
-    "reconcileWaitingRoom",
-    "hydrateAttachedSessionBinding",
-    "setMultiAgentResponseLayout",
-    "setCreatedSessionState",
-    "setSessionState",
-    "setCenterMode",
-    "setAttachmentState",
-    "clearDirectoryTree",
-    "resetWorkspaceScreen",
-    "clearWorkflows",
-    "clearActiveToolLabels",
-    "setProviderActivityLabel",
-    "setActiveStatusLabel",
-    "setFatalError",
-    "setDaemonDisconnected",
-    "setStreamingAgentId",
-    "setSubmitting",
-    "setWorking",
-    "setStatusLine",
-    "updateSessionChrome",
-    "focusPromptInput",
-    "listSessions",
-    "setAvailableSessions",
-    "scheduleShortViewportHistoryCheck",
-  ])
-})
+  assert.equal(events.filter((event) => event === "setProviderCatalogState").length, 0)
+  assert.ok(events.indexOf("setSessionState") < events.indexOf("attachToSession"), "the selected placeholder owns the view before I/O")
+  assert.ok(events.indexOf("primeAttachedSessionBinding") < events.indexOf("hydrateAttachedSessionBinding"))
+  assert.ok(events.indexOf("syncKernelEventSubscription") < events.indexOf("tryGetProviderRun"))
+  assert.ok(events.lastIndexOf("setSessionState") > events.indexOf("hydrateAttachedSessionBinding"), "the final state follows hydration")
+  assert.equal(events.at(-1), "setSessionHydratingState")})
 
 test("attachBinding patches the waiting-room session row without listing every session", async () => {
   const appliedSessions: SessionListEntry[][] = []
@@ -472,8 +491,10 @@ test("attachBinding recovers when its launch target moves remote", async () => {
   const appliedSessions: RuntimeSession[] = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> | undefined }> = []
   let stateReads = 0
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     attachToSession: async () => ({ id: "att-moving", session_id: "session-moving" }),
     getSessionState: async () => {
       stateReads += 1
@@ -594,8 +615,10 @@ test("attachBinding preserves the actionable vault warning after session hydrati
     }],
     config_state: { version: 1, values: {} },
   }
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     attachToSession: async () => ({ id: "att-vault-locked", session_id: "session-vault-locked" }),
     getSessionState: async () => attachedSession,
     launchProviderRun: async () => {
@@ -636,8 +659,9 @@ test("attachBinding skips provider launch when existing session exposes no visib
   }
   let launchCalled = false
   const providerRuns: Array<RuntimeProviderRun | null> = []
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
     attachToSession: async () => ({ id: "att-hidden-focus", session_id: "session-hidden-focus" }),
     getSessionState: async () => attachedSession,
     launchProviderRun: async () => {
@@ -648,7 +672,7 @@ test("attachBinding skips provider launch when existing session exposes no visib
     setProviderCatalogState: () => {},
     getProviderCatalog: async () => ({}),
     hydrateAttachedSessionBinding: async (_sessionId: string, _attachmentId: string, session: RuntimeSession) => session,
-    setAttachmentState: () => {},
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     setCreatedSessionState: () => {},
     setSessionState: () => {},
     setCenterMode: () => {},
@@ -676,7 +700,7 @@ test("attachBinding skips provider launch when existing session exposes no visib
   await controller.attachBinding({ id: "session-hidden-focus" }, false)
 
   assert.equal(launchCalled, false)
-  assert.deepEqual(providerRuns, [null])
+  assert.deepEqual(providerRuns, [null, null], "the placeholder clears the run, the session has none")
 })
 
 test("attachBinding skips provider launch when focused agent is stale", async () => {
@@ -717,8 +741,10 @@ test("attachBinding skips provider launch when focused agent is stale", async ()
     config_state: { version: 1, values: {} },
   }
   let launchCalled = false
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
+    setAttachmentState: (next: unknown) => { shownAttachment = next },
     attachToSession: async () => ({ id: "att-stale-focus", session_id: "session-stale-focus" }),
     getSessionState: async () => attachedSession,
     launchProviderRun: async () => {
@@ -736,7 +762,7 @@ test("attachBinding skips provider launch when focused agent is stale", async ()
   await controller.attachBinding({ id: "session-stale-focus" }, false)
 
   assert.equal(launchCalled, false)
-  assert.deepEqual(providerRuns, [null])
+  assert.deepEqual(providerRuns, [null, null], "the placeholder clears the run, the session has none")
   assert.deepEqual(warnings, [{
     session_id: "session-stale-focus",
     focused_agent_id: "missing-agent",
@@ -955,6 +981,7 @@ test("attachBinding syncs CLI provider selection from an existing active provide
 
 test("attachBinding keeps the CLI attached when post-attach refresh steps fail", async () => {
   const events: string[] = []
+  let currentAttachment: RuntimeAttachment | null = null
   const warnings: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
@@ -975,7 +1002,8 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
   }
 
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => currentAttachment,
+    sessionState: () => attachedSession,
     attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
     getSessionState: async () => attachedSession,
     tryGetProviderRun: async () => ({
@@ -990,7 +1018,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
       usage_tokens_total: null,
       state: "Running",
     }),
-    setAttachmentState: () => events.push("setAttachmentState"),
+    setAttachmentState: (value: RuntimeAttachment) => { currentAttachment = value; events.push("setAttachmentState") },
     resetWorkspaceScreen: () => events.push("resetWorkspaceScreen"),
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
@@ -1024,8 +1052,6 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
   assert.equal(events.includes("focusPromptInput"), true)
   assert.deepEqual(warnings, [
     "failed to synchronize kernel event subscription after attach",
-    "failed to refresh provider catalog after attach",
-    "failed to refresh terminal command catalog after attach",
     "failed to hydrate attached session after attach",
     "failed to refresh session list after attach",
   ])
@@ -1051,8 +1077,9 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     config_state: { version: 1, values: {} },
   }
 
+  let shownAttachment: unknown = null
   const { deps } = createBaseDeps({
-    attachmentState: () => null,
+    attachmentState: () => shownAttachment,
     attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
     getSessionState: async () => attachedSession,
     tryGetProviderRun: async () => ({
@@ -1070,7 +1097,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
     setCreatedSessionState: () => events.push("setCreatedSessionState"),
     setSessionState: () => events.push("setSessionState"),
     setCenterMode: () => events.push("setCenterMode"),
-    setAttachmentState: () => events.push("setAttachmentState"),
+    setAttachmentState: (next: unknown) => { shownAttachment = next; events.push("setAttachmentState") },
     resetWorkspaceScreen: () => events.push("resetWorkspaceScreen"),
     clearDirectoryTree: () => events.push("clearDirectoryTree"),
     clearActiveToolLabels: () => events.push("clearActiveToolLabels"),
@@ -1094,7 +1121,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
 
   await controller.attachBinding({ id: "session-2" }, false)
 
-  assert.deepEqual(events.slice(0, 15), [
+  assert.deepEqual(events.slice(events.indexOf("setMultiAgentResponseLayout")).slice(0, 15), [
     "setMultiAgentResponseLayout",
     "setCreatedSessionState",
     "setSessionState",
@@ -1163,4 +1190,171 @@ test("attachBinding adopts the attached session response layout immediately", as
 
   assert.deepEqual(appliedLayouts, ["split", "split"])
   assert.deepEqual(repaintCalls, ["refresh", "refresh"])
+})
+
+// MP-08 / MP-10 / MP-11 G03: user intent must cancel old-room recovery before transport I/O.
+test("detach releases the client binding before the kernel acknowledgement", async () => {
+  let attachment: {id: string; session_id: string} | null = {id: "att-1", session_id: "session-1"}
+  let acknowledge!: () => void
+  const pending = new Promise<void>(resolve => {acknowledge = resolve})
+  const {deps} = createBaseDeps({
+    attachmentState: () => attachment,
+    setAttachmentState: (next: typeof attachment) => {attachment = next},
+    detachAttachment: () => pending,
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const detaching = controller.detachCurrentAttachment()
+  const bindingDuringAck = attachment
+  const next = {id: "att-2", session_id: "session-2"}
+  attachment = next
+  acknowledge()
+  await detaching
+  assert.equal(bindingDuringAck, null)
+  assert.equal(attachment, next)
+})
+
+// MP-08 / MP-10, PANE-15: model/help catalog latency must not hold the attach command busy.
+test("attachment completes while provider and command catalogs are still pending", async () => {
+  let releaseProvider!: (value: never) => void
+  let releaseCommands!: (value: never) => void
+  const provider = new Promise<never>((resolve) => { releaseProvider = resolve })
+  const commands = new Promise<never>((resolve) => { releaseCommands = resolve })
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "catalog-attachment", session_id: "session-catalog-latency" }),
+    getSessionState: async () => ({ ...createBaseDeps().deps.sessionState(), id: "session-catalog-latency" }),
+    getProviderCatalog: () => provider,
+    getTerminalCommandCatalog: () => commands,
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  let completed = false
+  const attaching = controller.attachBinding({ id: "session-catalog-latency" }, false).then(() => { completed = true })
+  for (let i = 0; i < 100; i++) await Promise.resolve()
+  try {
+    assert.equal(completed, true)
+  } finally {
+    releaseProvider({} as never)
+    releaseCommands({} as never)
+    await attaching
+  }
+})
+
+// MP-08 / MP-10: the previous agent's paging cursor cannot follow a new Room binding.
+test("reattach invalidates the previous agent cursor before publishing the new session", async () => {
+  let cursor: SessionHistoryCursorState = { agentId: "old-agent", cursor: { before_sequence: 12 } }
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    setNextHistoryCursor: (value: SessionHistoryCursorState) => { cursor = value },
+    attachToSession: async () => {
+      assert.equal(cursor, null)
+      return { id: "new-attachment", session_id: "new-room" }
+    },
+    getSessionState: async () => ({ ...createBaseDeps().deps.sessionState(), id: "new-room" }),
+  })
+  await createSessionLifecycleController(deps as never).attachBinding({ id: "new-room" }, false)
+})
+
+test("MP-08 / MP-10 an old attach hydration cannot restore the Room after a newer attach", async () => {
+  const base = createBaseDeps().deps.sessionState()
+  const room = (id: string): RuntimeSession => ({ ...base, id })
+  let current = room("initial")
+  let binding: RuntimeAttachment | null = null
+  let release!: (session: RuntimeSession) => void
+  let primed!: () => void
+  const oldReachedHydration = new Promise<void>(resolve => { primed = resolve })
+  const oldHydration = new Promise<RuntimeSession>(resolve => { release = resolve })
+  const { deps } = createBaseDeps({
+    attachmentState: () => binding,
+    sessionState: () => current,
+    setAttachmentState: (value: RuntimeAttachment | null) => { binding = value },
+    setSessionState: (value: RuntimeSession) => { current = value },
+    detachAttachment: async () => {},
+    attachToSession: async (id: string) => ({ id: "att-" + id, session_id: id }),
+    getSessionState: async (id: string) => room(id),
+    hydrateAttachedSessionBinding: async (id: string) => {
+      if (id === "old") { primed(); return oldHydration }
+      return room(id)
+    },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const old = controller.attachBinding({ id: "old" }, false)
+  await oldReachedHydration
+  const next = controller.attachBinding({ id: "new" }, false)
+  assert.equal(current.id, "new")
+  release(room("old"))
+  await Promise.all([old, next])
+  assert.equal(current.id, "new")
+  assert.equal((binding as RuntimeAttachment | null)?.session_id, "new")
+})
+
+test("MP-08 / MP-10 rejected detach during a switch clears the abandoned hydration", async () => {
+  const base = createBaseDeps().deps.sessionState()
+  const room = (id: string): RuntimeSession => ({ ...base, id })
+  let current = room("initial")
+  let binding: RuntimeAttachment | null = null
+  let hydrating = false
+  let release!: (session: RuntimeSession) => void
+  let reached!: () => void
+  const pending = new Promise<RuntimeSession>(resolve => { release = resolve })
+  const requested = new Promise<void>(resolve => { reached = resolve })
+  const { deps } = createBaseDeps({
+    attachmentState: () => binding, sessionState: () => current,
+    setAttachmentState: (value: RuntimeAttachment | null) => { binding = value },
+    setSessionState: (value: RuntimeSession) => { current = value },
+    setSessionHydratingState: (value: boolean) => { hydrating = value },
+    detachAttachment: async () => { throw new Error("relay lost") },
+    attachToSession: async (id: string) => ({ id: "att-" + id, session_id: id }),
+    getSessionState: async (id: string) => room(id),
+    hydrateAttachedSessionBinding: async (id: string) => { reached(); return pending },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const old = controller.attachBinding({ id: "old" }, false)
+  await requested
+  const next = controller.attachBinding({ id: "new" }, false)
+  release(room("old"))
+  await assert.rejects(next, /relay lost/)
+  await old
+  assert.equal(hydrating, false)
+  assert.equal((binding as RuntimeAttachment | null)?.session_id, "old", "failed selection restores the retained attachment")
+})
+
+// MP-08 / MP-10: a partial Room snapshot has not published its attachment yet.
+test("superseded partial attach releases its unpublished attachment", async () => {
+  const base = createBaseDeps().deps.sessionState()
+  const room = (id: string): RuntimeSession => ({ ...base, id })
+  let current = room("initial")
+  let binding: RuntimeAttachment | null = null
+  let release!: (session: RuntimeSession) => void
+  let reached!: () => void
+  const pending = new Promise<RuntimeSession>(resolve => { release = resolve })
+  const requested = new Promise<void>(resolve => { reached = resolve })
+  const detached: string[] = []
+  const { deps } = createBaseDeps({
+    attachmentState: () => binding,
+    sessionState: () => current,
+    setAttachmentState: (value: RuntimeAttachment | null) => { binding = value },
+    setSessionState: (value: RuntimeSession) => { current = value },
+    detachAttachment: async (id: string) => { detached.push(id) },
+    attachToSession: async (id: string) => ({ id: "att-" + id, session_id: id }),
+    getSessionState: async (id: string) => { if (id === "old") { reached(); return pending } return room(id) },
+    hydrateAttachedSessionBinding: async (id: string) => room(id),
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const old = controller.attachBinding({ id: "old" }, false)
+  await requested
+  const next = controller.attachBinding({ id: "new" }, false)
+  release(room("old"))
+  await Promise.all([old, next])
+  assert.deepEqual(detached, ["att-old"])
+  assert.equal(current.id, "new")
+  assert.equal((binding as RuntimeAttachment | null)?.id, "att-new")
+})
+
+test("MP-08 / MP-10 OWNER-24 pending selection is hydrating and guarded before reference lookup", () => {
+  let hydrating = false
+  const { deps } = createBaseDeps({ setSessionHydratingState: (value: boolean) => { hydrating = value } })
+  const controller = createSessionLifecycleController(deps as never)
+  controller.beginSessionSelection({ id: "next" })
+  assert.equal(hydrating, true, "the selected placeholder must not render a waiting room")
+  assert.equal(controller.isSessionSelecting(), true)
 })

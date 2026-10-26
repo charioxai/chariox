@@ -1,3 +1,5 @@
+import { formatRoomTabOutline } from "./accessibility-outline.js"
+export { formatRoomTabOutline } from "./accessibility-outline.js"
 import { randomUUID } from "node:crypto"
 
 import {
@@ -40,7 +42,6 @@ import type {
   RoomEnvironmentSliceResponse,
   RoomEnvironmentSnapshot,
   RoomEnvironmentStateResponse,
-  RoomEnvironmentTabAccessibility,
   RoomEnvironmentTabAccessibilityResponse,
   RoomEnvironmentTakeoverUpdatedResponse,
   RoomEnvironmentUpdatedResponse,
@@ -604,28 +605,6 @@ function parseStartViewport(args: string[]): RoomEnvironmentViewportRequest | st
 
 function isU32(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff
-}
-
-// The Tab's page as indented text: one line per node a reader announces.
-export function formatRoomTabOutline(title: string, accessibility: RoomEnvironmentTabAccessibility): string {
-  const depth = new Map<string, number>()
-  const lines = accessibility.nodes.map((node) => {
-    const level = node.parent_ref === undefined ? 0 : (depth.get(node.parent_ref) ?? -1) + 1
-    depth.set(node.element_ref, level)
-    const states = [...(node.states ?? []), node.focused ? "focused" : "", node.disabled ? "disabled" : ""].filter(Boolean)
-    return [
-      `${"  ".repeat(level)}${node.role}`,
-      node.name ? ` ${JSON.stringify(node.name)}` : "",
-      node.value ? ` = ${JSON.stringify(node.value)}` : "",
-      node.description ? ` (${node.description})` : "",
-      states.length > 0 ? ` [${states.join(", ")}]` : "",
-    ].join("")
-  })
-  return [
-    `Page outline of ${title} (tab ${accessibility.tab_id}, revision ${accessibility.document_revision}):`,
-    ...(lines.length > 0 ? lines : ["(no readable content)"]),
-    ...(accessibility.truncated ? ["… the page is longer; this outline is shortened."] : []),
-  ].join("\n")
 }
 
 function roomCommandUsage(): string {

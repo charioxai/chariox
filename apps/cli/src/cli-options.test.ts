@@ -84,9 +84,8 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   }
 
   assert.match(output, /\/kernel health\s+show runtime health, remote readiness, and invariants/)
-  assert.match(output, /\/kernel remote-runtime\s+show home authority, worker runs, slices, home-proxy tools, and live sync readiness/)
-  assert.match(output, /\/session status\s+show owner, placement, live sync, extensions, and blockers/)
-  assert.match(output, /\/workspace sync \.\.\.\s+manage live sync status, session mode, global default, links, and diagnostics/)
+  assert.match(output, /\/kernel remote-runtime\s+show home authority, worker runs, slices, home-proxy tools readiness/)
+  assert.match(output, /\/session status\s+show owner, placement, extensions, and blockers/)
   assert.match(output, /\/provider processes \[n\]\s+list daemon-tracked provider processes/)
   assert.match(output, /\/provider processes teardown <n>\s+tear down safe daemon-tracked provider processes/)
   assert.match(output, /\/extension import\s+import provider MCPs and skills into Chariox/)
@@ -176,4 +175,15 @@ test("applyProviderPreferenceDefaults preserves explicit model and effort", () =
 
   assert.equal(options.model, "gpt-5.2")
   assert.equal(options.effort, "medium")
+})
+
+
+test("scoped self-host pairing takes a separate operator CLIENT token in either flag order", () => {
+  const link = `chariox-terminal-pair-v1.${Buffer.from(JSON.stringify({ relay_url:"ws://relay",relay_token:"operator-client-token-required",target_daemon_id:"kernel",terminal_id:"terminal" })).toString("base64url")}`
+  const previous = process.env.CHARIOX_DRILL_CLIENT_TOKEN
+  process.env.CHARIOX_DRILL_CLIENT_TOKEN = "synthetic-operator-client"
+  try {
+    assert.throws(() => parseArgs([link]), /operator-issued CLIENT transport token/)
+    for (const args of [[link,"--relay-token-env","CHARIOX_DRILL_CLIENT_TOKEN"],["--relay-token-env","CHARIOX_DRILL_CLIENT_TOKEN",link]]) assert.equal(parseArgs(args).relayToken,"synthetic-operator-client")
+  } finally { if(previous === undefined) delete process.env.CHARIOX_DRILL_CLIENT_TOKEN; else process.env.CHARIOX_DRILL_CLIENT_TOKEN=previous }
 })

@@ -53,9 +53,8 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
             json!({"session_id":fixture.rooms[1],"slice_id":"another-slice"}),
         )
         .await
-        .unwrap();
-    assert_eq!(forged.payload["session_id"], fixture.rooms[0]);
-    assert_eq!(forged.payload["slice_id"], "slice-1");
+        .expect_err("caller-supplied routing fields must not redirect a room-bound read");
+    assert!(forged.to_string().contains("unknown field"), "{forged}");
     assert!(runtime
         .dispatch_authenticated_runtime_tool_call(
             "invalid-token",

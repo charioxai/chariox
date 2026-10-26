@@ -2,6 +2,10 @@
 use super::*;
 use crate::runtime::{app_lifecycle::LifecycleError, app_package_preparation::PreparationError};
 pub(super) type Result = std::result::Result<Outcome, Error>;
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing Outcome typed actor payload layout"
+)]
 pub(super) enum Outcome {
     Review {
         operation: InstallOperation,

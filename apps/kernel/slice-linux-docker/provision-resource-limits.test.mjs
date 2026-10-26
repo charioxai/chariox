@@ -74,7 +74,8 @@ throw new Error("unexpected Docker call: " + args[0]);
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("CHARIOX_SLICE_")))
     const result = spawnSync("bash", [provisioner, "start-runtime"], {
       encoding: "utf8",
-      timeout: 15_000,
+      // Includes owned-process inspection on shared builders.
+      timeout: 45_000,
       env: {
         ...env,
         PATH: `${root}:${env.PATH}`,
@@ -148,7 +149,7 @@ test("protected default provider accounts stay in the private root, outside the 
   assert.match(runtimeSource, /DEFAULT_PROVIDER_ROOT="\$CHARIOX_SLICE_PRIVATE_ROOT\/provider-default"/)
   assert.match(runtimeSource, /CODEX_HOME="\$DEFAULT_PROVIDER_ROOT\/codex" CLAUDE_CONFIG_DIR="\$DEFAULT_PROVIDER_ROOT\/claude"/)
   assert.doesNotMatch(runtimeSource, /(?:CODEX_HOME|CLAUDE_CONFIG_DIR)="\$PROVIDER_HOME/)
-  assert.match(runtimeSource, /screen -dmS chariox-slice-kernel env \\\n\s+"\$\{default_provider_env\[@\]\}"/)
+  assert.match(runtimeSource, /screen -L -Logfile "\$LOGS\/kernel\.log" -dmS chariox-slice-kernel env \\\n\s+"\$\{default_provider_env\[@\]\}"/)
 })
 
 test("the isolation probe runs on its own kernel and the slice kernel starts without probe env", async () => {
@@ -157,7 +158,9 @@ test("the isolation probe runs on its own kernel and the slice kernel starts wit
   assert.match(probeStart, /CHARIOX_ACCEPT_REMOTE_LEASES=0/)
   assert.match(probeStart, /CHARIOX_CODEX_BIN="\$ROOT\/managed-provider-isolation-probe-wrapper\.sh"/)
   // Probe overrides come after the defaults so they win in env(1).
-  assert.match(source, /CHARIOX_ACCEPT_REMOTE_LEASES=1 \\\n    "\$@" \\\n    "\$ROOT\/bin\/chariox-kernel"/)
-  assert.match(source, /pkill -TERM -f "codex\[\^ \]\* app-server"/)
+  assert.match(source, /CHARIOX_ACCEPT_REMOTE_LEASES=1 \\\n    "\$@" \\\n    python3 "\$ROOT\/runtime-process-owner\.py" run --record "\$PRIVATE_RUNTIME_ROOT\/kernel-owner\.json" -- "\$ROOT\/bin\/chariox-kernel"/)
+  // MP-11: the probe kernel and its descendants stop through their recorded launch generation.
+  assert.match(source, /python3 "\$ROOT\/runtime-process-owner\.py" stop --record "\$PRIVATE_RUNTIME_ROOT\/kernel-owner\.json"/)
+  assert.doesNotMatch(source, /\bpkill\b/)
   assert.match(source, /\nfi\nstart_slice_kernel\n/)
 })

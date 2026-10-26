@@ -115,8 +115,14 @@ jobs:
           pnpm --filter @chariox/cli run build
           pnpm --filter @chariox/cli run test:compile
           bun apps/cli/scripts/compile.mjs --target ${{ matrix.platform }} --outfile unsigned/bin/chariox --version "$VERSION"
-          # --version, --help and native-Claude hooks with neither Node nor Bun on PATH.
+          # MP-07 / MP-08 / MP-11: standalone --version/--help with no Node or Bun on PATH.
           node apps/cli/scripts/release-smoke.mjs unsigned/bin/chariox "$VERSION"
+      - name: Compile generic Chariox Setup (MP-07 / MP-08 / MP-11)
+        env:
+          SETUP_PUBLIC_KEY: ${{ vars.CHARIOX_RELEASE_PUBLIC_KEY }}
+        run: |
+          node scripts/build-chariox-setup.mjs --version "$VERSION" --public-key "$SETUP_PUBLIC_KEY" --target ${{ matrix.platform }} --output "$RUNNER_TEMP/setup"
+          cp "$RUNNER_TEMP/setup/chariox-setup" unsigned/bin/
       # A tarball keeps the executable modes that an artifact upload drops.
       - run: tar -czf unsigned-${{ matrix.platform }}.tar.gz -C unsigned .
       - uses: actions/upload-artifact@v4
@@ -236,20 +242,7 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
         run: |
-          trap 'rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/notary.p8"' EXIT
-          keychain="$RUNNER_TEMP/release.keychain-db"
-          password=$(uuidgen)
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          (umask 077; printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"; printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8")
-          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain"
-          security default-keychain -d user -s "$keychain"
-          xcrun notarytool store-credentials "$CHARIOX_NOTARY_PROFILE" --key "$RUNNER_TEMP/notary.p8" \
-            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$keychain"
-          echo "RELEASE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          bash scripts/setup-release-keychain.sh
       # #678: Developer ID codesigning and notarization of a copy; #681: the runtime
       # inventory is then signed over the codesigned bytes, never before.
       - name: Codesign and notarize the executables
@@ -259,6 +252,8 @@ jobs:
             > "$RUNNER_TEMP/macos-signing-receipt.json"
           # Bun's JIT must still run under the hardened runtime.
           test "$("$RUNNER_TEMP/signed/bin/chariox" --version)" = "chariox $VERSION"
+          # MP-07 / MP-11: exercise Setup's JavaScriptCore after signing too.
+          test "$("$RUNNER_TEMP/signed/bin/chariox-setup" --version)" = "Chariox Setup $VERSION"
           # The runtime installer must carry macOS enrollment (#431); without it, it answers platform_unsupported.
           answer=$("$RUNNER_TEMP/signed/libexec/chariox-app-runtime-install" 2>&1 || true)
           [[ "$answer" == *app_runtime_installer_requires_root* ]] || { echo "the runtime installer has no macOS enrollment: $answer"; exit 1; }
@@ -300,7 +295,7 @@ jobs:
       - name: Remove the temporary keychain
         if: always()
         run: |
-          [[ -z "${RELEASE_KEYCHAIN:-}" ]] || security delete-keychain "$RELEASE_KEYCHAIN"
+          node scripts/release-keychain-state.mjs cleanup "$RUNNER_TEMP"
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-darwin-arm64

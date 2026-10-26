@@ -267,3 +267,13 @@ test("App worker start causes distinguish readiness cancellation from deadline",
     }
   }
 })
+
+ test("MP-08 / MP-10 App automation attach supports inject", async () => {
+  let request: Record<string, unknown> | undefined
+  const result = await executeAppCommand(["automation", "add", "app", "sub", "changed", "s", "p", "--delivery", "inject"], { send: async sent => {
+    request = sent
+    return { AppAutomation: { installation_id: "app", automation: { automation_id: "sub", revision: 1, event_name: "changed", event_version: 1, session_id: "s", publication_id: "p", endpoint_id: "e", queue_id: "q", scheduled: false, status: "active", delivery_mode: "inject" } } }
+  } })
+  assert.equal(result.ok, true)
+  assert.equal((request?.ConfigureAppAutomation as { delivery_mode: string }).delivery_mode, "inject")
+ })

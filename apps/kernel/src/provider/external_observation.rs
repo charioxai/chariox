@@ -229,6 +229,7 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         Self { provider }
     }
 
+    #[cfg(test)]
     pub(crate) fn configured_provider_ids() -> impl Iterator<Item = &'static str> {
         EXTERNAL_PROVIDER_OBSERVATION_SPECS
             .iter()
@@ -256,8 +257,34 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             return false;
         }
         let text = text.trim();
-        text == "[Request interrupted by user]"
+        let continuation = text
+            .strip_prefix("This session is being continued from a previous conversation that ran out of context.")
+            .and_then(|body| body.trim_start().strip_prefix("The summary below covers the earlier portion of the conversation."))
+            .is_some_and(|body| body.trim_start().starts_with("Summary:"));
+        self.user_prompt_is_compaction_control(text)
+            || text == "[Request interrupted by user]"
             || (text.starts_with("<task-notification>") && text.ends_with("</task-notification>"))
+            || continuation
+    }
+
+    pub(crate) fn user_prompt_is_compaction_control(self, text: &str) -> bool {
+        if !self.provider.trim().eq_ignore_ascii_case("claude") {
+            return false;
+        }
+        let text = text.trim();
+        let command = text
+            .strip_prefix("<command-name>/compact</command-name>")
+            .and_then(|body| {
+                body.trim_start()
+                    .strip_prefix("<command-message>compact</command-message>")
+            })
+            .and_then(|body| body.trim_start().strip_prefix("<command-args>"))
+            .is_some_and(|body| body.ends_with("</command-args>"));
+        let output = text
+            .strip_prefix("<local-command-stdout>")
+            .and_then(|body| body.strip_suffix("</local-command-stdout>"))
+            .is_some_and(|body| body.trim() == "Compacted");
+        command || output
     }
 
     pub(crate) fn status_settles(self, text: &str) -> bool {
@@ -386,7 +413,25 @@ fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
     current.as_u64()
 }
 
+/// Decode one complete official Claude collapsed-paste envelope. Both hook
+/// acknowledgement and observed-history ownership use this exact wrapper rule.
+pub(crate) fn claude_native_pasted_prompt_body(text: &str) -> Option<&str> {
+    let tag = text.trim().strip_prefix("<pasted_content id=\"")?;
+    let (id, body) = tag.split_once("\">")?;
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    let closing = format!("</pasted_content id=\"{id}\">");
+    body.strip_suffix(&closing).map(str::trim)
+}
+
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
+    let text = claude_native_pasted_prompt_body(text).unwrap_or(text);
     let without_account_handoff = strip_observed_account_handoff(text);
     let without_provider_attachment_suffix =
         strip_observed_provider_attachment_suffix(without_account_handoff);

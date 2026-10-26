@@ -376,7 +376,8 @@ fn proxy_display_request(
         return send_package_probe_response_to_proxy(outgoing_tx, request);
     }
     let url = local_display_url(target, &request.path)?;
-    let mut builder = ureq::request(&request.method, url.as_str());
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let mut builder = agent.request(&request.method, url.as_str());
     for header in request
         .headers
         .iter()
@@ -746,6 +747,90 @@ mod tests {
     use std::io::Write;
     use tokio::net::TcpListener;
     use tokio::time::{timeout, Duration};
+
+    #[test]
+    fn mp11_publication_redirect_does_not_contact_another_origin() {
+        use std::io::Read;
+        let admitted = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let foreign = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        foreign.set_nonblocking(true).unwrap();
+        let port = admitted.local_addr().unwrap().port();
+        let location = format!("http://{}/foreign", foreign.local_addr().unwrap());
+        admitted.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let (mut socket, _) = loop {
+                match admitted.accept() {
+                    Ok(socket) => break socket,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("admitted server was never contacted: {error}"),
+                }
+            };
+            let mut request = [0; 4096];
+            let count = socket.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..count])
+                .to_ascii_lowercase()
+                .contains("x-chariox-caller-claims: synthetic-claims"));
+            write!(socket, "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let target = RelayDisplayTunnelTarget {
+            tunnel_id: "publication".into(),
+            slice_id: "fixture".into(),
+            kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                local_base_url: format!("http://127.0.0.1:{port}"),
+            },
+            expires_at_ms: u64::MAX,
+            capabilities: Vec::new(),
+        };
+        let request = RelayDisplayTunnelOpenRequest {
+            stream_id: "redirect".into(),
+            tunnel_id: "publication".into(),
+            method: "GET".into(),
+            path: "/display/publication/".into(),
+            headers: vec![RelayDisplayTunnelHeader {
+                name: "x-chariox-caller-claims".into(),
+                value: "synthetic-claims".into(),
+            }],
+            body_base64: None,
+        };
+        let (sender, mut priority, _events) = RelayOutgoingSender::channel(8);
+        // A short agent timeout bounds the vulnerable redirected call on the baseline.
+        let task = std::thread::spawn(move || proxy_display_request(&sender, &target, &request));
+        server.join().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match foreign.accept() {
+                Ok((mut socket, _)) => {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                    task.join().unwrap().unwrap();
+                    panic!("cross-origin redirect forwarded scoped claims");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if task.is_finished() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+        task.join().unwrap().unwrap();
+        assert!(matches!(
+            priority.try_recv().unwrap(),
+            RelayEnvelope::DaemonDisplayTunnelResponseStart {
+                response: RelayDisplayTunnelResponseStart { status: 302, .. }
+            }
+        ));
+    }
 
     #[tokio::test]
     async fn invalid_selkies_open_preserves_one_time_admission_for_retry() {

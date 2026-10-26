@@ -1681,13 +1681,13 @@ fn project_names_are_unique_for_an_owner_across_workspaces() {
     let first_named = service
         .create_session(
             CreateSessionRequest::new("/workspace/main", "worktree-named-1")
-                .with_project_selection(SessionProjectSelection::New),
+                .with_project_selection(SessionProjectSelection::New { name: None }),
         )
         .expect("first named project should be created");
     let second_named = service
         .create_session(
             CreateSessionRequest::new("/workspace/codex-worktree", "worktree-named-2")
-                .with_project_selection(SessionProjectSelection::New),
+                .with_project_selection(SessionProjectSelection::New { name: None }),
         )
         .expect("second named project should be created");
 
@@ -1745,7 +1745,7 @@ fn project_supporting_workspace_can_be_selected_as_session_primary() {
     let first = service
         .create_session(
             CreateSessionRequest::new("/workspace/primary", "worktree-primary")
-                .with_project_selection(SessionProjectSelection::New),
+                .with_project_selection(SessionProjectSelection::New { name: None }),
         )
         .expect("named project session should be created");
     let project = service
@@ -1783,7 +1783,7 @@ fn project_workspace_updates_validate_membership_and_preserve_order() {
     let session = service
         .create_session(
             CreateSessionRequest::new("/workspace/primary", "worktree-primary")
-                .with_project_selection(SessionProjectSelection::New),
+                .with_project_selection(SessionProjectSelection::New { name: None }),
         )
         .expect("named project session should be created");
 
@@ -2050,5 +2050,159 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
     assert_eq!(
         retry_ids,
         BTreeSet::from([hidden.id().to_string(), ephemeral.id().to_string()])
+    );
+}
+
+#[test]
+fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them() {
+    use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("create session");
+    let decision = RuntimeInteraction::for_kernel_operation(
+        "kernel-decision",
+        "install-app",
+        "Install App?",
+        "Reviewed release",
+        vec![RuntimeInteractionChoice::new(
+            "deny", "Cancel", "deny", None,
+        )],
+    );
+    let agent_approval = RuntimeInteraction::new(
+        "agent-approval",
+        "agent-1",
+        crate::session::RuntimeInteractionKind::Permission,
+        crate::session::RuntimeInteractionLevel::Warning,
+        Some("Command approval required".into()),
+        "Read public source",
+        vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
+        None,
+        None,
+        None,
+    );
+    session.add_active_interaction(decision.clone());
+    session.add_active_interaction(agent_approval);
+    let persisted = serde_json::to_value(&session).expect("persist actual session shape");
+    let mut restored: RuntimeSession = serde_json::from_value(persisted).expect("restore session");
+    assert_eq!(restored.active_interactions().len(), 2);
+    let reconciliation = restored.reconcile_after_kernel_restart();
+    assert!(
+        restored.active_interaction_for_agent("agent-1").is_none(),
+        "a restored agent approval with no receiver still blocks Vault management"
+    );
+    assert_eq!(restored.active_interactions(), &[decision]);
+    assert!(
+        reconciliation.changed(),
+        "interaction cleanup must be saved even without a run or attachment"
+    );
+    assert!(
+        !restored.reconcile_after_kernel_restart().changed(),
+        "restart cleanup is idempotent"
+    );
+}
+
+#[test]
+fn mp08_owner15_project_pins_enforce_owner_and_survive_durable_restore() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("/workspace/pin", "main"))
+        .unwrap();
+    assert!(service
+        .set_project_pinned(session.project_id(), true, "other-user")
+        .is_err());
+    let pinned = service
+        .set_project_pinned(session.project_id(), true, DEFAULT_LOCAL_USER_ID)
+        .unwrap();
+    assert!(pinned.pinned());
+    let serialized = serde_json::to_vec(&service.durable_projects()).unwrap();
+    let mut restored = SessionService::new(&test_config());
+    restored.restore_projects(serde_json::from_slice(&serialized).unwrap());
+    assert!(restored.get_project(session.project_id()).unwrap().pinned());
+    assert!(!restored
+        .set_project_pinned(session.project_id(), false, DEFAULT_LOCAL_USER_ID)
+        .unwrap()
+        .pinned());
+}
+
+#[test]
+fn mp08_owner19_named_project_creation_and_cross_workspace_assignment() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/a", "a").with_project_selection(
+                SessionProjectSelection::New {
+                    name: Some(" Release ".into()),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        service.get_project(first.project_id()).unwrap().name(),
+        "Release"
+    );
+    let second = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/b", "b").with_project_selection(
+                SessionProjectSelection::Existing {
+                    project_id: first.project_id().into(),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(first.project_id(), second.project_id());
+    assert!(service
+        .get_project(first.project_id())
+        .unwrap()
+        .contains_workspace("/workspace/b"));
+    assert!(service
+        .create_session(
+            CreateSessionRequest::new("/workspace/c", "c").with_project_selection(
+                SessionProjectSelection::New {
+                    name: Some("release".into())
+                }
+            )
+        )
+        .is_err());
+}
+
+#[test]
+fn mp08_owner19_automatic_assignment_keeps_workspace_membership_bound() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/0", "0").with_project_selection(
+                SessionProjectSelection::New {
+                    name: Some("Bounded".into()),
+                },
+            ),
+        )
+        .unwrap();
+    let existing = |index: usize| {
+        CreateSessionRequest::new(format!("/workspace/{index}"), "w").with_project_selection(
+            SessionProjectSelection::Existing {
+                project_id: first.project_id().into(),
+            },
+        )
+    };
+    for index in 1..32 {
+        service.create_session(existing(index)).unwrap();
+    }
+    assert_eq!(
+        service
+            .get_project(first.project_id())
+            .unwrap()
+            .workspace_ids()
+            .len(),
+        32
+    );
+    assert!(service.create_session(existing(32)).is_err());
+    assert_eq!(
+        service
+            .get_project(first.project_id())
+            .unwrap()
+            .workspace_ids()
+            .len(),
+        32
     );
 }

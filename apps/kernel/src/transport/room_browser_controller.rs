@@ -20,6 +20,7 @@ pub(crate) struct BrowserImportDomainResult {
     pub(crate) cookie_count: u16,
 }
 
+pub(crate) const ROOM_COMPUTER_HOLD_MAX_DURATION_MS: u32 = 10_000;
 pub(crate) const ROOM_COMPUTER_SCROLL_MAX_STEPS: u16 = 120;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_TEXT_MAX_UTF8_BYTES: usize = 64 * 1024;
 pub(crate) const ROOM_COMPUTER_KEYBOARD_KEY_MAX_UTF8_BYTES: usize = 128;
@@ -43,6 +44,7 @@ impl RoomComputerSecretInput {
         &self.0
     }
 
+    #[cfg(test)]
     pub(crate) fn new(value: String) -> Self {
         Self(value)
     }
@@ -160,6 +162,11 @@ impl RoomComputerSecretTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomComputerInputAction {
+    TargetAction {
+        tree_revision: u64,
+        target_id: String,
+        action: String,
+    },
     PointerMove {
         x: u32,
         y: u32,
@@ -183,6 +190,16 @@ pub(crate) enum RoomComputerInputAction {
     KeyboardKey {
         input: RoomComputerKeyboardInput,
         repeat: u16,
+    },
+    KeyboardHold {
+        input: RoomComputerKeyboardInput,
+        duration_ms: u32,
+    },
+    PointerHold {
+        x: u32,
+        y: u32,
+        button: RoomComputerPointerButton,
+        duration_ms: u32,
     },
     ClipboardWrite {
         text: RoomComputerClipboardText,
@@ -230,6 +247,10 @@ pub(crate) struct RoomBrowserImportBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerCommand {
+    NoteObservation {
+        target_id: String,
+        document_id: String,
+    },
     Acquire,
     Reconcile {
         viewport: CanonicalViewport,
@@ -237,6 +258,9 @@ pub(crate) enum RoomBrowserControllerCommand {
         /// windows as they are.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         browser_bar_visible: bool,
+    },
+    Artifact {
+        request: crate::runtime::browser_artifact::BrowserArtifactRequest,
     },
     Snapshot {
         target_id: String,
@@ -399,6 +423,7 @@ pub(crate) enum SecretObservationDisposition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerResult {
+    NoteObservation { observation: Option<crate::runtime::notes::observation::BrowserNoteObservation> },
     RecoveryRequired {
         process: BrowserControllerProcessSnapshot,
     },
@@ -426,6 +451,7 @@ pub(crate) enum RoomBrowserControllerResult {
     SecretObservationCleared,
     CookieImportRecovered,
     CookieImportRolledBack,
+    Artifact { capture: Option<crate::runtime::browser_artifact::BrowserArtifactCapture> },
     Snapshot {
         snapshot: Option<
             crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,

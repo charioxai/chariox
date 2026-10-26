@@ -19,9 +19,21 @@ use crate::error::DaemonError;
 #[path = "account_copy_notice.rs"]
 mod copy_notice;
 
+#[path = "account_profile_authority.rs"]
+mod authority;
+pub(crate) use authority::{
+    bind_provider_account_authority, copy_provider_account_selection,
+    provider_account_authority_for_launch, provider_account_authority_for_run,
+    provider_account_authority_owner_for_profile, provider_account_selection_for_run,
+    ResolvedProviderAccount,
+};
+
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+#[path = "account_profile_authority_tests.rs"]
+mod authority_tests;
 #[cfg(unix)]
 #[path = "account_profile_managed_fs.rs"]
 mod managed_fs;
@@ -169,6 +181,9 @@ pub(crate) fn provider_auth_env_vars(provider: &str) -> &'static [&'static str] 
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
             "CLAUDE_CODE_OAUTH_SCOPES",
@@ -390,6 +405,11 @@ fn provider_account_usage_block(
     usage: &ProviderAccountUsageSnapshot,
     now_ms: u64,
 ) -> Option<ProviderAccountUsageBlock> {
+    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
+    // OpenCode owns service fallback (Go may draw Zen credits); its own refusal is the run error.
+    if provider == "opencode" {
+        return None;
+    }
     let usage = usage.clone().reconciled_freshness(now_ms);
     if !matches!(
         usage.availability,
@@ -405,10 +425,6 @@ fn provider_account_usage_block(
                 .resets_at_ms
                 .is_none_or(|resets_at_ms| resets_at_ms > now_ms)
     };
-    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
-    let selected_opencode_service = (provider == "opencode")
-        .then(|| model.and_then(opencode_service_from_model))
-        .flatten();
     let relevant_meters = usage.meters.iter().filter(|meter| {
         if provider == "codex" && meter.meter_id.starts_with("rolling/") {
             if let Some(model) = model
@@ -428,14 +444,7 @@ fn provider_account_usage_block(
                 }
             }
         }
-        if provider != "opencode" {
-            return true;
-        }
-        let meter_service = meter
-            .service_id
-            .as_deref()
-            .or_else(|| meter.meter_id.starts_with("go/").then_some("opencode-go"));
-        selected_opencode_service.is_some_and(|service| meter_service == Some(service))
+        true
     });
     let exhausted = relevant_meters
         .filter(is_currently_exhausted)
@@ -493,19 +502,6 @@ fn provider_account_usage_block(
 
 fn usage_meter_is_fresh(meter: &ProviderAccountUsageMeter, now_ms: u64) -> bool {
     now_ms.saturating_sub(meter.observed_at_ms) <= PROVIDER_USAGE_STALE_AFTER_MS
-}
-
-fn opencode_service_from_model(model: &str) -> Option<&str> {
-    let model = model.trim();
-    if model.is_empty() || model == "default" {
-        return None;
-    }
-    let Some((service, model_id)) = model.split_once('/') else {
-        // OpenCode's runtime parser treats an unqualified model as a Zen
-        // model. Capacity admission must resolve it the same way.
-        return Some("opencode");
-    };
-    (!service.is_empty() && !model_id.is_empty()).then_some(service)
 }
 
 /// Read-side projection so list/get responses report honest freshness for
@@ -1160,9 +1156,7 @@ impl ProviderAccountProfileRegistry {
             .iter()
             .filter(|profile| {
                 profile.public.owner_user_id == owner_user_id
-                    && provider
-                        .as_deref()
-                        .is_none_or(|provider| profile.public.provider == provider)
+                    && provider.is_none_or(|provider| profile.public.provider == provider)
             })
             .map(|profile| project_usage_freshness(profile.public.clone()))
             .collect())
@@ -1184,16 +1178,7 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         self.find(owner_user_id, provider, profile_id)?
-            .ok_or_else(|| {
-                registry_error(
-                    "resolve account profile",
-                    format!(
-                        "account profile `{}` is not registered for {}",
-                        profile_id.trim(),
-                        provider.trim()
-                    ),
-                )
-            })
+            .ok_or_else(|| missing_account_profile(provider, profile_id))
     }
 
     pub(crate) fn find(
@@ -1219,7 +1204,21 @@ impl ProviderAccountProfileRegistry {
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
-        if profile.auth_state == ProviderAccountAuthState::Authenticated {
+        // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
+        // kernel's first-use check. Unknown/expired observations must not ask
+        // the user to replace a potentially valid token before that check. A
+        // home's Claude replica holds no token: the home supplies it to every
+        // launch of the lease, and that launch runs the same check.
+        let deferred_claude_check = matches!(
+            profile.auth_state,
+            ProviderAccountAuthState::Unknown | ProviderAccountAuthState::Expired
+        ) && profile.provider == "claude"
+            && (crate::provider::provider_account_credential_registered(
+                owner_user_id,
+                "claude",
+                &profile.profile_id,
+            )? || self.is_home_token_claude_replica(owner_user_id, &profile.profile_id)?);
+        if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
             if let Some(block) = provider_account_usage_block(
                 &profile.provider,
                 model,
@@ -1262,16 +1261,15 @@ impl ProviderAccountProfileRegistry {
 
     pub(crate) fn require_agent_authenticated(
         &self,
-        config: &crate::config::DaemonConfig,
+        owner_user_id: &str,
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_user_id(config, agent.owner_user_id());
         self.require_authenticated(
-            &owner_user_id,
+            owner_user_id,
             provider,
             agent.provider_account_profile(),
             agent.model(),
@@ -1294,6 +1292,10 @@ impl ProviderAccountProfileRegistry {
             .map(|profile| profile.public.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_observation operation signature and explicit context arguments"
+    )]
     pub fn update_observation(
         &self,
         owner_user_id: &str,
@@ -1427,6 +1429,29 @@ impl ProviderAccountProfileRegistry {
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
+    }
+
+    /// Records usage observed in provider output. Usage is advisory account
+    /// metadata: a leased worker run carries the home kernel's profile, which
+    /// this registry may not contain, and must never drop the output with it.
+    pub(crate) fn record_observed_usage(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        usage: ProviderAccountUsageSnapshot,
+    ) {
+        if let Err(error) = self.update_usage(owner_user_id, provider, profile_id, usage) {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "observed provider usage not recorded",
+                serde_json::json!({
+                    "provider": provider,
+                    "account_profile": profile_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(crate) fn acquire_usage_refresh_attempt(
@@ -2225,7 +2250,7 @@ impl ProviderAccountProfileRegistry {
                 require_replica_root_identity(managed_parent, profile_id, expected_root_identity)?;
                 managed_parent.rename(profile_id, rollback_name)?;
                 require_replica_root_identity(
-                    &managed_parent,
+                    managed_parent,
                     rollback_name,
                     expected_root_identity,
                 )?;
@@ -2567,6 +2592,27 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
+    /// A lease replica of a home Claude account carries no credential file:
+    /// the worker refuses one and the home supplies its token to every launch.
+    /// A deployment replica must carry one and validate it first.
+    fn is_home_token_claude_replica(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        {
+            let document = self.read_document()?;
+            let stored = resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?;
+            if !stored.materialized_replica || stored.managed_context_replica.is_some() {
+                return Ok(false);
+            }
+        }
+        let environment = self.resolve_environment(owner_user_id, "claude", profile_id)?;
+        Ok(environment
+            .get("CLAUDE_CONFIG_DIR")
+            .is_some_and(|dir| !Path::new(dir).join(".credentials.json").exists()))
+    }
+
     pub(crate) fn is_legacy_unpinned_replica(
         &self,
         owner_user_id: &str,
@@ -2781,7 +2827,7 @@ impl ProviderAccountProfileRegistry {
             let registry_restore_error = self.persist_locked(&document).err();
             let root_restore_error = retained.as_ref().and_then(|(root, identity, parent)| {
                 let name = root.file_name()?.to_str()?;
-                require_replica_root_identity(&parent, name, *identity)
+                require_replica_root_identity(parent, name, *identity)
                     .and_then(|_| {
                         if parent.exists(profile_id)? {
                             return Err(registry_error(
@@ -4155,15 +4201,21 @@ fn resolve_stored_profile<'a>(
     provider: &str,
     profile_id: &str,
 ) -> Result<&'a StoredProviderAccountProfile, DaemonError> {
-    find_stored_profile(document, owner_user_id, provider, profile_id).ok_or_else(|| {
-        registry_error(
-            "resolve account profile",
-            format!(
-                "account profile `{}` is not registered for {provider}",
-                profile_id.trim()
-            ),
-        )
-    })
+    find_stored_profile(document, owner_user_id, provider, profile_id)
+        .ok_or_else(|| missing_account_profile(provider, profile_id))
+}
+
+// MP-08 / MP-10 / MP-11: a profile ID is scoped to this kernel and owner.
+// Provider run modes are not distinct credential families.
+fn missing_account_profile(provider: &str, profile_id: &str) -> DaemonError {
+    let provider = crate::provider::canonical_provider_family(provider).unwrap_or(provider);
+    registry_error(
+        "resolve account profile",
+        format!(
+            "account profile `{}` is not registered for {provider} on this kernel. Sign in on this machine, or copy login from the machine that owns the account, then select it again",
+            profile_id.trim(),
+        ),
+    )
 }
 
 fn find_stored_profile<'a>(
@@ -4180,11 +4232,21 @@ fn find_stored_profile<'a>(
                 && profile.public.is_default
         })
     } else {
-        document.profiles.iter().find(|profile| {
-            profile.public.owner_user_id == owner_user_id
-                && profile.public.provider == provider
-                && profile.public.profile_id == profile_id
-        })
+        let in_namespace = |profile: &&StoredProviderAccountProfile| {
+            profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+        };
+        document
+            .profiles
+            .iter()
+            .filter(in_namespace)
+            .find(|profile| profile.public.profile_id == profile_id)
+            .or_else(|| {
+                document
+                    .profiles
+                    .iter()
+                    .filter(in_namespace)
+                    .find(|profile| profile.public.label == profile_id)
+            })
     }
 }
 
@@ -4349,7 +4411,7 @@ fn read_bounded_regular_file_no_follow(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -4768,7 +4830,7 @@ fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonEr
             ));
         };
         let parent = managed_fs::ManagedProviderParent::open(registry_path, owner, provider)?;
-        return parent.remove(name);
+        parent.remove(name)
     }
     #[cfg(not(unix))]
     {
@@ -4910,6 +4972,59 @@ mod tests {
         resets_at_ms: Option<u64>,
     }
 
+    // MP-08 / MP-10 / MP-11: aliases share the same kernel-local account;
+    // another kernel and another owner must never inherit its signed-in state.
+    #[test]
+    fn claude_modes_resolve_only_the_owning_kernel_profile() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-mode-account-scope");
+        let source = ProviderAccountProfileRegistry::open(root.path().join("a.json")).unwrap();
+        let target = ProviderAccountProfileRegistry::open(root.path().join("b.json")).unwrap();
+        let profile = source.create_managed("local", "claude", "miguel").unwrap();
+        source
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        for mode in ["claude", "claude-p", "claude-headless"] {
+            assert_eq!(
+                source
+                    .get("local", mode, &profile.profile_id)
+                    .unwrap()
+                    .auth_state,
+                ProviderAccountAuthState::Authenticated
+            );
+            source
+                .require_authenticated("local", mode, &profile.profile_id, None, "test launch")
+                .unwrap();
+            assert!(source
+                .resolve_environment("local", mode, &profile.profile_id)
+                .unwrap()
+                .contains_key("CLAUDE_CONFIG_DIR"));
+            assert!(source
+                .find("other-owner", mode, &profile.profile_id)
+                .unwrap()
+                .is_none());
+        }
+        for mode in ["claude", "claude-p", "claude-headless"] {
+            let error = target.get("local", mode, &profile.profile_id).unwrap_err();
+            let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+            assert!(
+                !mapped.retryable,
+                "missing {mode} profile requires user action"
+            );
+            assert!(mapped.message.contains("this kernel"));
+            assert!(mapped.message.contains("copy login"));
+        }
+    }
+
     #[test]
     fn admission_capacity_matches_the_shared_client_projection_fixtures() {
         let fixtures: Vec<CapacityPolicyFixture> = serde_json::from_str(include_str!(
@@ -4964,6 +5079,9 @@ mod tests {
     fn cloud_owner_aliases_local_accounts_without_aliasing_collaborators() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "cloud-owner".to_string(),
             ..Default::default()
         });
@@ -6053,63 +6171,75 @@ mod tests {
     #[test]
     fn usage_admission_blocks_fresh_exhaustion_but_not_expired_or_stale_meters() {
         let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
-        let mut exhausted = capacity_meter(
+        let exhausted = capacity_meter(
             "Monthly",
             ProviderAccountUsageMeterKind::RollingLimit,
             ProviderAccountUsageMeterState::Exhausted,
             now_ms,
             Some(now_ms + 60_000),
         );
-        exhausted.service_id = Some("opencode-go".to_string());
+        let credits = capacity_meter(
+            "Credits",
+            ProviderAccountUsageMeterKind::CreditBalance,
+            ProviderAccountUsageMeterState::Exhausted,
+            now_ms,
+            None,
+        );
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Available,
-                vec![exhausted.clone()],
+                vec![exhausted.clone(), credits.clone()],
                 now_ms,
             ),
             now_ms,
         )
         .is_some());
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Available,
-                vec![ProviderAccountUsageMeter {
-                    resets_at_ms: Some(now_ms),
-                    ..exhausted.clone()
-                }],
+                vec![
+                    ProviderAccountUsageMeter {
+                        resets_at_ms: Some(now_ms),
+                        ..exhausted.clone()
+                    },
+                    credits.clone()
+                ],
                 now_ms,
             ),
             now_ms,
         )
         .is_none());
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Available,
-                vec![ProviderAccountUsageMeter {
-                    observed_at_ms: now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
-                    ..exhausted.clone()
-                }],
+                vec![
+                    ProviderAccountUsageMeter {
+                        observed_at_ms: now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
+                        ..exhausted.clone()
+                    },
+                    credits.clone()
+                ],
                 now_ms.saturating_sub(PROVIDER_USAGE_STALE_AFTER_MS + 1),
             ),
             now_ms,
         )
         .is_none());
         assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
+            "codex",
+            Some("gpt-5.6-luna"),
             &capacity_snapshot(
-                "opencode",
+                "codex",
                 ProviderAccountUsageAvailability::Stale,
-                vec![exhausted],
+                vec![exhausted, credits],
                 now_ms,
             ),
             now_ms,
@@ -6118,52 +6248,14 @@ mod tests {
     }
 
     #[test]
-    fn usage_admission_does_not_refresh_one_service_from_another_service_observation() {
+    fn opencode_usage_is_reported_but_never_gates_admission() {
+        // OpenCode owns service fallback (Go may draw Zen credits); its own refusal surfaces as the run error.
         let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
-        let stale_zen = ProviderAccountUsageMeter {
-            service_id: Some("opencode".to_string()),
+        let exhausted = |service: &str, kind| ProviderAccountUsageMeter {
+            service_id: Some(service.to_string()),
             ..capacity_meter(
-                "Zen credits",
-                ProviderAccountUsageMeterKind::CreditBalance,
-                ProviderAccountUsageMeterState::Exhausted,
-                now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1,
-                None,
-            )
-        };
-        let fresh_go = ProviderAccountUsageMeter {
-            service_id: Some("opencode-go".to_string()),
-            ..capacity_meter(
-                "Go monthly",
-                ProviderAccountUsageMeterKind::RollingLimit,
-                ProviderAccountUsageMeterState::Healthy,
-                now_ms,
-                Some(now_ms + 60_000),
-            )
-        };
-        let mixed = capacity_snapshot(
-            "opencode",
-            ProviderAccountUsageAvailability::Available,
-            vec![stale_zen, fresh_go],
-            now_ms,
-        );
-
-        assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode/deepseek-v4-pro"),
-            &mixed,
-            now_ms,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn opencode_usage_admission_is_scoped_to_the_selected_service() {
-        let now_ms = PROVIDER_USAGE_STALE_AFTER_MS * 2;
-        let go_exhausted = ProviderAccountUsageMeter {
-            service_id: Some("opencode-go".to_string()),
-            ..capacity_meter(
-                "Monthly",
-                ProviderAccountUsageMeterKind::RollingLimit,
+                "Exhausted",
+                kind,
                 ProviderAccountUsageMeterState::Exhausted,
                 now_ms,
                 Some(now_ms + 60_000),
@@ -6172,48 +6264,23 @@ mod tests {
         let usage = capacity_snapshot(
             "opencode",
             ProviderAccountUsageAvailability::Available,
-            vec![go_exhausted],
+            vec![
+                exhausted("opencode-go", ProviderAccountUsageMeterKind::RollingLimit),
+                exhausted("opencode", ProviderAccountUsageMeterKind::CreditBalance),
+            ],
             now_ms,
         );
-
-        assert!(provider_account_usage_block(
-            "opencode",
-            Some("opencode-go/deepseek-v4-pro"),
-            &usage,
-            now_ms,
-        )
-        .is_some());
-        assert!(
-            provider_account_usage_block("opencode", Some("opencode/gpt-5.2"), &usage, now_ms,)
-                .is_none()
-        );
-        assert!(
-            provider_account_usage_block("opencode", Some("gpt-5.2"), &usage, now_ms,).is_none()
-        );
-        assert!(
-            provider_account_usage_block("opencode", Some("openai/gpt-5.2"), &usage, now_ms,)
-                .is_none()
-        );
-
-        let zen_usage = capacity_snapshot(
-            "opencode",
-            ProviderAccountUsageAvailability::Available,
-            vec![ProviderAccountUsageMeter {
-                service_id: Some("opencode".to_string()),
-                ..capacity_meter(
-                    "Credits",
-                    ProviderAccountUsageMeterKind::CreditBalance,
-                    ProviderAccountUsageMeterState::Exhausted,
-                    now_ms,
-                    None,
-                )
-            }],
-            now_ms,
-        );
-        assert!(
-            provider_account_usage_block("opencode", Some("gpt-5.2"), &zen_usage, now_ms,)
-                .is_some()
-        );
+        for model in [
+            "opencode-go/glm-5.3-flash",
+            "opencode/deepseek-v4-flash",
+            "gpt-5.2",
+            "openai/gpt-5.2",
+        ] {
+            assert!(
+                provider_account_usage_block("opencode", Some(model), &usage, now_ms).is_none(),
+                "{model}"
+            );
+        }
     }
 
     #[test]
@@ -7343,6 +7410,7 @@ mod tests {
 
     #[test]
     fn default_claude_profile_inherits_the_host_environment() {
+        crate::test_support::isolated_env_test!();
         let (root, registry) = fixture();
         registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
@@ -8427,6 +8495,7 @@ mod tests {
 
     #[test]
     fn default_alias_tracks_selected_provider_default() {
+        crate::test_support::isolated_env_test!();
         let (root, registry) = fixture();
         let native_default = registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
@@ -8899,4 +8968,12 @@ mod tests {
             .is_err());
         let _ = fs::remove_dir_all(root);
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_fifo_input_fails_without_waiting_for_a_writer() {
+    crate::test_support::assert_fifo_rejected(|path| {
+        read_bounded_regular_file_no_follow(&path, 1024, "fixture").is_err()
+    });
 }

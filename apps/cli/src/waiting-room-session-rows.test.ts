@@ -47,10 +47,9 @@ test("waiting room session rows render active sessions with stable columns", () 
   assert.equal(rows[1]?.title, "* session-working (frontend)")
   assert.equal(rows[1]?.value, "Working")
   assert.equal(rows[1]?.columns?.[1]?.trim(), "home-kernel@home-machine")
-  assert.equal(rows[1]?.columns?.[2]?.trim(), "managed")
-  assert.equal(rows[1]?.columns?.[3]?.trim(), "1 working")
-  assert.equal(rows[1]?.columns?.[4]?.trim(), "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent")
-  assert.equal(rows[1]?.columns?.[5]?.trim(), waitingRoomTimestampLabel(Date.UTC(2026, 0, 2, 10, 0)))
+  assert.equal(rows[1]?.columns?.[2]?.trim(), "1 working")
+  assert.equal(rows[1]?.columns?.[3]?.trim(), "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent")
+  assert.equal(rows[1]?.columns?.[4]?.trim(), waitingRoomTimestampLabel(Date.UTC(2026, 0, 2, 10, 0)))
   assert.equal(rows[1]?.focused, true)
 })
 
@@ -72,9 +71,9 @@ test("waiting room session rows surface active and queued prompt counts", () => 
     { inventoryLoading: false, loadingText: "loading", titleWidth: 32 },
   )
 
-  assert.equal(rows[0]?.columns?.[3]?.trim(), "Work")
+  assert.equal(rows[0]?.columns?.[2]?.trim(), "Work")
   assert.equal(rows[1]?.value, "Working")
-  assert.equal(rows[1]?.columns?.[3]?.trim(), "1 working, 1 active prompt, 2 queued prompts")
+  assert.equal(rows[1]?.columns?.[2]?.trim(), "1 working, 1 active prompt, 2 queued prompts")
 })
 
 test("waiting room session rows render queued-only sessions as queued, not working", () => {
@@ -97,7 +96,7 @@ test("waiting room session rows render queued-only sessions as queued, not worki
 
   assert.equal(rows[1]?.value, "Queued")
   assert.equal(rows[1]?.columns?.[0]?.trim(), "Queued")
-  assert.equal(rows[1]?.columns?.[3]?.trim(), "1 queued prompt")
+  assert.equal(rows[1]?.columns?.[2]?.trim(), "1 queued prompt")
 })
 
 test("waiting room session rows render done status for unread idle output", () => {
@@ -125,7 +124,7 @@ test("waiting room session rows render done status for unread idle output", () =
   assert.equal(rows[1]?.title, "session-done")
   assert.equal(rows[1]?.value, "Done")
   assert.equal(rows[1]?.columns?.[0]?.trim(), "Done")
-  assert.equal(rows[1]?.columns?.[3]?.trim(), "-")
+  assert.equal(rows[1]?.columns?.[2]?.trim(), "-")
 })
 
 test("waiting room session rows render mixed status for active work with unread idle output", () => {
@@ -194,11 +193,11 @@ test("waiting room session rows surface aggregate home-proxy recovery", () => {
   )
 
   assert.equal(
-    rows[1]?.columns?.[3]?.trim(),
+    rows[1]?.columns?.[2]?.trim(),
     "-",
   )
   assert.equal(
-    rows[1]?.columns?.[4]?.trim(),
+    rows[1]?.columns?.[3]?.trim(),
     "keep the home revoke in place; run /kernel remote-runtime to identify affected agents, then use /extension sync-status and /extension sync-retry after the worker reconnects",
   )
 })

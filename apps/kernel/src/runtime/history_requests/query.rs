@@ -212,6 +212,7 @@ mod tests {
 
     fn history_event(event_id: &str, sequence: u64) -> HistoryEvent {
         HistoryEvent {
+            public_history_owner_user_id: None,
             event_id: event_id.to_string(),
             sequence,
             timestamp_ms: sequence,

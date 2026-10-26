@@ -5,6 +5,15 @@ import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
 
+export function relayTokenFromEnvironment(name: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error("--relay-token-env requires a valid environment variable name")
+  }
+  const value = process.env[name]
+  if (!value?.trim()) throw new Error(`--relay-token-env variable ${name} is empty or unset`)
+  return value
+}
+
 export function parseNativeMode(value: string): "build" | "plan" {
   if (value === "build" || value === "plan") return value
   throw new Error("--mode must be build or plan")

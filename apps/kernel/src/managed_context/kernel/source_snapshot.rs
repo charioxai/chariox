@@ -9,9 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
-const MAX_SOURCE_FILES: usize = 16_384;
+const MAX_DIRECTORY_ENTRIES: usize = 1 << 20;
 const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SOURCE_DEPTH: usize = 64;
 const SNAPSHOT_PARENT_DIRECTORY: &str = "chariox-kernel-context-snapshots";
 const SNAPSHOT_DIRECTORY_PREFIX: &str = "chariox-kernel-context-";
@@ -44,18 +43,18 @@ pub(super) struct KernelContextSourceSnapshot {
 }
 
 impl KernelContextSourceSnapshot {
-    pub(super) fn capture() -> Result<Self, DaemonError> {
-        let first = Self::capture_once()?;
-        let second = Self::capture_once()?;
+    pub(super) fn capture_mode(without_credentials: bool) -> Result<Self, DaemonError> {
+        let first = Self::capture_once(without_credentials)?;
+        let second = Self::capture_once(without_credentials)?;
         if first.content_digest()? != second.content_digest()? {
             return Err(source_changed_error());
         }
         Ok(second)
     }
 
-    fn capture_once() -> Result<Self, DaemonError> {
+    fn capture_once(without_credentials: bool) -> Result<Self, DaemonError> {
         let root = PrivateSnapshotRoot::new()?;
-        let mut budget = SourceBudget::default();
+        let mut budget = SourceBudget::copying_into(&root.path);
         let mcp_root = root.path.join("user/mcps");
         let skill_root = root.path.join("user/skills");
         let script_root = root.path.join("user/scripts");
@@ -119,11 +118,15 @@ impl KernelContextSourceSnapshot {
             &connector_adapter_root,
             &mut budget,
         )?;
-        capture_optional_root(
-            crate::credential::CharioxCredentialRegistry::user_root().as_deref(),
-            &credential_root,
-            &mut budget,
-        )?;
+        if !without_credentials {
+            capture_optional_root(
+                crate::credential::CharioxCredentialRegistry::user_root().as_deref(),
+                &credential_root,
+                &mut budget,
+            )?;
+        } else {
+            create_private_directory(&credential_root)?;
+        }
 
         let mut bundled_adapter_roots = Vec::new();
         for (index, source) in crate::connector::CharioxConnectorAdapterRegistry::bundled_roots()
@@ -153,7 +156,7 @@ impl KernelContextSourceSnapshot {
 
     fn content_digest(&self) -> Result<String, DaemonError> {
         let mut hasher = Sha256::new();
-        let mut budget = SourceBudget::default();
+        let mut budget = SourceBudget::hashing();
         for (label, root) in self.roots() {
             hasher.update(label.as_bytes());
             hasher.update([0]);
@@ -186,29 +189,40 @@ impl KernelContextSourceSnapshot {
     }
 }
 
-#[derive(Default)]
 struct SourceBudget {
-    entries: usize,
     bytes: u64,
+    limit: u64,
+    dir: PathBuf,
 }
 
 impl SourceBudget {
-    fn add_entry(&mut self) -> Result<(), DaemonError> {
-        self.entries = self.entries.saturating_add(1);
-        if self.entries > MAX_SOURCE_FILES {
-            return Err(source_error(
-                "kernel Extension source exceeds its entry limit",
-            ));
+    /// Copies are admitted against the free space below the snapshot directory.
+    fn copying_into(dir: &Path) -> Self {
+        Self {
+            bytes: 0,
+            limit: crate::managed_context::limits::disk_budget(dir),
+            dir: dir.to_path_buf(),
         }
-        Ok(())
+    }
+
+    /// Hash-only passes write nothing and need no admission.
+    fn hashing() -> Self {
+        Self {
+            bytes: 0,
+            limit: u64::MAX,
+            dir: PathBuf::new(),
+        }
     }
 
     fn add_file(&mut self, bytes: u64) -> Result<(), DaemonError> {
         self.bytes = self.bytes.saturating_add(bytes);
-        if self.bytes > MAX_SOURCE_BYTES {
-            return Err(source_error(
-                "kernel Extension source exceeds its byte limit",
-            ));
+        if self.bytes > self.limit {
+            return Err(source_error(crate::managed_context::limits::disk_shortage(
+                "kernel Extension source snapshot",
+                &self.dir,
+                self.bytes,
+                self.limit,
+            )));
         }
         Ok(())
     }
@@ -610,20 +624,16 @@ fn capture_environment_root(
                 "portable environment must be a directory without reparse points",
             ));
         }
-        budget.add_entry()?;
         let destination_package = destination.join(".portable").join(&name);
         create_private_directory(&destination_package)?;
         for file_name in PORTABLE_ENVIRONMENT_FILES {
             let source_file = source_package.join(file_name);
             match fs::symlink_metadata(&source_file) {
-                Ok(_) => {
-                    budget.add_entry()?;
-                    copy_selected_fallback_file(
-                        &source_file,
-                        &destination_package.join(file_name),
-                        budget,
-                    )?
-                }
+                Ok(_) => copy_selected_fallback_file(
+                    &source_file,
+                    &destination_package.join(file_name),
+                    budget,
+                )?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     return Err(source_io_error("inspect portable environment input", error))
@@ -719,7 +729,6 @@ fn bounded_directory_entries(
     for entry in
         fs::read_dir(source).map_err(|error| source_io_error("enumerate source snapshot", error))?
     {
-        budget.add_entry()?;
         entries.push(entry.map_err(|error| source_io_error("enumerate source snapshot", error))?);
     }
     Ok(entries)
@@ -764,7 +773,6 @@ fn hash_snapshot_tree(
         .map_err(|error| source_io_error("enumerate private source snapshot", error))?;
     entries.sort_by_key(fs::DirEntry::file_name);
     for entry in entries {
-        budget.add_entry()?;
         let path = entry.path();
         let relative = path
             .strip_prefix(root)
@@ -1035,7 +1043,6 @@ mod unix {
         }
         let names = read_directory_names(source)?;
         for name in names {
-            budget.add_entry()?;
             let name_text = name
                 .to_str()
                 .ok_or_else(|| source_error("kernel Extension source path is not UTF-8"))?;
@@ -1098,7 +1105,6 @@ mod unix {
             {
                 continue;
             }
-            budget.add_entry()?;
             validate_snapshot_component(name_text)?;
             let c_name = CString::new(name.as_bytes())
                 .map_err(|_| source_error("environment definition path contains NUL"))?;
@@ -1128,7 +1134,6 @@ mod unix {
         let Some(environment) = open_optional_directory_at(&portable, &environment_name)? else {
             return Ok(());
         };
-        budget.add_entry()?;
         let destination_package = destination.join(".portable").join(
             environment_name
                 .to_str()
@@ -1145,7 +1150,6 @@ mod unix {
                     "portable environment input must be a regular file without links",
                 ));
             }
-            budget.add_entry()?;
             copy_regular_entry(
                 &environment,
                 &c_name,
@@ -1269,7 +1273,7 @@ mod unix {
                 continue;
             }
             names.push(OsString::from_vec(name.to_vec()));
-            if names.len() > MAX_SOURCE_FILES {
+            if names.len() > MAX_DIRECTORY_ENTRIES {
                 unsafe { libc::closedir(directory) };
                 return Err(source_error(
                     "kernel Extension source entry count exceeds its limit",
@@ -1533,7 +1537,7 @@ mod tests {
         fs::write(mcp_root.join("a.json"), b"first").expect("source should write");
 
         let snapshot =
-            KernelContextSourceSnapshot::capture_once().expect("snapshot should capture");
+            KernelContextSourceSnapshot::capture_once(false).expect("snapshot should capture");
         fs::write(mcp_root.join("a.json"), b"second").expect("source should change");
         fs::write(mcp_root.join("a.json"), b"first").expect("source should restore");
         assert_eq!(
@@ -1546,14 +1550,14 @@ mod tests {
             use std::os::unix::fs::symlink;
             fs::remove_file(mcp_root.join("a.json")).expect("source should remove");
             symlink(root.join("outside"), mcp_root.join("a.json")).expect("link should create");
-            assert!(KernelContextSourceSnapshot::capture_once().is_err());
+            assert!(KernelContextSourceSnapshot::capture_once(false).is_err());
             fs::remove_file(mcp_root.join("a.json")).expect("link should remove");
 
             fs::remove_dir_all(&mcp_root).expect("source root should remove");
             let outside_root = root.join("outside-root");
             fs::create_dir_all(&outside_root).expect("outside root should create");
             symlink(&outside_root, &mcp_root).expect("root link should create");
-            assert!(KernelContextSourceSnapshot::capture_once().is_err());
+            assert!(KernelContextSourceSnapshot::capture_once(false).is_err());
             fs::remove_file(&mcp_root).expect("root link should remove");
             fs::create_dir_all(&mcp_root).expect("source root should recreate");
         }
@@ -1562,7 +1566,7 @@ mod tests {
         File::create(&oversized)
             .and_then(|file| file.set_len(MAX_SOURCE_FILE_BYTES + 1))
             .expect("oversized sparse source should create");
-        assert!(KernelContextSourceSnapshot::capture_once().is_err());
+        assert!(KernelContextSourceSnapshot::capture_once(false).is_err());
 
         std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
         std::env::remove_var("CHARIOX_HOME");

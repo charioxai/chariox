@@ -25,8 +25,8 @@ use super::export::{
     package_definition_hash, reject_literal_secrets_in_json, serialized_json_measure,
     validate_identifier, validate_node_package_files, validate_portable_credential_injection,
     validate_portable_mcp, validate_portable_user_adapter, validate_python_requirements_lock,
-    validate_safe_package_file, validate_sha256, MAX_DEPENDENCIES, MAX_EXTENSIONS, MAX_FILE_BYTES,
-    MAX_PACKAGE_BYTES, MAX_PACKAGE_FILES, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_FILES,
+    validate_safe_package_file, validate_sha256, MAX_FILE_BYTES, MAX_PACKAGE_BYTES,
+    MAX_PACKAGE_FILES, UNBOUNDED_SERIALIZATION,
 };
 use super::{
     KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
@@ -35,14 +35,26 @@ use super::{
     KERNEL_CONTEXT_SCHEMA_VERSION,
 };
 
+#[path = "ordinary_publication.rs"]
+mod ordinary_publication;
+#[cfg(any(test, not(unix)))]
+use ordinary_publication::record_ordinary_entries;
+use ordinary_publication::{publish_ordinary_entries, remove_ordinary_entries};
+#[path = "import_ownership.rs"]
+mod import_ownership;
+#[cfg(unix)]
+#[path = "registry_paths.rs"]
+mod registry_paths;
+
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
-const PUBLISHED_ENTRIES_NAME: &str = "published-entries.json";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RUNTIME_PROBE_BYTES: u64 = 64 * 1024;
 const MAX_RUNTIME_PROBE_ENTRIES: u64 = 32;
-const MAX_MATERIALIZED_CONTEXT_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_MATERIALIZED_CONTEXT_ENTRIES: u64 = 100_000;
+/// Bytes are admitted against the destination disk (`MaterializationBudget::admitting`), not a constant.
+const MAX_MATERIALIZED_CONTEXT_BYTES: u64 = u64::MAX;
+/// Traversal bound for ownership walks, far above any real capability tree.
+const MAX_MATERIALIZED_CONTEXT_ENTRIES: u64 = 1 << 24;
 static RUNTIME_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,13 +82,27 @@ impl Drop for ImportLock {
 struct MaterializationBudget {
     bytes: u64,
     entries: u64,
+    limit: u64,
+    dir: PathBuf,
 }
 
 impl MaterializationBudget {
+    /// Counting only; nothing is written under this budget.
     fn new() -> Self {
         Self {
             bytes: 0,
             entries: 0,
+            limit: MAX_MATERIALIZED_CONTEXT_BYTES,
+            dir: PathBuf::new(),
+        }
+    }
+
+    /// Materialization is refused only when the destination volume lacks the room.
+    fn admitting(dir: &Path) -> Self {
+        Self {
+            limit: crate::managed_context::limits::disk_budget(dir),
+            dir: dir.to_path_buf(),
+            ..Self::new()
         }
     }
 
@@ -93,15 +119,35 @@ impl MaterializationBudget {
     }
 
     fn ensure_available(&self) -> Result<(), DaemonError> {
-        if self.bytes > MAX_MATERIALIZED_CONTEXT_BYTES
-            || self.entries > MAX_MATERIALIZED_CONTEXT_ENTRIES
-        {
+        if self.bytes > self.limit {
+            return Err(import_error(crate::managed_context::limits::disk_shortage(
+                "kernel context materialization",
+                &self.dir,
+                self.bytes,
+                self.limit,
+            )));
+        }
+        if self.entries > MAX_MATERIALIZED_CONTEXT_ENTRIES {
             return Err(import_error(
-                "kernel context materialization exceeds its resource limits",
+                "kernel context materialization exceeds its entry limit",
             ));
         }
         Ok(())
     }
+}
+
+// MP-11: publication is additive into the receiving kernel's own registry.
+fn validate_publication_root(root: Option<&Path>) -> Result<(), DaemonError> {
+    if let Some(root) = root {
+        let expected = crate::mcp::CharioxMcpRegistry::user_root()
+            .ok_or_else(|| import_error("target registry root unavailable"))?;
+        if !root.is_absolute() || expected.parent() != Some(root) {
+            return Err(import_error(
+                "context publication root is not the target registry",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn import_kernel_context(
@@ -118,15 +164,42 @@ pub fn import_kernel_context(
         &request.target_kernel_id,
         &target_key_thumbprint,
     )?;
-    validate_import_paths(&request.capability_root, &request.vault_path)?;
+    if request.snapshot.payload.vault.is_some() {
+        validate_import_paths(&request.capability_root, &request.vault_path)?;
+    } else {
+        crate::managed_context::credential_free::validate_kernel_payload(
+            &request.snapshot.payload,
+        )?;
+        if !request.capability_root.is_absolute() {
+            return Err(import_error(
+                "credential-free capability root must be absolute",
+            ));
+        }
+    }
 
+    validate_publication_root(request.publication_root.as_deref())?;
+    let publication_root =
+        request
+            .publication_root
+            .clone()
+            .or(if request.snapshot.payload.vault.is_some() {
+                ordinary_user_root()?
+            } else {
+                None
+            });
+    #[cfg(unix)]
+    let ordinary_root = publication_root
+        .clone()
+        .map(|home| registry_paths::RegistryDirectory::root(&home))
+        .transpose()?;
     let parent = request
         .capability_root
         .parent()
         .ok_or_else(|| import_error("kernel context capability root must have a private parent"))?;
     ensure_private_directory(parent)?;
     let _lock = acquire_import_lock(parent)?;
-    let receipt = import_receipt(&request.snapshot, request.capability_root.clone());
+    let mut receipt = import_receipt(&request.snapshot, request.capability_root.clone());
+    receipt.publication_root = request.publication_root.clone();
     if request.capability_root.exists() {
         return verify_existing_import(&request, &receipt);
     }
@@ -135,12 +208,13 @@ pub fn import_kernel_context(
     cleanup_staging(&staging)?;
     let result = (|| {
         ensure_private_directory(&staging)?;
-        let mut budget = MaterializationBudget::new();
+        let mut budget = MaterializationBudget::admitting(parent);
         budget.directory()?;
         materialize_snapshot(
             &request.snapshot,
             &staging,
             &request.capability_root,
+            publication_root.as_deref(),
             &mut budget,
         )?;
         write_json_file(
@@ -149,19 +223,26 @@ pub fn import_kernel_context(
             false,
             &mut budget,
         )?;
-        if let Some(home) = ordinary_user_root()? {
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            ordinary_publication::record_ordinary_entries_at(&staging, home, &mut budget)?;
+        }
+        #[cfg(not(unix))]
+        if let Some(home) = publication_root.as_ref() {
             record_ordinary_entries(&staging, &home, &mut budget)?;
         }
         ensure_tree_within_budget(&staging)?;
         sync_private_tree(&staging)?;
 
-        crate::secret::install_transferred_vault_snapshot(
-            &request.vault_path,
-            &request.snapshot.payload.vault,
-            &request.expected_source,
-            &request.target_kernel_id,
-            &request.target_private_key,
-        )?;
+        if let Some(vault) = request.snapshot.payload.vault.as_ref() {
+            crate::secret::install_transferred_vault_snapshot(
+                &request.vault_path,
+                vault,
+                &request.expected_source,
+                &request.target_kernel_id,
+                &request.target_private_key,
+            )?;
+        }
         match publish_directory_no_clobber(&staging, &request.capability_root) {
             Ok(()) => sync_directory(parent)?,
             Err(_) if request.capability_root.exists() => {
@@ -169,7 +250,12 @@ pub fn import_kernel_context(
             }
             Err(error) => return Err(error),
         }
-        if let Some(home) = ordinary_user_root()? {
+        #[cfg(unix)]
+        if let Some(home) = ordinary_root.as_ref() {
+            ordinary_publication::publish_ordinary_entries_at(&request.capability_root, home)?;
+        }
+        #[cfg(not(unix))]
+        if let Some(home) = publication_root.as_ref() {
             publish_ordinary_entries(&request.capability_root, &home)?;
         }
         Ok(receipt.clone())
@@ -185,7 +271,14 @@ pub(crate) fn cleanup_kernel_context_import(
     vault_path: &Path,
     target_private_key: &str,
 ) -> Result<(), DaemonError> {
-    validate_import_paths(&receipt.capability_root, vault_path)?;
+    if !receipt.without_credentials {
+        validate_import_paths(&receipt.capability_root, vault_path)?;
+    } else if !receipt.capability_root.is_absolute() {
+        return Err(import_error(
+            "credential-free rollback root must be absolute",
+        ));
+    }
+    validate_publication_root(receipt.publication_root.as_deref())?;
     let target_public_key =
         crate::transport::relay_crypto::public_key_from_private_key_base64(target_private_key)?;
     if receipt.target_key_thumbprint
@@ -209,7 +302,16 @@ pub(crate) fn cleanup_kernel_context_import(
                 ));
             }
             verify_published_receipt(&receipt.capability_root, receipt)?;
-            if let Some(home) = ordinary_user_root()? {
+            if let Some(home) =
+                receipt
+                    .publication_root
+                    .clone()
+                    .or(if receipt.without_credentials {
+                        None
+                    } else {
+                        ordinary_user_root()?
+                    })
+            {
                 remove_ordinary_entries(&receipt.capability_root, &home)?;
             }
             fs::remove_dir_all(&receipt.capability_root)
@@ -223,6 +325,9 @@ pub(crate) fn cleanup_kernel_context_import(
                 error,
             ))
         }
+    }
+    if receipt.without_credentials {
+        return Ok(());
     }
     crate::secret::remove_installed_transferred_vault(
         vault_path,
@@ -241,15 +346,26 @@ fn verify_existing_import(
     expected_receipt: &KernelContextImportReceipt,
 ) -> Result<KernelContextImportReceipt, DaemonError> {
     let receipt = verify_published_receipt(&request.capability_root, expected_receipt)?;
-    if let Some(home) = ordinary_user_root()? {
+    if let Some(home) =
+        request
+            .publication_root
+            .clone()
+            .or(if request.snapshot.payload.vault.is_some() {
+                ordinary_user_root()?
+            } else {
+                None
+            })
+    {
         publish_ordinary_entries(&request.capability_root, &home)?;
     }
-    crate::secret::validate_installed_transferred_vault(
-        &request.vault_path,
-        &request.expected_source,
-        &request.target_kernel_id,
-        &request.target_private_key,
-    )?;
+    if request.snapshot.payload.vault.is_some() {
+        crate::secret::validate_installed_transferred_vault(
+            &request.vault_path,
+            &request.expected_source,
+            &request.target_kernel_id,
+            &request.target_private_key,
+        )?;
+    }
     Ok(receipt)
 }
 
@@ -269,7 +385,7 @@ fn validate_snapshot(
     validate_identifier(&payload.target_kernel_id, "target kernel id")?;
     validate_sha256(&payload.target_key_thumbprint, "target key thumbprint")?;
     validate_sha256(&snapshot.snapshot_sha256, "snapshot digest")?;
-    let (_, actual_snapshot_sha256) = serialized_json_measure(payload, MAX_SNAPSHOT_BYTES)?;
+    let (_, actual_snapshot_sha256) = serialized_json_measure(payload, UNBOUNDED_SERIALIZATION)?;
     if actual_snapshot_sha256 != snapshot.snapshot_sha256 {
         return Err(import_error("kernel context payload digest does not match"));
     }
@@ -295,67 +411,23 @@ fn validate_snapshot(
             "kernel context was exported by a newer incompatible kernel",
         ));
     }
-    crate::secret::validate_transferred_vault_snapshot_for_export(
-        &payload.vault,
-        expected_source,
-        target_kernel_id,
-        target_key_thumbprint,
-    )?;
-    validate_total_snapshot_file_count(snapshot)?;
+    if let Some(vault) = payload.vault.as_ref() {
+        crate::secret::validate_transferred_vault_snapshot_for_export(
+            vault,
+            expected_source,
+            target_kernel_id,
+            target_key_thumbprint,
+        )?;
+    } else {
+        crate::managed_context::credential_free::validate_kernel_payload(payload)?;
+    }
     validate_extensions(snapshot)?;
     validate_dependencies(snapshot)?;
     validate_extension_dependencies(snapshot)
 }
 
-fn validate_total_snapshot_file_count(snapshot: &KernelContextSnapshot) -> Result<(), DaemonError> {
-    let extension_files = snapshot
-        .payload
-        .extensions
-        .iter()
-        .map(|extension| match &extension.definition {
-            KernelExtensionDefinition::Skill { package, .. } => package.files.len(),
-            KernelExtensionDefinition::Script { .. } => 1,
-            KernelExtensionDefinition::Mcp { runtime, .. } => {
-                runtime.as_ref().map_or(0, |runtime| runtime.files.len())
-            }
-            KernelExtensionDefinition::Connector { .. } => 0,
-        })
-        .sum::<usize>();
-    let dependency_files = snapshot
-        .payload
-        .dependencies
-        .iter()
-        .map(|dependency| match dependency {
-            KernelExtensionDependency::UserRules { .. } => 1,
-            KernelExtensionDependency::Environment {
-                runtime:
-                    PortableEnvironmentRuntime::Python { files, .. }
-                    | PortableEnvironmentRuntime::Node { files, .. },
-                ..
-            }
-            | KernelExtensionDependency::UserConnectorAdapter { files, .. } => files.len(),
-            KernelExtensionDependency::BundledConnectorAdapter { .. }
-            | KernelExtensionDependency::Credential { .. } => 0,
-        })
-        .sum::<usize>();
-    if 1_usize
-        .saturating_add(extension_files)
-        .saturating_add(dependency_files)
-        > MAX_SNAPSHOT_FILES
-    {
-        return Err(import_error(
-            "kernel context snapshot file count exceeds its limit",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonError> {
-    if snapshot.payload.extensions.len() > MAX_EXTENSIONS {
-        return Err(import_error("kernel Extension count exceeds its limit"));
-    }
     let mut identities = BTreeSet::new();
-    let mut file_count = 1_usize;
     for extension in &snapshot.payload.extensions {
         if extension.scope != KernelExtensionScope::User
             || !identities.insert((extension.kind.clone(), extension.name.clone()))
@@ -381,7 +453,6 @@ fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonErr
                 validate_portable_mcp(config, runtime.as_ref())?;
                 if let Some(runtime) = runtime {
                     validate_package_files(&runtime.files)?;
-                    file_count = file_count.saturating_add(runtime.files.len());
                 }
             }
             (
@@ -394,11 +465,9 @@ fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonErr
                 if package.metadata.name != extension.name {
                     return Err(import_error("skill Extension name does not match"));
                 }
-                file_count = file_count.saturating_add(package.files.len());
                 validate_skill_package(package, executable_paths)?;
             }
             (ExtensionKind::Script, KernelExtensionDefinition::Script { script }) => {
-                file_count = file_count.saturating_add(1);
                 validate_script_snapshot(&extension.name, script)?;
             }
             (ExtensionKind::Connector, KernelExtensionDefinition::Connector { definition }) => {
@@ -417,22 +486,11 @@ fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonErr
             }
         }
     }
-    if file_count > MAX_SNAPSHOT_FILES {
-        return Err(import_error(
-            "kernel context snapshot file count exceeds its limit",
-        ));
-    }
     Ok(())
 }
 
 fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonError> {
-    if snapshot.payload.dependencies.len() > MAX_DEPENDENCIES {
-        return Err(import_error(
-            "kernel Extension dependency count exceeds its limit",
-        ));
-    }
     let mut identities = BTreeSet::new();
-    let mut file_count = 1_usize;
     for dependency in &snapshot.payload.dependencies {
         let identity = dependency_identity(dependency);
         if !identities.insert(identity) {
@@ -445,7 +503,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                 if body.len() > 64 * 1024 || body.contains('\0') {
                     return Err(import_error("user rules exceed bounds"));
                 }
-                file_count += 1;
             }
             KernelExtensionDependency::Environment { name, runtime } => {
                 crate::mcp::validate_registry_name(name, "environment name")?;
@@ -476,7 +533,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                     }
                 };
                 validate_package_files(files)?;
-                file_count = file_count.saturating_add(files.len());
             }
             KernelExtensionDependency::UserConnectorAdapter {
                 name,
@@ -502,7 +558,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                 }
                 adapter.validate()?;
                 validate_portable_user_adapter(&adapter)?;
-                file_count = file_count.saturating_add(files.len());
             }
             KernelExtensionDependency::BundledConnectorAdapter {
                 name,
@@ -540,11 +595,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                 validate_portable_credential_injection(credential)?;
             }
         }
-    }
-    if file_count > MAX_SNAPSHOT_FILES {
-        return Err(import_error(
-            "kernel context snapshot file count exceeds its limit",
-        ));
     }
     Ok(())
 }
@@ -601,10 +651,14 @@ fn materialize_snapshot(
     snapshot: &KernelContextSnapshot,
     staging: &Path,
     final_root: &Path,
+    publication_root: Option<&Path>,
     budget: &mut MaterializationBudget,
 ) -> Result<(), DaemonError> {
     let user_root = staging.join("user");
-    let final_user_root = final_user_root(final_root)?;
+    let final_user_root = match publication_root {
+        Some(root) => root.to_path_buf(),
+        None => final_user_root(final_root)?,
+    };
     ensure_budgeted_directory(&user_root, budget)?;
     materialize_dependencies(snapshot, staging, &final_user_root, budget)?;
     for extension in &snapshot.payload.extensions {
@@ -1028,6 +1082,7 @@ fn import_receipt(
     capability_root: PathBuf,
 ) -> KernelContextImportReceipt {
     KernelContextImportReceipt {
+        publication_root: None,
         schema_version: 1,
         context_id: snapshot.payload.context_id.clone(),
         source_kernel_id: snapshot.payload.source_kernel_id.clone(),
@@ -1038,6 +1093,7 @@ fn import_receipt(
         capability_root,
         extension_count: snapshot.payload.extensions.len(),
         dependency_count: snapshot.payload.dependencies.len(),
+        without_credentials: snapshot.payload.vault.is_none(),
     }
 }
 
@@ -1135,123 +1191,6 @@ fn ordinary_user_root() -> Result<Option<PathBuf>, DaemonError> {
 
 fn final_user_root(final_root: &Path) -> Result<PathBuf, DaemonError> {
     Ok(ordinary_user_root()?.unwrap_or_else(|| final_root.join("user")))
-}
-
-/// Registry directories an import may share with the user; only their
-/// children are published, so rollback never removes the directory itself.
-const ORDINARY_REGISTRY_DIRECTORIES: &[&str] = &[
-    "mcps",
-    "skills",
-    "scripts",
-    "credentials",
-    "envs",
-    "envs/.portable",
-    "connectors",
-    "connectors/definitions",
-    "connectors/adapters",
-];
-
-/// List every staged extension entry and reject any that already exists in the
-/// ordinary registries, before the Vault or capability root is installed.
-fn record_ordinary_entries(
-    staging: &Path,
-    home: &Path,
-    budget: &mut MaterializationBudget,
-) -> Result<(), DaemonError> {
-    let mut entries = Vec::new();
-    let staged = staging.join("user");
-    if staged.exists() {
-        collect_ordinary_entries(&staged, home, Path::new(""), &mut entries)?;
-    }
-    write_json_file(
-        &staging.join(PUBLISHED_ENTRIES_NAME),
-        &entries,
-        false,
-        budget,
-    )
-}
-
-fn collect_ordinary_entries(
-    staged: &Path,
-    home: &Path,
-    relative: &Path,
-    entries: &mut Vec<String>,
-) -> Result<(), DaemonError> {
-    let mut children = fs::read_dir(staged.join(relative))
-        .and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
-        .map_err(|error| import_io_error("read staged kernel context", error))?;
-    children.sort_by_key(|entry| entry.file_name());
-    for child in children {
-        let path = relative.join(child.file_name());
-        let path_text = path
-            .to_str()
-            .ok_or_else(|| import_error("kernel context entry is not UTF-8"))?
-            .to_string();
-        if ORDINARY_REGISTRY_DIRECTORIES.contains(&path_text.as_str()) {
-            collect_ordinary_entries(staged, home, &path, entries)?;
-            continue;
-        }
-        match fs::symlink_metadata(home.join(&path)) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => entries.push(path_text),
-            Ok(_) => {
-                return Err(import_error(format!(
-                    "kernel context entry `{path_text}` already exists in the ordinary registry"
-                )))
-            }
-            Err(error) => return Err(import_io_error("inspect ordinary registry", error)),
-        }
-    }
-    Ok(())
-}
-
-/// Move the recorded entries into the ordinary registries without replacing
-/// any. A replay finishes the same set; an entry already moved is skipped.
-fn publish_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    for relative in read_published_entries(root)? {
-        let source = staged.join(&relative);
-        if fs::symlink_metadata(&source).is_err() {
-            continue;
-        }
-        let destination = home.join(&relative);
-        let parent = destination
-            .parent()
-            .ok_or_else(|| import_error("published kernel context entry has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| import_io_error("create ordinary registry directory", error))?;
-        publish_directory_no_clobber(&source, &destination)?;
-        sync_directory(parent)?;
-    }
-    Ok(())
-}
-
-fn read_published_entries(root: &Path) -> Result<Vec<String>, DaemonError> {
-    let bytes = read_bounded_file(&root.join(PUBLISHED_ENTRIES_NAME), 4 * 1024 * 1024)?;
-    let entries = serde_json::from_slice::<Vec<String>>(&bytes)
-        .map_err(|_| import_error("published kernel context entries are invalid"))?;
-    for entry in &entries {
-        validate_portable_package_path(entry)?;
-    }
-    Ok(entries)
-}
-
-/// Remove only entries this import moved: one still staged was never published.
-fn remove_ordinary_entries(root: &Path, home: &Path) -> Result<(), DaemonError> {
-    let staged = root.join("user");
-    for relative in read_published_entries(root)? {
-        if fs::symlink_metadata(staged.join(&relative)).is_ok() {
-            continue;
-        }
-        let path = home.join(&relative);
-        let removed = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path),
-            Ok(_) => fs::remove_file(&path),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        };
-        removed.map_err(|error| import_io_error("remove published kernel context entry", error))?;
-    }
-    Ok(())
 }
 
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
@@ -1683,11 +1622,23 @@ fn wait_for_child(
     maximum_entries: u64,
     allow_python_venv_symlink: bool,
 ) -> Result<ExitStatus, DaemonError> {
+    let mut signals =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_session_child(child)
+            .map_err(|error| import_io_error(operation, error))?;
     let started = std::time::Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                terminate_child_descendants(child.id());
+        signals
+            .refresh()
+            .map_err(|error| import_io_error(operation, error))?;
+        match child_exited_without_reaping(child) {
+            Ok(true) => {
+                if let Err(error) = signals.kill_group() {
+                    terminate_child_tree(child, &mut signals);
+                    return Err(import_io_error(operation, error));
+                }
+                let status = child
+                    .wait()
+                    .map_err(|error| import_io_error(operation, error))?;
                 ensure_tree_within_limits(
                     budget_root,
                     maximum_bytes,
@@ -1696,9 +1647,9 @@ fn wait_for_child(
                 )?;
                 return Ok(status);
             }
-            Ok(None) => {}
+            Ok(false) => {}
             Err(error) => {
-                terminate_child_tree(child);
+                terminate_child_tree(child, &mut signals);
                 return Err(import_io_error(operation, error));
             }
         }
@@ -1708,38 +1659,68 @@ fn wait_for_child(
             maximum_entries,
             allow_python_venv_symlink,
         ) {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(error);
         }
         if started.elapsed() >= timeout {
-            terminate_child_tree(child);
+            terminate_child_tree(child, &mut signals);
             return Err(import_error(format!("{operation} timed out")));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            &mut status,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Retain the exited session leader until its descendants have been checked and stopped.
+    Ok(unsafe { status.si_pid() } != 0)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn child_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    child.try_wait().map(|status| status.is_some())
+}
+
 #[cfg(unix)]
 fn configure_child_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
+    // An exclusive session proves fast reparented descendants while the leader is retained.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
 }
 
 #[cfg(not(unix))]
 fn configure_child_process_group(_command: &mut Command) {}
 
-#[cfg(unix)]
-fn terminate_child_descendants(process_group: u32) {
-    let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn terminate_child_descendants(_process_group: u32) {}
-
-fn terminate_child_tree(child: &mut Child) {
-    terminate_child_descendants(child.id());
-    let _ = child.kill();
-    let _ = child.wait();
+fn terminate_child_tree(
+    child: &mut Child,
+    signals: &mut crate::runtime::owned_process_signals::OwnedProcessSignals,
+) {
+    if signals.kill_group().is_err() {
+        let _ = signals.kill_owned_processes();
+    }
+    if signals.kill_child().is_ok() {
+        let _ = child.wait();
+    }
 }
 
 struct TemporaryDirectoryCleanup(PathBuf);
@@ -2151,6 +2132,113 @@ mod tests {
     use super::*;
     use crate::secret::{TransferredVaultSourceBinding, VaultUnlockLease};
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn mp11_review_import_retains_exited_session_leader_until_child_cleanup() {
+        use crate::runtime::owned_process_signals::OwnedProcessSignals;
+        let root = test_root("exited-parent-descendant");
+        fs::create_dir_all(&root).unwrap();
+        let release = root.join("release");
+        let pid_file = root.join("child-pid");
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(
+            "sleep 30 & printf '%s' $! > \"$1\"; while [ ! -f \"$2\" ]; do sleep 0.01; done; exit 0",
+        ).arg("mp11-fixture").arg(&pid_file).arg(&release);
+        configure_child_process_group(&mut command);
+        let child = command.spawn().unwrap();
+        // A separate retained guard cleans the fixture even if the regression fails.
+        struct Cleanup(Child, OwnedProcessSignals, PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.1.kill_group();
+                let _ = self.1.kill_child();
+                let _ = self.0.wait();
+                let _ = fs::remove_dir_all(&self.2);
+            }
+        }
+        let signals = OwnedProcessSignals::for_child(&child).unwrap();
+        let mut cleanup = Cleanup(child, signals, root.clone());
+        let started = std::time::Instant::now();
+        while !pid_file.exists() || fs::read_to_string(&pid_file).unwrap().is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let descendant = fs::read_to_string(&pid_file)
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        cleanup.1.refresh().unwrap();
+        fs::write(&release, "release parent").unwrap();
+        while !child_exited_without_reaping(&mut cleanup.0).unwrap() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The import's new guard has never seen the child attached to its parent.
+        let status = wait_for_child(
+            &mut cleanup.0,
+            "test exited parent",
+            &root,
+            Duration::from_secs(5),
+            1024 * 1024,
+            100,
+            false,
+        )
+        .unwrap();
+        assert!(status.success());
+        let stopped = std::time::Instant::now();
+        loop {
+            let inspection = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &descendant.to_string()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8(inspection.stdout).unwrap();
+            if state.trim().is_empty() || state.trim().starts_with('Z') {
+                break;
+            }
+            assert!(
+                stopped.elapsed() < Duration::from_secs(2),
+                "fast-exiting import left a live descendant"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp11_ordinary_registry_symlink_is_rejected_before_publication_and_rollback() {
+        let root = test_root("registry-parent-symlink");
+        let home = root.join("home/.chariox");
+        let outside = root.join("outside");
+        let staging = root.join("staging");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(staging.join("user/skills/imported")).unwrap();
+        fs::write(outside.join("untouched"), "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, home.join("skills")).unwrap();
+        assert!(
+            record_ordinary_entries(&staging, &home, &mut MaterializationBudget::new()).is_err(),
+            "symlinked registry parent was admitted before Vault publication"
+        );
+        fs::write(
+            staging.join("published-entries.json"),
+            b"[\"skills/imported\"]",
+        )
+        .unwrap();
+        fs::create_dir_all(outside.join("imported")).unwrap();
+        fs::write(outside.join("imported/user-entry"), "user").unwrap();
+        fs::remove_dir_all(staging.join("user")).unwrap();
+        assert!(remove_ordinary_entries(&staging, &home).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("untouched")).unwrap(),
+            "outside"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("imported/user-entry")).unwrap(),
+            "user"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn imports_unified_kernel_context_and_replays_exact_receipt() {
         crate::test_support::isolated_env_test!();
@@ -2188,6 +2276,7 @@ mod tests {
         };
         let snapshot = fixture_snapshot(vault);
         let request = KernelContextImportRequest {
+            publication_root: None,
             snapshot: snapshot.clone(),
             expected_source,
             target_kernel_id: "target-kernel".to_string(),
@@ -2273,7 +2362,9 @@ mod tests {
                 .unlocked
         );
         let receipt_debug = format!("{receipt:?}");
-        assert!(!receipt_debug.contains(&snapshot.payload.vault.vault_file_base64));
+        assert!(
+            !receipt_debug.contains(&snapshot.payload.vault.as_ref().unwrap().vault_file_base64)
+        );
 
         crate::secret::lock_chariox_encrypted_vault(&source_vault).ok();
         crate::secret::lock_chariox_encrypted_vault(&target_vault).ok();
@@ -2282,6 +2373,79 @@ mod tests {
             .expect_err("replay must validate current Vault health")
             .to_string()
             .contains("Vault"));
+        restore_managed_import_paths(previous_paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn imports_more_extensions_than_the_old_fixed_total_and_verifies_the_receipt() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = test_root("beyond-old-total");
+        let source_vault = root.join("source-vault.json");
+        let target_vault = root.join("target-vault.json");
+        let capability_root = root.join("target").join("managed-context").join("kernel");
+        let previous_paths = set_managed_import_paths(&capability_root, &target_vault);
+        let source_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let target_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let target_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&target_private)
+                .expect("target public key");
+        crate::secret::unlock_chariox_encrypted_vault(
+            &source_vault,
+            "correct horse battery staple",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("source Vault should unlock");
+        let vault = crate::secret::export_transferred_vault_snapshot(
+            &source_vault,
+            "context-1",
+            "source-kernel",
+            &source_private,
+            "target-kernel",
+            &target_public,
+        )
+        .expect("Vault snapshot should export");
+        let expected_source = TransferredVaultSourceBinding {
+            context_id: vault.context_id.clone(),
+            source_kernel_id: vault.source_kernel_id.clone(),
+            source_key_thumbprint: vault.source_key_thumbprint.clone(),
+        };
+        let mut snapshot = fixture_snapshot(vault);
+        // Old total: 2_048 extensions.
+        for index in 0..2_100 {
+            let name = format!("extra-{index:05}");
+            snapshot.payload.extensions.push(extension(
+                ExtensionKind::Mcp,
+                &name,
+                KernelExtensionDefinition::Mcp {
+                    config: Box::new(crate::mcp::CharioxMcpServerConfig::streamable_http(
+                        &name,
+                        "https://example.test/mcp",
+                    )),
+                    runtime: None,
+                },
+            ));
+        }
+        snapshot.snapshot_sha256 =
+            serialized_json_measure(&snapshot.payload, UNBOUNDED_SERIALIZATION)
+                .expect("snapshot should hash")
+                .1;
+        let expected_extensions = snapshot.payload.extensions.len();
+        let request = KernelContextImportRequest {
+            publication_root: None,
+            snapshot,
+            expected_source,
+            target_kernel_id: "target-kernel".to_string(),
+            target_private_key: target_private,
+            capability_root: capability_root.clone(),
+            vault_path: target_vault.clone(),
+        };
+        let receipt = import_kernel_context(request).expect("a larger context must import");
+        assert_eq!(receipt.extension_count, expected_extensions);
+        assert!(expected_extensions > 2_048);
+        crate::secret::lock_chariox_encrypted_vault(&source_vault).ok();
+        crate::secret::lock_chariox_encrypted_vault(&target_vault).ok();
         restore_managed_import_paths(previous_paths);
         let _ = fs::remove_dir_all(root);
     }
@@ -2317,6 +2481,7 @@ mod tests {
         .expect("Vault snapshot should export");
         let snapshot = fixture_snapshot(vault.clone());
         let wrong_destination = KernelContextImportRequest {
+            publication_root: None,
             snapshot: snapshot.clone(),
             expected_source: TransferredVaultSourceBinding {
                 context_id: vault.context_id.clone(),
@@ -2333,6 +2498,7 @@ mod tests {
             .to_string()
             .contains("running managed kernel configuration"));
         let wrong_source = KernelContextImportRequest {
+            publication_root: None,
             snapshot: snapshot.clone(),
             expected_source: TransferredVaultSourceBinding {
                 context_id: "wrong-context".to_string(),
@@ -2352,6 +2518,7 @@ mod tests {
         fs::create_dir_all(&capability_root).expect("occupied root should create");
         fs::write(capability_root.join("owner"), "other\n").expect("occupied marker should write");
         let occupied = KernelContextImportRequest {
+            publication_root: None,
             snapshot,
             expected_source: TransferredVaultSourceBinding {
                 context_id: vault.context_id,
@@ -2592,6 +2759,55 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn ordinary_rollback_preserves_replaced_and_edited_entries() {
+        for case in [
+            "replaced-directory",
+            "replaced-file",
+            "edited-directory",
+            "edited-file",
+        ] {
+            let root = test_root(case);
+            let context = root.join("context");
+            let home = root.join("home");
+            fs::create_dir_all(context.join("user/skills")).unwrap();
+            fs::create_dir_all(home.join("skills")).unwrap();
+            let staged = context.join("user/skills/imported");
+            if case.ends_with("directory") {
+                fs::create_dir_all(&staged).unwrap();
+                fs::write(staged.join("original"), b"imported").unwrap();
+            } else {
+                fs::write(&staged, b"imported").unwrap();
+            }
+            fs::write(home.join("skills/unrelated"), b"mine").unwrap();
+            record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
+            publish_ordinary_entries(&context, &home).unwrap();
+            let destination = home.join("skills/imported");
+            if case.starts_with("replaced") {
+                // Keep the old inode alive to rule out inode reuse in the fixture.
+                fs::rename(&destination, root.join("old-import")).unwrap();
+                if case.ends_with("directory") {
+                    fs::create_dir(&destination).unwrap();
+                }
+            }
+            let replacement = if case.ends_with("directory") {
+                destination.join("user-added")
+            } else {
+                destination.clone()
+            };
+            fs::write(&replacement, b"user-owned replacement").unwrap();
+            let _ = remove_ordinary_entries(&context, &home);
+            assert_eq!(
+                fs::read(&replacement).unwrap(),
+                b"user-owned replacement",
+                "{case}"
+            );
+            assert_eq!(fs::read(home.join("skills/unrelated")).unwrap(), b"mine");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn runtime_probe_rejects_burst_output_after_the_process_exits() {
         crate::test_support::isolated_env_test!();
         use std::os::unix::fs::PermissionsExt;
@@ -2709,10 +2925,10 @@ mod tests {
             },
             extensions,
             dependencies: Vec::new(),
-            vault,
+            vault: Some(vault),
         };
-        let (_, snapshot_sha256) =
-            serialized_json_measure(&payload, MAX_SNAPSHOT_BYTES).expect("snapshot should hash");
+        let (_, snapshot_sha256) = serialized_json_measure(&payload, UNBOUNDED_SERIALIZATION)
+            .expect("snapshot should hash");
         KernelContextSnapshot {
             payload,
             snapshot_sha256,
@@ -2816,6 +3032,7 @@ mod tests {
             source_key_thumbprint: vault.source_key_thumbprint.clone(),
         };
         let request = KernelContextImportRequest {
+            publication_root: None,
             snapshot: fixture_snapshot(vault),
             expected_source,
             target_kernel_id: "target-kernel".to_string(),
@@ -2917,4 +3134,81 @@ mod tests {
         fs::create_dir_all(&root).expect("test root should create");
         root
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_rollback_preserves_replaced_credentials_and_edited_packages() {
+    let root =
+        std::env::temp_dir().join(format!("mp11-kernel-owned-{:016x}", rand::random::<u64>()));
+    let staged = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(staged.join("user/credentials")).unwrap();
+    fs::create_dir_all(staged.join("user/scripts/package")).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        staged.join("user/credentials/fixture.json"),
+        b"synthetic-original",
+    )
+    .unwrap();
+    fs::write(
+        staged.join("user/scripts/package/source"),
+        b"original package",
+    )
+    .unwrap();
+    record_ordinary_entries(&staged, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&staged, &home).unwrap();
+    fs::rename(
+        home.join("credentials/fixture.json"),
+        root.join("prior-credential"),
+    )
+    .unwrap();
+    fs::write(
+        home.join("credentials/fixture.json"),
+        b"synthetic-replacement",
+    )
+    .unwrap();
+    fs::write(home.join("scripts/package/user-file"), b"user addition").unwrap();
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert_eq!(
+        fs::read(home.join("credentials/fixture.json")).unwrap(),
+        b"synthetic-replacement"
+    );
+    assert!(home.join("scripts/package/user-file").exists());
+    // Recovery retries retain the same conflicts and the ownership journal.
+    assert!(remove_ordinary_entries(&staged, &home).is_err());
+    assert!(staged.join("published-entries.json").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn mp11_kernel_retirement_restart_finds_quarantine_and_preserves_a_later_user_publication() {
+    let root = std::env::temp_dir().join(format!(
+        "mp11-kernel-retirement-{:016x}",
+        rand::random::<u64>()
+    ));
+    let context = root.join("context");
+    let home = root.join("home");
+    fs::create_dir_all(context.join("user/credentials")).unwrap();
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        context.join("user/credentials/fixture.json"),
+        b"synthetic original",
+    )
+    .unwrap();
+    record_ordinary_entries(&context, &home, &mut MaterializationBudget::new()).unwrap();
+    publish_ordinary_entries(&context, &home).unwrap();
+    let published = home.join("credentials/fixture.json");
+    // MP-11: simulate interruption after private detachment, before deletion.
+    let rollback = context.join(".ordinary-rollback");
+    ensure_private_directory(&rollback).unwrap();
+    let quarantine = rollback.join("0");
+    publish_directory_no_clobber(&published, &quarantine).unwrap();
+    fs::write(&published, b"synthetic user replacement").unwrap();
+    remove_ordinary_entries(&context, &home).unwrap();
+    assert!(!quarantine.exists());
+    assert!(published.is_file());
+    assert_eq!(fs::read(published).unwrap(), b"synthetic user replacement");
+    fs::remove_dir_all(root).unwrap();
 }

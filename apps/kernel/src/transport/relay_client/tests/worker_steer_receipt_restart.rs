@@ -79,7 +79,7 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
     let test_root = std::env::temp_dir().join(format!(
-        "chariox-worker-steer-restart-{}-{}",
+        "steer-restart-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms(),
     ));

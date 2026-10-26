@@ -1,10 +1,10 @@
 import type { RuntimeSession } from "./cli-types.js"
 
-export type RootWorkflowShortcutKind = "loop" | "goal"
+export type RootWorkflowShortcutKind = "loop"
 
 export type RootWorkflowShortcutDescriptor = {
   readonly kind: RootWorkflowShortcutKind
-  readonly commandName: "/loop" | "/goal"
+  readonly commandName: "/loop"
   readonly registryEntryName: string
   readonly endpointRef: string
   readonly entryNode: string
@@ -20,14 +20,7 @@ export const ROOT_WORKFLOW_SHORTCUTS: Record<RootWorkflowShortcutKind, RootWorkf
     entryNode: "worker",
     generatedNodes: ["checker"],
   },
-  goal: {
-    kind: "goal",
-    commandName: "/goal",
-    registryEntryName: "planner-worker-reviewer",
-    endpointRef: "entry",
-    entryNode: "planner",
-    generatedNodes: ["worker", "reviewer"],
-  },
+
 }
 
 export function focusedSessionAgent(session: RuntimeSession, focusedAgentId: string | null) {

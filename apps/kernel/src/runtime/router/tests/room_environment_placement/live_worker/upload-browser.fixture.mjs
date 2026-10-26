@@ -19,6 +19,8 @@ export async function fixtureUploadBrowser(directory, root) {
     let record;
     if (existsSync(receipt)) {
       record = JSON.parse(readFileSync(receipt, "utf8"));
+      // MP-08/MP-10/MP-11: reject unsafe PIDs even for liveness probes.
+      if (!Number.isSafeInteger(record?.browser?.pid) || record.browser.pid <= 1) throw new Error("unsafe owned browser PID");
       process.kill(record.browser.pid, 0);
     } else {
       const code = `import socket,time\ns=socket.socket();s.bind(("127.0.0.1",0));s.listen()\nopen(${JSON.stringify(portFile)},"w").write(str(s.getsockname()[1]))\ntime.sleep(180)`;

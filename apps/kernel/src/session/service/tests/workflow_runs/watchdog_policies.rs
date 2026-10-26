@@ -100,7 +100,25 @@ fn workflow_watchdog_queue_policy_queues_one_pending_run() {
     let queued = service
         .collect_due_workflow_watchdog_invocations(watchdog.next_run_at_ms())
         .expect("watchdog collection should succeed");
-    assert!(queued.is_empty());
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].enqueue_prompt && queued[0].enqueue_only);
+    assert!(service
+        .get_session(session.id())
+        .unwrap()
+        .workflow_queued_prompts()
+        .is_empty());
+    // The kernel runtime admits the plan and its owner record atomically.
+    service
+        .enqueue_workflow_prompt(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some(queued[0].invocation_prompt.clone()),
+            queued[0].queue_id.as_deref(),
+            WorkflowQueuedPromptSource::Scheduled,
+            Some(watchdog.id().into()),
+        )
+        .unwrap();
     let queued_prompt = service
         .get_session(session.id())
         .expect("session should exist")
@@ -130,6 +148,7 @@ fn workflow_watchdog_queue_policy_queues_one_pending_run() {
         .expect("watchdog collection should succeed");
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].endpoint_id, endpoint.id());
+    assert!(!plans[0].enqueue_prompt && !plans[0].enqueue_only);
     let watchdog = service
         .resolve_workflow_watchdog_ref(session.id(), watchdog.id())
         .expect("watchdog should resolve");

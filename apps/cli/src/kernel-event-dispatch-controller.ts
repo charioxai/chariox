@@ -1,3 +1,4 @@
+import { invalidateClientInventories } from "./client-inventory-cache.js"
 import {
   normalizeRuntimeSessionWithAgentActivity,
   type RuntimeNoticeRecord,
@@ -40,6 +41,7 @@ type KernelEventDispatchControllerDeps = {
     session: RuntimeSession,
     providerRun: RuntimeProviderRun | null,
   ) => Promise<void> | void
+  applyAgentTaskUpdated?: (sessionId: string, task: Extract<KernelEvent, { event: "agent_task_updated" }>["task"]) => Promise<void> | void
   applyAgentActivityChanged: (
     sessionId: string,
     agentActivity: Record<string, unknown>,
@@ -100,7 +102,7 @@ export function createKernelEventDispatchController(
     deps.scheduleSharedPromptInputHistoryRefresh()
     await deps.applyKernelSessionSnapshot(
       normalizeRuntimeSessionWithAgentActivity({
-        session: event.session as RuntimeSession,
+        session: { ...event.session, room_workflows: event.room_workflows } as RuntimeSession,
         agent_activity: isRecord(event.agent_activity)
           ? event.agent_activity as RuntimeSession["agent_activity"]
           : null,
@@ -131,6 +133,14 @@ export function createKernelEventDispatchController(
       case "session_snapshot":
         await applySessionSnapshot(event)
         return
+      case "agent_task_updated":
+        deps.recordDaemonActivity("kernel_agent_task_updated")
+        if (!event.session_id || !isRecord(event.task) || typeof event.task.task_id !== "string" || !Number.isSafeInteger(event.task.revision)) {
+          deps.appendNotice("Kernel sent malformed task update.", "warning")
+          return
+        }
+        await deps.applyAgentTaskUpdated?.(event.session_id, event.task)
+        return
       case "agent_activity_changed":
         deps.recordDaemonActivity("kernel_agent_activity_changed")
         await applyAgentActivityChanged(event)
@@ -139,7 +149,12 @@ export function createKernelEventDispatchController(
         deps.recordDaemonActivity("kernel_provider_run_changed")
         await applyProviderRunChanged(event)
         return
+      case "client_catalog_changed":
+        void invalidateClientInventories()
+        deps.recordDaemonActivity("kernel_client_catalog_changed")
+        return
       case "provider_catalog_changed":
+        void invalidateClientInventories()
         deps.recordDaemonActivity("kernel_provider_catalog_changed")
         await applyProviderCatalogChanged(event)
         return
@@ -155,8 +170,15 @@ export function createKernelEventDispatchController(
         deps.recordDaemonActivity("kernel_runtime_interactions_changed")
         await applyRuntimeInteractionsChanged(event)
         return
+      case "kernel_browser_frame":
+        // MD-DISPLAY-04: raster presentation is consumed by an admitted display viewer.
+        return
       case "heartbeat":
         deps.recordDaemonActivity("kernel_heartbeat")
+        return
+      case "room_workflows_changed":
+        // The room workflow composition subscribes to these itself.
+        deps.recordDaemonActivity("kernel_room_workflows_changed")
         return
       case "passkey_prompts_changed":
         // The passkey popup composition subscribes to these itself.

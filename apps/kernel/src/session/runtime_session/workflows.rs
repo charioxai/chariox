@@ -11,6 +11,19 @@ impl RuntimeSession {
         now_ms: u64,
         grace_period_ms: u64,
     ) -> usize {
+        self.reconcile_live_orphaned_workflow_runs_with_tasks(
+            now_ms,
+            grace_period_ms,
+            &BTreeSet::new(),
+        )
+    }
+
+    pub(crate) fn reconcile_live_orphaned_workflow_runs_with_tasks(
+        &mut self,
+        now_ms: u64,
+        grace_period_ms: u64,
+        supervised_tasks: &BTreeSet<(String, String)>,
+    ) -> usize {
         let durable_workflow_prompt_targets = self
             .prompt_runtime
             .prompt_states()
@@ -41,6 +54,10 @@ impl RuntimeSession {
                     .iter()
                     .any(|(run_id, _)| run_id == workflow_run.id())
                 || settling_workflow_run_ids.contains(workflow_run.id())
+                || supervised_tasks.iter().any(|(run, node)| {
+                    run == workflow_run.id()
+                        && workflow_run.node_runs().iter().any(|n| n.id() == node)
+                })
             {
                 continue;
             }
@@ -682,13 +699,24 @@ impl RuntimeSession {
     }
 
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
-        let mut reconciliation = KernelRestartReconciliation::default();
-        reconciliation.removed_orphaned_workflow_prompt_count =
-            self.reconcile_workflow_queue_ownership();
+        let mut reconciliation = KernelRestartReconciliation {
+            removed_orphaned_workflow_prompt_count: self.reconcile_workflow_queue_ownership(),
+            ..KernelRestartReconciliation::default()
+        };
         if self.active_provider_run_id.take().is_some() {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
+        // Agent decisions wait on process-local responders. A restored popup
+        // cannot answer the old provider or unlock request and must not block
+        // a new one. Recovered turns request fresh permission; no approval is
+        // carried across a kernel restart. Kernel operation decisions retain
+        // their existing owner-controlled supersession path.
+        let interaction_count = self.active_interactions.len();
+        self.active_interactions
+            .retain(|interaction| interaction.agent_id().is_none());
+        reconciliation.cleared_agent_interaction_count =
+            interaction_count - self.active_interactions.len();
         let terminal_workflow_run_ids = self
             .workflow_runs
             .iter()
@@ -1064,6 +1092,14 @@ impl RuntimeSession {
         queued_prompt
     }
 
+    pub(crate) fn notification_prompt_mut(
+        &mut self,
+        id: &str,
+    ) -> Option<&mut WorkflowQueuedPrompt> {
+        self.workflow_queued_prompts
+            .iter_mut()
+            .find(|item| item.id() == id)
+    }
     pub fn update_queued_workflow_prompt(
         &mut self,
         queue_item_id: &str,
@@ -1128,12 +1164,29 @@ impl RuntimeSession {
         removed
     }
 
+    pub(crate) fn expire_workflow_notification_prompts(&mut self, now: u64) -> bool {
+        let mut changed = false;
+        for item in &mut self.workflow_queued_prompts {
+            if item.status() == WorkflowQueuedPromptStatus::Queued
+                && item.notification_expired_at(now)
+            {
+                item.mark_cancelled();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn pop_next_workflow_queued_prompt(&mut self) -> Option<WorkflowQueuedPrompt> {
         let best = self
             .workflow_queued_prompts
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|(_, item)| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|(index, item)| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 if !queue.enabled() {
@@ -1159,7 +1212,11 @@ impl RuntimeSession {
             .workflow_queued_prompts
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|(_, item)| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|(index, item)| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 if !queue.enabled() {
@@ -1195,7 +1252,11 @@ impl RuntimeSession {
     pub fn next_dispatchable_workflow_queued_prompt_created_at_ms(&self) -> Option<u64> {
         self.workflow_queued_prompts
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 let workflow = self.workflow(item.workflow_id())?;
@@ -1215,7 +1276,11 @@ impl RuntimeSession {
     pub fn next_workflow_queued_prompt_created_at_ms(&self) -> Option<u64> {
         self.workflow_queued_prompts
             .iter()
-            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter(|item| {
+                item.status() == WorkflowQueuedPromptStatus::Queued
+                    && !item.notification_injection_pending()
+                    && !item.notification_expired_at(super::super::types::unix_epoch_ms())
+            })
             .filter_map(|item| {
                 let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
                 queue

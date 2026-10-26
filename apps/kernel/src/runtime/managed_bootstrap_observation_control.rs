@@ -78,6 +78,9 @@ mod tests {
     fn pre_reimage_observation_requires_the_installed_cloud_owner_and_machine_credential() {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
             user_id: "owner-1".to_string(),
             machine_credential: Some(format!("mcred_{}", "a".repeat(40))),
             ..PersistedCloudRelayProfile::default()

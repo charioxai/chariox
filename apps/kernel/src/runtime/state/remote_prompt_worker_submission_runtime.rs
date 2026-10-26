@@ -99,6 +99,8 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         );
         match outcome {
             RemotePromptSubmissionOutcome::Accepted(provider_run_id) => {
+                // The worker accepted this exact lease; retries must not replay its history.
+                state.owned.clear_accepted_remote_lease_context(dispatch);
                 // Dispatch settlement clears the hold only after its durable ACK write.
                 return Ok(provider_run_id);
             }
@@ -198,11 +200,11 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 let detail = if persist_remote_prompt_reconciliation_pending(state, dispatch, true)
                     .is_ok()
                 {
-                    "the request may have reached the worker, but no submission acknowledgement was recorded"
+                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error})")
                 } else {
-                    "the request may have reached the worker, but no submission acknowledgement was recorded and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay"
+                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error}) and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay")
                 };
-                state.report_remote_prompt_reconciliation_pending(dispatch, detail);
+                state.report_remote_prompt_reconciliation_pending(dispatch, &detail);
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt delivery is pending worker receipt reconciliation",
@@ -268,6 +270,47 @@ pub(super) async fn query_remote_queued_steer_receipt(
     worker_provider_run_id: &str,
     execution_lease_id: &str,
 ) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+    query_remote_queued_steer_receipt_with_transport(
+        state,
+        agent_id,
+        queued_prompt_id,
+        worker_kernel_id,
+        worker_machine_id,
+        leased_agent_id,
+        target_home_prompt_id,
+        worker_provider_run_id,
+        execution_lease_id,
+        |config, target, request| async move {
+            crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                &config,
+                target,
+                request,
+                REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT,
+            )
+            .await
+        },
+    )
+    .await
+}
+
+// Keep the same explicit identity checks as the production transport wrapper.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn query_remote_queued_steer_receipt_with_transport<F, Fut>(
+    state: &KernelRuntimeState,
+    agent_id: &str,
+    queued_prompt_id: &str,
+    worker_kernel_id: &str,
+    worker_machine_id: &str,
+    leased_agent_id: &str,
+    target_home_prompt_id: &str,
+    worker_provider_run_id: &str,
+    execution_lease_id: &str,
+    send_request: F,
+) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError>
+where
+    F: FnOnce(crate::config::DaemonConfig, ClientTarget, RelayPeerRequest) -> Fut + Send,
+    Fut: Future<Output = Result<RelayPeerResponse, DaemonError>> + Send,
+{
     let agent = state.owned.agent_store.get_agent(agent_id)?;
     let remote_execution = agent
         .remote_execution()
@@ -294,23 +337,21 @@ pub(super) async fn query_remote_queued_steer_receipt(
     let relay_config = state
         .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&remote_execution))
         .await;
-    let response =
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-            &relay_config,
-            ClientTarget {
-                daemon_id: Some(worker_kernel_id.to_string()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
-                leased_agent_id: leased_agent_id.to_string(),
-                steer_id: queued_prompt_id.to_string(),
-                target_home_prompt_id: target_home_prompt_id.to_string(),
-                worker_provider_run_id: worker_provider_run_id.to_string(),
-                execution_lease_id: execution_lease_id.to_string(),
-            },
-            REMOTE_PROMPT_RECEIPT_QUERY_TIMEOUT,
-        )
-        .await?;
+    let response = send_request(
+        relay_config,
+        ClientTarget {
+            daemon_id: Some(worker_kernel_id.to_string()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: leased_agent_id.to_string(),
+            steer_id: queued_prompt_id.to_string(),
+            target_home_prompt_id: target_home_prompt_id.to_string(),
+            worker_provider_run_id: worker_provider_run_id.to_string(),
+            execution_lease_id: execution_lease_id.to_string(),
+        },
+    )
+    .await?;
     match response {
         RelayPeerResponse::LeasedPromptReceiptQueried { receipt } => {
             if receipt
@@ -634,7 +675,7 @@ pub(super) fn remote_prompt_transport_retry_delay(attempt: u32) -> std::time::Du
     std::time::Duration::from_millis(250_u64.saturating_mul(multiplier))
 }
 
-fn remote_prompt_transport_retry_window_expired(elapsed: std::time::Duration) -> bool {
+pub(super) fn remote_prompt_transport_retry_window_expired(elapsed: std::time::Duration) -> bool {
     elapsed >= REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW
 }
 
@@ -670,6 +711,7 @@ fn remote_prompt_error_is_known_pre_admission_rejection(error: &DaemonError) -> 
     ) && matches!(
         code.as_str(),
         crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+            | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
             | "leased_agent_not_found"
             | "execution_lease_not_found"
             | "target_not_connected"
@@ -811,12 +853,35 @@ impl KernelRuntimeState {
         unexpected_response_message: &'static str,
     ) -> RemotePromptSubmissionAttempt {
         let agent_id = dispatch.agent_id.clone();
-        #[cfg(test)]
         let prompt_id = dispatch.prompt_id.clone();
-        #[cfg(test)]
         let closure_prompt_id = prompt_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
-        let hidden_system_context = dispatch.hidden_system_context.clone();
+        let mut hidden_system_context = dispatch.hidden_system_context.clone();
+        match self.owned.agent_task_context_hint(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+        ) {
+            Ok(Some(hint)) if !hidden_system_context.contains(&hint) => {
+                hidden_system_context = format!("{}\n\n{hint}", hidden_system_context.trim())
+                    .trim()
+                    .to_string();
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return RemotePromptSubmissionAttempt {
+                    result: Err(error),
+                    request_transport_started: false,
+                }
+            }
+        }
+        // A10: an elevated leased turn's worker fence lands before its prompt.
+        if let Err(error) = self.fence_leased_turn(dispatch).await {
+            return RemotePromptSubmissionAttempt {
+                result: Err(error),
+                request_transport_started: false,
+            };
+        }
         let workflow_context = dispatch.workflow_context.clone();
         let git_context = remote_git_turn_context(dispatch);
         let callback_state = self.clone();
@@ -867,11 +932,6 @@ impl KernelRuntimeState {
                 } else {
                     None
                 };
-                let manifest = if native_provider_run {
-                    manifest.without_mcp_tools()
-                } else {
-                    manifest
-                };
                 let mut config = callback_state.config_snapshot().await;
                 if let (Some(relay_url), Some(relay_token)) = (
                     remote_execution.relay_url.clone(),
@@ -883,6 +943,25 @@ impl KernelRuntimeState {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                     daemon_alias: None,
                 };
+                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
+                let session = callback_state.owned.session_store.get_session(agent.session_id())?;
+                let fresh_workflow = callback_state.owned.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .filter(|active| active.id() == closure_prompt_id)
+                    .map(|active| callback_state.owned.workflow_prompt_requires_fresh_provider_context(
+                        agent.session_id(), agent.id(), &active,
+                    ))
+                    .transpose()?.unwrap_or(false);
+                let hidden_system_context = callback_state.owned.remote_prompt_hidden_context(
+                    &agent,
+                    &remote_execution.leased_agent_id,
+                    &closure_prompt_id,
+                    &hidden_system_context,
+                    fresh_workflow,
+                    native_provider_run,
+                )?;
+                let response_timeout = super::leased_profile_transition_runtime::worker_profile_response_timeout(
+                    crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT, agent.provider());
                 let request = RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
@@ -897,7 +976,6 @@ impl KernelRuntimeState {
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };
-                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
                 match relay_state {
                     Some(relay_state) => {
                         #[cfg(test)]
@@ -916,7 +994,7 @@ impl KernelRuntimeState {
                             &relay_state,
                             target,
                             request,
-                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                            response_timeout,
                         )
                         .await?;
                         #[cfg(test)]
@@ -944,7 +1022,7 @@ impl KernelRuntimeState {
                             &config,
                             target,
                             request,
-                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                            response_timeout,
                         )
                         .await?;
                         #[cfg(test)]

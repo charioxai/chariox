@@ -20,7 +20,9 @@ mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
+mod provider_account_authority;
 mod provider_activation;
+mod provider_endpoint_identity;
 mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
@@ -30,6 +32,9 @@ pub(crate) mod provider_output;
 mod provider_output_claude_native;
 mod provider_output_fanout;
 mod provider_output_prompt_settlement;
+mod provider_output_resume;
+#[cfg(test)]
+pub(crate) use provider_output_resume::persist_resolved_resume_state;
 mod provider_output_trace;
 mod provider_processes;
 mod provider_prompt_launch;
@@ -75,9 +80,13 @@ pub(crate) use prompt_lifecycle::{
     KernelQueuedPromptCancellation, KernelQueuedPromptSteer, KernelQueuedPromptUpdate,
     KernelRemotePromptDispatch, KernelRemotePromptDispatchIntent,
 };
+pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_settled_prompt;
+#[cfg(test)]
+pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{
-    claude_native_recent_terminal_failure, format_claude_permission_message,
-    ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
@@ -129,11 +138,13 @@ pub(crate) use provider_processes::{
     ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
-#[cfg(test)]
-pub(crate) use remote_lease::ProviderCleanupFailurePoint;
 pub(crate) use remote_lease::{
-    LeaseCallerBinding, LeasedAgentCleanupPhase, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteLeaseRuntime, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
+    LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget, PreparedLeasedProviderRun,
+    RemoteLeaseRuntime,
+};
+#[cfg(test)]
+pub(crate) use remote_lease::{
+    LeasedAgentCleanupPhase, ProviderCleanupFailurePoint, REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS,
 };
 
 pub struct DaemonApp {
@@ -152,6 +163,11 @@ pub struct DaemonApp {
     pub(crate) active_turns: ActiveTurnStore,
     pub(crate) prompt_activity: PromptActivityStore,
     pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
+    // MP-08 / MP-10 / MP-11: one authority across independently built runtime actors.
+    pub(crate) kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    pub(crate) private_assessment_dispatch:
+        Option<crate::runtime::state::PrivateAssessmentDispatch>,
+    pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     prompt_state_owner: PromptStateOwner,
     pub(crate) sessions: SessionStateStore,
@@ -172,9 +188,11 @@ pub struct DaemonApp {
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
+    sudo_window_projection: crate::runtime::state::SudoWindowProjection,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
+    pending_agent_context_handoffs: crate::runtime::state::PendingAgentContextHandoffStore,
     provider_process_projection: ProviderProcessProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     credential_enrollment_control:
@@ -340,6 +358,7 @@ impl DaemonApp {
         crate::publication_provider_accounts::materialize_publication_provider_accounts(
             &provider_account_profiles,
             crate::session::DEFAULT_LOCAL_USER_ID,
+            &config,
         )?;
         let provider_home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())
@@ -361,6 +380,11 @@ impl DaemonApp {
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
+            kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
+                config.private_runtime_state_root(),
+            ),
+            room_computer_revoked: Default::default(),
+            private_assessment_dispatch: None,
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(
@@ -383,9 +407,11 @@ impl DaemonApp {
                 crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
+            sudo_window_projection: Default::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
             provider_catalog_projection: ProviderCatalogProjectionStore::default(),
             provider_run_projection: ProviderRunProjectionStore::default(),
+            pending_agent_context_handoffs: Default::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
             remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore::default(),
             credential_enrollment_control:
@@ -436,6 +462,8 @@ impl DaemonApp {
         app.app_control
             .lifecycle()
             .attach_event_config(app.config_projection.clone());
+        app.durable_state
+            .attach_workflow_history_authority(app.config_projection.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
@@ -587,7 +615,15 @@ impl DaemonApp {
         self.sessions.prompt_id_allocator()
     }
 
+    pub(crate) fn sudo_window_projection(&self) -> crate::runtime::state::SudoWindowProjection {
+        self.sudo_window_projection.clone()
+    }
+
     pub(crate) fn update_session_projection(&self, mut session: RuntimeSession) {
+        session.set_sudo_windows(
+            self.sudo_window_projection
+                .windows_for_session(session.id()),
+        );
         self.prompt_state_owner.project_into_session(&mut session);
         self.agent_runtime_projection.update_session(&session);
         self.session_projection.update(session);
@@ -633,6 +669,12 @@ impl DaemonApp {
 
     pub(crate) fn provider_run_projection_store(&self) -> ProviderRunProjectionStore {
         self.provider_run_projection.clone()
+    }
+
+    pub(crate) fn pending_agent_context_handoff_store(
+        &self,
+    ) -> crate::runtime::state::PendingAgentContextHandoffStore {
+        self.pending_agent_context_handoffs.clone()
     }
 
     pub(crate) fn provider_process_projection_store(&self) -> ProviderProcessProjectionStore {
@@ -738,6 +780,7 @@ impl DaemonApp {
         self.workflow_design_events.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn terminal_mut(&mut self) -> &TerminalStreamStore {
         &self.terminal
     }

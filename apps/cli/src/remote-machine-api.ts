@@ -4,6 +4,8 @@ import type {
   WaitingRoomRemoteMachineView,
 } from "./cli-types.js"
 import {
+  addSshMachineRequest,
+  removeSshMachineRequest,
   approveRemoteMachineRequest,
   forgetRemoteMachineRequest,
   listRemoteMachineKernelsRequest,
@@ -54,4 +56,18 @@ export async function listRemoteMachineKernels(
     kernels: WaitingRoomRemoteKernelView[]
   }>(response, "RemoteMachineKernelsListed")
   return payload.kernels
+}
+
+// MP-07 / MP-08 / MP-11: the kernel owns SSH, release admission and enrollment.
+export type SshMachineResult = {
+  install_id: string; status: string; kernel_id: string | null; machine_id: string | null
+  release_digest: string; state_retained: boolean
+}
+export async function addSshMachine(client: LocalIpcClient, host: string, options: { install_id?: string; port?: number; release?: string }): Promise<SshMachineResult> {
+  const response = await client.send<Record<string, unknown>>(addSshMachineRequest(host, options))
+  return expectVariant<{ machine: SshMachineResult }>(response, "SshMachine").machine
+}
+export async function removeSshMachine(client: LocalIpcClient, installId: string): Promise<SshMachineResult> {
+  const response = await client.send<Record<string, unknown>>(removeSshMachineRequest(installId))
+  return expectVariant<{ machine: SshMachineResult }>(response, "SshMachine").machine
 }

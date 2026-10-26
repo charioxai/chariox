@@ -30,6 +30,8 @@ function mutatedInput(area, file, mutate, expected) {
 
 for (const [label, area, file, mutate, expected] of [
   ["launcher bytes", "source", "docker/slice-screen.sh", s => s + "\n# changed launcher\n", /hash drifted/],
+  ["image helper bytes", "source", "docker/browser-controller-image.mjs", s => s + "\n// changed image helper\n", /hash drifted/],
+  ["image helper COPY", "fixture", "Dockerfile", s => s.replace(" browser-controller-image.mjs", ""), /launcher COPY drifted/],
   ["commented launcher COPY", "source", "docker/Dockerfile", s => s.replace("COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh", "# COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh"), /omits slice-screen/],
   ["missing apt package", "fixture", "Dockerfile", s => s.replace("chromium-sandbox ", ""), /apt package selection/],
   ["launcher COPY", "source", "docker/Dockerfile", s => s.replace("docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh", "docker/missing.sh /opt/chariox-slice/slice-screen.sh"), /omits slice-screen/],

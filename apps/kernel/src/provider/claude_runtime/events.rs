@@ -40,8 +40,10 @@ fn apply_system_message(
         record_claude_session_id(state, batch, session_id);
     }
     if batch.resolved_model.is_none() {
-        if let Some(model) = string_field(value, "model") {
-            batch.resolved_model = Some(format_claude_model(&model));
+        if let Some(model) =
+            string_field(value, "model").and_then(|model| format_claude_model(&model))
+        {
+            batch.resolved_model = Some(model);
             batch.resolved_model_source = Some("claude.system");
         }
     }
@@ -63,6 +65,13 @@ fn apply_stream_event(
         return;
     }
     if event_kind == "message_start" {
+        if let Some(usage) = event
+            .get("message")
+            .and_then(|message| message.get("usage"))
+            .and_then(usage_from_value)
+        {
+            apply_message_usage(state, batch, usage);
+        }
         state.active_stream_message_id = event
             .get("message")
             .and_then(|message| message.get("id"))
@@ -72,8 +81,9 @@ fn apply_stream_event(
             .get("message")
             .and_then(|message| message.get("model"))
             .and_then(Value::as_str)
+            .and_then(format_claude_model)
         {
-            batch.resolved_model = Some(format_claude_model(model));
+            batch.resolved_model = Some(model);
             batch.resolved_model_source = Some("claude.stream_event");
         }
     }
@@ -142,8 +152,7 @@ fn apply_stream_event(
             })
             .and_then(usage_from_value)
         {
-            batch.resolved_usage_tokens_total = usage.total_tokens;
-            batch.resolved_usage = Some(usage);
+            apply_message_usage(state, batch, usage);
         }
     }
 }
@@ -243,14 +252,17 @@ fn apply_assistant_message(
 ) {
     let message = value.get("message").unwrap_or(value);
     if batch.resolved_model.is_none() {
-        if let Some(model) = message.get("model").and_then(Value::as_str) {
-            batch.resolved_model = Some(format_claude_model(model));
+        if let Some(model) = message
+            .get("model")
+            .and_then(Value::as_str)
+            .and_then(format_claude_model)
+        {
+            batch.resolved_model = Some(model);
             batch.resolved_model_source = Some("claude.assistant");
         }
     }
     if let Some(usage) = message.get("usage").and_then(usage_from_value) {
-        batch.resolved_usage_tokens_total = usage.total_tokens;
-        batch.resolved_usage = Some(usage);
+        apply_message_usage(state, batch, usage);
     }
     if let Some(content) = message.get("content").and_then(Value::as_array) {
         for (index, block) in content.iter().enumerate() {
@@ -282,7 +294,9 @@ fn apply_result_message(
     if let Some(session_id) = string_field(value, "session_id") {
         record_claude_session_id(state, batch, session_id);
     }
-    if let Some(usage) = value.get("usage").and_then(usage_from_value) {
+    if let Some(mut usage) = value.get("usage").and_then(usage_from_value) {
+        // The result sums API calls. Preserve billing, replace only context.
+        usage.context_tokens = state.last_context_tokens;
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
@@ -349,10 +363,7 @@ fn emit_stream_text_delta(
         .entry(key.to_string())
         .or_default()
         .push_str(text);
-    match block_kind {
-        "thinking" => push_reasoning_chunk(provider_run_id, batch, text),
-        _ => push_text_chunk(provider_run_id, batch, text),
-    }
+    push_block_chunk(provider_run_id, batch, key, block_kind, text);
 }
 
 fn emit_authoritative_text(
@@ -385,10 +396,7 @@ fn emit_authoritative_text(
         );
         return;
     };
-    match block_kind {
-        "thinking" => push_reasoning_chunk(provider_run_id, batch, suffix),
-        _ => push_text_chunk(provider_run_id, batch, suffix),
-    }
+    push_block_chunk(provider_run_id, batch, key, block_kind, suffix);
     *emitted = text.to_string();
 }
 
@@ -473,24 +481,26 @@ fn claude_block_text<'a>(block: &'a Value, block_kind: &str) -> Option<&'a str> 
     }
 }
 
-fn push_text_chunk(provider_run_id: &str, batch: &mut ProviderPromptSignalBatch, text: &str) {
+/// One merge key per content block, so text written after a tool call is its
+/// own transcript entry below that call instead of folding into the first
+/// text block of the run.
+fn push_block_chunk(
+    provider_run_id: &str,
+    batch: &mut ProviderPromptSignalBatch,
+    block_key: &str,
+    block_kind: &str,
+    text: &str,
+) {
     if text.is_empty() {
         return;
     }
+    let (kind, role) = match block_kind {
+        "thinking" => (TerminalOutputKind::ProviderReasoning, "reasoning"),
+        _ => (TerminalOutputKind::ProviderOutput, "assistant"),
+    };
     batch.chunks.push(ProviderPromptChunk {
-        kind: TerminalOutputKind::ProviderOutput,
-        merge_key: Some(format!("claude:{provider_run_id}:assistant")),
-        bytes: text.as_bytes().to_vec(),
-    });
-}
-
-fn push_reasoning_chunk(provider_run_id: &str, batch: &mut ProviderPromptSignalBatch, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    batch.chunks.push(ProviderPromptChunk {
-        kind: TerminalOutputKind::ProviderReasoning,
-        merge_key: Some(format!("claude:{provider_run_id}:reasoning")),
+        kind,
+        merge_key: Some(format!("claude:{provider_run_id}:{block_key}:{role}")),
         bytes: text.as_bytes().to_vec(),
     });
 }
@@ -504,13 +514,32 @@ fn string_field(value: &Value, field: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn format_claude_model(model: &str) -> String {
+fn format_claude_model(model: &str) -> Option<String> {
     let model = model.trim();
-    if model.starts_with("claude/") {
-        model.to_string()
-    } else {
-        format!("claude/{model}")
+    // Claude emits synthetic assistant messages for failures such as quota
+    // exhaustion. Their placeholder is not an observed execution model.
+    if model.is_empty() || model.strip_prefix("claude/").unwrap_or(model) == "<synthetic>" {
+        return None;
     }
+    if model.starts_with("claude/") {
+        Some(model.to_string())
+    } else {
+        Some(format!("claude/{model}"))
+    }
+}
+
+fn apply_message_usage(
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+    mut usage: ProviderRunTokenUsage,
+) {
+    if let Some(context) = usage.context_tokens {
+        state.last_context_tokens = Some(context);
+    }
+    // Output-only streaming deltas must not erase the input context.
+    usage.context_tokens = state.last_context_tokens;
+    batch.resolved_usage_tokens_total = usage.total_tokens;
+    batch.resolved_usage = Some(usage);
 }
 
 fn usage_from_value(value: &Value) -> Option<ProviderRunTokenUsage> {
@@ -527,7 +556,15 @@ fn usage_from_value(value: &Value) -> Option<ProviderRunTokenUsage> {
     (total > 0).then_some(ProviderRunTokenUsage {
         total_tokens: Some(total),
         last_tokens: Some(output),
-        context_tokens: Some(input + cache_create + cache_read),
+        context_tokens: [
+            "input_tokens",
+            "input",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+        .then_some(input + cache_create + cache_read),
         context_window: None,
     })
 }

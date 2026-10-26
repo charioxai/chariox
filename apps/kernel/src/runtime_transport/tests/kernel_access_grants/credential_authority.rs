@@ -98,8 +98,27 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
         holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))["error"]
             .is_null()
     );
+    // MP-08/MP-11: main permits routine answers under the user grant; only
+    // critical and credential interactions remain terminal-only.
     kernel.control("agent-question").await;
     assert!(holder.request(answer("routine-access-question", "continue", None))["error"].is_null());
+    assert!(
+        kernel
+            .request(answer("routine-access-question", "continue", None))
+            .await["error"]
+            .is_object(),
+        "the first routine answer closes the shared interaction"
+    );
+    // MP-08/MP-11: removing the blanket routine-answer ban must never admit
+    // a critical interaction, even when its choice carries no passkey field.
+    kernel.control("agent-critical-question").await;
+    assert!(
+        holder.request(answer("critical-access-question", "continue", None))["error"].is_object()
+    );
+    assert!(kernel
+        .request(answer("critical-access-question", "continue", None))
+        .await["error"]
+        .is_null());
 }
 
 #[tokio::test]
@@ -124,6 +143,8 @@ async fn kernel_access_external_holder_cannot_answer_vault_unlock() {
 
 #[tokio::test]
 async fn kernel_access_revocation_stops_waiting_and_deferred_provider_launches() {
+    crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
     let grant_id = grant(&mut kernel, &mut holder).await;

@@ -132,6 +132,10 @@ fn workflow_code_apply_rebinds_generated_agent_provider() {
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
         .expect("session should create");
 
+    let profile = app
+        .provider_account_profile_registry()
+        .create_managed("local-user", "opencode", "profile-a")
+        .unwrap();
     let definition = generated_workflow_code_definition();
     let report = app
         .apply_workflow_code_definition_with_rebindings(
@@ -145,7 +149,7 @@ fn workflow_code_apply_rebinds_generated_agent_provider() {
                 provider: "opencode".to_string(),
                 model: Some("qwen3-coder".to_string()),
                 effort: Some("medium".to_string()),
-                account_profile: Some("profile-a".to_string()),
+                account_profile: Some(profile.label.clone()),
             }],
             &[],
         )
@@ -159,7 +163,7 @@ fn workflow_code_apply_rebinds_generated_agent_provider() {
     assert_eq!(planner.provider(), "opencode");
     assert_eq!(planner.model(), Some("qwen3-coder"));
     assert_eq!(planner.effort(), Some("medium"));
-    assert_eq!(planner.account_profile(), Some("profile-a"));
+    assert_eq!(planner.account_profile(), Some(profile.profile_id.as_str()));
 }
 
 #[test]

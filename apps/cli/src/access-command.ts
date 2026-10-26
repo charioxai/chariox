@@ -14,19 +14,18 @@ export function parseAccessRequest(argv: string[], defaultHolder: () => number) 
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]!
     const value = argv[i + 1]
-    if (!["--session", "--holder-pid", "--minutes", "--socket"].includes(key) || !value || values.has(key)) {
-      throw new Error("Usage: chariox access request --session <id> [--holder-pid <pid>] [--minutes <minutes>] [--socket <absolute-path>]")
+    if (!["--holder-pid", "--minutes", "--socket"].includes(key) || !value || values.has(key)) {
+      throw new Error("Usage: chariox access request [--holder-pid <pid>] [--minutes <minutes>] [--socket <absolute-path>]")
     }
     values.set(key, value)
   }
-  const session_id = values.get("--session")
   const holder_pid = values.has("--holder-pid") ? Number(values.get("--holder-pid")) : defaultHolder()
   const lifetime_minutes = values.has("--minutes") ? Number(values.get("--minutes")) : undefined
-  if (!session_id || !Number.isSafeInteger(holder_pid) || holder_pid <= 1
+  if (!Number.isSafeInteger(holder_pid) || holder_pid <= 1
     || (lifetime_minutes !== undefined && (!Number.isSafeInteger(lifetime_minutes) || lifetime_minutes < 1))) {
-    throw new Error("Access requires a session id and positive integer holder pid and lifetime")
+    throw new Error("Access requires a positive integer holder pid and lifetime")
   }
-  return { request: { RequestKernelAccess: { session_id, holder_pid, lifetime_minutes } }, socket: values.get("--socket") }
+  return { request: { RequestKernelAccess: { holder_pid, lifetime_minutes } }, socket: values.get("--socket") }
 }
 
 export async function runAccessCommand(argv: string[]): Promise<boolean> {
@@ -51,7 +50,7 @@ export async function runAccessCommand(argv: string[]): Promise<boolean> {
       const result = await client.send<KernelAccessRevokedResponse>({ RevokeKernelAccessGrant: { grant_id: argv[2] === "--all" ? null : argv[2] } })
       console.log(`Revoked ${result.KernelAccessRevoked.revoked} grants`)
     } else {
-      throw new Error("Usage: chariox access request --session <id> [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>] | access list | access revoke <id|--all>")
+      throw new Error("Usage: chariox access request [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>] | access list | access revoke <id|--all>")
     }
   } finally { await client.close() }
   return true
