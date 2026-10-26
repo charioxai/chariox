@@ -141,6 +141,7 @@ impl KernelRuntimeState {
                         error("goal control unavailable; use /goal on the focused agent")
                     });
             }
+            self.validate_sudo_goal_resume(&control)?;
             request.prompt = control.prompt;
         }
         self.sweep_sudo();
