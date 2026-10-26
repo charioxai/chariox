@@ -966,6 +966,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const appPublisherEnrollment = new AppPublisherEnrollment((request) => client.send(request), appendNotice)
   const appDevLoop = new AppDevLoop({
     send: (request) => client.send(request), installer: appFileInstaller, notice: appendNotice,
+    isKernelLocal: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id) !== null,
     currentSession: () => isAttached() ? sessionState().id : undefined,
   })
   let recordDaemonActivity: (activityType: string) => void = () => {}

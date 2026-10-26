@@ -18,6 +18,8 @@ export type AppDevDeps = {
   installer: Pick<AppFileInstaller, "install" | "update" | "status" | "cancel" | "retained" | "discardRetained">
   notice: (message: string) => void
   currentSession: () => string | undefined
+  /** Same-machine discovery selects kernel builds; remote clients upload their bundle. */
+  isKernelLocal?: () => boolean
   pack?: (options: AppDevPackOptions) => Promise<PackedAppPackage>
   watch?: (directory: string, onChange: (file: string | null) => void, onError: (error: unknown) => void) => AppDevWatcher
   /** A new private directory for packed output; it must be outside the App directory. */
@@ -43,8 +45,14 @@ export class AppDevLoop {
     if (!session) throw new Error("Attach to a session before starting /app dev")
     const cwd = this.deps.cwd ?? terminalCwd()
     const root = await sourceDirectory(resolve(cwd, directory))
+    const workspace = this.deps.isKernelLocal?.() === false
+      ? await (this.deps.workspace ?? privateWorkspace)() : undefined
+    if (workspace && contains(root, workspace)) {
+      await rm(workspace, { recursive: true, force: true })
+      throw new Error("The temporary package directory must be outside the App directory")
+    }
     await this.stop()
-    const run = new DevRun(this.deps, root, undefined, undefined, session, () => { if (this.current === run) this.current = undefined })
+    const run = new DevRun(this.deps, root, undefined, workspace, session, () => { if (this.current === run) this.current = undefined })
     this.current = run
     run.begin()
     return { directory: root }
@@ -177,7 +185,7 @@ class DevRun {
       void this.close()
       return
     }
-    if (!this.key) { await this.push(savedAt); return }
+    if (!this.key && !this.workspace) { await this.push(savedAt); return }
     try {
       if (!(await this.settleRetained())) return
       await rm(this.output, { force: true })
@@ -189,12 +197,12 @@ class DevRun {
       const existing = await this.findInstallation(packed.appId)
       if (this.stopped) return
       const started = existing
-        ? await this.deps.installer.update(existing, this.output, this.session, "register")
-        : await this.deps.installer.install(this.output, this.session, "register")
+        ? await this.deps.installer.update(existing, this.output, this.session, this.key ? "register" : "dev_push")
+        : await this.deps.installer.install(this.output, this.session, this.key ? "register" : "dev_push")
       const status = await this.follow(started)
       if (status) {
         this.report(status, existing)
-        if (status.phase === "committed") this.deps.notice(`Register → running: ${Math.round(performance.now() - savedAt)} ms; generation ${status.generation}.`)
+        if (status.phase === "committed") this.deps.notice(`${this.key ? "Register" : "DEV save"} → running: ${Math.round(performance.now() - savedAt)} ms; generation ${status.generation}.`)
       }
     } finally {
       await rm(this.output, { force: true }).catch(() => {})
@@ -324,7 +332,7 @@ class DevRun {
       for (const item of listed.installations) {
         if (item.app_id === appId && item.channel !== "dev" && item.channel !== "release") throw new Error("This kernel does not support separate dev installations. Update the kernel before developing or registering this App.")
         if (item.app_id === appId && (item.active_release || item.data_kept) &&
-            item.channel === "release") matches.push(item.installation_id)
+            (this.key ? item.channel === "release" : item.channel === "dev" && item.dev_room_id === this.session)) matches.push(item.installation_id)
       }
       if (!listed.next_cursor) {
         if (matches.length > 1) throw new Error("Several installations match this App and channel; remove the conflicting installation before retrying")

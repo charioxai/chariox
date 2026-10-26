@@ -5,12 +5,18 @@ keeps one push in flight, and pushes the latest saved source after a running
 push completes. `/app dev stop` closes the watcher. Generated Rust `target/`,
 dependency directories and dotfiles do not trigger pushes.
 
-The source must be available at the requested absolute path **on the kernel**.
-A local TUI watches that same directory. For a remote TUI with client-only source,
-put the folder in a kernel workspace using the existing `files put` command,
-and develop from that kernel workspace. D2 adds no source-transfer service or
-kernel watcher. A missing kernel path returns `source_unavailable` with this
-remedy; it never builds from the kernel's current directory as a fallback.
+A local TUI uses same-machine kernel discovery and sends the source's absolute
+path to the kernel for building. That path must exist on the kernel; a missing
+path returns `source_unavailable`.
+
+A remote TUI keeps watching its client-side folder and uses the existing
+`dev-pack` + package-upload + `dev_push` installer path from D1. It does not send
+the client's path to the kernel or require `files put`. The folder must contain
+`app.json` and a ready-to-package `bundle/`; compile JS/TS or Rust into the bundle
+with the pinned SDK tools before saving the bundle, as in D1. The kernel still
+owns dev signing, capability approval and activation. Remote updates select only
+the dev installation in the current Room, leaving releases and other Rooms alone.
+No kernel-side watcher or source-transfer protocol is added.
 
 The kernel builds, packs with the shared `chariox app dev-pack` implementation,
 uploads through the normal package store and enters the normal installer. The

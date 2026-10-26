@@ -24,7 +24,7 @@ pub(super) fn build(
     scratch_parent: &Path,
     stopped: &AtomicBool,
 ) -> Result<Build, super::Failure> {
-    let root = fs::canonicalize(directory).map_err(|_| super::Failure { code: crate::local::AppDevPushFailureCode::SourceUnavailable, message: "App source directory is unavailable on this kernel. Put the folder in a kernel workspace with files put, then use that kernel path. A remote TUI cannot watch a client-only folder.".to_owned() })?;
+    let root = fs::canonicalize(directory).map_err(|_| super::Failure { code: crate::local::AppDevPushFailureCode::SourceUnavailable, message: "App source directory is unavailable on this kernel. Restore this workspace path or use files put to place source there. A remote TUI can use /app dev on its client-side folder through package upload.".to_owned() })?;
     let limits = Limits::default();
     let manifest_path = root.join("app.json");
     let metadata = fs::symlink_metadata(&manifest_path)

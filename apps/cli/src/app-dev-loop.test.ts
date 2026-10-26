@@ -108,3 +108,28 @@ test("ignored paths include dependency and generated Rust build trees",()=>{
   assert.equal(ignored("app.ts"),false)
   assert.equal(ignored(null),false)
 })
+
+// MP-08 / MP-10 / MP-11: remote source stays on the client and uses D1 uploads.
+test("remote dev watches client source and updates only its Room's dev copy", async t => {
+  const f = await fixture(t), h = harness(f)
+  let change!: (file: string | null) => void
+  const entry = (installation_id: string, channel: string, dev_room_id: string | null) => ({ installation_id, app_id: "com.example.todo", channel, dev_room_id, active_release: {}, data_kept: false })
+  h.deps.send = async request => {
+    assert.ok(request.ListAppInstallations, "remote source must use the existing package upload installer")
+    return { AppInstallationsListed: { installations: [entry("release", "release", null), entry("other-room", "dev", "session-2"), entry("own-dev", "dev", "session-1")], next_cursor: null } }
+  }
+  const loop = new AppDevLoop({ ...h.deps, isKernelLocal: () => false,
+    debounceMs: 1, watch: (root, callback) => { assert.equal(root, f.app); change = callback; return { close() {} } },
+  })
+  t.after(() => loop.dispose())
+  await loop.start("my-app"); await loop.settled()
+  change("bundle/ui/index.html"); await loop.settled()
+  assert.deepEqual(h.calls, [
+    { kind: "update", installation: "own-dev", source: "dev_push" },
+    { kind: "update", installation: "own-dev", source: "dev_push" },
+  ])
+  assert.equal(h.packs.length, 2)
+  assert.equal(h.packs[0]!.key, undefined)
+  await loop.stop()
+  await assert.rejects(stat(h.workspaces[0]!), /ENOENT/)
+})
