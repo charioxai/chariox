@@ -70,6 +70,10 @@ pub(super) fn collect_overlay(
         })?;
     }
     let ignore_patterns = read_context_ignore_patterns(worktree)?;
+    // The root policy belongs to the snapshot, not to descendant inclusion rules.
+    if worktree.join(".charioxignore").is_file() && paths.insert(".charioxignore".into()) {
+        manifest_budget.consume(".charioxignore".len() + 256)?;
+    }
     let includes: Vec<_> = ignore_patterns
         .iter()
         .filter_map(|rule| rule.strip_prefix('!'))
@@ -86,10 +90,7 @@ pub(super) fn collect_overlay(
         args.extend(includes);
         stream_git_nul_records(worktree, &args, usize::MAX, |path| {
             if !excluded_for_export(&path, vault_enabled)
-                && !crate::workspace_live_sync_ignore::user_rules_exclude_path(
-                    &path,
-                    &ignore_patterns,
-                )
+                && !user_rules_exclude_path(&path, &ignore_patterns)
                 && paths.insert(path.clone())
             {
                 manifest_budget.consume(path.len().saturating_add(256))?;
@@ -105,7 +106,7 @@ pub(super) fn collect_overlay(
     for path in paths {
         validate_relative_path(&path)?;
         if excluded_for_export(&path, vault_enabled)
-            || crate::workspace_live_sync_ignore::user_rules_exclude_path(&path, &ignore_patterns)
+            || user_rules_exclude_path(&path, &ignore_patterns)
         {
             continue;
         }
@@ -160,10 +161,7 @@ fn reject_dirty_head_types(
                 .ok_or_else(|| context_error("Git tree returned malformed dirty-path metadata"))?;
             if paths.contains(path)
                 && !excluded_for_export(path, vault_enabled)
-                && !crate::workspace_live_sync_ignore::user_rules_exclude_path(
-                    path,
-                    ignore_patterns,
-                )
+                && !user_rules_exclude_path(path, ignore_patterns)
                 && matches!(
                     metadata.split_whitespace().next(),
                     Some("120000" | "160000")
@@ -474,10 +472,12 @@ fn is_portable_git_admin_component(component: &str) -> bool {
 pub(super) fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
     // Keep strict validation of the optional expert file at the import/export boundary.
     read_expert_context_ignore_patterns(worktree)?;
-    let mut patterns =
-        crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree);
-    patterns.push("!.charioxignore".into());
-    Ok(patterns)
+    Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree))
+}
+
+pub(super) fn user_rules_exclude_path(path: &str, patterns: &[String]) -> bool {
+    path != ".charioxignore"
+        && crate::workspace_live_sync_ignore::user_rules_exclude_path(path, patterns)
 }
 
 fn read_expert_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {

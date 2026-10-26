@@ -136,8 +136,7 @@ pub(super) fn snapshot(
             } else {
                 path_text.clone()
             };
-            let excluded =
-                crate::workspace_live_sync_ignore::user_rules_exclude_path(&rule_path, &patterns);
+            let excluded = overlay::user_rules_exclude_path(&rule_path, &patterns);
             if excluded
                 && (!file_type.is_dir() || !overlay::may_include_descendant(&patterns, &path_text))
             {

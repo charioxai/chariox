@@ -406,3 +406,78 @@ fn mk02_directory_glob_inclusion_reaches_vault_review() {
         );
     }
 }
+
+#[test]
+fn mk02_root_policy_does_not_traverse_ignored_unreadable_directory() {
+    for expert_file in [false, true] {
+        let root = test_root("move-ignored-unreadable-directory");
+        let _cleanup = PlainWorkspaceCleanup(root.clone());
+        let directory = root.join("notes");
+        let ignored = directory.join("archive");
+        fs::create_dir_all(&ignored).unwrap();
+        fs::write(directory.join(".gitignore"), "archive/\n").unwrap();
+        if expert_file {
+            fs::write(directory.join(".charioxignore"), "unrelated.txt\n").unwrap();
+        }
+        fs::write(directory.join("input"), "portable\n").unwrap();
+        fs::set_permissions(&ignored, fs::Permissions::from_mode(0o000)).unwrap();
+        let exported = export_development_context(DevelopmentContextExportRequest {
+            project_id: "move-project".into(),
+            repositories: vec![selection(&directory, true)],
+            archive_path: root.join("selected.tar.gz"),
+        });
+        let reviewed =
+            vault_artifacts::review_items(&BTreeMap::from([("notes".into(), directory)]));
+        // Restore access before assertions so a failed regression still cleans up.
+        fs::set_permissions(&ignored, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            exported.is_ok() && reviewed.is_ok(),
+            "ignored unreadable directory entered Copy ({:?}) or Vault review ({:?})",
+            exported.as_ref().err(),
+            reviewed.as_ref().err(),
+        );
+        let exported = exported.expect("an ignored unreadable directory must not enter Copy");
+        reviewed.expect("an ignored unreadable directory must not enter Vault review");
+        assert!(!exported.manifest.repositories[0]
+            .directories
+            .iter()
+            .any(|path| path.starts_with("archive")));
+        assert_eq!(
+            exported.manifest.repositories[0]
+                .overlay
+                .iter()
+                .any(|entry| entry.path == ".charioxignore"),
+            expert_file
+        );
+    }
+}
+
+#[test]
+fn mk02_root_policy_retention_does_not_include_nested_policy_files() {
+    for git_workspace in [false, true] {
+        let root = test_root("move-nested-policy");
+        let _cleanup = PlainWorkspaceCleanup(root.clone());
+        let directory = root.join("notes");
+        if git_workspace {
+            init_repository(&directory, "input", "base\n");
+        }
+        fs::create_dir_all(directory.join("archive")).unwrap();
+        fs::write(directory.join(".gitignore"), "archive/\n.charioxignore\n").unwrap();
+        fs::write(directory.join(".charioxignore"), "unrelated.txt\n").unwrap();
+        fs::write(directory.join("archive/.charioxignore"), "nested policy\n").unwrap();
+        let exported = export_development_context(DevelopmentContextExportRequest {
+            project_id: "move-project".into(),
+            repositories: vec![selection(&directory, true)],
+            archive_path: root.join("selected.tar.gz"),
+        })
+        .unwrap();
+        let overlay = &exported.manifest.repositories[0].overlay;
+        assert!(overlay.iter().any(|entry| entry.path == ".charioxignore"));
+        assert!(
+            !overlay
+                .iter()
+                .any(|entry| entry.path == "archive/.charioxignore"),
+            "only the root policy is retained implicitly"
+        );
+    }
+}

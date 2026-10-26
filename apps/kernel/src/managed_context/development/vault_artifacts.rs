@@ -66,7 +66,7 @@ pub(crate) fn review_items(
                 } else {
                     path.to_string()
                 };
-                if crate::workspace_live_sync_ignore::user_rules_exclude_path(&rule_path, &patterns)
+                if overlay::user_rules_exclude_path(&rule_path, &patterns)
                     && (!metadata.is_dir() || !overlay::may_include_descendant(&patterns, path))
                 {
                     continue;
