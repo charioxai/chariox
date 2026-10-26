@@ -41,7 +41,7 @@ async fn forwarded_delete() {
     let mut parent_binding = parent.remote_execution().unwrap().clone();
     parent_binding.active_worker_provider_run_id = Some("delegator-worker-run".into());
     {
-        let mut app = fixture.home.app.lock().await;
+        let app = fixture.home.app.lock().await;
         app.agents()
             .bind_remote_execution(parent.id(), parent_binding.clone())
             .unwrap();
