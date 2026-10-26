@@ -177,6 +177,7 @@ impl KernelRuntimeState {
                     }
                     let process_key = app.pty().process_key(&dispatch.provider_run_id).ok().or_else(||
                         self.owned.provider_process_tracking.read().run_processes.get(&dispatch.provider_run_id).cloned());
+                    app.pty_mut().terminate_owned_processes(&dispatch.provider_run_id)?;
                     let (_, removed_key) = crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&dispatch.provider_run_id)?;
                     if process_key.as_ref().is_some_and(|key| app.pty().has_process_key(key)) {
                         return Err(DaemonError::PtyCleanup { provider_run_id: dispatch.provider_run_id.clone(),

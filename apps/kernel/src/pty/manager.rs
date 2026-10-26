@@ -136,7 +136,7 @@ fn terminate_pty_process_group(master: &dyn MasterPty, process_group: Option<i32
     for process_group in [master.process_group_leader(), Some(process_group)]
         .into_iter()
         .flatten()
-        .filter(|group| *group > 0)
+        .filter(|group| *group > 1)
     {
         let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
     }
@@ -930,6 +930,44 @@ impl PtyManager {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
         Ok(process.child.process_id())
+    }
+
+    /// Tools can create their own sessions, outside the provider's PTY group.
+    pub(crate) fn terminate_owned_processes(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        #[cfg(unix)]
+        if let Some(process) = self
+            .process_aliases
+            .get(provider_run_id)
+            .and_then(|key| self.processes.get(key))
+        {
+            if process.reference_count > 1 {
+                return Err(DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.into(),
+                    message: "cannot terminate a provider process still shared by another run"
+                        .into(),
+                });
+            }
+            if process.exit_code.is_none() && process.signal.is_none() {
+                let mut signals =
+                    crate::runtime::owned_process_signals::OwnedProcessSignals::for_pty_child(
+                        process.child.as_ref(),
+                    )
+                    .map_err(|error| DaemonError::PtyCleanup {
+                        provider_run_id: provider_run_id.into(),
+                        message: error.to_string(),
+                    })?;
+                signals
+                    .kill_owned_processes()
+                    .map_err(|error| DaemonError::PtyCleanup {
+                        provider_run_id: provider_run_id.into(),
+                        message: error.to_string(),
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {

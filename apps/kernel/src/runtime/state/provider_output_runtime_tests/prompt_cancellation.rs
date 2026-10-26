@@ -813,6 +813,16 @@ async fn structured_abort_waiter_releases_provider_lane_after_external_owner_set
 // MP-08/MP-10/MP-11: a provider that never answers Stop cannot hold the next turn.
 #[tokio::test]
 async fn unresponsive_structured_abort_terminates_provider_and_settles_task() {
+    assert_unresponsive_abort_settles(false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn native_cancellation_reaps_a_tool_in_its_own_process_group() {
+    assert_unresponsive_abort_settles(true).await;
+}
+
+async fn assert_unresponsive_abort_settles(detached_tool: bool) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     let worktree = crate::test_support::TestWorktree::new("unresponsive-stop");
     let mut config = crate::DaemonConfig::for_tests();
@@ -835,7 +845,47 @@ async fn unresponsive_structured_abort_terminates_provider_and_settles_task() {
         "codex".into(),
     );
     run.mark_running();
-    spawn_inert_pty_for_run(&mut app, run.id());
+    let sentinel = worktree.path().join("tool-alive");
+    let pid_file = worktree.path().join("tool-pid");
+    let mut tool_pid = None;
+    if detached_tool {
+        std::fs::write(&sentinel, b"alive").unwrap();
+        let script = "import os,time,sys\npid=os.fork()\nif pid==0:\n os.setsid()\n open(sys.argv[1],'w').write(str(os.getpid()))\n while os.path.exists(sys.argv[2]): time.sleep(.02)\nelse: os.waitpid(pid,0)";
+        app.pty_mut()
+            .spawn(crate::pty::PtySpawnRequest {
+                process_key: run.id().into(),
+                provider_run_id: run.id().into(),
+                program: "python3".into(),
+                args: vec![
+                    "-c".into(),
+                    script.into(),
+                    pid_file.display().to_string(),
+                    sentinel.display().to_string(),
+                ],
+                env: Default::default(),
+                env_remove: vec![],
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !pid_file.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tool_pid = Some(
+            std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap(),
+        );
+    } else {
+        spawn_inert_pty_for_run(&mut app, run.id());
+    }
     app.providers_mut().insert_run_for_test(run.clone());
     let prompt = crate::session::PromptQueueItem::new(
         "unresponsive-stop-prompt",
@@ -897,6 +947,16 @@ async fn unresponsive_structured_abort_terminates_provider_and_settles_task() {
         .agent_tasks(Some(session.id()), Some(agent.id()))
         .unwrap();
     assert_eq!(tasks[0].state, ExecutionState::Cancelled);
+    if let Some(pid) = tool_pid {
+        let live = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .is_some_and(|stat| {
+                stat.split_once(") ")
+                    .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+            });
+        std::fs::remove_file(&sentinel).unwrap();
+        assert!(!live, "Stop left a tool alive in its own process group");
+    }
     assert!(
         app.lock().await.pty().process_id(run.id()).is_err(),
         "Stop must terminate the owned provider process before releasing the turn"
