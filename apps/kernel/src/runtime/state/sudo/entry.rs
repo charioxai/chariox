@@ -413,6 +413,8 @@ impl KernelRuntimeState {
         let mut catalog_deadline = None;
         let mut vault: Option<super::super::runtime_vault_unlock_state::VaultUnlockGuard> = None;
         loop {
+            // Waiting for ordinary work must not outlive the authorized window.
+            self.live_queued_sudo(entry)?;
             if reload && self.sudo_agent_busy(entry)? {
                 catalog_deadline = None;
                 // Ordinary work must not keep an operation unlock open.
