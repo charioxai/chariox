@@ -90,6 +90,13 @@ impl AgentMoveStore {
                 }
             }
         }
+        // A crash can leave the archive after its terminal record was synced.
+        for source in records.sources.values().filter(|source| source.retired) {
+            store.remove_workspace_archive(&source.identity.operation_id)?;
+        }
+        for target in records.targets.values().filter(|target| target.active) {
+            store.remove_workspace_archive(&target.capture.identity.operation_id)?;
+        }
         drop(records);
         Ok(store)
     }
@@ -229,12 +236,16 @@ impl AgentMoveStore {
         } else {
             "source:prepared"
         };
+        let cleanup_operation = source.retired.then(|| source.identity.operation_id.clone());
         records
             .sources
             .insert(source.identity.operation_id.clone(), source);
         drop(records);
         #[cfg(test)]
         self.crash_at_named_boundary_for_test(phase);
+        if let Some(operation) = cleanup_operation {
+            self.remove_workspace_archive(&operation)?;
+        }
         Ok(())
     }
 
@@ -275,12 +286,18 @@ impl AgentMoveStore {
         } else {
             "target:reserved"
         };
+        let cleanup_operation = target
+            .active
+            .then(|| target.capture.identity.operation_id.clone());
         records
             .targets
             .insert(target.capture.identity.operation_id.clone(), target);
         drop(records);
         #[cfg(test)]
         self.crash_at_named_boundary_for_test(phase);
+        if let Some(operation) = cleanup_operation {
+            self.remove_workspace_archive(&operation)?;
+        }
         Ok(())
     }
 

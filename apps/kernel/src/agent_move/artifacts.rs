@@ -246,6 +246,11 @@ impl AgentMoveStore {
                 "This Move target was cancelled; start a new generation",
             ));
         }
+        if target.active {
+            return Err(error(
+                "Move target is already active; query its completed operation",
+            ));
+        }
         let descriptor = kind.descriptor(&target.capture)?;
         let end = offset
             .checked_add(bytes.len() as u64)
@@ -306,6 +311,15 @@ impl AgentMoveStore {
         file.sync_all()
             .map_err(|_| error("Cannot sync move artifact; check free space"))?;
         Ok(())
+    }
+
+    pub(super) fn remove_workspace_archive(&self, operation: &str) -> Result<(), DaemonError> {
+        // Native bytes remain bound to strict launch and Return after restart.
+        match fs::remove_file(self.artifact_path(operation, AgentMoveArtifactKind::Workspace)) {
+            Ok(()) => Ok(()),
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(error("Cannot remove completed Move archive; restore staging directory permissions and retry")),
+        }
     }
 
     pub(crate) fn native_checkpoint(

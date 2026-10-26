@@ -1742,3 +1742,112 @@ async fn mk03_abort_recovers_after_source_release_before_terminal_write() {
         .dispatch_fenced(&session, &fixture.agent_id));
     move_request(&fixture, &session, true).await;
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: repeated large Moves retain live checkouts, not transfer archives.
+async fn assert_no_workspace_archives(fixture: &Fixture) {
+    let roots = [
+        fixture
+            .home
+            .lock()
+            .await
+            .config
+            .private_runtime_state_root()
+            .join("agent-moves"),
+        fixture.workers[0]
+            .lock()
+            .await
+            .config
+            .private_runtime_state_root()
+            .join("agent-moves"),
+    ];
+    for root in roots {
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path().join("workspace.archive");
+            assert!(
+                !path.exists(),
+                "completed Move retained workspace archive: {}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_repeated_large_project_moves_release_transfer_archives() {
+    use rand::RngCore;
+    let (fixture, session, original) = crash_fixture().await;
+    let mut bytes = vec![0; 8 * 1024 * 1024];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    for byte in &mut bytes {
+        *byte = b'a' + *byte % 26;
+    }
+    std::fs::write(original.join("large-input"), &bytes).unwrap();
+    for _ in 0..3 {
+        move_request(&fixture, &session, true).await;
+        {
+            let home = fixture.home.lock().await;
+            let operation = home
+                .agent_moves
+                .for_agent(&session, &fixture.agent_id)
+                .unwrap();
+            let worker = fixture.workers[0].lock().await;
+            worker
+                .agent_moves
+                .write_chunk(
+                    &operation.identity.operation_id,
+                    crate::agent_move::AgentMoveArtifactKind::Workspace,
+                    0,
+                    b"retry",
+                )
+                .expect_err("an active target must refuse late chunks without recreating staging");
+        }
+        assert_no_workspace_archives(&fixture).await;
+        move_request(&fixture, &session, false).await;
+        assert_no_workspace_archives(&fixture).await;
+        let home = fixture.home.lock().await;
+        let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+        assert!(
+            std::fs::read(PathBuf::from(agent.worktree_id().unwrap()).join("large-input")).unwrap()
+                == bytes,
+            "the large Project must survive every Move and Return"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_restart_removes_completed_workspace_archives_but_keeps_native() {
+    use crate::agent_move::AgentMoveArtifactKind;
+    let (mut fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    let operation = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    let mut retained_native = Vec::new();
+    // Recreate the crash window after the terminal record is synced but before unlink.
+    for app in [&fixture.home, &fixture.workers[0]] {
+        let app = app.lock().await;
+        let store = &app.agent_moves;
+        let path = store.artifact_path(
+            &operation.identity.operation_id,
+            AgentMoveArtifactKind::Workspace,
+        );
+        std::fs::write(path, b"archive left at crash").unwrap();
+        let native = store.artifact_path(
+            &operation.identity.operation_id,
+            AgentMoveArtifactKind::Native,
+        );
+        std::fs::write(&native, b"native state must survive").unwrap();
+        retained_native.push(native);
+        app.save_durable_state_snapshot().unwrap();
+    }
+    reboot_app(&fixture.home).await;
+    reboot_worker(&mut fixture).await;
+    assert_no_workspace_archives(&fixture).await;
+    for native in retained_native {
+        assert_eq!(std::fs::read(native).unwrap(), b"native state must survive");
+    }
+}

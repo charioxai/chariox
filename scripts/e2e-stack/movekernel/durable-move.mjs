@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: public Move, real native turns and mid-Move restarts.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js';
@@ -142,6 +142,25 @@ async function journal(r, generation) {
         if (value.identity.generation === generation) return value;
     }
 }
+async function assertCompletedArchives(source, target, label) {
+    const checked = [];
+    for (const runtime of [source, target]) {
+        const directory = runtime.path + '/home/agent-moves';
+        for (const name of await readdir(directory)) {
+            if (!/\.(source|target)\.json$/.test(name)) continue;
+            const value = JSON.parse(await readFile(directory + '/' + name, 'utf8'));
+            if (!(name.endsWith('.source.json') ? value.retired : value.active)) continue;
+            const operation = value.identity?.operation_id ?? value.capture.identity.operation_id;
+            const archive = directory + '/' + sha(Buffer.from(operation)) + '/workspace.archive';
+            let remaining;
+            try {remaining = (await stat(archive)).size;} catch (error) {if (error.code !== 'ENOENT') throw error;}
+            assert.equal(remaining, undefined, 'Completed Move must release its workspace transfer archive');
+            checked.push({kernel: runtime.name, operation, role: name.endsWith('.source.json') ? 'source' : 'target'});
+        }
+    }
+    assert.ok(checked.length >= 2, 'Both source and target cleanup boundaries must be observed');
+    await record(label + '-archive-cleanup', {result: 'PASS', checked});
+}
 async function moveWithRestart(source, target, sessionId, agentId, workspace, generation, forward) {
     const client = new LocalIpcClient(source.url, {timeoutMs: 1800000, localAuthEnvironment: source.env});
     let response;
@@ -191,6 +210,10 @@ try {
     const source = await runtime('source'), target = await runtime('target');
     await enroll(source); await enroll(target);
     const paths = await fixture();
+    const largeFile = randomBytes(8 * 1024 * 1024);
+    for (let i = 0; i < largeFile.length; i++) largeFile[i] = 97 + largeFile[i] % 26;
+    const largeDigest = sha(largeFile);
+    await writeFile(paths.primary + '/large-transfer.txt', largeFile);
     paths.workspace = dirname(execFileSync('git', ['-C', paths.primary, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {encoding: 'utf8'}).trim());
     // A bounded real file keeps the public transfer in progress long enough to restart.
     await writeFile(paths.primary + '/restart-transfer-a.bin', randomBytes(12 * 1024 * 1024));
@@ -221,7 +244,9 @@ try {
     await assertTuiRoute(source, agentId, target.status.daemon_id, 'moved-idle');
     await captureTui(source, 'moved-idle');
     webProof.push(...await captureWeb(source, sessionId, agentId, 'moved-idle'));
+    await assertCompletedArchives(source, target, 'forward');
     const primary = forward.repositories.find(r => r.role === 'primary').destinationPath;
+    assert.equal(sha(await readFile(primary + '/large-transfer.txt')), largeDigest);
     const notes = forward.repositories.find(r => r.role === 'supporting').destinationPath;
     assert.notEqual(primary, paths.primary);
     assert.equal(movedAgent.worktree_id, primary, 'Home route must select the receipt worktree');
@@ -253,7 +278,9 @@ try {
     await assertTuiRoute(source, agentId, null, 'returned-idle');
     await captureTui(source, 'returned-idle');
     webProof.push(...await captureWeb(source, sessionId, agentId, 'returned-idle'));
+    await assertCompletedArchives(source, target, 'return');
     const home = returned.repositories.find(r => r.role === 'primary').destinationPath;
+    assert.equal(sha(await readFile(home + '/large-transfer.txt')), largeDigest);
     const homeNotes = returned.repositories.find(r => r.role === 'supporting').destinationPath;
     assert.notEqual(home, paths.primary); assert.notEqual(home, primary);
     const returnedState = await state(source, sessionId);
