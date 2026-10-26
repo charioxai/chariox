@@ -220,7 +220,8 @@ async fn reboot_app(app: &Arc<Mutex<DaemonApp>>) {
 }
 
 async fn reboot_worker(fixture: &mut Fixture) {
-    fixture.shutdown[0].send(true).unwrap();
+    // A crash may already have closed the worker connector. It is joined below.
+    let _ = fixture.shutdown[0].send(true);
     fixture.tasks[1].abort();
     let _ = (&mut fixture.tasks[1]).await;
     reboot_app(&fixture.workers[0]).await;
@@ -304,11 +305,8 @@ async fn crash_boundary(phase: &'static str, forward: bool) {
         .await
         .remote_relay_inventory_projection_store()
         .update(Vec::new(), fixture.presences.clone());
-    // Bound exercises a lost unacknowledged lease. Committed exercises the
-    // durable target backing, with its original caller and lease timestamps.
-    if forward && matches!(phase, "bound" | "committed") {
-        reboot_worker(&mut fixture).await;
-    }
+    // Reopen both roles at every home boundary: target on Move, source on Return.
+    reboot_worker(&mut fixture).await;
     let operation = move_journal(&fixture, &session).await;
     assert_eq!(
         operation["phase"]["phase"].as_str() == Some("complete"),
@@ -452,4 +450,359 @@ async fn move_journal(fixture: &Fixture, session: &str) -> serde_json::Value {
         })
         .max_by_key(|record| record["identity"]["generation"].as_u64().unwrap())
         .expect("public Move must persist a generation")
+}
+
+// MP-08 / MP-10 / MP-11: fail between a role's durable write and its acknowledgement.
+async fn crash_role_boundary(phase: &'static str, forward: bool, worker: bool) {
+    let (mut fixture, session, original) = crash_fixture().await;
+    if !forward {
+        move_request(&fixture, &session, true).await;
+    }
+    let source = if forward {
+        original.clone()
+    } else {
+        let home = fixture.home.lock().await;
+        let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+        let remote = agent.remote_execution().unwrap();
+        let worker = fixture.workers[0].lock().await;
+        let backing = worker.leased_agents.get(&remote.leased_agent_id).unwrap();
+        PathBuf::from(
+            worker
+                .agents()
+                .get_agent(&backing.backing_agent_id)
+                .unwrap()
+                .worktree_id()
+                .unwrap(),
+        )
+    };
+    std::fs::write(source.join("input"), "latest source boundary\n").unwrap();
+    let crash_app = if worker {
+        &fixture.workers[0]
+    } else {
+        &fixture.home
+    };
+    let journal = crash_app
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&journal).unwrap();
+    let marker = journal.join("crash-after-phase-for-test");
+    std::fs::write(&marker, phase).unwrap();
+    let request = if forward {
+        crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id: session.clone(),
+                agent_ref: fixture.agent_id.clone(),
+                machine_ref: fixture.presences[0].machine_id.clone(),
+            },
+        )
+    } else {
+        crate::local::LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+            session_id: session.clone(),
+            agent_ref: fixture.agent_id.clone(),
+        })
+    };
+    let home = fixture.home.clone();
+    let task = tokio::spawn(async move {
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8);
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk03-role-crash",
+            None,
+            None,
+            &request,
+        );
+        router.dispatch(command, request).await
+    });
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while marker.exists() {
+            assert!(
+                !task.is_finished(),
+                "public Move ended before role boundary {phase}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("public Move must reach its durable role boundary");
+    // The home request loses its peer reply when the other process crashes.
+    task.abort();
+    let crashed = task.await;
+    assert!(
+        !marker.exists(),
+        "public Move must reach role boundary {phase}"
+    );
+    assert!(
+        !matches!(crashed, Ok(Ok(_))),
+        "role crash must interrupt its acknowledgement: {phase}"
+    );
+    reboot_app(&fixture.home).await;
+    reboot_worker(&mut fixture).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    move_request(&fixture, &session, forward).await;
+    let operation = move_journal(&fixture, &session).await;
+    assert_eq!(operation["phase"]["phase"], "complete", "{phase}");
+    let home = fixture.home.lock().await;
+    assert!(home.providers().list_runs().is_empty());
+    let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+    let path = if forward {
+        let worker = fixture.workers[0].lock().await;
+        assert!(worker.providers().list_runs().is_empty());
+        let remote = agent.remote_execution().unwrap();
+        let backing = worker.leased_agents.get(&remote.leased_agent_id).unwrap();
+        PathBuf::from(
+            worker
+                .agents()
+                .get_agent(&backing.backing_agent_id)
+                .unwrap()
+                .worktree_id()
+                .unwrap(),
+        )
+    } else {
+        PathBuf::from(agent.worktree_id().unwrap())
+    };
+    assert_ne!(path, source);
+    assert_eq!(
+        std::fs::read(path.join("input")).unwrap(),
+        b"latest source boundary\n",
+        "{phase}"
+    );
+    assert_eq!(
+        std::fs::read(source.join("input")).unwrap(),
+        b"latest source boundary\n"
+    );
+}
+
+macro_rules! role_crash_test {
+    ($name:ident, $phase:literal, $forward:literal, $worker:literal) => {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn $name() {
+            crash_role_boundary($phase, $forward, $worker).await;
+        }
+    };
+}
+role_crash_test!(
+    mk03_forward_source_restart_prepared,
+    "source:prepared",
+    true,
+    false
+);
+role_crash_test!(
+    mk03_forward_source_restart_stopped,
+    "source:stopped",
+    true,
+    false
+);
+role_crash_test!(
+    mk03_forward_source_restart_captured,
+    "source:captured",
+    true,
+    false
+);
+role_crash_test!(
+    mk03_forward_source_restart_retired,
+    "source:retired",
+    true,
+    false
+);
+role_crash_test!(
+    mk03_forward_target_restart_reserved,
+    "target:reserved",
+    true,
+    true
+);
+role_crash_test!(
+    mk03_forward_target_restart_materialized,
+    "target:materialized",
+    true,
+    true
+);
+role_crash_test!(
+    mk03_forward_target_restart_attached,
+    "target:attached",
+    true,
+    true
+);
+role_crash_test!(
+    mk03_forward_target_restart_ready,
+    "target:ready",
+    true,
+    true
+);
+role_crash_test!(
+    mk03_forward_target_restart_active,
+    "target:active",
+    true,
+    true
+);
+role_crash_test!(
+    mk03_return_source_restart_prepared,
+    "source:prepared",
+    false,
+    true
+);
+role_crash_test!(
+    mk03_return_source_restart_stopped,
+    "source:stopped",
+    false,
+    true
+);
+role_crash_test!(
+    mk03_return_source_restart_captured,
+    "source:captured",
+    false,
+    true
+);
+role_crash_test!(
+    mk03_return_source_restart_retired,
+    "source:retired",
+    false,
+    true
+);
+role_crash_test!(
+    mk03_return_target_restart_reserved,
+    "target:reserved",
+    false,
+    false
+);
+role_crash_test!(
+    mk03_return_target_restart_materialized,
+    "target:materialized",
+    false,
+    false
+);
+role_crash_test!(
+    mk03_return_target_restart_attached,
+    "target:attached",
+    false,
+    false
+);
+role_crash_test!(
+    mk03_return_target_restart_ready,
+    "target:ready",
+    false,
+    false
+);
+role_crash_test!(
+    mk03_return_target_restart_active,
+    "target:active",
+    false,
+    false
+);
+role_crash_test!(
+    mk03_return_source_target_retirement_restart,
+    "target:retired",
+    false,
+    true
+);
+
+#[cfg(unix)]
+async fn rollback_crash_boundary(phase: &'static str) {
+    let (mut fixture, session, original) = crash_fixture().await;
+    let outside = fixture.workspace_root.join("rollback-outside");
+    std::fs::write(&outside, b"preserve outside").unwrap();
+    std::fs::remove_file(original.join("input")).unwrap();
+    std::os::unix::fs::symlink(&outside, original.join("input")).unwrap();
+    let journal = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&journal).unwrap();
+    let marker = journal.join("crash-after-phase-for-test");
+    std::fs::write(&marker, phase).unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session.clone(),
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let home = fixture.home.clone();
+    let retry = request.clone();
+    let task = tokio::spawn(async move {
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8);
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk03-rollback-crash",
+            None,
+            None,
+            &request,
+        );
+        router.dispatch(command, request).await
+    });
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while marker.exists() {
+            assert!(
+                !task.is_finished(),
+                "public Move ended before rollback boundary {phase}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("public Move must reach its durable rollback boundary");
+    task.abort();
+    let _ = task.await;
+    reboot_app(&fixture.home).await;
+    reboot_worker(&mut fixture).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk03-rollback-recovery",
+        None,
+        None,
+        &retry,
+    );
+    assert!(router.dispatch(command, retry).await.is_err());
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "rolled_back"
+    );
+    {
+        let home = fixture.home.lock().await;
+        assert!(!home
+            .agent_moves
+            .dispatch_fenced(&session, &fixture.agent_id));
+        assert!(home
+            .agents()
+            .get_agent(&fixture.agent_id)
+            .unwrap()
+            .remote_execution()
+            .is_none());
+        assert!(home.providers().list_runs().is_empty());
+    }
+    assert_eq!(std::fs::read_link(original.join("input")).unwrap(), outside);
+    assert_eq!(std::fs::read(&outside).unwrap(), b"preserve outside");
+    std::fs::remove_file(original.join("input")).unwrap();
+    std::fs::write(original.join("input"), b"repaired source").unwrap();
+    move_request(&fixture, &session, true).await;
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "complete"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_rollback_home_restart() {
+    rollback_crash_boundary("rolled_back").await;
+}
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_rollback_source_release_restart() {
+    rollback_crash_boundary("source:released").await;
 }

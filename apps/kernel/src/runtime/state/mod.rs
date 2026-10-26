@@ -34,6 +34,8 @@ mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
+#[cfg(test)]
+mod agent_move_launch_tests;
 mod agent_move_peer;
 mod agent_move_runtime;
 mod agent_move_source;

@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn mk03_move_peer_binds_generation_to_authenticated_home_owner_and_key() {
+async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
     let home = DaemonConfig::for_tests();
     let target = DaemonConfig::for_tests();
     let app = Arc::new(Mutex::new(
@@ -69,5 +69,119 @@ async fn mk03_move_peer_binds_generation_to_authenticated_home_owner_and_key() {
             );
         }
     }
+    let mut capture = crate::agent_move::AgentMoveCapture {
+        identity: identity.clone(),
+        source_project_id: "project".into(),
+        archive_project_id: "project".into(),
+        source_provider_run_id: None,
+        source_repositories: Vec::new(),
+        workspace: crate::agent_move::AgentMoveArtifact {
+            sha256: "0".repeat(64),
+            size_bytes: u64::MAX,
+        },
+        native: None,
+        checkpoint_binding: None,
+    };
+    use crate::agent_move::peer::{AgentMoveChunk, AgentMovePeerRequest as Request};
+    let response = send_authenticated_peer_request_for_test(
+        &router,
+        &state,
+        &sender,
+        &temporary_home,
+        caller.clone(),
+        &home.relay_private_key,
+        &target.relay_public_key,
+        RelayPeerRequest::AgentMove {
+            request: Request::BeginTarget {
+                capture: Box::new(capture.clone()),
+            },
+        },
+    )
+    .await;
+    assert!(
+        !matches!(&response, Ok(RelayPeerResponse::AgentMove { .. })),
+        "staging must refuse a transfer larger than available disk: {response:?}"
+    );
+    assert!(
+        format!("{response:?}").contains("space"),
+        "capacity rejection must identify free space"
+    );
     assert!(app.lock().await.agent_moves.targets().is_empty());
+    assert!(!target
+        .private_runtime_state_root()
+        .join("move-workspaces")
+        .exists());
+    assert!(!app
+        .lock()
+        .await
+        .agent_moves
+        .artifact_root(&identity.operation_id)
+        .exists());
+
+    capture.workspace.size_bytes = 1;
+    let prepared = send_authenticated_peer_request_for_test(
+        &router,
+        &state,
+        &sender,
+        &temporary_home,
+        caller.clone(),
+        &home.relay_private_key,
+        &target.relay_public_key,
+        RelayPeerRequest::AgentMove {
+            request: Request::BeginTarget {
+                capture: Box::new(capture),
+            },
+        },
+    )
+    .await;
+    assert!(matches!(
+        prepared,
+        Ok(RelayPeerResponse::AgentMove {
+            response: crate::agent_move::peer::AgentMovePeerResponse::TargetPrepared
+        })
+    ));
+    let mut stale = identity.clone();
+    stale.generation += 1;
+    for request in [
+        Request::WriteChunk {
+            identity: stale.clone(),
+            kind: crate::agent_move::AgentMoveArtifactKind::Workspace,
+            chunk: AgentMoveChunk {
+                offset: 0,
+                bytes: vec![42],
+            },
+        },
+        Request::PublishTarget {
+            identity: stale.clone(),
+        },
+        Request::ActivateTarget {
+            identity: stale.clone(),
+        },
+    ] {
+        let response = send_authenticated_peer_request_for_test(
+            &router,
+            &state,
+            &sender,
+            &temporary_home,
+            caller.clone(),
+            &home.relay_private_key,
+            &target.relay_public_key,
+            RelayPeerRequest::AgentMove { request },
+        )
+        .await;
+        assert!(
+            !matches!(&response, Ok(RelayPeerResponse::AgentMove { .. })),
+            "stale generation cannot mutate its target: {response:?}"
+        );
+        assert!(format!("{response:?}").contains("generation changed"));
+    }
+    let target = app
+        .lock()
+        .await
+        .agent_moves
+        .target(&identity.operation_id)
+        .unwrap();
+    assert_eq!(target.capture.identity.generation, 1);
+    assert!(!target.active && !target.ready && target.receipt.is_none());
+    assert!(!target.destination_root.exists());
 }

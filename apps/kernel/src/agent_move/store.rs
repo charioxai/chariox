@@ -193,9 +193,24 @@ impl AgentMoveStore {
             &self.record_path(&source.identity.operation_id, "source"),
             &source,
         )?;
+        #[cfg(test)]
+        let phase = if source.retired {
+            "source:retired"
+        } else if source.released {
+            "source:released"
+        } else if source.capture.is_some() {
+            "source:captured"
+        } else if source.stopped {
+            "source:stopped"
+        } else {
+            "source:prepared"
+        };
         records
             .sources
             .insert(source.identity.operation_id.clone(), source);
+        drop(records);
+        #[cfg(test)]
+        self.crash_at_named_boundary_for_test(phase);
         Ok(())
     }
 
@@ -220,9 +235,26 @@ impl AgentMoveStore {
             &self.record_path(&target.capture.identity.operation_id, "target"),
             &target,
         )?;
+        #[cfg(test)]
+        let phase = if target.retired {
+            "target:retired"
+        } else if target.active {
+            "target:active"
+        } else if target.ready {
+            "target:ready"
+        } else if target.backing_agent_id.is_some() {
+            "target:attached"
+        } else if target.receipt.is_some() {
+            "target:materialized"
+        } else {
+            "target:reserved"
+        };
         records
             .targets
             .insert(target.capture.identity.operation_id.clone(), target);
+        drop(records);
+        #[cfg(test)]
+        self.crash_at_named_boundary_for_test(phase);
         Ok(())
     }
 
@@ -452,6 +484,10 @@ impl AgentMoveStore {
             HomeMovePhase::Complete { .. } => "complete",
             HomeMovePhase::RolledBack { .. } => "rolled_back",
         };
+        self.crash_at_named_boundary_for_test(name);
+    }
+
+    fn crash_at_named_boundary_for_test(&self, name: &str) {
         let marker = self.root.join("crash-after-phase-for-test");
         let crash = fs::read_to_string(&marker).is_ok_and(|requested| requested.trim() == name);
         if crash {
