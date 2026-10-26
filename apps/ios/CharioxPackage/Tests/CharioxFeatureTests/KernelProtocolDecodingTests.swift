@@ -673,3 +673,22 @@ import Testing
     #expect(records[0].agentID == "agent-1")
     #expect(records[0].text == "Hello")
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: Stop may cancel a parked task.
+@Test func agentTaskUpdatedResponseDecodesCancelledTask() throws {
+    let json = """
+    {
+      "type": "response",
+      "request_id": "request-stop",
+      "response": {
+        "AgentTaskUpdated": {
+          "session_id": "session-1",
+          "task": { "task_id": "parked-task", "state": "Cancelled" }
+        }
+      },
+      "error": null
+    }
+    """
+    let frame = try KernelProtocolCodec.decodeResponseFrame(Data(json.utf8))
+    #expect(frame.response == .agentTaskUpdated(taskID: "parked-task"))
+}

@@ -390,10 +390,14 @@ public final class CharioxAppModel {
         .cancelActivePrompt(sessionID: session.id, attachmentID: attachment.id),
         to: try endpointURL()
       )
-      guard case .promptCancelled = response else {
+      switch response {
+      case .promptCancelled:
+        return "Cancellation requested."
+      case .agentTaskUpdated(let taskID):
+        return "Cancelled task \(taskID)."
+      default:
         throw KernelClientError.unexpectedResponse(String(describing: response))
       }
-      return "Cancellation requested."
     }
   }
 
