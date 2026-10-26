@@ -88,6 +88,15 @@ async fn sudo_goal_resume_refuses_unsettled_goal_before_passkey() {
 
 #[tokio::test]
 async fn sudo_goal_resume_reauthorizes_existing_goal() {
+    reauthorize_existing_goal(false).await;
+}
+
+#[tokio::test]
+async fn sudo_goal_resume_never_starts_ordinary_work_when_busy_turn_settles() {
+    reauthorize_existing_goal(true).await;
+}
+
+async fn reauthorize_existing_goal(settle_after_busy: bool) {
     let f = fixture_with_options(None, true);
     let original = blocked_task(&f, true);
     let mut request = f.request.clone();
@@ -101,6 +110,32 @@ async fn sudo_goal_resume_reauthorizes_existing_goal() {
     let consent = tokio::time::timeout(Duration::from_secs(2), popup(&f.state))
         .await
         .unwrap();
+    if settle_after_busy {
+        let session = f
+            .state
+            .owned
+            .session_store
+            .get_session(&f.request.session_id)
+            .unwrap();
+        f.state
+            .owned
+            .prompt_state_owner
+            .sync_external_active_prompt(
+                &session,
+                &original.agent_id,
+                Some(PromptQueueItem::new(
+                    "finishing-turn",
+                    &f.request.attachment_id,
+                    &original.agent_id,
+                    "Previous work finishing",
+                    PromptStatus::Running,
+                )),
+            );
+        super::entry::SETTLE_AFTER_BUSY_FOR_TEST
+            .lock()
+            .unwrap()
+            .insert(session.id().into());
+    }
     super::window_tests::approve(&f, &consent, None)
         .await
         .unwrap();
