@@ -329,6 +329,24 @@ test("workflow composer excludes agent navigation and editing shortcuts", () => 
   }
 })
 
+for (const promptFocused of [false, true]) {
+  for (const taskOwned of [false, true]) {
+    test(`question Ctrl+C preserves ${taskOwned ? "async stop" : "blocking input"} with prompt focus ${promptFocused}`, () => {
+      const h = createHarness({
+        parsedEvent: keyEvent("c", { ctrl: true }),
+        promptFocused,
+        focusedInteractionActive: true,
+        focusedInteractionTaskOwned: taskOwned,
+        focusedInteractionHandled: true,
+        activeTurnWork: true,
+      })
+      h.controller.handleData("\u0003")
+      assert.equal(h.calls().includes("stop"), taskOwned)
+      assert(!h.calls().includes("exit"))
+    })
+  }
+}
+
 function createHarness(options: {
   roomWorkflowInput?: boolean
   parsedEvent?: CliStdinKeyEvent | null
@@ -337,6 +355,7 @@ function createHarness(options: {
   dialogOpen?: boolean
   sessionBrowserHandled?: boolean
   focusedInteractionActive?: boolean
+  focusedInteractionTaskOwned?: boolean
   focusedInteractionHandled?: boolean
   queuedPromptHandled?: boolean
   onQueuedPromptKey?: (event: CliStdinKeyEvent) => boolean
@@ -382,6 +401,7 @@ function createHarness(options: {
       calls.push("exit")
     },
     focusedInteractionActive: () => options.focusedInteractionActive ?? false,
+    focusedInteractionTaskOwned: () => options.focusedInteractionTaskOwned ?? false,
     handleFocusedInteractionKey: (event) => {
       calls.push(`focused:${event.name}`)
       return options.focusedInteractionHandled ?? false

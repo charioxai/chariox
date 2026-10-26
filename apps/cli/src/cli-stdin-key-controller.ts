@@ -25,6 +25,7 @@ export type CliStdinKeyControllerDeps = {
   handleSessionBrowserKey: (event: CliStdinKeyEvent) => boolean
   requestExit: () => void
   focusedInteractionActive: () => boolean
+  focusedInteractionTaskOwned: () => boolean
   handleFocusedInteractionKey: (event: CliStdinKeyEvent) => boolean
   handleQueuedPromptKey: (event: CliStdinKeyEvent) => boolean
   promptFocused: () => boolean
@@ -95,6 +96,12 @@ export function createCliStdinKeyController(
     }
     // Meta+C shares Alt+C with queued-prompt cancel; a selection wins.
     if (event.eventType !== "release" && copyKey && deps.copyPromptSelection()) {
+      return true
+    }
+    // A task-owned question must not hide the running agent's stop shortcut.
+    if (event.eventType !== "release" && event.ctrl && event.name === "c"
+      && deps.focusedInteractionTaskOwned() && deps.hasActiveTurnWork()) {
+      deps.requestPromptStop()
       return true
     }
     // The focused textarea receives the same terminal key through its

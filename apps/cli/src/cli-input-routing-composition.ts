@@ -781,6 +781,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.requestExit()
     },
     focusedInteractionActive: () => Boolean(deps.focusedAgentInteraction()),
+    focusedInteractionTaskOwned: () => Boolean(deps.focusedAgentInteraction()?.asking_task_id),
     handleFocusedInteractionKey,
     handleQueuedPromptKey: deps.handleQueuedPromptKey,
     promptFocused: deps.promptInputRefController.isFocused,
