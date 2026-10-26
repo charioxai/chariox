@@ -118,6 +118,8 @@ fn too_large(size: u64) -> DaemonError {
 }
 
 pub(crate) fn read(request: &ReadKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
     if request.length > KERNEL_FILE_MAX_CHUNK_BYTES {
         return Err(fail(
             "file_chunk_too_large",
@@ -125,7 +127,12 @@ pub(crate) fn read(request: &ReadKernelFileRequest) -> Result<LocalDaemonRespons
         ));
     }
     let path = resolve(&request.path)?;
-    let mut file = std::fs::File::open(&path).map_err(|e| io_failure(&path, &e))?;
+    // Inspect the opened descriptor without waiting for a FIFO's writer.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|e| io_failure(&path, &e))?;
     let metadata = file.metadata().map_err(|e| io_failure(&path, &e))?;
     if !metadata.is_file() {
         return Err(fail(
@@ -189,7 +196,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .append(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(partial)
     {
         Ok(file) => file,
@@ -622,6 +629,40 @@ mod tests {
             length: 1,
         };
         assert_eq!(code(read(&directory).unwrap_err()), "file_not_a_file");
+    }
+
+    #[test]
+    fn a_fifo_without_a_writer_is_rejected_without_blocking() {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::time::Duration;
+
+        let dir = scratch();
+        let fifo = dir.join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: name is a valid NUL-terminated path and mode is a valid permission mask.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let request = ReadKernelFileRequest {
+            path: fifo.display().to_string(),
+            offset: 0,
+            length: 0,
+        };
+        let (send, receive) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || send.send(read(&request)).unwrap());
+        let result = receive.recv_timeout(Duration::from_secs(1));
+        // Release a blocking regression before failing so the test leaves no stuck thread.
+        let release = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        reader.join().unwrap();
+        drop(release);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(
+            code(result.expect("FIFO read blocked").unwrap_err()),
+            "file_not_a_file"
+        );
     }
 
     // EA2-07 review: the staging name is predictable, so another user of a shared
