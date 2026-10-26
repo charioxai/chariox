@@ -145,6 +145,8 @@ try {
     assert.equal(await evaluate(`document.querySelectorAll('[role="dialog"] input').length`), 2, 'CSV export uses the existing Univer dialog inside the App sandbox');
     const dialogFonts = await evaluate(`(() => { const d=document.querySelector('[role="dialog"]'); return {title:getComputedStyle(d.querySelector('h2')).fontFamily,input:getComputedStyle(d.querySelector('input')).fontFamily}; })()`);
     assert.equal(dialogFonts.title, dialogFonts.input, 'dialog title and input use the same UI font');
+    const fieldGap = await evaluate(`(() => { const fields=[...document.querySelectorAll('[role="dialog"] label')]; const text=document.createRange(); text.selectNodeContents(fields[1].firstChild); return text.getBoundingClientRect().top-fields[0].querySelector('input').getBoundingClientRect().bottom; })()`);
+    assert.ok(fieldGap >= 8, `CSV fields have a visible gap (${fieldGap}px)`);
     const popup = await cdp('Page.captureScreenshot', { format: 'png' });
     await writeFile(path.join(evidence, `export-dialog-dpr${dpr}.png`), Buffer.from(popup.data, 'base64'));
     const exportConfirm = await evaluate(`(() => { const el=[...document.querySelectorAll('[role="dialog"] button')].find(e=>e.textContent.trim()==='Export'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);

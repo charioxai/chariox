@@ -12,13 +12,13 @@ export function fileDialogs(confirm) {
     }),
     async export(format) {
       let name = format === 'csv' ? 'Workbook.csv' : 'Workbook.univer.json', range = '';
-      const fields = [h('label', { key: 'name' }, 'Export filename',
+      const fields = [h('label', { key: 'name', className: 'univer-flex univer-flex-col univer-gap-1' }, 'Export filename',
         h(Input, { 'aria-label': 'Export filename', defaultValue: name, onChange: value => { name = value; } }))];
-      if (format === 'csv') fields.push(h('label', { key: 'range' }, 'CSV range (blank for used cells; at most 1,000 cells)',
+      if (format === 'csv') fields.push(h('label', { key: 'range', className: 'univer-flex univer-flex-col univer-gap-1' }, 'CSV range (blank for used cells; at most 1,000 cells)',
         h(Input, { 'aria-label': 'CSV range', defaultValue: '', onChange: value => { range = value; } })));
       const accepted = await confirm({
         id: 'chariox-export', title: { title: format === 'csv' ? 'Export CSV' : 'Export workbook' },
-        children: { title: h('div', null, ...fields) }, confirmText: 'Export', cancelText: 'Cancel', width: 480,
+        children: { title: h('div', { className: 'univer-flex univer-flex-col univer-gap-3' }, ...fields) }, confirmText: 'Export', cancelText: 'Cancel', width: 480,
       });
       return accepted ? { name, offer: true, ...(range.trim() ? { range: range.trim().toUpperCase() } : {}) } : null;
     },
