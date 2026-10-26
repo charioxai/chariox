@@ -140,6 +140,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         }
                     };
                     let next_check_in = t.goal.as_ref().and_then(|goal| goal.next_check_in_ms);
+                    let source_deadline = if let Some(wait) = t.wait.as_ref() {
+                        wakes::source_deadline(tx, &t, &wait.registration_ids)?
+                    } else {
+                        None
+                    };
                     if let Some(w) = t.wait.as_mut() {
                         if !w.long_wait_notified
                             && now.saturating_sub(t.last_progress_at_ms) >= LONG_WAIT_MS
@@ -158,7 +163,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                         let check_in = next_check_in.filter(|due| {
                             *due <= now
-                                && w.deadline_ms > now
+                                && source_deadline.is_none_or(|deadline| deadline > now)
                                 && !dead
                                 && now >= w.started_at_ms
                                 && !clock_rollback
