@@ -121,3 +121,40 @@ test("request preserves the selected peer when focus changes while cancellation 
   assert.equal(target, "peer")
   assert.equal(notified, "peer")
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 G02: a parked task has no active provider prompt.
+test("request stops parked work on the focused agent and preserves that target across I/O", async () => {
+  let focused = "parked-peer"
+  let target: string | null | undefined
+  let notified: string | null = null
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  const controller = createPromptStopController({
+    getAttachment: () => ({ id: "terminal" }), getActivePrompt: () => null,
+    getSessionId: () => "room", getFallbackStreamingAgentId: () => "other-stream",
+    getCancellableTaskAgentId: () => focused,
+    cancelActivePrompt: async (_room, _terminal, agent) => { target = agent; await pending },
+    onCancellationRequested: (agent) => { notified = agent }, onCancellationFailed: () => {},
+  })
+  const requested = controller.request()
+  focused = "other-peer"
+  assert.equal(await controller.request(), false)
+  release()
+  assert.equal(await requested, true)
+  assert.equal(target, "parked-peer")
+  assert.equal(notified, "parked-peer")
+})
+
+test("request reports when the focused agent has no work to stop", async () => {
+  let idle = 0
+  const controller = createPromptStopController({
+    getAttachment: () => ({ id: "terminal" }), getActivePrompt: () => null,
+    getSessionId: () => "room", getFallbackStreamingAgentId: () => "unrelated-stream",
+    getCancellableTaskAgentId: () => null,
+    onNothingToCancel: () => { idle += 1 },
+    cancelActivePrompt: async () => { assert.fail("no work") },
+    onCancellationRequested: () => {}, onCancellationFailed: () => {},
+  })
+  assert.equal(await controller.request(), false)
+  assert.equal(idle, 1)
+})
