@@ -9,6 +9,9 @@ use std::{
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--spawn-probe") {
+        return;
+    }
     if args.get(1).is_some_and(|arg| arg == "--child") {
         child(&args[2], &args[3]);
         return;
@@ -20,6 +23,21 @@ fn main() {
     fs::create_dir_all(&root).unwrap();
     let outside = root.join("outside");
     fs::write(&outside, b"not an App file").unwrap();
+    // Offline compilation may start platform runtime threads. The contained
+    // child must only read these trusted bytes before entering its boundary,
+    // just as a supervisor prepares the production AOT input.
+    let aot = root.join("trusted.aot");
+    let engine = chariox_app_wasm_worker::engine::engine().unwrap();
+    fs::write(
+        &aot,
+        engine
+            .precompile_module(
+                &wat::parse_str("(module (func (export \"answer\") (result i32) i32.const 42))")
+                    .unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
     let executable = std::env::current_exe().unwrap();
     let mut failures = 0;
     for scenario in ["authority", "memory", "cpu", "file", "aot"] {
@@ -36,6 +54,7 @@ fn main() {
             command
                 .args(["--child", scenario, mode])
                 .env("PROBE_OUTSIDE", &outside)
+                .env("PROBE_AOT", &aot)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -92,6 +111,7 @@ fn main() {
 
 fn child(scenario: &str, mode: &str) {
     let outside = std::env::var("PROBE_OUTSIDE").unwrap();
+    let executable = std::env::current_exe().unwrap();
     let (mut reader, mut writer) = UnixStream::pair().unwrap();
     // The worker must discard even an accidentally inherited outside-file FD.
     // A path-only policy would leave this descriptor usable.
@@ -102,17 +122,7 @@ fn child(scenario: &str, mode: &str) {
         libc::close(outside_fd);
     }
     let aot = if scenario == "aot" {
-        let engine = chariox_app_wasm_worker::engine::engine().unwrap();
-        Some(
-            engine
-                .precompile_module(
-                    &wat::parse_str(
-                        "(module (func (export \"answer\") (result i32) i32.const 42))",
-                    )
-                    .unwrap(),
-                )
-                .unwrap(),
-        )
+        Some(fs::read(std::env::var_os("PROBE_AOT").unwrap()).unwrap())
     } else {
         None
     };
@@ -146,10 +156,14 @@ fn child(scenario: &str, mode: &str) {
                     libc::close(socket);
                 }
             }
-            let spawned = Command::new("/bin/true").status();
-            assert_eq!(spawned.is_err(), green, "native process spawn");
+            let spawned = Command::new(executable)
+                .arg("--spawn-probe")
+                .status();
+            assert_eq!(spawned.is_err(), green, "native process spawn: {spawned:?}");
             if green {
                 assert_eq!(spawned.unwrap_err().raw_os_error(), Some(libc::EPERM));
+            } else {
+                assert!(spawned.unwrap().success());
             }
             #[cfg(target_os = "linux")]
             if green {
@@ -292,7 +306,7 @@ fn child(scenario: &str, mode: &str) {
         }
         "aot" => {
             let engine = chariox_app_wasm_worker::engine::engine().unwrap();
-            // These bytes were precompiled by this exact process/engine above,
+            // These bytes were precompiled by this exact executable/config,
             // never read from a package or an unverified native cache.
             let module =
                 unsafe { wasmtime::Module::deserialize(&engine, aot.as_ref().unwrap()) }.unwrap();
