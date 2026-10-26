@@ -44,7 +44,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "b5705b2b1d3a16cf6e0f0d8588ef424051dfa9d9e7f65c35dea59a68b7b90bbb"
+        "326fefe14e534d9147aa0dc67961bda9f3b137451eb9ff467fa0394394e14c7c"
     );
 }
 

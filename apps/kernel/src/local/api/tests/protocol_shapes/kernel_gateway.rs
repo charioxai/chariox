@@ -107,7 +107,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "3392afcfcfdb6b3ad9ef9e89adc30abee92ee909715109eb6d926426ccb61d44"
+        "6c0f3deb362a23035220269665f470086bee1b85b302c0b288c13eb6387827c5"
     );
 }
 
@@ -132,7 +132,13 @@ fn outside_event_requests_are_typed() {
 // EA2-76: requests taken out of the protocol are unknown, not ignored.
 #[test]
 fn removed_requests_are_unknown() {
-    for name in ["ListEvents", "StatKernelFile", "ListKernelDirectory"] {
+    for name in [
+        "ListEvents",
+        "StatKernelFile",
+        "ListKernelDirectory",
+        "SetAgentDeadline",
+        "GetAgentDeadline",
+    ] {
         let parsed = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({name: {}}));
         let error = parsed.expect_err(name).to_string();
         assert!(error.contains("unknown variant"), "{name}: {error}");
@@ -183,7 +189,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "bad840c36f8e160f55a1a5c29b3f30064decfa2a677c9fa7bb4ded52241834bb"
+        "2f8ce68bcfd82c515e8679ea0b7b55a4998d95a328d13ef264666cb32a4b1a9b"
     );
 }
 
