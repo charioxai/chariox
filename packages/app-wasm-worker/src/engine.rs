@@ -1,6 +1,10 @@
 use wasmtime::{component::Component, Config, Engine};
 
 pub fn engine() -> wasmtime::Result<Engine> {
+    Engine::new(&configuration())
+}
+
+pub(crate) fn configuration() -> Config {
     let mut config = Config::new();
     config.wasm_component_model_async(true);
     config.epoch_interruption(true);
@@ -11,7 +15,7 @@ pub fn engine() -> wasmtime::Result<Engine> {
     config.memory_guard_size(64 << 10);
     // No memfd or filesystem backing escapes the native file-size ceiling.
     config.memory_init_cow(false);
-    Engine::new(&config)
+    config
 }
 
 /// Offline preflight uses the same admission and engine as execution.
@@ -25,5 +29,9 @@ pub fn check(bytes: &[u8], world: &str) -> wasmtime::Result<Component> {
 pub const ENGINE_CONFIG: &str = "wasmtime=50.0.0;component-model-async=true;epoch-interruption=true;compiler=cranelift;cpu=native;memory-reservation=0;memory-reservation-for-growth=4194304;memory-guard-size=65536;memory-init-cow=false";
 pub fn configuration_digest() -> String {
     use sha2::{Digest, Sha256};
-    format!("sha256:{:x}", Sha256::digest(ENGINE_CONFIG.as_bytes()))
+    let mut digest = Sha256::new();
+    digest.update(ENGINE_CONFIG.as_bytes());
+    #[cfg(target_os = "macos")]
+    digest.update(b";macos-code=map-jit-v1");
+    format!("sha256:{:x}", digest.finalize())
 }

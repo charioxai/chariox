@@ -40,12 +40,17 @@ impl RetryPolicy {
 }
 pub struct WorkerEngine {
     engine: Engine,
+    #[cfg(target_os = "macos")]
+    code: Arc<crate::macos_code::JitCode>,
     stop: Arc<AtomicBool>,
     ticker: Option<std::thread::JoinHandle<()>>,
 }
 impl WorkerEngine {
     pub fn new() -> wasmtime::Result<Self> {
+        #[cfg(not(target_os = "macos"))]
         let engine = crate::engine::engine()?;
+        #[cfg(target_os = "macos")]
+        let (engine, code) = crate::macos_code::engine()?;
         let ticking = engine.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
@@ -59,6 +64,8 @@ impl WorkerEngine {
             })?;
         Ok(Self {
             engine,
+            #[cfg(target_os = "macos")]
+            code,
             stop,
             ticker: Some(ticker),
         })
@@ -68,7 +75,28 @@ impl WorkerEngine {
     }
     pub fn compile(&self, bytes: &[u8], world: &str) -> wasmtime::Result<Component> {
         chariox_app_wit::check_component(bytes, world)?;
+        #[cfg(target_os = "macos")]
+        {
+            let compiled = self.engine.precompile_component(bytes)?;
+            // The bytes were just produced by this engine, never supplied as
+            // native code by an App package.
+            return unsafe { self.code.component(&self.engine, &compiled) };
+        }
+        #[cfg(not(target_os = "macos"))]
         Component::new(&self.engine, bytes)
+    }
+    /// Load a module produced by this exact engine/configuration.
+    ///
+    /// # Safety
+    /// The caller must authenticate the artifact's compiler/configuration and
+    /// integrity. App package bytes must never enter this native-code API.
+    pub unsafe fn deserialize_module(&self, bytes: &[u8]) -> wasmtime::Result<wasmtime::Module> {
+        #[cfg(target_os = "macos")]
+        return unsafe { self.code.module(&self.engine, bytes) };
+        #[cfg(not(target_os = "macos"))]
+        unsafe {
+            wasmtime::Module::deserialize(&self.engine, bytes)
+        }
     }
     pub fn precompile(&self, bytes: &[u8], world: &str) -> wasmtime::Result<Vec<u8>> {
         chariox_app_wit::check_component(bytes, world)?;

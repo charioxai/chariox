@@ -109,6 +109,14 @@ The Mac native memory probe reports this gap explicitly; it does not claim an
 ENOMEM boundary. Guest linear-memory limits remain enforced by Wasmtime.
 R4 must retain its kernel memory monitor; this worker alone does not bound
 native compiler/runtime allocations on macOS.
+Hardened macOS execution uses only `allow-jit`: compiler output is copied into
+owned anonymous `MAP_JIT` memory via Wasmtime's public `deserialize_raw` API.
+A custom publisher makes only the aligned text executable; metadata stays
+read-only. Apple Silicon write protection is disabled only on the copying
+thread and restored before publication. The publisher retains the allocations
+for the lifetime of every engine/module/component reference and unwind record.
+App-supplied native artifacts never enter this path. R4 must authenticate any
+cached AOT input before deserializing it under this platform/configuration key.
 The worker introduces no lifetime CPU budget: a healthy long-lived generation
 must not expire after accumulated successful calls. Epoch slices and call
 deadlines bound guest CPU; R4 retains supervisor monitoring for native runaways.

@@ -28,10 +28,11 @@ fn main() {
     // child must only read these trusted bytes before entering its boundary,
     // just as a supervisor prepares the production AOT input.
     let aot = root.join("trusted.aot");
-    let engine = chariox_app_wasm_worker::engine::engine().unwrap();
+    let compiler = chariox_app_wasm_worker::worker::WorkerEngine::new().unwrap();
     fs::write(
         &aot,
-        engine
+        compiler
+            .engine()
             .precompile_module(
                 &wat::parse_str("(module (func (export \"answer\") (result i32) i32.const 42))")
                     .unwrap(),
@@ -39,6 +40,7 @@ fn main() {
             .unwrap(),
     )
     .unwrap();
+    drop(compiler);
     let executable = std::env::current_exe().unwrap();
     let mut failures = 0;
     for scenario in [
@@ -382,12 +384,11 @@ fn child(scenario: &str, mode: &str) {
             std::io::stdout().write_all(&[b'x'; 8192]).unwrap();
         }
         "aot" => {
-            let engine = chariox_app_wasm_worker::engine::engine().unwrap();
+            let engine = chariox_app_wasm_worker::worker::WorkerEngine::new().unwrap();
             // These bytes were precompiled by this exact executable/config,
             // never read from a package or an unverified native cache.
-            let module =
-                unsafe { wasmtime::Module::deserialize(&engine, aot.as_ref().unwrap()) }.unwrap();
-            let mut store = wasmtime::Store::new(&engine, ());
+            let module = unsafe { engine.deserialize_module(aot.as_ref().unwrap()) }.unwrap();
+            let mut store = wasmtime::Store::new(engine.engine(), ());
             store.set_epoch_deadline(u64::MAX);
             let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
             assert_eq!(
