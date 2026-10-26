@@ -364,6 +364,7 @@ impl KernelRuntimeState {
                 Some(self.app_binding_epoch(agent.id(), target)),
             );
             authority.check()?;
+            let mut retired = None;
             let existing = match self.bound_view(agent, target) {
                 Ok(context) => {
                     // The drain can lag idle retirement. Registrations run no App
@@ -375,7 +376,10 @@ impl KernelRuntimeState {
                         Ok(_) => Some(context.target),
                         // Open waits for retirement; a failed close leaves the
                         // adopted Tab live, including its human restore intent.
-                        Err(error) if error.code == "view_retired" => None,
+                        Err(error) if error.code == "view_retired" => {
+                            retired = Some(context);
+                            None
+                        }
                         Err(error)
                             if error.code == "view_unavailable"
                                 && error.message.contains("unknown App tab") =>
@@ -407,6 +411,15 @@ impl KernelRuntimeState {
                     )
                     .await
                     .map_err(|error| failure("view_unavailable", error.to_string()))?;
+                if let Some(context) = retired {
+                    // A successful close must not leave the old binding for
+                    // the next call or browser-loss restore before the drain.
+                    if opened.target_id != context.target {
+                        self.app_control()
+                            .views()
+                            .unbind(&context.session, &context.target);
+                    }
+                }
                 opened.target_id
             };
             authority.check()?;

@@ -582,12 +582,19 @@ async fn mp08_a3_failed_retirement_keeps_the_adopted_tabs_restore_intent() {
     check_live_binding(LiveBindingCheck::FailedRetirement).await;
 }
 
+// MP-08/MP-09/MP-10/MP-11: retirement must settle bindings before the drain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_successful_retirement_unbinds_the_old_adopted_tab_on_reopen() {
+    check_live_binding(LiveBindingCheck::SuccessfulRetirement).await;
+}
+
 #[derive(PartialEq)]
 enum LiveBindingCheck {
     Catalog,
     Panel,
     RegistrationErrors,
     FailedRetirement,
+    SuccessfulRetirement,
 }
 
 async fn check_live_binding(check: LiveBindingCheck) {
@@ -723,7 +730,9 @@ async fn check_live_binding(check: LiveBindingCheck) {
         }
         if matches!(
             check,
-            LiveBindingCheck::Panel | LiveBindingCheck::FailedRetirement
+            LiveBindingCheck::Panel
+                | LiveBindingCheck::FailedRetirement
+                | LiveBindingCheck::SuccessfulRetirement
         ) {
             rig.runtime
                 .ensure_room_app_view(
@@ -772,6 +781,68 @@ async fn check_live_binding(check: LiveBindingCheck) {
                 "failed retirement must preserve the adopted Tab's restore intent"
             );
             assert_eq!(restoring[0].installation, APP);
+            return;
+        }
+        if check == LiveBindingCheck::SuccessfulRetirement {
+            let views = rig.runtime.app_control().views();
+            let old_tab = crate::session::EnvironmentTab {
+                tab_id: "retired-person-tab".into(),
+                url: "https://app.invalid/".into(),
+                title: "Old App".into(),
+                document_revision: 1,
+                focused: true,
+                app: None,
+            };
+            views.remember_logical_tab(&rig.session, "actor-target", old_tab.clone());
+            std::fs::write(rig.root.join("successful-idle-close"), "").unwrap();
+            let context = rig.runtime.view_context(&rig.agent, APP).await.unwrap();
+            assert_eq!(context.target, "actor-target-2");
+            assert!(
+                views.binding_state(&rig.session, "actor-target").is_none(),
+                "a successful close must unbind the old adopted Tab before the drain"
+            );
+            assert_eq!(views.bound_views(&rig.session).len(), 1);
+            let opened = || std::fs::read_to_string(rig.root.join("app-opens")).unwrap();
+            let before = opened();
+            assert!(views.request_panel(
+                &rig.session,
+                &context.target,
+                crate::runtime::app_views::PanelRequest {
+                    placement: Some(crate::session::AppPanelPlacement::Bottom),
+                    size: Some(275),
+                }
+            ));
+            assert!(views.first_call(&rig.session, &context.target));
+            let layouts = views.layouts(&rig.session);
+            let state = rig
+                .runtime
+                .app_view_tool(&rig.run, &rig.agent, STATE, json!({"view": APP}))
+                .await
+                .unwrap();
+            assert_eq!(state, json!({"ready": true}));
+            assert_eq!(opened(), before, "the next agent call sends no second Open");
+            assert_eq!(views.layouts(&rig.session), layouts);
+            assert!(!views.first_call(&rig.session, &context.target));
+            // The person adopts the replacement before the next drain. Browser
+            // loss must restore this document, never the successfully closed one.
+            rig.runtime
+                .ensure_room_app_view(
+                    "alice",
+                    &rig.session,
+                    APP,
+                    crate::runtime::browser_controller_app_view::AppViewProjection::Human,
+                )
+                .await
+                .unwrap();
+            let new_tab = crate::session::EnvironmentTab {
+                tab_id: "replacement-person-tab".into(),
+                ..old_tab
+            };
+            views.remember_logical_tab(&rig.session, &context.target, new_tab.clone());
+            views.suspend_for_cold_start(&rig.session);
+            let restoring = views.cold_start_views(&rig.session);
+            assert_eq!(restoring.len(), 1);
+            assert_eq!(restoring[0].logical_tab, Some(new_tab));
             return;
         }
         let opens = || {

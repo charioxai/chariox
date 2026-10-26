@@ -13,7 +13,7 @@ AppTabs.prototype.agent = async function (params) {
   if (params.call === 'registrations' && existsSync(join(root, 'registration-error'))) {
     throw new Error('registration-vault-value');
   }
-  if (!retirement && existsSync(join(root, 'fail-idle-close'))) {
+  if (!retirement && (existsSync(join(root, 'fail-idle-close')) || existsSync(join(root, 'successful-idle-close')))) {
     const app = [...this.apps.values()].find(app => app.targetId === params.target_id);
     app.lastActivity = this.now() - this.idleMs;
     retirement = this.retireIdle();
@@ -28,7 +28,7 @@ AppTabs.prototype.open = function (params) {
   return originalOpen.call(this, params);
 };
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, 'browser-controller.mjs')));
-let listener, bridge, context;
+let listener, bridge, context, targets = 0;
 const resume = () => new Promise(resolve => {
   const wait = () => existsSync(join(root, 'resume-handler')) ? resolve() : setTimeout(wait, 10);
   wait();
@@ -38,7 +38,7 @@ const connection = {
   subscribe(fn) { listener = fn; return () => { listener = undefined; }; },
   async send(method, params = {}, sessionId) {
     if (method === 'Target.getTargets') return { targetInfos: [] };
-    if (method === 'Target.createTarget') return { targetId: 'actor-target' };
+    if (method === 'Target.createTarget') return { targetId: ++targets === 1 ? 'actor-target' : 'actor-target-2' };
     if (method === 'Browser.getWindowForTarget') return { windowId: 1 };
     if (method === 'Browser.getWindowBounds') return { bounds: { windowState: 'fullscreen' } };
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { loaderId: 'actor-document' } } };
@@ -69,6 +69,8 @@ const browser = {
   closePageTarget: async () => {
     if (existsSync(join(root, 'fail-idle-close'))) {
       await new Promise((_, reject) => { releaseClose = () => reject(new Error('CDP close unavailable')); });
+    } else if (existsSync(join(root, 'successful-idle-close'))) {
+      await new Promise(resolve => { releaseClose = resolve; });
     }
   },
   close: async () => {},
