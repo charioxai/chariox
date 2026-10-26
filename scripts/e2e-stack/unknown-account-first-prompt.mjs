@@ -4,15 +4,18 @@ import { shapedRemoteTui } from './context-switch/remote-tui.mjs';
 
 const label = process.env.UIQA_BUILD_LABEL ?? 'candidate';
 const expectUnverified = process.env.UIQA_EXPECT_UNVERIFIED === '1';
+const loggedOut = process.env.UIQA_LOGGED_OUT === '1';
 const source = process.env.UIQA_CODEX_PROFILE;
-if (!source) throw Error('UIQA_CODEX_PROFILE must name an existing product-linked Codex scope');
+if (!source && !loggedOut) throw Error('UIQA_CODEX_PROFILE must name an existing product-linked Codex scope');
 let run, remote;
-const result = { MP: ['MP-08', 'MP-10', 'MP-11'], status: 'FAIL', expectUnverified };
+const result = { MP: ['MP-08', 'MP-10', 'MP-11'], status: 'FAIL', expectUnverified, loggedOut };
 try {
   run = await stack(label, process.env.UIQA_RUN_NAME ?? `unknown-account-${label}`, 'unused-claude-validation-placeholder');
-  const profile = variant(await run.client.send({ LinkProviderAccountProfile: {
-    provider: 'codex', label: 'fresh-linked-account', path: source,
-  } }), 'ProviderAccountProfile').profile;
+  const profile = variant(await run.client.send(loggedOut
+    ? { CreateProviderAccountProfile: { provider: 'codex', label: 'unsigned-account' } }
+    : { LinkProviderAccountProfile: {
+      provider: 'codex', label: 'fresh-linked-account', path: source,
+    } }), 'ProviderAccountProfile').profile;
   if (profile.auth_state !== 'unknown') throw Error('Link must start with an unknown observation');
   run.profiles.codex = profile.profile_id;
   // Base attachment isolates the prompt seam; candidate runs can create in TUI.
@@ -43,6 +46,21 @@ try {
     if ((await account()).auth_state !== 'unknown') throw Error('Base unexpectedly checked authentication');
     result.status = 'EXPECTED RED';
     result.firstSeam = first.footer.message;
+  } else if (loggedOut) {
+    const observed = await account();
+    if (observed.auth_state !== 'not_configured' || !Number.isInteger(observed.last_validated_at_ms)) {
+      throw Error('Official logged-out status did not persist before refusal');
+    }
+    if (first.footer?.tone !== 'error') throw Error('Unsigned account was not refused');
+    result.firstRefusal = first.footer.message;
+    result.firstCheckedAt = observed.last_validated_at_ms;
+    await run.tui.send('submit_prompt', { prompt: 'This account is still unsigned.' });
+    await sleep(500);
+    await run.capture('second-refusal');
+    const second = await account();
+    if (second.last_validated_at_ms !== observed.last_validated_at_ms) throw Error('Known logged-out account rechecked');
+    result.secondCheckedAt = second.last_validated_at_ms;
+    result.status = 'PASS';
   } else {
     if (first.footer?.tone === 'error') throw Error('First prompt refused: ' + first.footer.message);
     await run.turn('', 'UIQA_FIRST_OK', 180000, false);

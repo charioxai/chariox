@@ -31,6 +31,10 @@ slirp4netns/libslirp tools under `CTXVAL_LANE/ns-tools` for shaped hosted runs.
   the profile unknown. Omit it for the candidate run.
 - `UIQA_CREATE_IN_TUI=1`: create the candidate session through the real TUI's
   normal `--create-session` entry; omission attaches a session prepared by API.
+- `UIQA_LOGGED_OUT=1`: create a new unsigned product profile instead of linking
+  the shared login. Its official status must become `not_configured`, both
+  prompts must be refused, and the second must retain the observation timestamp.
+  This negative case neither signs out nor changes the shared login.
 
 Setup uses public LinkProviderAccountProfile/CreateSession requests; no refresh
 is sent. The action under test is the real compiled TUI's ordinary prompt path,
