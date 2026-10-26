@@ -37,6 +37,7 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
     assert.ok(list.includes(567), "main's protocol (567) must stay reciprocal so an installed 567 kernel can upgrade and roll back")
     assert.ok(list.includes(570), "the preceding C2 must remain reciprocal")
     assert.ok(list.includes(573), "the preceding agent-model protocol (573) must remain reciprocal")
+    assert.ok(list.includes(590), "the preceding acknowledged-drain protocol (590) must remain reciprocal")
     assert.ok(list.includes(localProtocolVersion), "new protocol must include itself")
     // Signed releases F/G/G2 (376, 377, 411), the Apps release (416), main (472, 520) and the display union (552) can be on a machine.
     for (const predecessor of [376, 377, 411, 416, 472, 490, 491, 493, 520, 552]) assert.ok(list.includes(predecessor), `shipped version ${predecessor} must stay reciprocal`)
@@ -68,7 +69,7 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
     assert.equal(transition(join(scratch, "protocol-567"), 567, newRoot, localProtocolVersion), "", "upgrade from main's 567")
     assert.equal(transition(newRoot, localProtocolVersion, join(scratch, "protocol-567"), 567), "", "rollback to main's 567")
     // Released G2 and Apps predecessors are reciprocal; other branch numbers stay refused.
-    for (const version of [312, 325, 333, 339, 342, 368, 369, 370, 371, 372, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 26 }, (_, index) => 436 + index), ...Array.from({ length: 14 }, (_, index) => 473 + index), 488, 489, 492, 495, 496, 499]) {
+    for (const version of [312, 325, 333, 339, 342, 368, 369, 370, 371, 372, 373, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 26 }, (_, index) => 436 + index), ...Array.from({ length: 14 }, (_, index) => 473 + index), 488, 489, 492, 495, 496, 499]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.throws(() => transition(oldRoot, version, newRoot, localProtocolVersion), /not reciprocally authorized/)
       assert.throws(() => transition(newRoot, localProtocolVersion, oldRoot, version), /not reciprocally authorized/)

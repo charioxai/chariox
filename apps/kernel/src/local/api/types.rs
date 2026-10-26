@@ -348,4 +348,5 @@ pub use workspace::*;
 /// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: allocated 573/181 binds leased assessment wire identities to the home check.
 /// MP-08/MP-10/MP-11: allocated 590/196 carries the acknowledged leased projection drain.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 590;
+/// MP-08/MP-10/MP-11: allocated 611/217 binds the leased prompt completion to its exact prompt.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 611;

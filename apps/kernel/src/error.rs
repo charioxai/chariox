@@ -239,6 +239,15 @@ pub enum DaemonError {
     ExecutionLeaseNotFound { lease_id: String },
     #[error("leased agent `{leased_agent_id}` was not found")]
     LeasedAgentNotFound { leased_agent_id: String },
+    #[error(
+        "leased agent `{leased_agent_id}` is not running home prompt `{home_prompt_id}` on worker run `{worker_provider_run_id}`: {reason}"
+    )]
+    LeasedPromptNotCurrent {
+        leased_agent_id: String,
+        home_prompt_id: String,
+        worker_provider_run_id: String,
+        reason: &'static str,
+    },
     #[error("{message}")]
     NoRemoteKernelAvailable {
         machine_ref: String,
@@ -456,3 +465,15 @@ impl DaemonError {
         }
     }
 }
+
+    /// The worker answered that the prompt a completion names is not its current
+    /// one, so the home's prompt already settled there.
+    pub(crate) fn is_leased_prompt_not_current(&self) -> bool {
+        match self {
+            Self::LeasedPromptNotCurrent { .. } => true,
+            Self::RelayTransport { code, .. } => {
+                code == crate::transport::relay_peer::LEASED_PROMPT_NOT_CURRENT_CODE
+            }
+            _ => false,
+        }
+    }

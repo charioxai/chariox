@@ -1296,8 +1296,18 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
-            let completion = router.relay_complete_leased_prompt(&leased_agent_id).await;
+        RelayPeerRequest::CompleteLeasedPrompt {
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        } => {
+            let completion = router
+                .relay_complete_leased_prompt(
+                    &leased_agent_id,
+                    &home_prompt_id,
+                    &worker_provider_run_id,
+                )
+                .await;
             match completion {
                 Ok(completion) => {
                     let provider_run_id = router
@@ -2669,7 +2679,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::DrainLeasedRuntimeProjection {
             leased_agent_id, ..
         }
-        | RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id }
+        | RelayPeerRequest::CompleteLeasedPrompt {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::ObserveLeasedGitAfter {
             leased_agent_id, ..
         }

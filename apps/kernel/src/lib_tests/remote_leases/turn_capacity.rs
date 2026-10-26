@@ -122,7 +122,7 @@ fn turn_at_capacity_waits_and_starts_when_the_running_turn_completes() {
     assert!(waiting(&mut app, &second.id));
 
     RemoteLeaseRuntime::new(&mut app)
-        .complete_leased_prompt(&first.id)
+        .settle_leased_prompt(&first.id)
         .expect("running turn should complete");
     assert!(!waiting(&mut app, &second.id));
     assert!(turn_reached_provider(&app, &second_run));
@@ -188,7 +188,7 @@ fn steering_a_held_turn_is_delivered_when_the_turn_starts() {
     );
 
     RemoteLeaseRuntime::new(&mut app)
-        .complete_leased_prompt(&first.id)
+        .settle_leased_prompt(&first.id)
         .expect("running turn should complete");
     assert!(!waiting(&mut app, &second.id));
 }
@@ -221,7 +221,7 @@ fn cancelling_a_held_turn_settles_it_without_reaching_the_provider() {
     assert_eq!(completions.len(), 1, "the home needs one settlement");
 
     RemoteLeaseRuntime::new(&mut app)
-        .complete_leased_prompt(&first.id)
+        .settle_leased_prompt(&first.id)
         .expect("running turn should complete");
     assert!(!turn_reached_provider(&app, &second_run));
 }

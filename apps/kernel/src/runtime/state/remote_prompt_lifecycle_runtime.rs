@@ -696,6 +696,13 @@ impl KernelRuntimeState {
             }
             Ok(())
         };
+        let completion_worker_run_id = remote_execution
+            .active_worker_provider_run_id
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "complete remote prompt",
+                message: "the worker provider run is not bound yet; retry completion".to_string(),
+            })?;
         let completion_response = self
             .with_app_side_effect(|app| {
                 self.authorize_prompt_command(authority)?;
@@ -710,6 +717,8 @@ impl KernelRuntimeState {
                         },
                         RelayPeerRequest::CompleteLeasedPrompt {
                             leased_agent_id: remote_execution.leased_agent_id.clone(),
+                            home_prompt_id: completion_prompt.id().to_string(),
+                            worker_provider_run_id: completion_worker_run_id,
                         },
                         std::time::Duration::from_millis(relay_config.relay_request_timeout_ms),
                         || self.authorize_prompt_command(authority),
@@ -1024,6 +1033,9 @@ fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bo
 }
 
 fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
+    if error.is_leased_prompt_not_current() {
+        return true;
+    }
     match error {
         DaemonError::NoActivePrompt { .. } => true,
         DaemonError::RelayTransport {

@@ -131,7 +131,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 181 adds exact-home-check assessment wire identities.
 /// MP-08/MP-10/MP-11: allocated 196 acknowledges every leased projection drain, so a
 /// worker keeps drained output until the home applied it.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 196;
+/// MP-08/MP-10/MP-11: allocated 217 binds `CompleteLeasedPrompt` to the exact home prompt and
+/// worker provider run, so a late completion cannot end the prompt that replaced it.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 217;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -143,6 +145,9 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 /// account cannot start work there; repeating the prompt cannot repair it.
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
+/// The worker refused a completion because the prompt it names is not the leased
+/// agent's current prompt (already finished, or replaced by a later one).
+pub const LEASED_PROMPT_NOT_CURRENT_CODE: &str = "leased_prompt_not_current";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
@@ -950,8 +955,11 @@ pub enum RelayPeerRequest {
         /// agent. The worker keeps a drained projection until this acknowledges it.
         acknowledged_projection_sequence: u64,
     },
+    /// Peer 217: names the exact prompt it completes, like `CancelLeasedPrompt`.
     CompleteLeasedPrompt {
         leased_agent_id: String,
+        home_prompt_id: String,
+        worker_provider_run_id: String,
     },
     ObserveLeasedGitAfter {
         leased_agent_id: String,

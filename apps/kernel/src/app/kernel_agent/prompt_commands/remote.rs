@@ -212,6 +212,13 @@ impl<'a> KernelAgentService<'a> {
             Ok(())
         };
         revalidate(self.app)?;
+        let completion_worker_run_id = remote_execution
+            .active_worker_provider_run_id
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "complete remote prompt",
+                message: "the worker provider run is not bound yet; retry completion".to_string(),
+            })?;
         let relay_config = self
             .app
             .relay_config_for_remote_execution(&remote_execution);
@@ -225,6 +232,8 @@ impl<'a> KernelAgentService<'a> {
                     },
                     RelayPeerRequest::CompleteLeasedPrompt {
                         leased_agent_id: remote_execution.leased_agent_id.clone(),
+                        home_prompt_id: expected_prompt.id().to_string(),
+                        worker_provider_run_id: completion_worker_run_id,
                     },
                 ));
         let (remote_provider_run_id, provider_termination) = match completion_response {
@@ -265,7 +274,7 @@ impl<'a> KernelAgentService<'a> {
                     });
                 }
             },
-            Err(error) if error.is_no_active_prompt() => {
+            Err(error) if error.is_no_active_prompt() || error.is_leased_prompt_not_current() => {
                 crate::logging::warn_with_fields(
                     "daemon.remote_prompt_dispatch",
                     "remote prompt completion already settled on worker",

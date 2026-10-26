@@ -1301,7 +1301,82 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .then(|| run_id.to_string())
     }
 
+    /// Completes the leased agent's prompt only when the request names the exact
+    /// home prompt and worker provider run that are still current. A late or
+    /// repeated completion of an earlier prompt changes nothing.
     pub(crate) fn complete_leased_prompt(
+        &mut self,
+        leased_agent_id: &str,
+        expected_home_prompt_id: &str,
+        expected_worker_provider_run_id: &str,
+    ) -> Result<crate::session::PromptCompletion, DaemonError> {
+        let not_current = |reason: &'static str| DaemonError::LeasedPromptNotCurrent {
+            leased_agent_id: leased_agent_id.to_string(),
+            home_prompt_id: expected_home_prompt_id.to_string(),
+            worker_provider_run_id: expected_worker_provider_run_id.to_string(),
+            reason,
+        };
+        if expected_home_prompt_id.is_empty() || expected_worker_provider_run_id.is_empty() {
+            return Err(not_current(
+                "completion requires an exact home prompt and worker provider run",
+            ));
+        }
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let active_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .ok_or_else(|| not_current("that prompt already finished on the worker"))?;
+        if leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id)
+            || leased_agent.active_home_prompt_started_at_ms != Some(active_prompt.created_at_ms())
+        {
+            return Err(not_current("the worker is running another prompt"));
+        }
+        if self
+            .leased_completion_provider_run_id(&leased_agent)?
+            .as_deref()
+            != Some(expected_worker_provider_run_id)
+        {
+            return Err(not_current("the worker prompt runs on another provider run"));
+        }
+        self.settle_leased_prompt(leased_agent_id)
+    }
+
+    /// The provider run a completion of this leased agent's active prompt belongs
+    /// to. Cancellation retires the process before prompt settlement, so the exact
+    /// admitted execution identity is kept for the ordinary leased projection to
+    /// deliver to the home kernel.
+    fn leased_completion_provider_run_id(
+        &mut self,
+        leased_agent: &LeasedAgent,
+    ) -> Result<Option<String>, DaemonError> {
+        if let Some(run) = self.app.providers.get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        ) {
+            return Ok(Some(run.id().to_string()));
+        }
+        Ok(self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .and_then(|active| self.cancelled_leased_prompt_provider_run_id(leased_agent, &active)))
+    }
+
+    /// Settles whichever prompt is active on the leased agent, with no identity
+    /// check; callers must have established that it is the prompt to complete.
+    pub(crate) fn settle_leased_prompt(
         &mut self,
         leased_agent_id: &str,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
@@ -1313,30 +1388,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        let provider_run_id = self
-            .app
-            .providers
-            .get_run_for_agent(
-                &leased_agent.backing_session_id,
-                &leased_agent.backing_agent_id,
-            )
-            .map(|run| run.id().to_string());
-        // Cancellation retires the process before prompt settlement. Keep the
-        // exact admitted execution identity on the completion record so the
-        // ordinary leased projection can deliver it to the home kernel.
-        let provider_run_id = if provider_run_id.is_none() {
-            self.app
-                .prompt_owner_active_prompt_for_agent(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )?
-                .as_ref()
-                .and_then(|active| {
-                    self.cancelled_leased_prompt_provider_run_id(&leased_agent, active)
-                })
-        } else {
-            provider_run_id
-        };
+        let provider_run_id = self.leased_completion_provider_run_id(&leased_agent)?;
         let active_home_prompt_id = leased_agent.active_home_prompt_id.clone();
         let completion = self.app.complete_active_prompt(
             &leased_agent.backing_session_id,
@@ -1682,7 +1734,7 @@ mod receipt_tests {
             first.prompt
         );
         RemoteLeaseRuntime::new(&mut app)
-            .complete_leased_prompt(&leased)
+            .settle_leased_prompt(&leased)
             .unwrap();
         let records = app.terminal.drain_completion_records(
             &session,
@@ -1787,7 +1839,7 @@ mod receipt_tests {
         );
 
         RemoteLeaseRuntime::new(&mut app)
-            .complete_leased_prompt(&leased_agent.id)
+            .settle_leased_prompt(&leased_agent.id)
             .expect("worker prompt should complete");
         let Some((
             _,
@@ -2049,7 +2101,7 @@ mod receipt_tests {
         );
 
         RemoteLeaseRuntime::new(&mut app)
-            .complete_leased_prompt(&leased_agent.id)
+            .settle_leased_prompt(&leased_agent.id)
             .expect("target provider prompt should complete");
         let agent = app
             .leased_agents

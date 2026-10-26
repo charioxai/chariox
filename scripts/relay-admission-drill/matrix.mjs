@@ -108,7 +108,7 @@ try {
     for (const op of [
       { kind: 'get_leased_prompt_receipt', leased_agent_id: A.remote.leased_agent_id, home_prompt_id: 'p' },
       { kind: 'cancel_leased_prompt', leased_agent_id: A.remote.leased_agent_id, home_prompt_id: sess.active_prompt?.id ?? 'p', worker_provider_run_id: run },
-      { kind: 'complete_leased_prompt', leased_agent_id: A.remote.leased_agent_id },
+      { kind: 'complete_leased_prompt', leased_agent_id: A.remote.leased_agent_id, home_prompt_id: sess.active_prompt?.id ?? 'p', worker_provider_run_id: run },
       { kind: 'destroy_leased_agent', leased_agent_id: A.remote.leased_agent_id },
       { kind: 'destroy_leased_agent', leased_agent_id: B.remote.leased_agent_id },
       { kind: 'destroy_execution_lease', lease_id: A.remote.execution_lease_id },
@@ -193,7 +193,7 @@ try {
     for (const op of [
       { kind: 'get_leased_prompt_receipt', leased_agent_id: oldL.leased_agent_id, home_prompt_id: 'p' },
       { kind: 'cancel_leased_prompt', leased_agent_id: oldL.leased_agent_id, home_prompt_id: 'p', worker_provider_run_id: 'r' },
-      { kind: 'complete_leased_prompt', leased_agent_id: oldL.leased_agent_id },
+      { kind: 'complete_leased_prompt', leased_agent_id: oldL.leased_agent_id, home_prompt_id: 'p', worker_provider_run_id: 'r' },
       { kind: 'steer_leased_prompt', leased_agent_id: oldL.leased_agent_id, steer_id: 's', target_home_prompt_id: 'p', prompt: 'stale' },
       { kind: 'destroy_execution_lease', lease_id: oldL.execution_lease_id },
       { kind: 'destroy_leased_agent', leased_agent_id: oldL.leased_agent_id },
@@ -207,6 +207,8 @@ try {
   if (phase === 'g10done') {
     // agent B: finish one prompt, start a second, then deliver a completion that belongs to the first
     await submit(S2, B.agent, 'Reply with exactly the single word b-first and nothing else.')
+    const firstRun = await waitFor(async () => (await listAgents(S2)).find(a => a.id === B.agent)?.remote_execution?.active_worker_provider_run_id, 'B first run', 150000)
+    const firstPrompt = (await listSessions()).find(s => s.id === S2).active_prompt?.id
     await waitFor(async () => !(await listSessions()).find(s => s.id === S2).active_prompt && JSON.stringify(unwrap(await H.send(requests.getSessionHistoryOutlineRequest(S2, null, 3)), 'SessionHistoryOutline')).includes('b-first'), 'B first', 180000)
     const before = await snapshot()
     await submit(S2, B.agent, longPrompt('b-second', 100))
@@ -217,7 +219,10 @@ try {
     const receiptReq = { kind: 'get_leased_prompt_receipt', leased_agent_id: B.remote.leased_agent_id, home_prompt_id: p }
     const rBefore = await peer.send('home', ids.worker.kernel, receiptReq)
     console.log('receipt before', JSON.stringify(rBefore.outcome.response ?? rBefore.outcome).slice(0, 500))
-    const rec = await sendCase('G10', 'stale-completion', 'home', 'worker', { kind: 'complete_leased_prompt', leased_agent_id: B.remote.leased_agent_id }, 'refused', 'completion of the earlier prompt delivered while the successor run is active')
+    const completion = (home_prompt_id, worker_provider_run_id) => ({ kind: 'complete_leased_prompt', leased_agent_id: B.remote.leased_agent_id, home_prompt_id, worker_provider_run_id })
+    await sendCase('G10', 'stale-completion-wrong-run', 'home', 'worker', completion(p, firstRun === run ? 'provider-run-other' : firstRun), 'refused', 'completion naming the successor prompt with another worker run')
+    await sendCase('G10', 'stale-completion-wrong-prompt', 'home', 'worker', completion(firstPrompt, run), 'refused', 'completion naming the earlier prompt with the successor run')
+    const rec = await sendCase('G10', 'stale-completion', 'home', 'worker', completion(firstPrompt, firstRun), 'refused', 'completion of the earlier prompt delivered while the successor run is active')
     console.log('complete response', JSON.stringify(rec.response_kind), JSON.stringify((await peer.send('home', ids.worker.kernel, receiptReq)).outcome.response ?? '').slice(0, 500))
     await sleep(5000)
     const s = (await listSessions()).find(x => x.id === S2)
@@ -265,7 +270,10 @@ try {
     await sleep(10000)
     const rq = { kind: 'get_leased_prompt_receipt', leased_agent_id: L.remote_execution.leased_agent_id, home_prompt_id: prompt }
     console.log(tag, 'run', run, 'prompt', prompt, 'receipt before', JSON.stringify((await peer.send('home', ids.worker.kernel, rq)).outcome.response?.receipt))
-    const rec = await sendCase('G10', `${tag}-stale-completion`, 'home', 'worker', { kind: 'complete_leased_prompt', leased_agent_id: L.remote_execution.leased_agent_id }, 'refused', 'late completion while the client-started successor turn runs')
+    const g10 = JSON.parse(readFileSync(`${STATE}/g10-active.json`, 'utf8'))
+    const completion = (home_prompt_id, worker_provider_run_id) => ({ kind: 'complete_leased_prompt', leased_agent_id: L.remote_execution.leased_agent_id, home_prompt_id, worker_provider_run_id })
+    await sendCase('G10', `${tag}-stale-completion-wrong-run`, 'home', 'worker', completion(prompt, g10.run2 === run ? 'provider-run-other' : g10.run2), 'refused', 'current prompt named with another worker run')
+    const rec = await sendCase('G10', `${tag}-stale-completion`, 'home', 'worker', completion(g10.p2, g10.run2), 'refused', 'late completion of an earlier prompt while the client-started successor turn runs')
     console.log(tag, 'receipt after', JSON.stringify((await peer.send('home', ids.worker.kernel, rq)).outcome.response?.receipt))
     const t0 = Date.now(); const seen = []
     while (Date.now() - t0 < 30000) { const s = (await listSessions()).find(x => x.id === S1); seen.push(s.active_prompt?.id ?? null); await sleep(2000) }
