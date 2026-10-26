@@ -318,6 +318,77 @@ fn malformed_review_entries_are_refused() {
     );
 }
 
+fn check_review_json_limit(attestation: Value, limits: Limits, expected: Option<ErrorCode>) {
+    let fixture = base();
+    let mut review = fixture.reviews["reviewer-a"].clone();
+    review.attestation = attestation;
+    let mut policy = policy();
+    policy.limits = limits;
+    let review_bytes = crate::json::canonical(&review).unwrap();
+    assert!(review_bytes.len() <= MAX_REVIEW_BYTES);
+    let delivered = with_entry(
+        &packed(&fixture, &[]),
+        "signatures/reviews/reviewer-a.json",
+        &review_bytes,
+    );
+    let verified = verify(&delivered, &policy);
+    let packed = pack(
+        &fixture.manifest,
+        &fixture.files,
+        &key(),
+        &[review],
+        &policy.limits,
+    );
+    match expected {
+        Some(expected) => {
+            assert_eq!(code(verified), expected);
+            assert_eq!(packed.err().map(|error| error.code), Some(expected));
+        }
+        None => {
+            verified.unwrap();
+            verify(&packed.unwrap(), &policy).unwrap();
+        }
+    }
+}
+
+#[test]
+fn review_json_depth_limits_include_the_envelope() {
+    // The review root is depth 0; the attestation starts at depth 1.
+    let nested = |count| (0..count).fold(json!({}), |value, _| json!({"nested": value}));
+    check_review_json_limit(nested(31), Limits::default(), None);
+    check_review_json_limit(nested(40), Limits::default(), Some(ErrorCode::ArchiveLimit));
+    check_review_json_limit(nested(32), Limits::default(), Some(ErrorCode::ArchiveLimit));
+}
+
+#[test]
+fn review_json_node_limits_include_the_envelope() {
+    let limits = Limits {
+        max_json_nodes: 128,
+        ..Limits::default()
+    };
+    // Root, four strings, attestation object and array account for seven nodes.
+    check_review_json_limit(json!({"items": vec![0; 121]}), limits.clone(), None);
+    check_review_json_limit(
+        json!({"items": vec![0; 122]}),
+        limits,
+        Some(ErrorCode::ArchiveLimit),
+    );
+}
+
+#[test]
+fn review_json_numbers_must_be_interoperable() {
+    for number in [9_007_199_254_740_991i64, -9_007_199_254_740_991] {
+        check_review_json_limit(json!({"number": number}), Limits::default(), None);
+    }
+    for number in [9_007_199_254_740_992i64, -9_007_199_254_740_992] {
+        check_review_json_limit(
+            json!({"number": number}),
+            Limits::default(),
+            Some(ErrorCode::InvalidSchema),
+        );
+    }
+}
+
 #[test]
 fn a_review_never_stands_in_for_the_publisher_signature() {
     let policy = policy();
