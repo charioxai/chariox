@@ -513,6 +513,8 @@ impl KernelRuntimeState {
             unreachable!()
         };
         let committed = std::time::Instant::now();
+        self.retract_stale_task_owner_interactions(&next.room_id, std::slice::from_ref(&next))
+            .await;
         if action == "resume" {
             let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
             let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
@@ -531,8 +533,6 @@ impl KernelRuntimeState {
         } else if action == "pause" || action == "edit" {
             self.stop_goal_turn(&task).await?;
         }
-        self.retract_stale_task_owner_interactions(&next.room_id, std::slice::from_ref(&next))
-            .await;
         let effects_completed = std::time::Instant::now();
         let snapshot = self.owned.session_snapshot(session.id())?;
         self.owned

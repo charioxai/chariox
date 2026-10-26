@@ -650,6 +650,8 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
+        self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
+            .await;
         let name = self.agent_notice_name(&task.agent_id);
         let message = super::agent_task_projection::task_status_notice(&task, &name);
         self.owned.record_notice_for_agent(

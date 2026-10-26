@@ -6,16 +6,37 @@ fn task_needs_owner_interaction(task: &AgentTaskExecution) -> bool {
     task.state == ExecutionState::Blocked && !task.goal.as_ref().is_some_and(|goal| goal.paused)
 }
 
-impl KernelRuntimeState {
+impl KernelRuntimeOwnedState {
+    /// Admission cannot wait for the asynchronous task pump to release ended decisions.
+    pub(super) fn sweep_stale_task_owner_interactions(&self) -> Result<(), DaemonError> {
+        let rooms = self
+            .pending_interactions
+            .write()
+            .iter()
+            .filter(|(id, pending)| {
+                id.starts_with("task-blocked-") && pending.belongs_to(&self.session_store)
+            })
+            .map(|(_, pending)| pending.session_id.clone())
+            .collect::<BTreeSet<_>>();
+        if rooms.is_empty() {
+            return Ok(());
+        }
+        let tasks = self.durable_state_store.agent_tasks(None, None)?;
+        for room in rooms {
+            self.retract_stale_task_owner_interactions(&room, &tasks)?;
+        }
+        Ok(())
+    }
+
     /// A task that left Blocked (for example cancelled with its parent) or
     /// re-blocked at a later revision withdraws its older owner decision.
-    pub(super) async fn retract_stale_task_owner_interactions(
+    pub(super) fn retract_stale_task_owner_interactions(
         &self,
         room: &str,
         tasks: &[AgentTaskExecution],
-    ) {
-        let Ok(session) = self.owned.session_store.get_session(room) else {
-            return;
+    ) -> Result<(), DaemonError> {
+        let Ok(session) = self.session_store.get_session(room) else {
+            return Ok(());
         };
         let stale = session
             .active_interactions()
@@ -37,7 +58,27 @@ impl KernelRuntimeState {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         for id in stale {
-            let _ = self.timeout_runtime_interaction(room, &id).await;
+            self.timeout_runtime_interaction(room, &id)?;
+            self.record_notice_for_agent(
+                room, None, None, self.attachment_store.list_session_attachment_ids(room),
+                format!("Task decision `{id}` withdrawn because the task ended or its owner decision was superseded. Late answers are refused."),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    pub(super) async fn retract_stale_task_owner_interactions(
+        &self,
+        room: &str,
+        tasks: &[AgentTaskExecution],
+    ) {
+        if let Err(error) = self
+            .owned
+            .retract_stale_task_owner_interactions(room, tasks)
+        {
+            tracing::warn!(%error, room_id=room, "task owner decision withdrawal failed; interaction admission will retry");
         }
     }
     pub(super) async fn ensure_task_owner_interaction(
