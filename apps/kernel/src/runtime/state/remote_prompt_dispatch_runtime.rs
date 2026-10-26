@@ -4,43 +4,22 @@ use super::remote_prompt_claim_runtime::RemotePromptAgentClaim;
 use super::*;
 
 impl KernelRuntimeState {
+    pub(super) fn connected_relays(&self) -> crate::transport::relay_client::ConnectedRelays {
+        crate::transport::relay_client::ConnectedRelays {
+            primary: Arc::clone(&self.owned.relay_state),
+            slice_private: Arc::clone(&self.owned.slice_private_relay_connectors),
+        }
+    }
+
     pub(super) async fn connected_relay_state_for_config(
         &self,
         relay_config: &crate::config::DaemonConfig,
     ) -> Option<Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>> {
-        let relay_url = relay_config.relay_url.as_deref()?;
-        if self
-            .owned
-            .relay_state
-            .read()
-            .await
-            .connected_relay_url()
-            .as_deref()
-            == Some(relay_url)
-        {
-            return Some(Arc::clone(&self.owned.relay_state));
-        }
-        let slice_states = {
-            let connectors = self.owned.slice_private_relay_connectors.lock().await;
-            connectors
-                .values()
-                .filter(|connector| connector.relay_url == relay_url)
-                .map(|connector| Arc::clone(&connector.state))
-                .collect::<Vec<_>>()
-        };
-        for state in slice_states {
-            if state.read().await.connected_relay_url().as_deref() == Some(relay_url) {
-                return Some(state);
-            }
-        }
-        None
+        self.connected_relays().state_for_config(relay_config).await
     }
 
-    /// The one route of every home-to-worker request for a leased agent: the
-    /// relay connection that already reaches the worker (its identity and its
-    /// cached peer key), else a temporary connection on the binding's relay.
-    /// A temporary connection discovers the worker through relay metadata,
-    /// which hosted and slice workers are not visible to.
+    /// The one route of every home-to-worker request for a leased agent; see
+    /// [`ConnectedRelays::enqueue_leased_worker_request_authorized`].
     pub(super) async fn enqueue_leased_worker_request(
         &self,
         config: &crate::config::DaemonConfig,
@@ -48,30 +27,33 @@ impl KernelRuntimeState {
         request: crate::transport::relay_peer::RelayPeerRequest,
         response_timeout: std::time::Duration,
     ) -> Result<crate::transport::relay_client::RelayPeerResponseWaiter, DaemonError> {
-        match self.connected_relay_state_for_config(config).await {
-            Some(relay_state) => {
-                crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
-                    config,
-                    &relay_state,
-                    target,
-                    request,
-                    response_timeout,
-                )
-                .await
-            }
-            None => {
-                // Temporary sockets have no shared FIFO sender with manifest
-                // updates, so keep this fallback serialized through its response.
-                let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                    config,
-                    target,
-                    request,
-                    response_timeout,
-                )
-                .await?;
-                Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(response))
-            }
-        }
+        self.enqueue_leased_worker_request_authorized(
+            config,
+            target,
+            request,
+            response_timeout,
+            || Ok(()),
+        )
+        .await
+    }
+
+    pub(super) async fn enqueue_leased_worker_request_authorized(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: chariox_relay::protocol::ClientTarget,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+        response_timeout: std::time::Duration,
+        authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
+    ) -> Result<crate::transport::relay_client::RelayPeerResponseWaiter, DaemonError> {
+        self.connected_relays()
+            .enqueue_leased_worker_request_authorized(
+                config,
+                target,
+                request,
+                response_timeout,
+                authorize,
+            )
+            .await
     }
 
     pub(crate) fn spawn_remote_prompt_dispatch(

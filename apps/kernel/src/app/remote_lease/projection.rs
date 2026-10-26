@@ -4,7 +4,6 @@ use crate::execution_lease::LeasedAgent;
 use crate::history::SessionHistoryEntryKind;
 use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
-use crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
     RelayProjectedOutputChunk, RelayProjectedPrompt,
@@ -1617,20 +1616,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider_run_id: &str,
     ) {
         let relay_config = self.app.relay_config_for_remote_execution(remote_execution);
-        let response = self.app.block_on_relay_future(
-            send_peer_request_via_temporary_connection_with_timeout(
-                &relay_config,
-                ClientTarget {
-                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                    daemon_alias: None,
-                },
-                RelayPeerRequest::ObserveLeasedGitAfter {
-                    leased_agent_id: remote_execution.leased_agent_id.clone(),
-                    provider_run_id: provider_run_id.to_string(),
-                },
-                REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT,
-            ),
-        );
+        let connected_relays = self.app.connected_relays();
+        let response = self.app.block_on_relay_future(async {
+            connected_relays
+                .enqueue_leased_worker_request_authorized(
+                    &relay_config,
+                    ClientTarget {
+                        daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::ObserveLeasedGitAfter {
+                        leased_agent_id: remote_execution.leased_agent_id.clone(),
+                        provider_run_id: provider_run_id.to_string(),
+                    },
+                    REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT,
+                    || Ok(()),
+                )
+                .await?
+                .wait()
+                .await
+        });
         match response {
             Ok(RelayPeerResponse::LeasedGitObserved {
                 git_observations,
@@ -3627,3 +3632,6 @@ mod mp11_projection_admission_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod harvest_route_tests;
