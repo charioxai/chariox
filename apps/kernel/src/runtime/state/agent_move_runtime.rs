@@ -440,6 +440,10 @@ impl KernelRuntimeState {
                     self.owned.agent_moves.save_home(operation)?;
                     return self.owned.agent_store.get_agent(&agent_id);
                 }
+                HomeMovePhase::Cancelling => {
+                    self.finish_agent_move_abort(operation).await?;
+                    return Err(move_error("Move cancelled; source execution restored"));
+                }
                 HomeMovePhase::Complete { .. } => {
                     return self
                         .owned

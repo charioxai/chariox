@@ -40,6 +40,10 @@ pub enum AgentMovePeerRequest {
         kind: AgentMoveArtifactKind,
         offset: u64,
     },
+    CreateLease {
+        identity: AgentMoveIdentity,
+        home_agent_metaagent: bool,
+    },
     AbortTarget {
         identity: AgentMoveIdentity,
     },
@@ -83,7 +87,8 @@ impl AgentMovePeerRequest {
             | Self::ActivateTarget { identity }
             | Self::RetireSource { identity }
             | Self::ReleaseSource { identity, .. }
-            | Self::AbortTarget { identity } => identity,
+            | Self::AbortTarget { identity }
+            | Self::CreateLease { identity, .. } => identity,
             Self::BeginTarget { capture } => &capture.identity,
         }
     }
@@ -106,6 +111,10 @@ pub enum AgentMovePeerResponse {
     },
     SourceCaptured,
     TargetAborted,
+    LeaseCreated {
+        lease: crate::execution_lease::ExecutionLease,
+        relay_peer_protocol_version: u32,
+    },
     SourcePrepared {
         capture: Box<AgentMoveCapture>,
     },
@@ -134,7 +143,7 @@ mod tests {
         let bytes = include_bytes!("protocol-625-229.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "f08a5308e62c20c5292743554ee0e3368c2c82abf02bd98e349cd58628ada5ee"
+            "e24cc33fd81e9b636111c3e9976290851bfe7d889ae2454d76328ccefb620d0d"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(

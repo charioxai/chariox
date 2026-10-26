@@ -7,8 +7,11 @@ impl CommandRouter {
     pub(crate) async fn relay_agent_move(
         &self,
         request: crate::agent_move::peer::AgentMovePeerRequest,
+        caller: Option<crate::app::LeaseCallerBinding>,
     ) -> Result<crate::agent_move::peer::AgentMovePeerResponse, DaemonError> {
-        self.runtime_state.agent_move_peer_request(request).await
+        self.runtime_state
+            .agent_move_peer_request(request, caller)
+            .await
     }
 
     // MP-08/MP-09/MP-10/MP-11 A10: the bridge only wires the worker service.

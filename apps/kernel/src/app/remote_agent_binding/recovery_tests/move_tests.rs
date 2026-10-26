@@ -1142,10 +1142,11 @@ async fn interrupt_public_move(fixture: &Fixture, session: &str, phase: &str) {
             .await
     })
     .await;
-    assert!(
-        crashed.is_err_and(|error| error.is_panic()),
-        "Move must reach its requested durable boundary"
-    );
+    match crashed {
+        Err(error) if error.is_panic() => (),
+        Ok(Err(error)) => panic!("Move failed before {phase}: {error}"),
+        _ => panic!("Move must reach its requested durable boundary"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1267,15 +1268,26 @@ async fn mk03_peer_probe_refuses_native_incompatibility_before_staging() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mk03_abort_checks_actual_target_lease_and_rejects_delayed_creation() {
+async fn mk03_abort_retires_empty_move_lease_and_rejects_delayed_creation() {
     let (fixture, session, _) = crash_fixture().await;
     interrupt_public_move(&fixture, &session, "materialized").await;
     let operation = move_journal(&fixture, &session).await;
     let identity: crate::agent_move::AgentMoveIdentity =
         serde_json::from_value(operation["identity"].clone()).unwrap();
-    let lease = {
+    let (lease, ordinary) = {
         let mut worker = fixture.workers[0].lock().await;
-        crate::app::RemoteLeaseRuntime::new(&mut worker)
+        let lease = worker
+            .create_agent_move_lease(&identity, false, None)
+            .unwrap();
+        assert_eq!(
+            worker
+                .create_agent_move_lease(&identity, false, None)
+                .unwrap()
+                .id,
+            lease.id,
+            "lease preparation must be idempotent"
+        );
+        let ordinary = crate::app::RemoteLeaseRuntime::new(&mut worker)
             .create_execution_lease(
                 &identity.home_kernel_id,
                 &session,
@@ -1283,36 +1295,127 @@ async fn mk03_abort_checks_actual_target_lease_and_rejects_delayed_creation() {
                 false,
                 &identity.owner_user_id,
             )
-            .unwrap()
-    };
-    let abort = serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id,"abort_pending":true}});
-    let error = dispatch_move_value(&fixture, abort.clone())
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("lease"), "{error}");
-    assert_eq!(
-        move_journal(&fixture, &session).await["phase"]["phase"],
-        "materialized"
-    );
-    {
-        let mut worker = fixture.workers[0].lock().await;
-        crate::app::RemoteLeaseRuntime::new(&mut worker)
-            .destroy_execution_lease(&lease.id)
             .unwrap();
+        (lease, ordinary)
+    };
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id,"abort_pending":true}})).await.unwrap();
+    {
+        let worker = fixture.workers[0].lock().await;
+        assert!(
+            !worker.execution_leases.contains_key(&lease.id),
+            "abort must retire its empty move lease"
+        );
+        assert!(
+            worker.execution_leases.contains_key(&ordinary.id),
+            "abort must preserve independent ordinary leases"
+        );
     }
-    dispatch_move_value(&fixture, abort).await.unwrap();
+    move_request(&fixture, &session, true).await;
     let mut worker = fixture.workers[0].lock().await;
-    let error = crate::app::RemoteLeaseRuntime::new(&mut worker)
-        .create_execution_lease(
-            &identity.home_kernel_id,
-            &session,
-            &fixture.agent_id,
-            false,
-            &identity.owner_user_id,
-        )
+    let error = worker
+        .create_agent_move_lease(&identity, false, None)
         .unwrap_err();
     assert!(
         error.to_string().contains("cancelled"),
-        "a delayed lease request must respect cancellation: {error}"
+        "a delayed create from the old generation must stay refused after a newer Move: {error}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_captured_move_when_target_disappears() {
+    let (mut fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "captured").await;
+    fixture.shutdown[0].send(true).unwrap();
+    (&mut fixture.tasks[1]).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id,"abort_pending":true}}))).await
+        .expect("a target with no possible lease cannot hold source cancellation open")
+        .expect("cancellation before lease creation must not need the target online");
+    assert!(serde_json::to_value(reply)
+        .unwrap()
+        .get("AgentMoveAborted")
+        .is_some());
+    assert!(!fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_cancel_move_keeps_ordinary_lease_creation_available() {
+    let (fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "materialized").await;
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id,"abort_pending":true}})).await.unwrap();
+    let operation = move_journal(&fixture, &session).await;
+    let mut worker = fixture.workers[0].lock().await;
+    crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_execution_lease(
+            operation["identity"]["home_kernel_id"].as_str().unwrap(),
+            &session,
+            &fixture.agent_id,
+            false,
+            operation["identity"]["owner_user_id"].as_str().unwrap(),
+        )
+        .expect("cancelling a Move must not disable ordinary leases for that agent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_recovers_after_source_release_before_terminal_write() {
+    let (fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "captured").await;
+    let journal = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::write(
+        journal.join("crash-after-phase-for-test"),
+        "source:released",
+    )
+    .unwrap();
+    let home = fixture.home.clone();
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id,"abort_pending":true}})).unwrap();
+    let crashed = tokio::spawn(async move {
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk03-cancel-crash",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err_and(|error| error.is_panic()));
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "cancelling"
+    );
+    reboot_app(&fixture.home).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    let error = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToRemote":{"session_id":session,"agent_ref":fixture.agent_id,"machine_ref":fixture.presences[0].machine_id}})).await.unwrap_err();
+    assert!(
+        error.to_string().contains("cancelled"),
+        "restart must finish the user's cancellation: {error}"
+    );
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "rolled_back"
+    );
+    assert!(!fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+    move_request(&fixture, &session, true).await;
 }

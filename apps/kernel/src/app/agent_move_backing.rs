@@ -5,34 +5,97 @@ use crate::agent::AgentInstance;
 use crate::agent_move::{error as move_error, MoveBacking};
 
 impl DaemonApp {
+    pub(crate) fn create_agent_move_lease(
+        &mut self,
+        identity: &crate::agent_move::AgentMoveIdentity,
+        metaagent: bool,
+        caller: Option<LeaseCallerBinding>,
+    ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
+        let mut target = self
+            .agent_moves
+            .target(&identity.operation_id)
+            .ok_or_else(|| move_error("Prepare this Move target before acquiring its lease"))?;
+        if target.capture.identity != *identity
+            || target.retired
+            || identity.target_kernel_id != self.config.daemon_id
+        {
+            return Err(move_error(
+                "This Move target was cancelled or its generation changed; start a new Move",
+            ));
+        }
+        if let Some(lease) = target
+            .execution_lease_id
+            .as_deref()
+            .and_then(|id| self.execution_leases.get(id))
+            .cloned()
+        {
+            if let Some(caller) = caller {
+                RemoteLeaseRuntime::new(self)
+                    .authorize_execution_lease_caller(&lease.id, &caller)?;
+            }
+            return Ok(lease);
+        }
+        if target.active {
+            return Err(move_error("This Move already committed; recover its current execution binding instead of recreating an old lease"));
+        }
+        let mut runtime = RemoteLeaseRuntime::new(self);
+        let lease = if let Some(caller) = caller {
+            runtime.create_bound_execution_lease(
+                &identity.home_kernel_id,
+                &identity.home_session_id,
+                &identity.home_agent_id,
+                metaagent,
+                &identity.owner_user_id,
+                caller,
+            )?
+        } else {
+            runtime.create_execution_lease(
+                &identity.home_kernel_id,
+                &identity.home_session_id,
+                &identity.home_agent_id,
+                metaagent,
+                &identity.owner_user_id,
+            )?
+        };
+        target.execution_lease_id = Some(lease.id.clone());
+        if let Err(error) = self.agent_moves.save_target(target) {
+            RemoteLeaseRuntime::new(self).destroy_execution_lease(&lease.id)?;
+            return Err(error);
+        }
+        Ok(lease)
+    }
+
     pub(crate) fn abort_agent_move_target(
         &mut self,
         identity: &crate::agent_move::AgentMoveIdentity,
     ) -> Result<(), DaemonError> {
-        // Lease creation and this tombstone share the app authority mutex.
-        // A lost lease reply must never let cancellation restore two executors.
-        if self.execution_leases.values().any(|lease| {
-            lease.home_kernel_id == identity.home_kernel_id
-                && lease.home_session_id == identity.home_session_id
-                && lease.home_agent_id == identity.home_agent_id
-        }) {
-            return Err(move_error(
-                "The target already holds a Move lease; finish the operation before returning",
-            ));
-        }
         let Some(mut target) = self.agent_moves.target(&identity.operation_id) else {
             return Ok(());
         };
         if target.capture.identity != *identity {
             return Err(move_error("Move target generation changed"));
         }
-        if target.active || target.backing.is_some() || target.backing_agent_id.is_some() {
-            return Err(move_error(
-                "The target already holds a Move lease; finish the operation before returning",
-            ));
+        let has_agent = target.execution_lease_id.as_deref().is_some_and(|id| {
+            self.leased_agents
+                .values()
+                .any(|agent| agent.lease_id == id)
+        });
+        if target.active
+            || target.backing.is_some()
+            || target.backing_agent_id.is_some()
+            || has_agent
+        {
+            return Err(move_error("The target already holds a Move lease with an agent; finish the operation before returning"));
         }
+        // Tombstone this generation before retiring its empty lease. Delayed
+        // creates stay refused even after a newer generation starts.
         target.retired = true;
-        self.agent_moves.save_target(target)
+        let lease_id = target.execution_lease_id.clone();
+        self.agent_moves.save_target(target)?;
+        if let Some(id) = lease_id.filter(|id| self.execution_leases.contains_key(id)) {
+            RemoteLeaseRuntime::new(self).destroy_execution_lease(&id)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn retain_agent_move_backing(

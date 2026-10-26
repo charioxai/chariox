@@ -91,6 +91,7 @@ impl AgentMoveMaterialization {
 pub(crate) enum HomeMovePhase {
     Fenced,
     SourceStopped,
+    Cancelling,
     Captured {
         capture: AgentMoveCapture,
     },
@@ -150,6 +151,8 @@ pub(crate) struct MoveTarget {
     pub capture: AgentMoveCapture,
     pub destination_root: PathBuf,
     pub receipt: Option<AgentMoveMaterialization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_lease_id: Option<String>,
     pub backing_session_id: Option<String>,
     pub backing_agent_id: Option<String>,
     pub active: bool,

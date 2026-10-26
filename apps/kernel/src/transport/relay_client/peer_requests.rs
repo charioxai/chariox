@@ -453,16 +453,18 @@ pub(super) async fn handle_daemon_peer_request(
         }
     };
     let response = match request {
-        RelayPeerRequest::AgentMove { request } => match router.relay_agent_move(request).await {
-            Ok(response) => RelayPeerResponse::AgentMove { response },
-            Err(error) => {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(map_relay_error(&error)),
+        RelayPeerRequest::AgentMove { request } => {
+            match router.relay_agent_move(request, lease_worker_caller).await {
+                Ok(response) => RelayPeerResponse::AgentMove { response },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
                 }
             }
-        },
+        }
         RelayPeerRequest::SetLeasedComputerGrant {
             leased_agent_id,
             epoch,

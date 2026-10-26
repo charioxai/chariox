@@ -9,6 +9,7 @@ impl KernelRuntimeState {
     pub(crate) async fn agent_move_peer_request(
         &self,
         request: Request,
+        caller: Option<crate::app::LeaseCallerBinding>,
     ) -> Result<Response, DaemonError> {
         let identity = request.identity().clone();
         let _operation = self
@@ -55,6 +56,21 @@ impl KernelRuntimeState {
             Request::Probe { native, .. } => {
                 self.probe_agent_move_target(native, None).await?;
                 Ok(Response::Compatible)
+            }
+            Request::CreateLease {
+                home_agent_metaagent,
+                ..
+            } => {
+                let lease = self
+                    .with_app_side_effect(|app| {
+                        app.create_agent_move_lease(&identity, home_agent_metaagent, caller)
+                    })
+                    .await?;
+                Ok(Response::LeaseCreated {
+                    lease,
+                    relay_peer_protocol_version:
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                })
             }
             Request::AbortTarget { .. } => {
                 self.abort_agent_move_target(&identity).await?;

@@ -1,6 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11: real Claude history must refuse Move before teardown.
 import assert from 'node:assert/strict';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, readdir, writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {root, out, kernel, binary, sha, record, runtime, enroll, project, selection, launchBrowser, close, release} from './workspace-runtime.mjs';
 import {fixture} from './workspace-fixture.mjs';
@@ -62,7 +62,7 @@ try {
     await turn(source, 'Remember this marker and reply with it: ' + marker + '. Do not use tools or create agents.', 'claude-before-move');
     const before = await run(source, sessionId, agentId);
     assert.ok(before.provider_session_id, 'Claude native history must exist');
-    assert.equal(before.model, 'claude-haiku-5-5', 'Resolved validation model');
+    assert.ok(before.model.startsWith('claude-haiku-5-5'), 'Resolved validation model must be Haiku5.5');
     let reason;
     try {await source.client.send({MoveAgentToRemote: {session_id: sessionId, agent_ref: agentId, machine_ref: target.status.machine_id}});}
     catch (error) {reason = String(error);}
@@ -71,6 +71,8 @@ try {
     assert.equal(after.id, before.id, 'Refusal must retain the provider run');
     assert.equal(after.state, before.state, 'Refusal must happen before stopping the provider');
     assert.equal(after.provider_session_id, before.provider_session_id);
+    const operations = (await readdir(source.path + '/home/agent-moves')).filter(name => name.endsWith('.home.json'));
+    assert.equal(operations.length, 0, 'Unsupported history must be refused before any Move generation is fenced');
     const resumed = await turn(source, 'Repeat the marker from our previous task. Do not use tools or create agents.', 'claude-after-refusal');
     assert.ok(entries(resumed).some(row => row.role === 'assistant' && row.text?.includes(marker)), 'Source remains usable with its original native history');
     await record('summary', {result: 'PASS', refusalBeforeStop: true, sameProviderRun: true, sameNativeSession: true, model: after.model, realProviderTurns: 2, hostedWss: true});

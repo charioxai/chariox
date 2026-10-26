@@ -30,6 +30,9 @@ impl KernelRuntimeState {
         if matches!(operation.phase, HomeMovePhase::RolledBack { .. }) {
             return self.owned.agent_store.get_agent(agent.id());
         }
+        if matches!(operation.phase, HomeMovePhase::Cancelling) {
+            return self.finish_agent_move_abort(operation).await;
+        }
         if !matches!(
             operation.phase,
             HomeMovePhase::Fenced
@@ -54,7 +57,9 @@ impl KernelRuntimeState {
                 "The execution lease changed during Move. Finish that generation before returning",
             ));
         }
-        if operation.target_ref.is_some() {
+        if operation.target_ref.is_some()
+            && matches!(operation.phase, HomeMovePhase::Materialized { .. })
+        {
             let response = self
                 .move_peer_target(
                     &operation,
@@ -68,16 +73,28 @@ impl KernelRuntimeState {
                     "Target cancellation is uncertain; reconnect and retry this abort",
                 ));
             }
-        } else {
+        } else if operation.target_ref.is_none() {
             self.abort_agent_move_target(&operation.identity).await?;
         }
+        // Persist cancellation before source dispatch can reopen. Restart must
+        // finish cancellation rather than resume the original Move.
+        operation.phase = HomeMovePhase::Cancelling;
+        let operation = self.owned.agent_moves.save_home(operation)?;
+        self.finish_agent_move_abort(operation).await
+    }
+
+    pub(super) async fn finish_agent_move_abort(
+        &self,
+        mut operation: crate::agent_move::HomeMoveOperation,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.release_agent_move_source(&operation, false, true)
             .await?;
+        let agent_id = operation.identity.home_agent_id.clone();
         operation.phase = HomeMovePhase::RolledBack {
             reason: "Move cancelled; source execution restored".into(),
         };
         self.owned.agent_moves.save_home(operation)?;
-        self.owned.agent_store.get_agent(agent.id())
+        self.owned.agent_store.get_agent(&agent_id)
     }
 
     pub(super) async fn abort_agent_move_target(

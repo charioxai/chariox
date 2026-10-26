@@ -527,6 +527,7 @@ impl AgentMoveStore {
     fn crash_at_boundary_for_test(&self, phase: &HomeMovePhase) {
         let name = match phase {
             HomeMovePhase::Fenced => "fenced",
+            HomeMovePhase::Cancelling => "cancelling",
             HomeMovePhase::SourceStopped => "source_stopped",
             HomeMovePhase::Captured { .. } => "captured",
             HomeMovePhase::Materialized { .. } => "materialized",

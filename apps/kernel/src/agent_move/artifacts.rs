@@ -215,6 +215,7 @@ impl AgentMoveStore {
             capture,
             destination_root,
             receipt: None,
+            execution_lease_id: None,
             backing_session_id: None,
             backing_agent_id: None,
             active: false,
