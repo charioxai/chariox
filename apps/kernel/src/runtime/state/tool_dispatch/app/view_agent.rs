@@ -107,7 +107,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: CATALOG.into(),
-            description: "List the App views open in this Room: each view's declared actions (name, description, effect, input schema) and its current state. Run actions with chariox.app_view_invoke.".into(),
+            description: "Open or reuse granted Apps and list their views in this Room: each view's declared actions (name, description, effect, input schema) and its current state. Run actions with chariox.app_view_invoke.".into(),
             input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         },
         RuntimeToolSpec {
@@ -233,15 +233,12 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Open views with their declared actions and state. A view that cannot
+    /// Open granted Apps without a viewer, then read their actions and state. A view that cannot
     /// be read is listed with the reason instead of failing the others.
     async fn view_catalog(&self, agent: &crate::agent::AgentInstance) -> Value {
         let mut views = Vec::new();
-        for (target, binding) in self.app_control().views().bound_views(agent.session_id()) {
-            if !agent.has_extension_grant(ExtensionKind::App, &binding.installation) {
-                continue;
-            }
-            let entry = match self.view_context(agent, &target).await {
+        for installation in agent.granted_extension_names(ExtensionKind::App) {
+            let entry = match self.view_context(agent, &installation).await {
                 Ok(context) => {
                     let state = match self.view_turn(&context).await {
                         Ok(_turn) => {
@@ -250,11 +247,16 @@ impl KernelRuntimeState {
                         }
                         Err(error) => Err(error),
                     };
-                    json!({"view": target, "app": binding.installation, "generation": binding.generation,
+                    json!({"view": installation, "app": installation, "generation": context.binding.generation,
                         "actions": context.declared, "state": state.unwrap_or_else(|error| json!({"unavailable": error}))})
                 }
                 Err(error) => {
-                    json!({"view": target, "app": binding.installation, "generation": binding.generation, "unavailable": error})
+                    let mut entry =
+                        json!({"view": installation, "app": installation, "unavailable": error});
+                    if let Ok(context) = self.bound_view(agent, &installation) {
+                        entry["generation"] = json!(context.binding.generation);
+                    }
+                    entry
                 }
             };
             views.push(entry);
@@ -349,6 +351,39 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         target: &str,
     ) -> Result<ViewContext, ViewError> {
+        // Installation IDs are stable handles in the agent's own Room. After
+        // idle retirement they open a fresh Tab from the current verified release.
+        // Physical targets from the earlier catalog remain accepted while live.
+        if agent.has_extension_grant(ExtensionKind::App, target)
+            && !self
+                .app_control()
+                .views()
+                .bound_views(agent.session_id())
+                .iter()
+                .any(|(_, binding)| binding.installation == target)
+        {
+            let authority = AppViewAuthority::new(
+                self.owned.agent_store.clone(),
+                Some(agent),
+                target,
+                None,
+                Some(self.app_binding_epoch(agent.id(), target)),
+            );
+            authority.check()?;
+            // Opening changes controller state. Finish registration even if the
+            // grant is revoked meanwhile, so the pump can retire the idle Tab.
+            self.ensure_room_app_view(
+                agent.owner_user_id(),
+                agent.session_id(),
+                target,
+                crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
+                    agent: agent.id().into(),
+                },
+            )
+            .await
+            .map_err(|error| failure("view_unavailable", error.to_string()))?;
+            authority.check()?;
+        }
         let mut context = self.bound_view(agent, target)?;
         let lease = tokio::select! {
             result = self.app_lease_on_demand(&context.binding.owner, &context.binding.installation) => {
@@ -374,13 +409,26 @@ impl KernelRuntimeState {
         target: &str,
     ) -> Result<ViewContext, ViewError> {
         let session = agent.session_id();
-        let Some((binding, reloading)) = self.app_control().views().binding_state(session, target)
-        else {
-            return Err(failure(
-                "unknown_view",
-                "no such view is open in this Room; list them with chariox.app_view_catalog",
-            ));
-        };
+        let views = self.app_control().views();
+        let target = views
+            .binding_state(session, target)
+            .map(|_| target.to_owned())
+            .or_else(|| {
+                views
+                    .bound_views(session)
+                    .into_iter()
+                    .find(|(_, binding)| binding.installation == target)
+                    .map(|(target, _)| target)
+            })
+            .ok_or_else(|| {
+                failure(
+                    "unknown_view",
+                    "no such view is open in this Room; list them with chariox.app_view_catalog",
+                )
+            })?;
+        let (binding, reloading) = views
+            .binding_state(session, &target)
+            .ok_or_else(|| failure("unknown_view", "the view was closed"))?;
         if reloading {
             return Err(failure(
                 "APP_VIEW_STALE",
@@ -398,7 +446,7 @@ impl KernelRuntimeState {
         Ok(ViewContext {
             agent_id: agent.id().to_owned(),
             session: session.to_owned(),
-            target: target.to_owned(),
+            target,
             binding,
             authority,
             declared: Vec::new(),

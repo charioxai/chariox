@@ -49,7 +49,7 @@ async fn check() {
             FLOOR,
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ],
-        false,
+        None,
     )
     .await;
 }
@@ -61,10 +61,29 @@ fn app_view_agent_rejects_protocol_239_worker_before_dispatch() {
 }
 
 async fn check_app_agent_compatibility() {
-    check_versions(&[239], true).await;
+    check_versions(&[239], Some(AppViewProbe::Invoke)).await;
 }
 
-async fn check_versions(advertisements: &[u32], app_agent: bool) {
+#[derive(Clone, Copy)]
+enum AppViewProbe {
+    Invoke,
+    Unprojected,
+}
+
+#[test]
+fn app_view_unprojected_rejects_protocol_244_worker_before_dispatch() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack(
+        "app-unprojected-peer-version",
+        check_unprojected_compatibility,
+    );
+}
+
+async fn check_unprojected_compatibility() {
+    check_versions(&[244], Some(AppViewProbe::Unprojected)).await;
+}
+
+async fn check_versions(advertisements: &[u32], app_agent: Option<AppViewProbe>) {
     let _guard = relay_client_test_guard().await;
     let _home = RelayTestHome::new();
     let workspace = crate::test_support::TestWorktree::new("browser-peer-version");
@@ -185,8 +204,8 @@ async fn check_versions(advertisements: &[u32], app_agent: bool) {
         for &advertised in advertisements {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
-            if app_agent {
-                let error = room_app_agent_request(home_config.clone(), workspace.path())
+            if let Some(probe) = app_agent {
+                let error = room_app_agent_request(home_config.clone(), workspace.path(), probe)
                     .await
                     .expect_err("old worker must refuse at the version check");
                 assert!(
@@ -289,6 +308,7 @@ async fn check_versions(advertisements: &[u32], app_agent: bool) {
 async fn room_app_agent_request(
     config: DaemonConfig,
     workspace: &std::path::Path,
+    probe: AppViewProbe,
 ) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, DaemonError> {
     use crate::runtime::browser_controller_app_view::{BrowserAppViewRequest, ViewAgentCallKind};
     use crate::slice::{
@@ -370,15 +390,29 @@ async fn room_app_agent_request(
         .room_browser_controller_command(
             room.id(),
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::AppView {
-                request: BrowserAppViewRequest::Agent {
-                    target_id: "view-1".into(),
-                    agent: "agent-7".into(),
-                    call: ViewAgentCallKind::State,
-                    name: None,
-                    input: None,
-                    since: None,
-                    wait_ms: None,
-                    deadline_ms: 20_000,
+                request: match probe {
+                    AppViewProbe::Unprojected => BrowserAppViewRequest::Open {
+                        projection:
+                            crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
+                                agent: "agent".into(),
+                            },
+                        origin_label: "a".into(),
+                        installation_id: "todo".into(),
+                        instance_id: None,
+                        entry: "index.html".into(),
+                        assets: vec![],
+                        page: None,
+                    },
+                    AppViewProbe::Invoke => BrowserAppViewRequest::Agent {
+                        target_id: "view-1".into(),
+                        agent: "agent-7".into(),
+                        call: ViewAgentCallKind::State,
+                        name: None,
+                        input: None,
+                        since: None,
+                        wait_ms: None,
+                        deadline_ms: 20_000,
+                    },
                 },
             },
         )

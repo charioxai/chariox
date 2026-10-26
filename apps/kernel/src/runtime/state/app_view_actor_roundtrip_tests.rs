@@ -84,6 +84,7 @@ async fn room_controller_backend_actor_and_late_call_revocation() {
             &store,
             &session,
             BrowserAppViewRequest::Open {
+                projection: crate::runtime::browser_controller_app_view::AppViewProjection::Human,
                 origin_label: "actor".into(),
                 installation_id: "installed".into(),
                 instance_id: None,

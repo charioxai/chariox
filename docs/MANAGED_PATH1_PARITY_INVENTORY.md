@@ -71,6 +71,37 @@ ordinary and managed placement use the same history path. The Web consumes this
 metadata instead of setting every historical attachment size to zero. Existing
 history without this field remains readable. No managed shutdown policy changes.
 
+## MP-08 / MP-09 / MP-10 / MP-11: unprojected Room App Tabs (A3)
+
+The ordinary App-view path opens one background Tab per installation in the
+acting agent's Room. The catalog uses the installation ID as a stable view
+handle; after idle retirement it resolves to a fresh Tab on the active release.
+Human `OpenAppView` adopts the existing target and document. Agent catalog reads
+never demote an adopted Tab or focus another Room's browser.
+
+Security anchors: `state/tool_dispatch/app/view_agent.rs` checks the current
+agent/App binding before opening and after asynchronous admission;
+`browser_controller_app_view.rs` carries a typed human/agent projection;
+`state/room_browser_controller.rs` authenticates peer support before sending it.
+`browser-controller-apps.mjs` attributes background startup calls to the opening
+agent and preserves the running handler's actor during adoption. The existing
+Room backend actor/grant/turn checks and observation protection still apply.
+The allocation is local 648 / peer 246; clients need no higher minimum to use
+an existing human open.
+
+`browser-controller-app-idle.mjs` uses a ten-minute default, configurable with
+`CHARIOX_APP_VIEW_IDLE_TIMEOUT_MS` for bounded drills. The existing kernel drain
+retires idle Room Tabs. Active page handlers (including handlers beyond their
+action deadline), pending backend replies and live Room display leases retain
+the Tab. User-domain instances keep their existing separate lifetime. Browser
+loss cancels old document authority; unprojected views carry no human restore
+intent and the stable handle can open again. Closing a display lease leaves
+accepted work running. No managed-placement branch or shutdown trigger changed.
+
+Focused source/Chromium checks and cost samples do not close S1-05, managed
+parity, hosted continuity or independent security-anchor review. The lane's
+external handoff records exact heads and which live cells were actually run.
+
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
 The real WHATWG navigation timed out repeatedly creating a world that Chromium

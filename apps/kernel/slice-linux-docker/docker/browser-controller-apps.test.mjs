@@ -832,3 +832,114 @@ test('opening an unchanged App focuses its existing document without navigating'
  assert(!connection.sent.some(x=>['Page.navigate','Page.reload'].includes(x.method)),'an unchanged focus must not invalidate current input references');
  assert.equal([...tabs.apps.values()][0].ready,true);
 });
+
+test("MP-08/MP-10 A3: background open is unprojected and human adoption keeps its document", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const params = { origin_label: "background", installation_id: "todo", assets: [asset("index.html", "state")] };
+  const first = await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const app = [...tabs.apps.values()][0];
+  assert.equal(app.background, true);
+  assert.equal(connection.sent.some(item => item.method === "Target.activateTarget"), false);
+  assert.equal(connection.sent.some(item => item.method === "Browser.setWindowBounds"), false);
+  connection.sent.length = 0;
+  assert.deepEqual(await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } }), first);
+  assert.equal(app.background, true);
+  assert.deepEqual(await tabs.open(params), first);
+  assert.equal(app.background, false);
+  assert.equal(connection.created, 1);
+  assert.equal(connection.sent.filter(item => item.method === "Page.navigate").length, 0);
+  assert.ok(connection.sent.some(item => item.method === "Target.activateTarget"));
+  // A catalog read after adoption cannot hide the person's Tab again.
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  assert.equal(app.background, false);
+});
+
+test("MP-09/MP-10 A3: default idle is ten minutes and admitted work survives idle cleanup", async () => {
+  const { browser, connection } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { now: () => now });
+  const params = { origin_label: "idle", installation_id: "todo", projection: { kind: "agent", agent: "agent-1" }, assets: [asset("index.html", "state")] };
+  await tabs.open(params);
+  const app = [...tabs.apps.values()][0];
+  now = 599999;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.agentRunning = Promise.resolve();
+  now = 600001;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.agentRunning = null;
+  now += 599999;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.pending.add("backend-call");
+  now += 2;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.pending.clear();
+  now += 600001;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+  assert.ok(connection.sent.some(item => item.method === "Target.closeTarget"));
+  const reopened = await tabs.open(params);
+  assert.equal(reopened.target_id, "t2");
+});
+
+test("MP-09/MP-10 A3: a live Room viewer retains adopted Tabs, detached viewers do not", async () => {
+  const { browser } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { idleMs: 30, now: () => now });
+  await tabs.open({ origin_label: "viewer", installation_id: "todo", assets: [asset("index.html", "state")] });
+  browser.roomDisplay = { displays: new Map([["viewer", { expires: Date.now() + 60000, suspended: false }]]) };
+  now = 31;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  browser.roomDisplay.displays.clear();
+  now += 29;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  now += 2;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+});
+
+test("MP-11 A3: startup calls use the opening agent, and adoption preserves an in-flight actor", async () => {
+  const { browser } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const params = { origin_label: "startup", installation_id: "todo", assets: [asset("index.html", "state")] };
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const app = [...tabs.apps.values()][0];
+  assert.deepEqual(tabs.callActor(app), { kind: "agent", id: "agent-1" });
+  app.agentActor = { kind: "agent", id: "agent-2" };
+  await tabs.open(params);
+  assert.deepEqual(tabs.callActor(app), { kind: "agent", id: "agent-2" });
+  app.agentActor = undefined;
+  assert.equal(tabs.callActor(app), undefined);
+});
+
+test("MP-09/MP-10 A3: a concurrent open waits for retirement and failed closes retry", async () => {
+  const { browser } = fakeBrowser();
+  let now = 0, release;
+  const tabs = new AppTabs(browser, { idleMs: 1, now: () => now });
+  const params = { origin_label: "retiring", installation_id: "todo", assets: [asset("index.html", "state")] };
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const originalClose = browser.closePageTarget;
+  browser.closePageTarget = () => new Promise(resolve => { release = resolve; });
+  now = 2;
+  const retiring = tabs.retireIdle();
+  await new Promise(resolve => setImmediate(resolve));
+  const refused = await tabs.agent({ target_id: "t1", agent: "agent-1", call: "state" });
+  assert.equal(refused.code, "view_retired");
+  const adopting = tabs.open(params);
+  release();
+  await retiring;
+  assert.equal((await adopting).target_id, "t2");
+  browser.closePageTarget = async () => { throw new Error('CDP close unavailable'); };
+  now = 4;
+  await assert.rejects(tabs.retireIdle(), /CDP close unavailable/);
+  assert.equal(tabs.apps.size, 1);
+  browser.closePageTarget = originalClose;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+});

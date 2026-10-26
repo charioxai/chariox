@@ -3,7 +3,7 @@
 // drill with a real provider is run through the runtime MCP catalog.
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { KernelBrowserHost } from './kernel-browser-host.mjs';
 
@@ -38,9 +38,9 @@ const script = `
   document.querySelector('button').onclick = () => chariox.call('human.click');
   window.ready = true;`;
 
-async function openApp(label) {
+async function openApp(label, projection) {
   const reply = await host.handle({ id: ++requests, method: 'browser.app.open', params: {
-    origin_label: label, installation_id: label, assets: [
+    origin_label: label, installation_id: label, ...(projection ? { projection } : {}), assets: [
       asset('index.html', 'text/html', '<button style="width:100px;height:60px">Human</button><main></main><script src="app.js"></script>'), asset('app.js', 'text/javascript', script)] } });
   assert.equal(reply.ok, true, JSON.stringify(reply));
   const target = reply.result.target_id;
@@ -64,7 +64,10 @@ async function openApp(label) {
   const click = async () => {
     for (const type of ['mousePressed', 'mouseReleased']) await connection.send('Input.dispatchMouseEvent', { type, x: 30, y: 30, button: 'left', clickCount: 1 }, sessionId);
   };
-  return { agent, calls, serve, target, click };
+  const adopt = () => host.handle({ id: ++requests, method: 'browser.app.open', params: {
+    origin_label: label, installation_id: label, assets: [
+      asset('index.html', 'text/html', '<button style="width:100px;height:60px">Human</button><main></main><script src="app.js"></script>'), asset('app.js', 'text/javascript', script)] } });
+  return { agent, calls, serve, target, click, evaluate, adopt, connection, sessionId };
 }
 
 test('A2: an agent invoke runs the view function as that agent and the state and changes show the result', async () => {
@@ -139,4 +142,62 @@ test('A2: two agents and a human share a view with per-invocation actors', async
     { method: 'todo.add', actor: { kind: 'agent', id: 'agent-8' } },
     { method: 'human.click', actor: null },
   ]);
+});
+
+
+test('MP-08/MP-10 A3: an unprojected action is adopted as the same live document', async () => {
+  const app = await openApp('background-adoption', { kind: 'agent', agent: 'agent-7' });
+  const tabs = host.browser.appTabs;
+  assert.equal([...host.tabs.values()].some(tab => tab.target_id === app.target), false);
+  await app.evaluate('window.adoptionMarker = "completed-document"');
+  const serving = app.serve();
+  assert.equal((await app.agent({ call: 'invoke', name: 'add_todo', input: { text: 'work without viewers' } })).ok, true);
+  const shown = await app.adopt();
+  assert.equal(shown.ok, true);
+  assert.equal(shown.result.target_id, app.target);
+  assert.equal(await app.evaluate('window.adoptionMarker'), 'completed-document');
+  assert.deepEqual((await app.agent({ call: 'state' })).value, { todos: ['work without viewers'] });
+  assert.equal([...tabs.apps.values()].filter(tab => tab.installation === 'background-adoption').length, 1);
+  assert.equal([...host.tabs.values()].some(tab => tab.target_id === app.target), true);
+  if (process.env.CHARIOX_APP_VIEW_EVIDENCE_ROOT) {
+    const capture = await app.connection.send('Page.captureScreenshot', { format: 'png' }, app.sessionId);
+    await writeFile(path.join(process.env.CHARIOX_APP_VIEW_EVIDENCE_ROOT, 'same-tab-completed-state.png'), Buffer.from(capture.data, 'base64'));
+  }
+  await serving;
+});
+
+test('MP-09/MP-10 A3: idle ticks preserve a real late handler then release its Tab', async () => {
+  const app = await openApp('background-idle', { kind: 'agent', agent: 'agent-7' });
+  const tabs = host.browser.appTabs;
+  const originalIdle = tabs.idleMs;
+  tabs.idleMs = 100;
+  try {
+    const answer = await app.agent({ call: 'invoke', name: 'slow', deadline_ms: 150 });
+    assert.equal(answer.code, 'deadline');
+    for (let i = 0; i < 3; i++) {
+      await tabs.takeCalls();
+      if (i === 0) assert.ok([...tabs.apps.values()].find(tab => tab.targetId === app.target)?.agentRunning,
+        'the first idle tick must retain the actual handler beyond its deadline');
+    }
+    await new Promise(resolve => setTimeout(resolve, 150));
+    await tabs.takeCalls();
+    assert.equal([...tabs.apps.values()].some(tab => tab.targetId === app.target), false);
+    const reopened = await openApp('background-idle', { kind: 'agent', agent: 'agent-7' });
+    assert.notEqual(reopened.target, app.target);
+    assert.deepEqual((await reopened.agent({ call: 'state' })).value, { todos: [] });
+  } finally { tabs.idleMs = originalIdle; }
+});
+
+
+test('MP-08/MP-10 A3: browser loss gives an interrupted handler a typed result and a fresh next Tab', async () => {
+  const app = await openApp('background-restart', { kind: 'agent', agent: 'agent-7' });
+  const running = app.agent({ call: 'invoke', name: 'long', deadline_ms: 20000 });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  await host.stop();
+  const answer = await Promise.race([running, new Promise((_, reject) => setTimeout(() => reject(Error('interrupted handler stayed in limbo')), 5000))]);
+  assert.equal(answer.ok, false);
+  assert.ok(['view_reloaded', 'browser_unavailable', 'browser_error', 'view_unavailable'].includes(answer.code ?? answer.error?.code), JSON.stringify(answer));
+  const next = await openApp('background-restart', { kind: 'agent', agent: 'agent-7' });
+  assert.notEqual(next.target, app.target);
+  assert.deepEqual((await next.agent({ call: 'state' })).value, { todos: [] });
 });

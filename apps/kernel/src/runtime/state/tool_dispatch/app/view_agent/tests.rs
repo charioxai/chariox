@@ -29,11 +29,19 @@ impl Drop for Rig {
 }
 
 fn rig() -> Rig {
+    rig_for_catalog(false)
+}
+
+fn rig_for_catalog(with_tools: bool) -> Rig {
     let root =
         std::env::temp_dir().join(format!("chariox-view-agent-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
-    crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+    if with_tools {
+        crate::durable_state::app_state::fixture_tool_catalog(&app.durable_state_store());
+    } else {
+        crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+    }
     let session = app
         .sessions_mut()
         .create_session(
@@ -189,7 +197,13 @@ async fn an_agent_reaches_only_its_own_rooms_views_and_only_for_an_app_it_holds(
         "another Room's view is not addressable"
     );
     let listed = rig.runtime.view_catalog(&rig.agent).await;
-    assert_eq!(listed["views"], json!([]));
+    assert_eq!(listed["views"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["views"][0]["app"], APP);
+    assert!(listed["views"][0].get("unavailable").is_some());
+    assert!(
+        listed["views"][0].get("state").is_none(),
+        "another Room's view is not opened or read"
+    );
 }
 
 #[tokio::test]
@@ -219,7 +233,7 @@ async fn the_catalog_lists_each_open_view_and_says_why_one_cannot_be_read() {
             view["app"].as_str(),
             view["generation"].as_u64()
         ),
-        (Some(TARGET), Some(APP), Some(GENERATION))
+        (Some(APP), Some(APP), Some(GENERATION))
     );
     assert_eq!(
         view["unavailable"]["code"], "APP_UNAVAILABLE",
@@ -516,4 +530,132 @@ async fn action_approvals_keep_their_choice_action_and_generation_scope() {
             .code,
         "approval_denied"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_catalog_opens_granted_app_without_a_human_view() {
+    use crate::runtime::browser_controller_process::BrowserControllerProcessStore;
+    use chariox_app_package::{verify, VerificationPolicy};
+    use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
+    let mut rig = rig_for_catalog(true);
+    rig.grant().await;
+    let store = rig.runtime.owned.durable_state_store.clone();
+    let (bytes, publisher) = crate::durable_state::app_state::fixture_tool_package();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(
+            &package,
+            &bytes,
+            StageBudget {
+                max_stage_bytes: 1024 * 1024,
+                reserved_bytes: 1024 * 1024,
+                host_reserve_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .fixture_inbox_workers_with_mode(
+            chariox_app_runtime::worker_process::test_fixture::Mode::ToolEcho,
+        );
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
+        .unwrap();
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/runtime/state/app-view-actor.fixture.mjs");
+    let controllers = BrowserControllerProcessStore::new(
+        "systemd-run",
+        vec![
+            "--scope".into(),
+            "--quiet".into(),
+            "-p".into(),
+            "MemoryMax=4G".into(),
+            "-p".into(),
+            "MemorySwapMax=0".into(),
+            "node".into(),
+            fixture.display().to_string(),
+            directory.display().to_string(),
+            rig.root.display().to_string(),
+        ],
+        std::time::Duration::from_secs(3),
+    );
+    controllers.acquire(&rig.session).unwrap();
+    rig.runtime
+        .set_browser_controller_process_store_for_test(controllers.clone());
+    let result = std::panic::AssertUnwindSafe(async {
+        let listed = rig.runtime.view_catalog(&rig.agent).await;
+        assert_eq!(
+            listed["views"].as_array().unwrap().len(),
+            1,
+            "a granted App opens with every viewer closed: {listed}"
+        );
+        let view = &listed["views"][0];
+        assert_eq!(view["app"], APP);
+        assert_eq!(
+            view["view"], APP,
+            "the installation is a stable handle: {listed}"
+        );
+        assert_eq!(
+            rig.runtime.app_control().views().bound_views(&rig.session)[0].0,
+            "actor-target",
+            "the production controller was reached"
+        );
+        assert!(
+            view.get("state").is_some(),
+            "the state bridge answered: {listed}"
+        );
+        assert!(
+            view["state"].get("unavailable").is_none(),
+            "the controller answered state: {listed}"
+        );
+        let repeated = rig.runtime.view_catalog(&rig.agent).await;
+        assert_eq!(repeated["views"][0]["view"], view["view"]);
+        assert_eq!(
+            rig.runtime
+                .app_control()
+                .views()
+                .bound_views(&rig.session)
+                .len(),
+            1
+        );
+        // The binding grants declared App work in this Room, never another Room's Tab.
+        assert!(rig
+            .runtime
+            .app_control()
+            .views()
+            .bound_views("unrelated-room")
+            .is_empty());
+        rig.runtime
+            .app_control()
+            .views()
+            .unbind(&rig.session, "actor-target");
+        let reopened = rig.runtime.view_context(&rig.agent, APP).await.unwrap();
+        assert_eq!(reopened.binding.installation, APP);
+        assert_eq!(reopened.binding.generation, 1);
+    });
+    use futures_util::FutureExt;
+    let outcome = result.catch_unwind().await;
+    rig.runtime
+        .app_control()
+        .views()
+        .forget_session(&rig.session);
+    controllers.release(&rig.session).unwrap();
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .stop_blocking("alice", APP)
+        .unwrap();
+    if let Err(error) = outcome {
+        std::panic::resume_unwind(error);
+    }
 }
