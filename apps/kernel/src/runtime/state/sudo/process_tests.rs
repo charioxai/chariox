@@ -681,6 +681,50 @@ async fn sudo_review_shell_subscriptions_are_owner_session_bound() {
     }
 }
 
+async fn wait_after_sudo_process_cutoff(f: &super::tests::Fixture, turn: &KernelSudoTurn) {
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    let cutoff = f
+        .state
+        .owned
+        .prompt_state_owner
+        .sudo_bound_process_cutoff(
+            &session,
+            &turn.agent_id,
+            &turn.entry_id,
+            turn.prompt_id.as_deref().unwrap(),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while crate::runtime::kernel_access::process::birth_cutoff().unwrap() <= cutoff {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("process birth clock should advance past the bound cutoff");
+}
+
+async fn wait_for_sleep_exec(pid: u32) -> ProcessIdentity {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Ok((identity, _)) = inspect(pid) {
+                if Path::new(&identity.executable).file_name()
+                    == Some(std::ffi::OsStr::new("sleep"))
+                {
+                    return identity;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the forked shell child should exec sleep before its identity is captured")
+}
+
 // MP-08/MP-10/MP-11 F5: descendants belong to the bound turn that started them.
 #[tokio::test]
 async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
@@ -688,15 +732,17 @@ async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
     let script = format!("while :; do for name in first next; do if test -f '{0}/start-'$name; then rm '{0}/start-'$name; sleep 300 & echo $! > '{0}/pid-'$name; fi; done; sleep .02; done", scratch.path().display());
     let f = fixture_with_provider(Some(&script));
     let mut turn = running(&f);
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    wait_after_sudo_process_cutoff(&f, &turn).await;
     std::fs::write(scratch.path().join("start-first"), "start").unwrap();
     let first = file(&scratch.path().join("pid-first"))
         .await
         .trim()
         .parse::<u32>()
         .unwrap();
-    let mut children = SiblingCleanup::new(vec![first]);
-    let first_identity = inspect(first).unwrap().0;
+    // The parent publishes $! before its child execs. Capture the requested
+    // executable, rather than a transient bash identity that exec invalidates.
+    let first_identity = wait_for_sleep_exec(first).await;
+    let mut children = SiblingCleanup(vec![first_identity.clone()]);
     assert!(f.state.sudo_for_peer(&first_identity).is_ok());
     let session = f
         .state
@@ -722,7 +768,6 @@ async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
         &turn.entry_id,
         "sudo-next-turn"
     ));
-    tokio::time::sleep(Duration::from_millis(30)).await;
     let prompt = PromptQueueItem::new(
         "sudo-next-turn",
         &f.request.attachment_id,
@@ -740,17 +785,18 @@ async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
         .sudo_turns
         .lock()
         .unwrap()
-        .insert(turn.entry_id.clone(), turn);
+        .insert(turn.entry_id.clone(), turn.clone());
     let retained_allowed = f.state.sudo_for_peer(&first_identity).is_ok();
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    wait_after_sudo_process_cutoff(&f, &turn).await;
     std::fs::write(scratch.path().join("start-next"), "start").unwrap();
     let next = file(&scratch.path().join("pid-next"))
         .await
         .trim()
         .parse::<u32>()
         .unwrap();
-    children.0.push(inspect(next).unwrap().0);
-    assert!(f.state.sudo_for_peer(&inspect(next).unwrap().0).is_ok());
+    let next_identity = wait_for_sleep_exec(next).await;
+    children.0.push(next_identity.clone());
+    assert!(f.state.sudo_for_peer(&next_identity).is_ok());
     assert!(
         !retained_allowed,
         "prior turn descendant must lose shell authority"
