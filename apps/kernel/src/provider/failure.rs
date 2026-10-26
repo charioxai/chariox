@@ -189,6 +189,9 @@ fn failure_for_code(code: &str, message: &str) -> Option<(ProviderFailureCause, 
         .strip_prefix("http_status_")
         .and_then(|s| s.parse::<u16>().ok())
     {
+        if super::renewal_failure::renewal_failed("codex", message) {
+            return Some((SignInRequired, false));
+        }
         return Some(match status {
             408 | 500..=599 => (Network, true),
             _ => (Other, false),
