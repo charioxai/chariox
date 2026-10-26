@@ -16,7 +16,17 @@ save version, unsaved changes and a bounded A1:H10 preview. `read_range` returns
 both calculated values and formulas. Formula results are awaited before reads,
 saves and exports; sorting uses Univer's reference-aware sort command.
 
-The L1 **Rust SDK** backend provides version-checked state and brokered files.
+The L1 **Rust SDK** backend stores immutable snapshot files in App data and a
+small SHA-256/byte-count pointer in version-checked state. Save publishes that
+pointer only after the complete snapshot is written; a stale CAS cannot replace
+another saved workbook. Existing structured-state workbooks load and migrate on
+the next save. Each snapshot file fits the existing 512 KiB file broker limit.
+The view transfers files and snapshots in bounded text chunks, avoiding the
+existing App-call byte and node limits. Exports stage files only
+inside the same R6 WASI data preopen, then commit through
+`files.atomic-replace`. Old snapshot and upload files remain
+within the installation's existing 512 MiB data quota;
+a full volume fails the save explicitly and retains the previous saved pointer.
 Rust is used because the worker's WASI `data` preopen can read an imported file
 without introducing a new host read API or a Node backend. `files.import`,
 `files.atomic-replace`, `files.export` and `host.pick-file` retain the kernel's
@@ -70,12 +80,16 @@ is a placeholder for that publisher's key ID, not a shipped signing identity.
 - JSON: `.univer.json`, `format: chariox-univer-workbook`, `version: 1`, with the
   full validated Univer snapshot. Styles, formulas, values and sheet metadata
   round-trip. This is an App format, not an Excel file.
-- Workbooks: at most 192 KiB of snapshot JSON, 16 sheets, 10,000 rows and 256
-  columns per sheet. Range actions and a single CSV export cover at most 1,000
-  cells. These limits fit the existing state and A2 result budgets; operations
-  above them fail explicitly. The CSV export menu asks for an optional A1 range;
-  use selected ranges or split a larger workbook. The CSV byte cap also applies
-  to input, but the expanded workbook must independently fit its snapshot cap.
+- Workbooks: at most 512 KiB (524,288 bytes) of native JSON, including the
+  format/version metadata and the snapshot, 16 sheets, 10,000 rows and 256
+  columns per sheet. Native files fit the existing 512 KiB file-transfer
+  limit. This byte cap is binding;
+  the row count is a ceiling that only sparse sheets can reach. Range actions
+  and a single CSV export cover at most 1,000 cells. Operations above these
+  limits fail explicitly with the relevant cap. The CSV export menu asks for
+  an optional A1 range; use selected ranges or split a larger workbook. CSV
+  input and output are capped at 192 KiB (196,608 bytes), but the expanded
+  workbook must independently fit its native-file cap.
 - XLSX: **NOT SHIPPED.** See [LICENSING.md](LICENSING.md). There is no XLSX menu,
   extension claim, paid import/export dependency or collaboration feature.
 

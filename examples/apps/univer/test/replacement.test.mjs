@@ -27,8 +27,8 @@ test('an editor failure while opening a validated file restores the previous wor
   const bridge = {
     view: { state() {}, changed() {} }, action: (_, handler) => handler,
     async call(name) {
-      if (name === 'load_workbook') return { workbook: original, version: '7' };
-      if (name === 'read_file') return { text: workbookFile(broken) };
+      if (name === 'load_workbook') return { text: JSON.stringify(original), version: '7', done: true };
+      if (name === 'read_file') return { text: workbookFile(broken), done: true };
       throw new Error(name);
     },
   };

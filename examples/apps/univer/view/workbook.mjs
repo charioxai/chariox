@@ -1,4 +1,6 @@
-import { MAX_FILE_BYTES, MAX_ROWS, MAX_COLUMNS, parseCsv, csvCell } from './csv.mjs';
+import { MAX_ROWS, MAX_COLUMNS, parseCsv, csvCell } from './csv.mjs';
+
+export const MAX_WORKBOOK_BYTES = 512 * 1024;
 
 export function emptyWorkbook() {
   return {
@@ -13,7 +15,7 @@ export function validateWorkbook(value) {
       !Array.isArray(value.sheetOrder) || !value.sheetOrder.length || value.sheetOrder.length > 16 ||
       new Set(value.sheetOrder).size !== value.sheetOrder.length || !value.sheets ||
       Object.keys(value.sheets).length !== value.sheetOrder.length) throw new Error('Invalid Univer workbook');
-  if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_FILE_BYTES) throw new Error('Workbook exceeds 192 KiB');
+  if (new TextEncoder().encode(JSON.stringify({ format: 'chariox-univer-workbook', version: 1, workbook: value })).length > MAX_WORKBOOK_BYTES) throw new Error('Workbook exceeds 512 KiB (524288 bytes), including file metadata; export or split the workbook');
   for (const id of value.sheetOrder) {
     const sheet = value.sheets[id];
     if (!sheet || sheet.id !== id || typeof sheet.name !== 'string' ||
@@ -43,7 +45,7 @@ export function workbookFile(workbook) {
 }
 
 export function parseWorkbookFile(text) {
-  if (new TextEncoder().encode(text).length > MAX_FILE_BYTES + 128) throw new Error('Workbook file exceeds 192 KiB');
+  if (new TextEncoder().encode(text).length > MAX_WORKBOOK_BYTES) throw new Error('Workbook file exceeds 512 KiB (524288 bytes), including file metadata');
   const file = JSON.parse(text);
   if (file.format !== 'chariox-univer-workbook' || file.version !== 1) throw new Error('Open a Chariox Univer JSON workbook');
   return validateWorkbook(file.workbook);

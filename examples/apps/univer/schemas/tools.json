@@ -4,7 +4,13 @@
       "name": "load_workbook",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 524288
+          }
+        },
         "required": [],
         "additionalProperties": false
       }
@@ -14,18 +20,19 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "workbook": {
-            "type": "object"
-          },
           "version": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
           }
         },
         "required": [
-          "workbook",
+          "name",
           "version"
         ],
         "additionalProperties": false
@@ -43,6 +50,11 @@
           "grantId": {
             "type": "string",
             "minLength": 1
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 524288
           }
         },
         "required": [
@@ -62,15 +74,25 @@
           },
           "text": {
             "type": "string",
-            "maxLength": 196736
+            "maxLength": 65536
           },
           "offer": {
+            "type": "boolean"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 524288
+          },
+          "final": {
             "type": "boolean"
           }
         },
         "required": [
           "name",
-          "text"
+          "text",
+          "offset",
+          "final"
         ],
         "additionalProperties": false
       }

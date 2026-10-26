@@ -17,17 +17,21 @@ const calls = [], errors = [];
 let request = 0, target, running = true, stored = null, version = null;
 const handle = (method, params) => host.handle({ id: ++request, method, params });
 const fixture = async (name, input) => {
-  if (name === 'load_workbook') return { workbook: stored, version };
+  if (name === 'load_workbook') return { text: stored ? JSON.stringify(stored) : null, version, done: true };
   if (name === 'save_workbook') {
     assert.equal(input.version, version, 'optimistic save version');
-    stored = structuredClone(input.workbook); version = String(Number(version ?? 0) + 1); return { version };
+    stored = JSON.parse(files.get(input.name)).workbook; version = String(Number(version ?? 0) + 1); return { version };
   }
   if (name === 'read_file') {
     assert.ok(files.has(input.name), `fixture file ${input.name}`);
-    return { name: input.name, text: files.get(input.name) };
+    return { name: input.name, text: files.get(input.name), done: true };
   }
   if (name === 'write_file') {
-    files.set(input.name, input.text); await writeFile(path.join(evidence, input.name), input.text);
+    const old = input.offset ? files.get(input.name) : '';
+    assert.equal(Buffer.byteLength(old ?? ''), input.offset);
+    const text = old + input.text;
+    files.set(input.name, text);
+    if (input.final) await writeFile(path.join(evidence, input.name), text);
     return { name: input.name, bytes: Buffer.byteLength(input.text), grantId: null };
   }
   if (name === 'pick_file') return { grants: [] };

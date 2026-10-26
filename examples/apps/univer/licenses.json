@@ -1,7 +1,7 @@
 {
   "format": 1,
   "nodeLockSha256": "738373782d96c538f8d49264c899f8faa0cb571b63019ed59bccae6dc2f474d8",
-  "backendLockSha256": "0eae38a0f16e2bbf258b3bc864c38955a6e31518573c88800524f1d6d208ee55",
+  "backendLockSha256": "911aad147885d709b491215f69546108289df125050e59655e0b96d71958ece9",
   "packages": [
     {
       "id": "@esbuild/linux-x64@0.25.12",

@@ -1,10 +1,15 @@
 use serde_json::Value;
 
-pub const MAX_BYTES: usize = 192 * 1024;
+pub const MAX_CSV_BYTES: usize = 192 * 1024;
+pub const MAX_BYTES: usize = 512 * 1024;
 
 pub fn workbook(value: &Value) -> Result<(), String> {
-    if value.to_string().len() > MAX_BYTES {
-        return Err("workbook exceeds 192 KiB; export or split the workbook".into());
+    if serde_json::json!({"format":"chariox-univer-workbook","version":1,"workbook":value})
+        .to_string()
+        .len()
+        > MAX_BYTES
+    {
+        return Err("workbook exceeds 512 KiB (524288 bytes), including file metadata; export or split the workbook".into());
     }
     let order = value["sheetOrder"]
         .as_array()
@@ -75,8 +80,11 @@ pub fn filename(value: &Value) -> Result<String, String> {
 }
 
 pub fn file(name: &str, text: &str) -> Result<(), String> {
-    if text.len() > MAX_BYTES + 128 {
-        return Err("file exceeds 192 KiB".into());
+    if name.ends_with(".csv") && text.len() > MAX_CSV_BYTES {
+        return Err("CSV exceeds 192 KiB (196608 bytes)".into());
+    }
+    if text.len() > MAX_BYTES {
+        return Err("workbook file exceeds 512 KiB (524288 bytes), including file metadata".into());
     }
     if name.ends_with(".univer.json") {
         let value: Value = serde_json::from_str(text).map_err(|_| "file is not JSON")?;
@@ -129,5 +137,29 @@ mod tests {
         book["sheets"]["s"]["rowCount"] = json!(10);
         book["sheets"]["s"]["cellData"]["01"] = json!({});
         assert!(workbook(&book).is_err());
+    }
+    #[test]
+    fn import_and_save_enforce_the_same_snapshot_byte_boundary() {
+        let mut book = json!({"id":"book","name":"Boundary","sheetOrder":["s"],"sheets":{
+            "s":{"id":"s","name":"Sheet1","rowCount":10000,"columnCount":10,
+            "cellData":{"9999":{"0":{"v":"","t":1}}}}
+        }});
+        let overhead = json!({"format":"chariox-univer-workbook","version":1,"workbook":book})
+            .to_string()
+            .len();
+        for (bytes, valid) in [(MAX_BYTES - 1, true), (MAX_BYTES + 1, false)] {
+            book["sheets"]["s"]["cellData"]["9999"]["0"]["v"] = json!("x".repeat(bytes - overhead));
+            let imported =
+                json!({"format":"chariox-univer-workbook","version":1,"workbook":book}).to_string();
+            assert_eq!(imported.len(), bytes);
+            assert_eq!(workbook(&book).is_ok(), valid);
+            assert_eq!(file("boundary.univer.json", &imported).is_ok(), valid);
+            if !valid {
+                assert!(workbook(&book).unwrap_err().contains("512 KiB"));
+            }
+        }
+        assert!(file("large.csv", &"x".repeat(MAX_CSV_BYTES + 1))
+            .unwrap_err()
+            .contains("192 KiB"));
     }
 }

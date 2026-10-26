@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::{fs::File, io::Read};
 
 mod document;
+mod snapshot;
 
 struct Sheets;
 chariox_app_sdk::bindings::export!(Sheets with_types_in chariox_app_sdk::bindings);
@@ -14,8 +15,7 @@ fn invalid(message: impl Into<String>) -> AppError {
     error("INVALID_ARGUMENT", message)
 }
 
-async fn write_document(name: String, text: String) -> Result<u64, AppError> {
-    let bytes = text.into_bytes();
+async fn write_bytes(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
     let expected = bytes.len() as u64;
     let (mut sink, source) = chariox_app_sdk::bindings::wit_stream::new();
     let send = async move {
@@ -30,16 +30,112 @@ async fn write_document(name: String, text: String) -> Result<u64, AppError> {
     if !unwritten.is_empty() || written != expected {
         return Err(error(
             "FILE_WRITE_FAILED",
-            "file was not fully written; retry the export",
+            "file was not fully written; retry the save or export",
         ));
     }
     Ok(written)
 }
 
+fn read_document(name: &str) -> Result<String, AppError> {
+    let file = File::open(format!("data/{name}")).map_err(|_| {
+        error(
+            "FILE_NOT_FOUND",
+            "pick a file or export it to App data first",
+        )
+    })?;
+    let mut text = String::new();
+    file.take((document::MAX_BYTES + 1) as u64)
+        .read_to_string(&mut text)
+        .map_err(|_| invalid("file must be readable UTF-8"))?;
+    document::file(name, &text).map_err(invalid)?;
+    Ok(text)
+}
+
+fn text_chunk(text: &str, input: &Value) -> Result<Value, AppError> {
+    let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+    if offset > text.len() || !text.is_char_boundary(offset) {
+        return Err(invalid("invalid file offset"));
+    }
+    let mut end = (offset + 64 * 1024).min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Ok(json!({"text":&text[offset..end],"next":end,"done":end == text.len()}))
+}
+
+async fn stage_export(name: &str, input: &Value) -> Result<u64, AppError> {
+    use std::io::Write;
+    let text = input["text"]
+        .as_str()
+        .ok_or_else(|| invalid("text is required"))?;
+    let offset = input["offset"]
+        .as_u64()
+        .ok_or_else(|| invalid("offset is required"))?;
+    let limit = if name.ends_with(".csv") {
+        document::MAX_CSV_BYTES
+    } else {
+        document::MAX_BYTES
+    };
+    if text.len() > 64 * 1024 || offset > limit as u64 || text.len() > limit - offset as usize {
+        return Err(invalid(if name.ends_with(".csv") {
+            "CSV exceeds 192 KiB (196608 bytes)"
+        } else {
+            "workbook file exceeds 512 KiB (524288 bytes), including file metadata"
+        }));
+    }
+    let staging = format!("data/.{name}.pending");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if offset == 0 {
+        options.create(true).truncate(true);
+    } else {
+        options.append(true);
+    }
+    let mut file = options.open(&staging).map_err(|_| {
+        error(
+            "FILE_WRITE_FAILED",
+            "file upload could not open; retry from the beginning",
+        )
+    })?;
+    if file
+        .metadata()
+        .map_err(|_| invalid("file upload metadata is unavailable"))?
+        .len()
+        != offset
+    {
+        return Err(invalid(
+            "file upload offset changed; retry from the beginning",
+        ));
+    }
+    file.write_all(text.as_bytes()).map_err(|_| {
+        error(
+            "FILE_WRITE_FAILED",
+            "file upload failed; check App data space and retry",
+        )
+    })?;
+    let bytes = offset + text.len() as u64;
+    if input["final"] == true {
+        file.sync_all()
+            .map_err(|_| error("FILE_WRITE_FAILED", "file upload could not sync; retry"))?;
+        drop(file);
+        let full =
+            std::fs::read_to_string(&staging).map_err(|_| invalid("file upload is unreadable"))?;
+        document::file(name, &full).map_err(invalid)?;
+        write_bytes(name.into(), full.into_bytes()).await?;
+        std::fs::remove_file(staging).map_err(|_| {
+            error(
+                "FILE_WRITE_FAILED",
+                "file uploaded, but staging cleanup failed; retry",
+            )
+        })?;
+    }
+    Ok(bytes)
+}
+
 async fn dispatch(name: &str, input: Value) -> Result<Value, AppError> {
     match name {
         "load_workbook" => match state::get("workbook".into()).await? {
-            None => Ok(json!({"workbook":null,"version":null})),
+            None => Ok(json!({"text":null,"version":null})),
             Some(record) => {
                 let book: Value = serde_json::from_str(&record.value).map_err(|_| {
                     error(
@@ -47,12 +143,21 @@ async fn dispatch(name: &str, input: Value) -> Result<Value, AppError> {
                         "saved workbook is invalid JSON; open an exported copy",
                     )
                 })?;
-                document::workbook(&book).map_err(|e| error("INVALID_STATE", e))?;
-                Ok(json!({"workbook":book,"version":record.version.to_string()}))
+                let book = snapshot::read(book)?;
+                let mut result = text_chunk(&book.to_string(), &input)?;
+                result["version"] = json!(record.version.to_string());
+                Ok(result)
             }
         },
         "save_workbook" => {
-            let book = &input["workbook"];
+            let name = document::filename(&input["name"]).map_err(invalid)?;
+            if !name.ends_with(".univer.json") {
+                return Err(invalid("save a .univer.json workbook"));
+            }
+            let text = read_document(&name)?;
+            let wrapper: Value = serde_json::from_str(&text)
+                .map_err(|_| invalid("file must be a native workbook"))?;
+            let book = &wrapper["workbook"];
             document::workbook(book).map_err(invalid)?;
             let version = match &input["version"] {
                 Value::Null => None,
@@ -62,13 +167,26 @@ async fn dispatch(name: &str, input: Value) -> Result<Value, AppError> {
                 ),
                 _ => return Err(invalid("version must be a decimal string or null")),
             };
+            // Reject an already stale view before writing any files; the
+            // transaction rechecks after I/O to cover concurrent writers.
+            if state::get("workbook".into())
+                .await?
+                .map(|record| record.version)
+                != version
+            {
+                return Err(error(
+                    "STATE_CONFLICT",
+                    "workbook changed; export your edits before reopening the saved copy",
+                ));
+            }
+            let pointer = snapshot::write(book).await?;
             let tx = state::Transaction {
                 schema_version: 0,
                 checks: vec![state::Check {
                     key: "workbook".into(),
                     version,
                 }],
-                writes: vec![state::Write::Put(("workbook".into(), book.to_string()))],
+                writes: vec![state::Write::Put(("workbook".into(), pointer.to_string()))],
                 occurrences: vec![],
                 wakes: vec![],
             };
@@ -77,12 +195,8 @@ async fn dispatch(name: &str, input: Value) -> Result<Value, AppError> {
         }
         "write_file" => {
             let name = document::filename(&input["name"]).map_err(invalid)?;
-            let text = input["text"]
-                .as_str()
-                .ok_or_else(|| invalid("text is required"))?;
-            document::file(&name, text).map_err(invalid)?;
-            let written = write_document(name.clone(), text.into()).await?;
-            let grant = if input["offer"] == true {
+            let written = stage_export(&name, &input).await?;
+            let grant = if input["offer"] == true && input["final"] == true {
                 Some(files::export(name.clone()).await?)
             } else {
                 None
@@ -94,21 +208,10 @@ async fn dispatch(name: &str, input: Value) -> Result<Value, AppError> {
             if let Some(grant) = input["grantId"].as_str() {
                 files::import(grant.into(), name.clone()).await?;
             }
-            // The worker grants only data/tmp preopens. A validated basename is
-            // read in data after the kernel has imported a user-selected grant.
-            let file = File::open(format!("data/{name}")).map_err(|_| {
-                error(
-                    "FILE_NOT_FOUND",
-                    "pick a file or export it to App data first",
-                )
-            })?;
-            let mut text = String::new();
-            file.take((document::MAX_BYTES + 129) as u64)
-                .read_to_string(&mut text)
-                .map_err(|_| invalid("file must be readable UTF-8"))?;
-            document::file(&name, &text).map_err(invalid)?;
-            Ok(json!({"name":name,"text":text}))
+            let text = read_document(&name)?;
+            text_chunk(&text, &input)
         }
+
         "pick_file" => {
             let extension = match input["format"].as_str() {
                 Some("csv") => ".csv",

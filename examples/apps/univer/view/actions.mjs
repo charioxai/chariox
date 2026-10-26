@@ -1,8 +1,11 @@
+import { fileTransfer } from './transfer.mjs';
 import declarations from '../schemas/ui-actions.json' with { type: 'json' };
 import { MAX_ROWS, MAX_COLUMNS, encodeCsv } from './csv.mjs';
 import { emptyWorkbook, validateWorkbook, workbookFromCsv, workbookFile, parseWorkbookFile, usedBounds } from './workbook.mjs';
 
 export async function attachWorkbook(api, bridge) {
+  const transfer = fileTransfer(bridge);
+  const saveName = `save-${crypto.randomUUID()}.univer.json`;
   let version = null, dirty = false, revision = 0, subscription;
   let latestRange = null;
   const book = () => {
@@ -105,7 +108,7 @@ export async function attachWorkbook(api, bridge) {
     async import_csv(input) {
       if (!input.name?.endsWith('.csv')) throw new Error('Choose a .csv filename');
       const openingRevision = revision;
-      const { text } = await bridge.call('read_file', input);
+      const { text } = await transfer.readFile(input);
       if (revision !== openingRevision) throw new Error('Workbook changed while opening the file; save your edits and try again');
       replace(workbookFromCsv(text)); await calculated(); return summary();
     },
@@ -116,31 +119,33 @@ export async function attachWorkbook(api, bridge) {
       if (!input.range && bounds.rows * bounds.columns > 1000) throw new Error('Select an export range of at most 1000 cells');
       const values = input.range ? range(input).getValues()
         : bounds.rows && bounds.columns ? current.getRange(0, 0, bounds.rows, bounds.columns).getValues() : [['']];
-      return bridge.call('write_file', { name: input.name, text: encodeCsv(values), offer: input.offer ?? false });
+      return transfer.write( { name: input.name, text: encodeCsv(values), offer: input.offer ?? false });
     },
     async save_workbook() {
       await calculated(); const data = validateWorkbook(book().save()), savingRevision = revision;
-      const saved = await bridge.call('save_workbook', { workbook: data, version });
+      const name = saveName;
+      await transfer.write({ name, text: workbookFile(data), offer: false });
+      const saved = await bridge.call('save_workbook', { name, version });
       version = saved.version; dirty = revision !== savingRevision;
       changed({ saved: version, dirty }); return { version, dirty };
     },
     async open_workbook(input) {
       if (!input.name?.endsWith('.univer.json')) throw new Error('Choose a .univer.json filename');
       const openingRevision = revision;
-      const { text } = await bridge.call('read_file', input);
+      const { text } = await transfer.readFile(input);
       if (revision !== openingRevision) throw new Error('Workbook changed while opening the file; save your edits and try again');
       replace(parseWorkbookFile(text)); await calculated(); return summary();
     },
     async export_workbook(input) {
       if (!input.name?.endsWith('.univer.json')) throw new Error('Use a .univer.json filename');
-      await calculated(); return bridge.call('write_file', { name: input.name, text: workbookFile(book().save()), offer: input.offer ?? false });
+      await calculated(); return transfer.write( { name: input.name, text: workbookFile(book().save()), offer: input.offer ?? false });
     },
     pick_file: input => bridge.call('pick_file', input),
   };
 
-  const loaded = await bridge.call('load_workbook', {});
+  const loaded = await transfer.load();
   version = loaded.version;
-  replace(loaded.workbook ?? emptyWorkbook());
+  replace(loaded.text ? JSON.parse(loaded.text) : emptyWorkbook());
   await calculated(); dirty = false;
   bridge.view.state(summary);
   // Human menu callbacks and agent calls share the same workbook operations.
