@@ -186,6 +186,7 @@ export type AppViewAction = {
   name: string; description: string; inputSchema: unknown; outputSchema?: unknown
   effect: "read" | "write" | "approval"; approvalReason?: string
 }
+/** target_id is the logical Room Tab ID, also accepted by InspectAppView. */
 export type AppViewInspection = {
   installation_id: string; target_id: string; generation: string; development: boolean; catalog_json: string
 }

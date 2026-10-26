@@ -78,6 +78,15 @@ async fn app_open_drill() {
                 .into()
         })
         .collect();
+    for room in &rooms {
+        app.sessions_mut()
+            .create_room_environment(
+                room,
+                format!("environment-{room}"),
+                crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+            )
+            .unwrap();
+    }
     let mut router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
     let listed = request(
         &router,
@@ -133,10 +142,34 @@ async fn app_open_drill() {
     assert!(no_browser.contains("/room bind"));
     assert!(!no_browser.contains("stale revision"));
 
+    let snapshot = router
+        .runtime_state
+        .reconcile_room_environment_controller_tabs(
+            &rooms[0],
+            ["inspection-target", "focused-target"]
+                .into_iter()
+                .map(|target| crate::session::EnvironmentTabObservation {
+                    runtime_target_id: target.into(),
+                    document_id: format!("document-{target}"),
+                    url: "https://example.org/".into(),
+                    title: target.into(),
+                })
+                .collect(),
+            Some("focused-target"),
+        )
+        .unwrap();
+    let logical_tab = router
+        .runtime_state
+        .room_environment_tab_id_for_controller_target(&rooms[0], "inspection-target")
+        .unwrap()
+        .unwrap();
+    let focused_tab = snapshot.focused_tab_id.unwrap();
+    assert_ne!(logical_tab, "inspection-target");
+    assert_ne!(logical_tab, focused_tab);
     let inspection = |room: &str| {
         LocalDaemonRequest::InspectAppView(crate::local::InspectAppViewRequest {
             session_id: room.into(),
-            target_id: Some("inspection-tab".into()),
+            target_id: Some(logical_tab.clone()),
         })
     };
     assert!(request(&router, inspection(&rooms[0]))
@@ -151,7 +184,7 @@ while IFS= read -r request; do
   id=${id%%,*}
   case "$request" in
     *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-    *'"method":"browser.app.inspect"'*) printf '{"id":%s,"ok":true,"result":{"registrations":[{"name":"add","description":"Add","inputSchema":{"type":"object"},"effect":"write"}],"state":{"ok":true,"value":{"count":1}},"controls":[{"control":"button#missing","action":null}]}}\n' "$id" ;;
+    *'"method":"browser.app.inspect"'*) case "$request" in *'"target_id":"inspection-target"'*|*'"target_id":"focused-target"'*) ;; *) exit 1 ;; esac; printf '{"id":%s,"ok":true,"result":{"registrations":[{"name":"add","description":"Add","inputSchema":{"type":"object"},"effect":"write"}],"state":{"ok":true,"value":{"count":1}},"controls":[{"control":"button#missing","action":null}]}}\n' "$id" ;;
     *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
     *) exit 1 ;;
   esac
@@ -194,11 +227,12 @@ done
         panel: Default::default(),
         logical_tab: None,
     };
-    views.register(&rooms[0], "inspection-tab", binding.clone());
+    views.register(&rooms[0], "inspection-target", binding.clone());
     let LocalDaemonResponse::AppViewInspected {
         catalog_json,
         development,
         generation,
+        target_id,
         ..
     } = request(&router, inspection(&rooms[0])).await.unwrap()
     else {
@@ -206,6 +240,7 @@ done
     };
     let catalog: chariox_app_runtime::view_catalog::ViewCatalog =
         serde_json::from_str(&catalog_json).unwrap();
+    assert_eq!(target_id, logical_tab);
     assert!(!development);
     assert_eq!(generation, active_generation.to_string());
     assert_eq!(
@@ -215,6 +250,29 @@ done
     assert_eq!(catalog.registrations.len(), 1);
     assert_eq!(catalog.warnings.len(), 2);
     assert_eq!(catalog.warnings[1].code, "undeclared_control");
+    let controller_id = LocalDaemonRequest::InspectAppView(crate::local::InspectAppViewRequest {
+        session_id: rooms[0].clone(),
+        target_id: Some("inspection-target".into()),
+    });
+    assert!(request(&router, controller_id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not an open App view"));
+    views.register(&rooms[0], "focused-target", binding.clone());
+    let focused = request(
+        &router,
+        LocalDaemonRequest::InspectAppView(crate::local::InspectAppViewRequest {
+            session_id: rooms[0].clone(),
+            target_id: None,
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(focused, LocalDaemonResponse::AppViewInspected { target_id, .. } if target_id == focused_tab)
+    );
+    views.unbind(&rooms[0], "focused-target");
     assert!(request(&router, inspection(&rooms[1]))
         .await
         .unwrap_err()
@@ -230,7 +288,7 @@ done
     );
     views.register(
         &rooms[0],
-        "inspection-tab",
+        "inspection-target",
         crate::runtime::app_views::AppViewBinding {
             generation: active_generation + 1,
             ..binding
@@ -241,7 +299,7 @@ done
         .unwrap_err()
         .to_string()
         .contains("old generation"));
-    views.unbind(&rooms[0], "inspection-tab");
+    views.unbind(&rooms[0], "inspection-target");
     processes.shutdown().unwrap();
     let stopped = request(&router, open(&rooms[0]))
         .await

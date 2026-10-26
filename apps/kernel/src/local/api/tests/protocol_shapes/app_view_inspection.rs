@@ -12,7 +12,7 @@ fn app_view_inspection_protocol_646_245_snapshot() {
     });
     let explicit = LocalDaemonRequest::InspectAppView(InspectAppViewRequest {
         session_id: "room".into(),
-        target_id: Some("app-tab".into()),
+        target_id: Some("tab-2".into()),
     });
     for request in [&request, &explicit] {
         assert_eq!(
@@ -34,7 +34,7 @@ fn app_view_inspection_protocol_646_245_snapshot() {
     }
     let response = LocalDaemonResponse::AppViewInspected {
         installation_id: "dev".into(),
-        target_id: "app-tab".into(),
+        target_id: "tab-2".into(),
         generation: "9007199254740993".into(),
         development: true,
         catalog_json: serde_json::to_string(&ViewCatalog {
@@ -51,7 +51,7 @@ fn app_view_inspection_protocol_646_245_snapshot() {
     let peer_command =
         crate::transport::room_browser_controller::RoomBrowserControllerCommand::AppView {
             request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Inspect {
-                target_id: "app-tab".into(),
+                target_id: "controller-target".into(),
             },
         };
     assert_eq!(
@@ -67,15 +67,15 @@ fn app_view_inspection_protocol_646_245_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "a812af6ae5fba8838fd56eb684c2c0cea089b29c87d9e72cb991963c6a4495f7"
+        "aecbd4bd6b0f1005b21395b5a34a85fe77c2bda98e8508caa37d509a7f9c0cd4"
     );
     let command = crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Inspect {
-        target_id: "app-tab".into(),
+        target_id: "controller-target".into(),
     };
     assert_eq!(
         serde_json::to_value(&command).unwrap(),
-        json!({"op":"inspect","target_id":"app-tab"})
+        json!({"op":"inspect","target_id":"controller-target"})
     );
     assert_eq!(command.method(), "browser.app.inspect");
-    assert_eq!(command.params(), json!({"target_id":"app-tab"}));
+    assert_eq!(command.params(), json!({"target_id":"controller-target"}));
 }

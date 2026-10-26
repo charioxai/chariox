@@ -10,14 +10,14 @@
     {
       "InspectAppView": {
         "session_id": "room",
-        "target_id": "app-tab"
+        "target_id": "tab-2"
       }
     }
   ],
   "response": {
     "AppViewInspected": {
       "installation_id": "dev",
-      "target_id": "app-tab",
+      "target_id": "tab-2",
       "generation": "9007199254740993",
       "development": true,
       "catalog_json": "{\"actions\":[],\"registrations\":[],\"state\":{\"ok\":true,\"value\":{\"count\":1}},\"warnings\":[{\"code\":\"undeclared_control\",\"message\":\"Visible control 'button#missing' has no matching declared action\"}]}"
@@ -27,7 +27,7 @@
     "kind": "app_view",
     "request": {
       "op": "inspect",
-      "target_id": "app-tab"
+      "target_id": "controller-target"
     }
   }
 }

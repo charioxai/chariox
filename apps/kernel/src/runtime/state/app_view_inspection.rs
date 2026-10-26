@@ -15,26 +15,25 @@ impl KernelRuntimeState {
         owner: String,
         request: &InspectAppViewRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let target = match &request.target_id {
+        let tab = match &request.target_id {
             Some(target) if !target.is_empty() && target.len() <= 256 => target.clone(),
             Some(_) => {
                 return Err(error(
                     "Invalid App target; open the App view and retry /app actions",
                 ))
             }
-            None => {
-                let tab = self
-                    .room_environment_snapshot(&request.session_id)
-                    .map_err(|_| {
-                        error("The Room environment is unavailable; start it before /app actions")
-                    })?
-                    .focused_tab_id
-                    .ok_or_else(|| error("Focus an open App view before using /app actions"))?;
-                self.room_environment_controller_tab_binding(&request.session_id, &tab)
-                    .map_err(|_| error("The focused Tab is unavailable; reopen the App view"))?
-                    .runtime_target_id
-            }
+            None => self
+                .room_environment_snapshot(&request.session_id)
+                .map_err(|_| {
+                    error("The Room environment is unavailable; start it before /app actions")
+                })?
+                .focused_tab_id
+                .ok_or_else(|| error("Focus an open App view before using /app actions"))?,
         };
+        let target = self
+            .room_environment_controller_tab_binding(&request.session_id, &tab)
+            .map_err(|_| error("This Tab is not an open App view; use /app open first"))?
+            .runtime_target_id;
         let views = self.app_control().views().clone();
         let (binding, reconnecting) = views
             .binding_state(&request.session_id, &target)
@@ -69,7 +68,7 @@ impl KernelRuntimeState {
         let catalog = ViewCatalog::from_observation(&[], observation).map_err(error)?;
         Ok(LocalDaemonResponse::AppViewInspected {
             installation_id: binding.installation,
-            target_id: target,
+            target_id: tab,
             generation: binding.generation.to_string(),
             development,
             catalog_json: serde_json::to_string(&catalog)

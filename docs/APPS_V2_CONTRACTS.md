@@ -155,8 +155,11 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
 ## A4 inspection (MP-08 / MP-10 / MP-11)
 
 `InspectAppView` (local 646; peer 245) reads an **existing** Room App Tab.
-The kernel selects the focused Tab unless the caller supplies `target_id`,
-checks Room membership, the kernel's App binding, DEV Room scope, current
+The kernel selects the focused Tab unless the caller supplies `target_id`
+(the logical Room Tab ID, also used by `--tab`). It resolves that ID to the
+current controller target on every read and returns the logical ID in
+`AppViewInspected.target_id`, so DEV refresh survives controller rebinding.
+It checks Room membership, the kernel's App binding, DEV Room scope, current
 publisher trust and generation before and after the read. It uses the existing
 `AppView` home/worker command with `op: inspect`; it cannot invoke an action,
 open a headless Tab or grant a capability. A2's runtime MCP surface is separate.
