@@ -29,13 +29,6 @@ pub(super) struct AppBindingRequest {
 impl DurableKernelStateStore {
     /// Blocking check; retain the command's admission until this returns. An
     /// offline worker is fine: no worker readiness or tool availability is implied.
-    pub(crate) fn check_app_binding(
-        &self,
-        trusted_owner: &str,
-        installation_id: &str,
-    ) -> Result<ActiveGeneration, AppBindingError> {
-        self.check_app_binding_in_room(trusted_owner, installation_id, None)
-    }
     pub(crate) fn check_app_binding_in_room(
         &self,
         trusted_owner: &str,

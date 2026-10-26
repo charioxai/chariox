@@ -138,7 +138,7 @@ impl Fixture {
         self.upload_bytes("upload", &bytes).await
     }
     async fn upload_bytes(&self, request: &str, bytes: &[u8]) -> (String, String) {
-        let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let digest = format!("sha256:{:x}", Sha256::digest(bytes));
         let begin = LocalDaemonRequest::BeginAppPackageUpload(BeginAppPackageUploadRequest {
             request_id: request.into(),
             expected_size: bytes.len() as u64,
