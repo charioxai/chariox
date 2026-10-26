@@ -8,7 +8,14 @@ test "$#" = 1 || { echo "usage: $0 ABSOLUTE_EVIDENCE_DIRECTORY" >&2; exit 2; }
 evidence=$1
 case "$evidence" in /*) ;; *) echo 'Evidence directory must be absolute.' >&2; exit 2;; esac
 case "$evidence/" in "$repo/"*) echo 'Keep evidence outside the repository.' >&2; exit 2;; esac
-for tool in cargo rustup codesign python3 shasum; do command -v "$tool" >/dev/null; done
+for tool in cargo rustc rustup codesign python3 shasum; do command -v "$tool" >/dev/null; done
+python3 - "$(rustc --version)" <<'PY'
+import re, sys
+version = re.match(r'^rustc (\d+)\.(\d+)\.', sys.argv[1])
+if not version or tuple(map(int, version.groups())) < (1, 97):
+    sys.exit(f'Wasmtime 50 requires Rust >= 1.97; active compiler is {sys.argv[1]}. '
+             'Select a suitable rustup toolchain (for example rustup run 1.99.1 bash <drill> <evidence>) and rerun.')
+PY
 mkdir -p "$evidence" "$HOME/.chariox/dev"
 scratch=$(mktemp -d "$HOME/.chariox/dev/app-wasm-containment.XXXXXXXX")
 cleanup() { rm -rf -- "$scratch"; }
