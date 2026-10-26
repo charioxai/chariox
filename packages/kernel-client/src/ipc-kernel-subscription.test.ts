@@ -33,7 +33,7 @@ test("a kernel subscription routes, resumes from the given event and surfaces fr
   const seen: Array<[KernelEvent, unknown]> = []
   client.onKernelEvent((event, frame) => { seen.push([event, frame]) })
   try {
-    await client.subscribeToKernelEvents("s-1", "att-1", 7)
+    await client.subscribeToKernelEvents("s-1", "att-1", { resumeFromEventId: 7 })
     await new Promise<void>(resolve => setTimeout(resolve, 100))
     assert.equal(frames.length, 1)
     assert.deepEqual([frames[0]!.type, frames[0]!.kernel, frames[0]!.resume_from_event_id], ["subscribe", "b3", 7])

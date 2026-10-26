@@ -117,7 +117,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "3392afcfcfdb6b3ad9ef9e89adc30abee92ee909715109eb6d926426ccb61d44"
+        "102043fb7f6e4b46f4c9371d861b7ef60a004f86a4ba16d51210f34b9d90bb9e"
     );
 }
 
@@ -183,7 +183,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "bad840c36f8e160f55a1a5c29b3f30064decfa2a677c9fa7bb4ded52241834bb"
+        "85a721dcf87cc00b7501557604fa354c57887b3678b1f53a15b4c0a613dd5ddf"
     );
 }
 
