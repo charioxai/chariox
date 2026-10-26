@@ -809,6 +809,13 @@ impl SessionRuntimeStore {
                 terminal_caller,
             )
             .await
+            .map_err(|error| match error {
+                DaemonError::AgentNotFound { agent_id } => DaemonError::AgentNotInSession {
+                    session_id: request.session_id.clone(),
+                    agent_id,
+                },
+                error => error,
+            })
             .map(|agent| LocalDaemonResponse::AgentFocused { agent });
         self.with_session_projection_action_result(result).await
     }
@@ -838,6 +845,13 @@ impl SessionRuntimeStore {
                     .then_some(SessionProjectionAction::Update(ack.session));
                 (Ok(response), projection_action)
             }
+            Err(DaemonError::AgentNotFound { agent_id }) => (
+                Err(DaemonError::AgentNotInSession {
+                    session_id,
+                    agent_id,
+                }),
+                None,
+            ),
             Err(error) => (Err(error), None),
         }
     }

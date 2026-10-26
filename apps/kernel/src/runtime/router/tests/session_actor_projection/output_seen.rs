@@ -33,6 +33,45 @@ async fn agent_commands_use_authoritative_membership_after_a_stale_projection() 
 }
 
 #[tokio::test]
+async fn agent_commands_reject_missing_and_foreign_agents_after_a_stale_projection() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let (_, foreign) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "other-workspace",
+            "other-worktree",
+        ))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    for target in ["missing-agent", foreign.id()] {
+        let requests = [
+            LocalDaemonRequest::FocusAgent(crate::local::FocusAgentRequest {
+                session_id: session.id().into(),
+                agent_id: target.into(),
+            }),
+            LocalDaemonRequest::AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest {
+                session_id: session.id().into(),
+                agent_id: target.into(),
+            }),
+        ];
+        for request in requests {
+            let mut stale = session.clone();
+            stale.set_agents(vec![foreign.clone()]);
+            router.session_projection.update(stale);
+            let command =
+                KernelCommand::from_local_request("foreign-membership", None, None, &request);
+            assert!(matches!(
+                router.dispatch(command, request).await,
+                Err(DaemonError::AgentNotInSession { session_id, agent_id })
+                    if session_id == session.id() && agent_id == target
+            ));
+        }
+    }
+}
+
+#[tokio::test]
 async fn acknowledge_output_seen_uses_agent_store_membership_projection() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
