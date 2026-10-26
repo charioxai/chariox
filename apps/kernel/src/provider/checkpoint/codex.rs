@@ -183,7 +183,7 @@ pub(super) fn import(
         .filter(|path| path.is_absolute() && path.is_dir())
         .ok_or(Failure::ConfigurationMismatch)?;
     let client = CodexClient::new(
-        "native-checkpoint-import",
+        run.id(),
         run.structured_endpoint().ok_or(Failure::ResumeFailed)?,
     )
     .map_err(|_| Failure::ResumeFailed)?;
@@ -219,17 +219,14 @@ pub(super) fn import(
     if !already_published {
         directory.publish(&checkpoint.relative_path, &checkpoint.contents)?;
     }
+    // Check native continuity before normal startup installs this run's tools
+    // and interaction context. Process-level MCP entries must not run in a probe.
     let client = client
-        .with_mcp_servers(run.mcp_servers())
-        .with_provider_config_overrides(run.provider_config_overrides());
-    let client = if let Some(server_url) = run.runtime_mcp_server_url() {
-        client.with_runtime_mcp_binding(Some(server_url), run.runtime_mcp_auth_token())
-    } else {
-        client
-    };
+        .with_provider_config_overrides(run.provider_config_overrides())
+        .with_read_only_discovery_permissions();
     let mut socket = client
         .connect_initialized()
-        .map_err(|_| Failure::ResumeFailed)?;
+        .map_err(|error| resume_probe_failure(run, "connect", &error))?;
     let resumed = client
         .thread_resume(
             &mut socket,
@@ -243,7 +240,7 @@ pub(super) fn import(
             None,
             &mut Vec::new(),
         )
-        .map_err(|_| Failure::ResumeFailed)?;
+        .map_err(|error| resume_probe_failure(run, "thread/resume", &error))?;
     if resumed.thread.id != id {
         return Err(Failure::SessionChanged);
     }
@@ -257,6 +254,23 @@ pub(super) fn import(
             Some(checkpoint.binding.clone()),
         ),
     )
+}
+
+fn resume_probe_failure(
+    run: &RuntimeProviderRun,
+    stage: &str,
+    error: &crate::DaemonError,
+) -> Failure {
+    let operation = match error {
+        crate::DaemonError::ProviderProtocol { operation, .. } => *operation,
+        _ => "native_checkpoint",
+    };
+    crate::logging::warn_with_fields(
+        "provider.checkpoint",
+        "Native checkpoint probe failed",
+        json!({"provider_run_id":run.id(), "stage":stage, "operation":operation}),
+    );
+    Failure::ResumeFailed
 }
 
 #[cfg(not(unix))]

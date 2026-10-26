@@ -474,6 +474,7 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
                         serde_json::json!({"thread":{"id":SESSION,"path":server_artifact,"status":{"type":"idle"}}})
                     }
                     "thread/resume" => {
+                        assert_eq!(request["params"]["config"]["mcp_servers"], serde_json::json!({}), "native import must not start user MCP tools before the run context is installed");
                         std::fs::OpenOptions::new()
                             .append(true)
                             .open(&server_artifact)
