@@ -484,17 +484,30 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
         _ => panic!("unexpected local response"),
     };
     let unavailable_account = harness.with_app(|app| {
-        app.provider_account_profile_registry()
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
             .create_managed(
                 crate::session::DEFAULT_LOCAL_USER_ID,
                 "codex",
                 "Unavailable account",
             )
-            .expect("unavailable account profile should register")
+            .expect("unavailable account profile should register");
+        registry
+            .update_observation(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("known unavailable account should be recorded")
     });
     assert_eq!(
         unavailable_account.auth_state,
-        crate::account_profile::ProviderAccountAuthState::Unknown
+        crate::account_profile::ProviderAccountAuthState::NotConfigured
     );
 
     harness
@@ -536,7 +549,7 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
     let message = error.to_string();
     assert!(message.contains("Unavailable account"), "{message}");
     assert!(message.contains("codex"), "{message}");
-    assert!(message.contains("refresh"), "{message}");
+    assert!(message.contains("authenticate"), "{message}");
     assert!(
         !message.contains(&unavailable_account.profile_id),
         "the public error must not expose the stable internal account id: {message}"
