@@ -27,6 +27,16 @@ impl KernelRuntimeState {
         let mut turn = entry.clone();
         turn.prompt_id = Some(prompt.into());
         turn.task_id = Some(task.task_id.clone());
+        if entry.placement.is_none() {
+            let run = self
+                .owned
+                .provider_store
+                .get_run_for_agent(&entry.session_id, &entry.agent_id)
+                .ok_or_else(|| {
+                    error("provider unavailable for goal resume; retry when it is ready")
+                })?;
+            turn.provider_run_id = Some(run.id().to_owned());
+        }
         // Only the durable continuation can enter this hold. Authority still
         // requires its running prompt binding, installed by normal admission.
         self.admit_sudo_turn(&entry, &turn, true)
