@@ -191,7 +191,9 @@ fn completed_kernel_calls(
         }
         let Some((id, request)) = (|| {
             let tool: serde_json::Value = serde_json::from_str(&entry.text).ok()?;
-            if tool["tool"] != "chariox_kernel_request" || tool["status"] != "completed" {
+            let name = tool.get("tool")?.as_str()?;
+            let name = name.strip_prefix("mcp__chariox__").unwrap_or(name);
+            if name != "chariox_kernel_request" || tool["status"] != "completed" {
                 return None;
             }
             let request = tool.get("input")?.get("request")?;
@@ -308,6 +310,31 @@ mod tests {
             Some("typed goal")
         );
         assert_eq!(objective_of("task", None, &[], true), None);
+    }
+    #[test]
+    fn completed_claude_kernel_call_has_a_typed_receipt() {
+        // Minimal metadata from a recorded real Claude ListSessions receipt.
+        let mut receipt: serde_json::Value =
+            serde_json::from_str(include_str!("agent_goal_context_claude_call.json")).unwrap();
+        receipt["output"] = serde_json::json!("PRIVATE_RESULT");
+        let entry = crate::history::SessionHistoryEntry::provider_output(
+            "room",
+            "run",
+            Some("agent"),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            None,
+            receipt.to_string(),
+        );
+        let (calls, omitted) =
+            completed_kernel_calls(&[prompt("count sessions"), entry], "task", Some("run"));
+        assert_eq!(omitted, 0);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["request"], "ListSessions");
+        assert_eq!(calls[0]["call_id"], "toolu_0127BXRSY51N3hMSVtn31aox");
+        assert_eq!(calls[0].as_object().unwrap().len(), 4);
+        assert!(!serde_json::to_string(&calls)
+            .unwrap()
+            .contains("PRIVATE_RESULT"));
     }
     #[test]
     fn completed_call_metadata_is_bound_deduplicated_and_has_no_payloads() {
