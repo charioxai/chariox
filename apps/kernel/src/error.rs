@@ -50,8 +50,12 @@ pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
-    #[error("{}", external_request_failure_message(.reason.code()))]
-    ProviderProfileRefused { reason: ProviderProfileRefusal },
+    #[error("{provider} account `{account_name}`: {}", .reason.local_message())]
+    ProviderProfileRefused {
+        reason: ProviderProfileRefusal,
+        provider: String,
+        account_name: String,
+    },
     #[error("User-domain request refused")]
     UserDomainRefused { reason: UserDomainRefusalReason },
     #[error("invalid daemon configuration for `{field}`: {message}")]

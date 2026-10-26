@@ -1062,7 +1062,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             mapped.message = error.to_string();
             mapped
         }
-        DaemonError::ProviderProfileRefused { reason } => kernel_error(reason.code(), error, false),
+        DaemonError::ProviderProfileRefused { reason, .. } => {
+            kernel_error(reason.code(), error, false)
+        }
         DaemonError::AgentNotInSession { .. } => kernel_error("agent_not_in_session", error, false),
         DaemonError::AgentNotFound { .. } => kernel_error("agent_not_found", error, false),
         DaemonError::NoActivePrompt { .. } => kernel_error("no_active_prompt", error, false),

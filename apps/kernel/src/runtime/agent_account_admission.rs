@@ -48,5 +48,7 @@ pub(crate) fn resolve_spawn_account(
     }
     Err(DaemonError::ProviderProfileRefused {
         reason: crate::error::ProviderProfileRefusal::Unavailable,
+        provider: family.to_string(),
+        account_name: reference.to_string(),
     })
 }

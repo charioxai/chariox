@@ -1382,6 +1382,6 @@ fn absent_spawn_profile_is_actionable_through_the_public_dispatcher() {
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
     assert_eq!(mapped.code, "provider_profile_unavailable");
     assert!(!mapped.retryable);
-    assert!(mapped.message.contains("ListProviderAccountProfiles"));
-    assert!(!mapped.message.contains("absent-profile-canary"));
+    assert!(mapped.message.contains("Provider Accounts"));
+    assert!(mapped.message.contains("absent-profile-canary"));
 }

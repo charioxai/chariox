@@ -268,6 +268,35 @@ mod tests {
     }
 
     #[test]
+    fn local_profile_refusal_names_account_but_relay_uses_static_remedy() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("local-account-refusal");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles.json"),
+        )
+        .unwrap();
+        let profile = registry
+            .create_managed("local", "codex", "Review account")
+            .unwrap();
+        let error = registry
+            .require_authenticated("local", "codex", &profile.profile_id, None, "submit prompt")
+            .unwrap_err();
+        let local = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert!(local.message.contains(&profile.label), "{}", local.message);
+        assert!(
+            local.message.contains("Provider Accounts"),
+            "{}",
+            local.message
+        );
+        assert!(!local.message.contains(&profile.profile_id));
+        let external = map_relay_error(&error);
+        assert_eq!(external.code, "provider_profile_unverified");
+        assert!(external.message.contains("RefreshProviderAccountProfile"));
+        assert!(!external.message.contains(&profile.label));
+        assert!(!external.message.contains(&profile.profile_id));
+    }
+
+    #[test]
     fn typed_profile_refusal_keeps_the_existing_leased_admission_code() {
         crate::test_support::isolated_env_test!();
         let root = crate::test_support::TestWorktree::new("lane-leased-account-refusal");
