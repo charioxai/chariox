@@ -162,6 +162,13 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        let tool_ids = self
+            .owned
+            .prompt_activity
+            .read()
+            .get(&dispatch.provider_run_id)
+            .map(|state| state.active_tool_ids.clone())
+            .unwrap_or_default();
         // The protocol ACK can precede tool exit. Retire the owned process group
         // before releasing the turn; its persisted provider identity resumes on the next prompt.
         let finished = self.with_app_side_effect(|app| {
@@ -197,6 +204,8 @@ impl KernelRuntimeState {
         if finished != Some(true) {
             return Ok(());
         }
+        self.flush_provider_history(&dispatch.provider_run_id)
+            .await?;
         let Some((agent_id, prompt)) = self.owned.cancelling_prompt_for_abort(
             &dispatch.session_id,
             &dispatch.provider_run_id,
@@ -204,6 +213,13 @@ impl KernelRuntimeState {
         ) else {
             return Ok(());
         };
+        self.owned.record_cancelled_tool_transcripts(
+            &dispatch.session_id,
+            &agent_id,
+            &prompt,
+            &dispatch.provider_run_id,
+            tool_ids,
+        );
         let settlement = self.owned.settle_agent_task(
             &dispatch.session_id,
             &agent_id,

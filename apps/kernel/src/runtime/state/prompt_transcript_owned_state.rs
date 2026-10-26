@@ -96,6 +96,81 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(&dispatch.session_id, Some(&dispatch.agent_id));
     }
 
+    pub(super) fn record_cancelled_tool_transcripts(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: &str,
+        tool_ids: std::collections::BTreeSet<String>,
+    ) {
+        if tool_ids.is_empty() {
+            return;
+        }
+        let entries = tool_ids
+            .into_iter()
+            .map(|id| {
+                crate::history::SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    Some(agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderTool,
+                    Some(id.clone()),
+                    serde_json::json!({"id": id, "status": "cancelled"}).to_string(),
+                )
+                .with_prompt_origin(Some(prompt.prompt_origin()))
+                .with_source_attachment_id(Some(prompt.source_attachment_id().to_string()))
+            })
+            .collect::<Vec<_>>();
+        let mut prepared = self.prepare_history_entries(session_id, entries.clone());
+        // Another cancellation observer may release this prompt concurrently.
+        // Keep its final tool updates on the captured turn.
+        for item in &mut prepared {
+            item.context = self.operational_history_context(
+                &item.entry,
+                Some(prompt.id()),
+                prompt.workflow_run_id(),
+                prompt.workflow_node_run_id(),
+            );
+        }
+        let positions = prepared
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>();
+        let sequences = positions
+            .into_iter()
+            .zip(self.append_prepared_history_entries(prepared))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let recipients = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            Some(agent_id),
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+        );
+        let recipients =
+            self.with_metaagent_trace_recipient_ids(session_id, Some(agent_id), recipients);
+        self.terminal_stream.fan_out_outputs(
+            entries
+                .into_iter()
+                .enumerate()
+                .map(|(position, entry)| crate::terminal::TerminalOutputAppend {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run_id.to_string(),
+                    agent_id: Some(agent_id.to_string()),
+                    prompt_id: Some(prompt.id().to_string()),
+                    prompt_origin: Some(prompt.prompt_origin()),
+                    source_attachment_id: Some(prompt.source_attachment_id().to_string()),
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: entry.merge_key,
+                    sequence: sequences.get(&position).copied(),
+                    recipient_attachment_ids: recipients.clone().into(),
+                    bytes: entry.text.into_bytes(),
+                })
+                .collect(),
+        );
+        self.notify_metaagent_trace_activity(session_id, Some(agent_id));
+    }
+
     pub(super) fn record_provider_failure_output(
         &self,
         session_id: &str,

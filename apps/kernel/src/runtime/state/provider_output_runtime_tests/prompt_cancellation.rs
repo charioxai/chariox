@@ -902,6 +902,15 @@ async fn assert_unresponsive_abort_settles(detached_tool: bool) {
         provider_run_id: run.id().into(),
     };
     let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    for (id, status) in [("tool-active", "running"), ("tool-finished", "completed")] {
+        let bytes =
+            serde_json::json!({"id": id, "tool": "bash", "status": status, "output": "partial"})
+                .to_string();
+        runtime
+            .owned
+            .note_prompt_tool_output(run.id(), Some(id), bytes.as_bytes());
+    }
     let cancellation = runtime
         .owned
         .cancel_local_prompt(session.id(), agent.id(), attachment.id())
@@ -947,6 +956,44 @@ async fn assert_unresponsive_abort_settles(detached_tool: bool) {
         .agent_tasks(Some(session.id()), Some(agent.id()))
         .unwrap();
     assert_eq!(tasks[0].state, ExecutionState::Cancelled);
+    let tools = runtime
+        .owned
+        .terminal_stream
+        .output_records()
+        .into_iter()
+        .filter(|record| {
+            record.provider_run_id == run.id()
+                && record.kind == crate::terminal::TerminalOutputKind::ProviderTool
+        })
+        .map(|record| serde_json::from_slice::<serde_json::Value>(&record.bytes).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tools.len(),
+        1,
+        "Stop must publish one terminal update for each unfinished tool"
+    );
+    assert_eq!(tools[0]["id"], "tool-active");
+    assert_eq!(tools[0]["status"], "cancelled");
+    let history = runtime
+        .owned
+        .operational_history_store
+        .query_events(crate::history::HistoryEventQuery {
+            session_id: Some(session.id().into()),
+            kind: Some("provider_tool".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        history.iter().any(
+            |event| event.prompt_id.as_deref() == Some("unresponsive-stop-prompt")
+                && event
+                    .content
+                    .as_deref()
+                    .is_some_and(|text| text.contains("cancelled"))
+        ),
+        "cancelled tool update must survive transcript hydration"
+    );
+
     if let Some(pid) = tool_pid {
         let live = std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .ok()
