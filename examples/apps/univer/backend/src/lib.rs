@@ -18,8 +18,14 @@ async fn write_document(name: String, text: String) -> Result<u64, AppError> {
     let bytes = text.into_bytes();
     let expected = bytes.len() as u64;
     let (mut sink, source) = chariox_app_sdk::bindings::wit_stream::new();
-    let (commit, unwritten) =
-        futures::join!(files::atomic_replace(name, source), sink.write_all(bytes));
+    let send = async move {
+        let unwritten = sink.write_all(bytes).await;
+        // The host commits only after EOF. Keeping the writer through join!
+        // deadlocks the commit against the writer's own eventual drop.
+        drop(sink);
+        unwritten
+    };
+    let (commit, unwritten) = futures::join!(files::atomic_replace(name, source), send);
     let written = commit?;
     if !unwritten.is_empty() || written != expected {
         return Err(error(
