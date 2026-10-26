@@ -1266,6 +1266,14 @@ mod tests {
                 Other, false, "Model access denied",
             ),
             (
+                json!({"message": "OAuth refresh failed: invalid_grant", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 400}}}),
+                SignInRequired, false, "OAuth refresh failed: invalid_grant",
+            ),
+            (
+                json!({"message": "OAuth refresh failed: refresh_token_reused", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 403}}}),
+                SignInRequired, false, "OAuth refresh failed: refresh_token_reused",
+            ),
+            (
                 json!({"message": "Try later", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 429}}}),
                 UsageLimit, true, "Try later",
             ),
