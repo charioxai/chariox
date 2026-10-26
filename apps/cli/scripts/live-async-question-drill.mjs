@@ -27,6 +27,17 @@ async function until(label, read, predicate = Boolean, timeout = 90_000) {
   throw Error(`Timed out: ${label}`)
 }
 
+if (process.argv[2] === '--deny-only') {
+  const [socket, room, interactionId, output] = process.argv.slice(3)
+  for (const request of [{GetSessionState:{session_id:room}}, {RespondToInteraction:{session_id:room,interaction_id:interactionId,choice_id:'continue'}}]) {
+    const client=new LocalIpcClient(`ws+unix://${socket}`)
+    try { let refused=false;try{await client.send(request)}catch{refused=true};assert(refused,'An ungranted outside viewer or answerer must be refused') }
+    finally { await client.close() }
+  }
+  await writeFile(output,JSON.stringify({ungranted_view_refused:true,ungranted_answer_refused:true})+'\n')
+  console.log('AMASK_OUTSIDE_REFUSED');process.exit(0)
+}
+
 // This runs from an official provider tool on the outside kernel. It knows no
 // owner's token or profile: only the private socket and public Room id.
 if (process.argv[2] === '--follower') {
@@ -69,12 +80,13 @@ const report = {MP:['MP-08','MP-09','MP-10','MP-11'],head:process.env.AMASK_RUNT
 let browser
 function safe(text) { for(const secret of secrets) assert(!text.includes(secret),'Private value in evidence'); return text }
 async function record(name, data) { await writeFile(path.join(evidence,name+'.json'),safe(JSON.stringify(data,null,2))+'\n',{mode:0o600}) }
-function questionAnswers(kernel, sourceId) {
+function questionEvidence(kernel, sourceId) {
   // Read only this disposable question's public ledger payload, never config or
   // provider state. Keep the attribution and exact outcome in the evidence.
-  const script = 'import sqlite3,json,sys\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True)\nprint(json.dumps([json.loads(r[0])["payload"]["public_answer"] for r in c.execute("SELECT payload FROM agent_inbox WHERE source_id=? ORDER BY sequence",(sys.argv[2],))]))'
+  const script = 'import sqlite3,json,sys\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True)\nw=c.execute("SELECT payload FROM agent_wakes WHERE id=?",(sys.argv[2],)).fetchone()\nprint(json.dumps({"wake":json.loads(w[0]) if w else None,"answers":[json.loads(r[0])["payload"]["public_answer"] for r in c.execute("SELECT payload FROM agent_inbox WHERE source_id=? ORDER BY sequence",(sys.argv[2],))]}))'
   return JSON.parse(execFileSync('python3',['-c',script,path.join(kernel.env.CHARIOX_HOME,'state/kernel.db'),sourceId],{encoding:'utf8'}))
 }
+const questionAnswers=(kernel,sourceId)=>questionEvidence(kernel,sourceId).answers
 async function port() { return new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>resolve(p))})}) }
 function start(binary, env, name) {
   const child=spawnOwned(binary,[],{cwd:tree,env,stdio:['ignore','pipe','pipe'],detached:true})
@@ -171,18 +183,28 @@ try {
     const s=await until('delete question',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK delete'))
     const q=s.active_interactions.find(q=>q.title==='AMASK delete')
     await until('delete asker waiting',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===q.asking_task_id&&t.state==='waiting'))
+    const denialResult=path.join(root,'outside-denied.json')
+    const denialCommand=['node',path.join(tree,'apps/cli/scripts/live-async-question-drill.mjs'),'--deny-only',owner.env.CHARIOX_DAEMON_SOCKET,owner.room,q.id,denialResult].map(s=>"'"+s.replaceAll("'","'\\''")+"'").join(' ')
+    await follower.tui.send('submit_prompt',{prompt:`Run this exact shell command and wait for it: ${denialCommand}. It must only confirm refusal without a grant; never read owner tokens or state. Finish with AMASK_DENIAL_DONE.`})
+    await record('10-outside-denied',await until('outside view and answer refused',()=>readFile(denialResult,'utf8').then(JSON.parse).catch(()=>null)))
+    await owner.tui.send('submit_prompt',{prompt:'While the earlier AMASK delete question stays pending, run chariox.events.inbox using this turn metadata, then finish with AMASK_PENDING_WORK_DONE. For this turn leave the question unanswered.'})
+    await until('new work finishes with pending question',async()=>owner.tui.send('snapshot'),s=>assistantText(s).includes('AMASK_PENDING_WORK_DONE'))
+    const working=await owner.session()
+    assert(working.active_interactions?.some(i=>i.id===q.id))
+    assert(working.agent_tasks?.some(t=>t.task_id===q.asking_task_id&&t.state==='waiting'))
+    await capture(owner.tui,'10-pending-next-turn')
     await capture(owner.tui,'10-before-delete')
     await owner.tui.send('submit_prompt',{prompt:'/agent delete '+owner.agent})
     await until('delete withdraws question',owner.session,s=>!(s.active_interactions??[]).some(i=>i.id===q.id))
     await until('asking agent deleted',async()=>owner.tui.send('snapshot'),s=>s.session.agentCount===0)
-    const after=await owner.session(),wake=after.agent_wakes.find(w=>w.id===q.id)
-    assert(['lost','cancelled'].includes(wake.state));assert(wake.summary)
+    const {wake,answers:receipts}=questionEvidence(owner,q.id)
+    assert(['lost','cancelled'].includes(wake.state))
+    assert(wake.summary||receipts.some(r=>r.reason||r.cancelled===true))
     assert.equal(wake.next_due_ms??null,null)
-    const receipts=questionAnswers(owner,q.id)
     assert(receipts.length<=1&&receipts.every(r=>r.reply==null))
     await capture(owner.tui,'11-after-delete')
     await record('11-delete-outcome',{wake,receipts})
-    report.cells.push({id:'AM-ASK-05',result:'DELETE PASS',deleted_via:'real TUI /agent delete command'})
+    report.cells.push({id:'AM-ASK-05',result:'DELETE PASS',deleted_via:'real TUI /agent delete command',queued_work_accepted:true,outside_view_and_answer_refused:true})
   }else{
   await owner.tui.send('submit_prompt',{prompt:'Use chariox.request_popup with wait:false, title "AMASK primary", message "Choose the next step", one choice {id:"continue",label:"Continue",reply:"AMASK exact outside answer"}, timeout_sec:600. Then call chariox.events.inbox with this turn task_id and origin_prompt_id as a second tool while the question is pending. Finish this turn with AMASK_KEPT_WORKING. Do not block or yield. In a subsequent inbox turn, handle the answer, print AMASK_ANSWER_RECEIVED with the exact reply and attributed answerer, then acknowledge it as handled.'})
   const pending=await until('primary async question',owner.session,s=>(s.active_interactions??[]).some(q=>q.title==='AMASK primary'))

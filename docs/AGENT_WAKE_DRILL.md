@@ -203,5 +203,8 @@ through the older client's existing interaction control. Record that build's
 source and entry hash separately; the normal candidate TUI remains attached.
 
 `AMASK_DELETE_ONLY=1` runs a short supplement: a real provider asks and ends
-its turn, then the TUI `/agent delete` command removes the asking agent. The
-question must disappear with a final reason and without applying its default.
+its turn, an ungranted outside provider is refused both viewing and answering,
+and new work completes while the same question remains pending. Then the TUI
+`/agent delete` command removes the asking agent. The question must disappear
+with a final cancellation record and without applying its default. Read that
+record from the disposable ledger because deleted agents leave the UI projection.
