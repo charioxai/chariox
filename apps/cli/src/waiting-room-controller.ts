@@ -529,7 +529,9 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       if (account && account.auth_state !== "authenticated") {
         return {
           action: "stage-command", command: providerAccountSignInCommand(account),
-          message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)!,
+          // An unknown account has no Start block: the kernel checks it on the first prompt.
+          message: selectedProviderAccountStartBlockReason(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)
+            ?? `${account.label} has not been checked yet. Press Enter to check its sign-in now.`,
         }
       }
       return {
