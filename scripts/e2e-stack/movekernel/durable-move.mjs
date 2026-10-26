@@ -19,6 +19,12 @@ async function currentRun(r, id, agentId) {
     assert.ok(runId, 'Real provider run identity');
     return variant(await r.client.send({GetProviderRun: {provider_run_id: runId}}), 'ProviderRun').provider_run;
 }
+async function accountIdentity(r, profile) {
+    const auth = variant(await r.client.send({GetProviderAuthStatus: {provider: 'codex', account_profile: profile}}), 'ProviderAuthStatus').status;
+    assert.equal(auth.auth_state, 'authenticated', 'Moved account must remain authenticated');
+    assert.ok(auth.identity_summary?.trim(), 'Account identity must be available');
+    return sha(Buffer.from('codex:authenticated:' + auth.identity_summary.trim().toLowerCase()));
+}
 async function captureTui(r, label) {
     const ansi = out + '/' + label + '.ansi';
     await writeFile(ansi, r.tui.output(), {mode: 0o600});
@@ -151,6 +157,9 @@ try {
     const sourceState = await state(source, sessionId), sourceAgent = sourceState.session.agents.find(a => a.id === agentId);
     await record('source-layout', {roomWorkspace: sourceState.session.workspace_id, roomWorktree: sourceState.session.worktree_id, agentWorkspace: sourceAgent.workspace_id, agentWorktree: sourceAgent.worktree_id, providerWorkingDirectory: sourceRun.working_directory, projectMembers: [paths.workspace, paths.notes]});
     assert.ok(nativeId);
+    assert.equal(sourceRun.model, 'gpt-6-luna');
+    assert.equal(sourceRun.variant, 'low');
+    const sourceAccount = await accountIdentity(source, sourceRun.account_profile);
     const webProof = await captureWeb(source, sessionId, agentId, 'source');
     const forward = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 1, true);
     const movedState = await state(source, sessionId);
@@ -163,6 +172,8 @@ try {
     const primary = forward.repositories.find(r => r.role === 'primary').destinationPath;
     const notes = forward.repositories.find(r => r.role === 'supporting').destinationPath;
     assert.notEqual(primary, paths.primary);
+    assert.equal(movedAgent.worktree_id, primary, 'Home route must select the receipt worktree');
+    assert.equal(movedAgent.account_profile, sourceAgent.account_profile, 'Remote route must retain the home account selection');
     assert.equal(await readFile(primary + '/input', 'utf8'), await readFile(paths.primary + '/input', 'utf8'));
     await writeFile(primary + '/input', 'latest target work\n');
     await writeFile(notes + '/nested/document', 'latest target notes\n');
@@ -173,22 +184,34 @@ try {
     assert.equal(targetRun.working_directory, primary, 'Leased provider must use the receipt primary');
     assert.equal(targetRun.model, sourceRun.model, 'Move must preserve the provider model');
     assert.equal(targetRun.variant, sourceRun.variant, 'Move must preserve the provider effort');
+    assert.equal(await accountIdentity(target, targetRun.account_profile), sourceAccount, 'Move must preserve the authenticated account');
     assert.ok(entries(remoteTurn.snapshot).some(row => row.role === 'assistant' && row.text?.includes(marker)), 'Native target must recall previous context');
     assert.ok(completedWorkspaceTool(entries(remoteTurn.snapshot), remoteTurn.promptId, primary), 'Target tool must execute in the receipt primary');
-    await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true, nativeSessionId: targetRun.provider_session_id, providerWorkingDirectory: targetRun.working_directory, model: targetRun.model, effort: targetRun.variant});
+    await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true, nativeSessionId: targetRun.provider_session_id, providerWorkingDirectory: targetRun.working_directory, model: targetRun.model, effort: targetRun.variant, sameAuthenticatedAccount: true, receiptWorktreeSelected: true});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'target'));
     const returned = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 2, false);
     await captureTui(source, 'returned-idle');
+    webProof.push(...await captureWeb(source, sessionId, agentId, 'returned-idle'));
     const home = returned.repositories.find(r => r.role === 'primary').destinationPath;
     const homeNotes = returned.repositories.find(r => r.role === 'supporting').destinationPath;
     assert.notEqual(home, paths.primary); assert.notEqual(home, primary);
+    const returnedState = await state(source, sessionId);
+    const returnedAgent = returnedState.session.agents.find(a => a.id === agentId);
+    assert.ok(!returnedAgent.remote_execution, 'Return must clear the remote route');
+    assert.equal(returnedAgent.worktree_id, home, 'Return must select the fresh receipt worktree');
     assert.equal(await readFile(home + '/input', 'utf8'), 'latest target work\n');
     assert.equal(await readFile(homeNotes + '/nested/document', 'utf8'), 'latest target notes\n');
     assert.equal(await readFile(paths.primary + '/input', 'utf8'), 'divergent original home\n');
     const homeTurn = await turn(source, 'Run a shell command to print your working directory, then repeat the marker and the working directory from our previous task. Do not use any other tools or create agents.', 'home-turn');
     assert.ok(entries(homeTurn.snapshot).some(row => row.role === 'assistant' && row.text?.includes(marker) && row.text?.includes(primary)), 'Returned native context must retain the target turn');
     assert.ok(completedWorkspaceTool(entries(homeTurn.snapshot), homeTurn.promptId, home));
-    assert.equal((await currentRun(source, sessionId, agentId)).provider_session_id, nativeId);
+    const returnedRun = await currentRun(source, sessionId, agentId);
+    assert.equal(returnedRun.provider_session_id, nativeId);
+    assert.equal(returnedRun.working_directory, home);
+    assert.equal(returnedRun.model, sourceRun.model);
+    assert.equal(returnedRun.variant, sourceRun.variant);
+    assert.equal(await accountIdentity(source, returnedRun.account_profile), sourceAccount, 'Return must preserve the authenticated account');
+    await record('return-verified', {nativeSessionId: returnedRun.provider_session_id, providerWorkingDirectory: returnedRun.working_directory, model: returnedRun.model, effort: returnedRun.variant, sameAuthenticatedAccount: true, receiptWorktreeSelected: true});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'returned'));
     await record('summary', {result: webProof.every(value => value.result === 'PASS') ? 'PASS' : 'PARTIAL', nativeResult: 'PASS', web: webProof.map(({result, dpr}) => ({result, dpr})), forwardRestart: true, returnRestart: true, sameNativeId: true, sameHomeRoom: homeTurn.snapshot.session.id === sessionId, sameHomeAgent: homeTurn.snapshot.session.focusedAgentId === agentId, preservedDivergentHome: true, freshReturn: home, realProviderTurns: 3, hostedWss: true});
 } catch (error) {
