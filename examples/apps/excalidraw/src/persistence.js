@@ -6,7 +6,12 @@ export function persistence(chariox, api, loaded) {
   let queue = Promise.resolve();
   let failure = null;
   let sequence = 0;
-  const notify = () => chariox.view.changed({ sequence: ++sequence, persisted: !failure });
+  let lastNotified = lastSaved;
+  const notify = (text = sceneJSON(api)) => {
+    if (text === lastNotified) return;
+    lastNotified = text;
+    chariox.view.changed({ sequence: ++sequence, persisted: !failure });
+  };
   function save(candidate) {
     const pending = queue.then(async () => {
       const text = candidate ?? sceneJSON(api);

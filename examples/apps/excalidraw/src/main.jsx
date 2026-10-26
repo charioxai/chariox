@@ -71,8 +71,8 @@ createRoot(document.getElementById('root')).render(
     }}
     onChange={() => {
       if (!storage) return;
-      storage.changed();
       const text = sceneJSON(api);
+      storage.changed(text);
       // Notices, selection and other UI state do not change the saved scene.
       if (text === previousScene) return;
       previousScene = text;

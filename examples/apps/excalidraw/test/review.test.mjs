@@ -155,3 +155,26 @@ test('UI saves offer distinct copies that a person can reopen through Open', { t
   assert.equal(broker.writes.at(-1).offer, false);
   await page.screenshot({ path: join(evidence, 'save-copy-open.png') });
 }));
+
+test('selection, hover and scroll do not flood view.changed', { timeout: 30_000 }, () => fixture(async ({ page, broker, invoke, draw }) => {
+  await draw();
+  const id = (await invoke('scene_summary')).value.elements[0].id;
+  const initial = await page.evaluate(() => window.__charioxViewAgent.changes(0));
+  const attempts = broker.saveAttempts;
+  for (let i = 0; i < 270; i++) await invoke('select_elements', { ids: i % 2 ? [id] : [] });
+  for (let i = 0; i < 10; i++) {
+    await page.mouse.move(500 + i * 10, 450);
+    await page.mouse.wheel(0, 10);
+  }
+  await page.waitForTimeout(500);
+  const afterUI = await page.evaluate(since => window.__charioxViewAgent.changes(since), initial.value.latest);
+  assert.equal(afterUI.value.latest, initial.value.latest, 'only serialized scene changes may notify agents');
+  assert.equal(afterUI.value.dropped, false, 'UI-only changes must not exhaust the 256-entry buffer');
+  assert.equal(broker.saveAttempts, attempts);
+  await draw(700);
+  const edited = await page.evaluate(since => window.__charioxViewAgent.changes(since), initial.value.latest);
+  assert(edited.value.latest > initial.value.latest, 'a real canvas edit must still notify');
+  const settled = edited.value.latest;
+  await page.waitForTimeout(600);
+  assert.equal((await page.evaluate(since => window.__charioxViewAgent.changes(since), settled)).value.latest, settled, 'persisting an already announced scene must not notify twice');
+}));
