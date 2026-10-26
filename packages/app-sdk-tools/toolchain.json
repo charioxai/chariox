@@ -1,0 +1,62 @@
+{
+  "rust": "1.99.1",
+  "target": "wasm32-wasip2",
+  "quickjs": {
+    "revision": "cecfa26bd323795be3a08afd3e08a26acfbc15dc",
+    "url": "https://codeload.github.com/andreiltd/componentize-qjs/tar.gz/cecfa26bd323795be3a08afd3e08a26acfbc15dc",
+    "sha256": "2fccd1633c13952b32ce18914c94e514f1ea3f9fa3a4371a98df493526380e51",
+    "license": "Apache-2.0",
+    "snapshotPatchSha256": "a8a1272c19738bdc77f2a7231a5f05905134de6432760067fc9e4a5cc34fac26",
+    "cancelPatchSha256": "4380c645ab9e288d3c4c43333d5adad56a0d889e78e546de24549c6fb9ba264a"
+  },
+  "platforms": {
+    "linux-x86_64": {
+      "wasiSdk": {
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz",
+        "sha256": "0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce",
+        "license": "Apache-2.0 WITH LLVM-exception AND MIT AND BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND ISC AND NCSA"
+      },
+      "binaryen": {
+        "url": "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz",
+        "sha256": "0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc",
+        "license": "Apache-2.0 AND MIT"
+      }
+    },
+    "linux-aarch64": {
+      "wasiSdk": {
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-linux.tar.gz",
+        "sha256": "4f98ee738c7abb45c81a94d1461fc53cc569d1cd01498951c8184d841a027844",
+        "license": "Apache-2.0 WITH LLVM-exception AND MIT AND BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND ISC AND NCSA"
+      },
+      "binaryen": {
+        "url": "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-aarch64-linux.tar.gz",
+        "sha256": "e6ae6e09ac40f4e14bc5be6f687c58e2995c84170013975fa641809dd3b480a0",
+        "license": "Apache-2.0 AND MIT"
+      }
+    },
+    "darwin-x86_64": {
+      "wasiSdk": {
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-macos.tar.gz",
+        "sha256": "18f3f201ba9734e6a4455b0b6410690395a55e9ffa9f6f5066f66083a94b93b3",
+        "license": "Apache-2.0 WITH LLVM-exception AND MIT AND BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND ISC AND NCSA"
+      },
+      "binaryen": {
+        "url": "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-macos.tar.gz",
+        "sha256": "d3e2d1235b70c93c54b52eabc1625ea960965152218754f1f4eeb0f873c48e03",
+        "license": "Apache-2.0 AND MIT"
+      }
+    },
+    "darwin-aarch64": {
+      "wasiSdk": {
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-macos.tar.gz",
+        "sha256": "85c997a2665ead91673b5bb88b7d0df3fc8900df3bfa244f720d478187bbdc78",
+        "license": "Apache-2.0 WITH LLVM-exception AND MIT AND BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND ISC AND NCSA"
+      },
+      "binaryen": {
+        "url": "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-arm64-macos.tar.gz",
+        "sha256": "79d3ab9f417d9e215f15f598f523d001a7d9ac1e59367e5c869fbdabd1cba72e",
+        "license": "Apache-2.0 AND MIT"
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -217,6 +217,18 @@
+     }
+ }
+ 
++// Build snapshots must not capture host entropy or the builder's clock. This
++// affects Wizer only; the installed component still imports runtime randomness.
++struct SnapshotClock;
++impl wasmtime_wasi::clocks::HostWallClock for SnapshotClock {
++    fn resolution(&self) -> std::time::Duration { std::time::Duration::from_millis(1) }
++    fn now(&self) -> std::time::Duration { std::time::Duration::ZERO }
++}
++impl wasmtime_wasi::clocks::HostMonotonicClock for SnapshotClock {
++    fn resolution(&self) -> u64 { 1 }
++    fn now(&self) -> u64 { 0 }
++}
++
+ async fn wizer_init(
+     component: &[u8],
+     shim: &str,
+@@ -231,6 +243,11 @@
+         .stdin(MemoryInputPipe::new(Bytes::new()))
+         .stdout(stdout.clone())
+         .stderr(stderr.clone())
++        .secure_random(wasmtime_wasi::random::Deterministic::new(vec![0; 32]))
++        .insecure_random(wasmtime_wasi::random::Deterministic::new(vec![0; 32]))
++        .insecure_random_seed(0)
++        .wall_clock(SnapshotClock)
++        .monotonic_clock(SnapshotClock)
+         .build();
+ 
+     let table = ResourceTable::new();

@@ -1,0 +1,12 @@
+[package]
+name = "chariox-app-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust SDK for the async Chariox App world"
+
+[dependencies]
+wit-bindgen = "=0.63.0"
+futures = { version = "0.3.31", default-features = false, features = ["std", "async-await"] }
+serde_json = "1.0.140"
+
