@@ -138,6 +138,7 @@ impl ProviderProcessService {
                 self.run_actor_mailbox
                     .insert_codex_runtime(run_id.to_string(), binding.state);
                 self.apply_codex_run_selection(run_id, binding.selection)?;
+                self.get_run_mut(run_id)?.mark_native_checkpoint_imported();
             }
             ProviderRuntimeBinding::OpenCode(binding) => {
                 self.run_actor_mailbox

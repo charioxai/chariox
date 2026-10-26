@@ -402,7 +402,7 @@ fn review_native_checkpoint_service_plans_before_contacting_managed_endpoint() {
 fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_history() {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
-    use std::io::Write;
+    use std::io::{BufRead, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -440,7 +440,7 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
     let server_cwd = cwd.clone();
     let thread = std::thread::spawn(move || {
         while !stopped.load(Ordering::SeqCst) {
-            let (stream, _) = match listener.accept() {
+            let (mut stream, _) = match listener.accept() {
                 Ok(value) => value,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -451,6 +451,37 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(3)))
                 .unwrap();
+            // The service probes HTTP readiness before its WebSocket handshake.
+            let mut prefix = [0; 12];
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                let count = stream.peek(&mut prefix).unwrap();
+                if count == 0 || count == prefix.len() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "checkpoint test header deadline"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if &prefix == b"GET /readyz " {
+                let mut reader = std::io::BufReader::new(&mut stream);
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                drop(reader);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .unwrap();
+                continue;
+            }
             let mut socket = accept(stream).unwrap();
             while let Ok(message) = socket.read() {
                 if !message.is_text() {
@@ -609,6 +640,30 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
     .unwrap();
     unindexed.binding.requirement().verify_run(&verify_run, &client)
         .expect("required continuity must verify an unindexed native rollout without losing its binding");
+    // Startup must distinguish a verified import from a pending artifact, while
+    // retaining that artifact for an unindexed thread's first accepted turn.
+    let mut service = crate::provider::ProviderProcessService::new();
+    service.insert_run_for_test(verify_run.clone());
+    assert!(
+        service.mark_run_running(verify_run.id()).is_err(),
+        "an unimported checkpoint must keep launch fenced"
+    );
+    service
+        .initialize_runtime(&verify_run)
+        .expect("the actual Codex startup path must import its checkpoint");
+    let running = service
+        .mark_run_running(verify_run.id())
+        .expect("a verified native import must finish service launch");
+    assert!(
+        running.native_checkpoint().is_some(),
+        "readiness must retain the artifact until native turn acceptance"
+    );
+    unindexed
+        .binding
+        .requirement()
+        .verify_run(&running, &client)
+        .expect("the running native launch must still verify an unindexed artifact");
+    verify_run = running;
     let mut accepted = verify_run.resume_state().clone();
     accepted.record_native_resume_accepted("codex", SESSION);
     verify_run.set_resume_state(accepted);

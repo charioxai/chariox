@@ -248,7 +248,7 @@ impl ProviderProcessService {
                 operation: "finish launch",
             });
         }
-        if run.native_checkpoint().is_some() {
+        if run.native_checkpoint_needs_import() {
             return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error());
         }
         run.mark_running();
