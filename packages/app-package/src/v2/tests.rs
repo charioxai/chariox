@@ -76,6 +76,20 @@ fn policy() -> PolicyV2 {
     )
 }
 
+#[test]
+fn generic_verifier_refuses_ui_actions_without_a_runtime() {
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
+    assert_eq!(
+        crate::verify_app(&bytes, &generic)
+            .err()
+            .expect("R4 has no UI-action runtime")
+            .code,
+        ErrorCode::UnsupportedFeature
+    );
+}
+
 struct Fixture {
     manifest: ManifestV2,
     files: BTreeMap<String, Vec<u8>>,
