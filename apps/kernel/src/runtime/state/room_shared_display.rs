@@ -2,6 +2,7 @@
 #[cfg(test)]
 mod admission_tests;
 mod audience;
+mod capture;
 pub(super) mod timing;
 mod worker;
 use super::*;
@@ -13,6 +14,7 @@ use crate::slice::{
 use crate::transport::room_shared_display::{
     RoomDisplayCommand, RoomDisplayResult, RoomDisplayTarget, SealedRoomDisplayFrame,
 };
+pub(crate) use capture::CapturedRoomDisplayFrame;
 #[derive(Clone, Default)]
 pub(super) struct RoomDisplayLeases {
     audience: Arc<audience::Audience>,
@@ -34,6 +36,7 @@ impl HomeLease {
         }
     }
 }
+#[derive(Clone)]
 struct RoomDisplayLease {
     caller: KernelCaller,
     session_id: String,
@@ -461,59 +464,6 @@ impl KernelRuntimeState {
                 .remove(id);
         }
         Ok(serde_json::json!({"generation":generation,"attached":true}))
-    }
-    pub(crate) async fn room_display_frame(
-        &self,
-        caller: &KernelCaller,
-        id: &str,
-        generation: u64,
-        after_sequence: u64,
-        reset: bool,
-        congested: bool,
-    ) -> Result<Option<SealedRoomDisplayFrame>, DaemonError> {
-        let lease = self.home_display_lease(id)?;
-        let mut lease = lease.lock().await;
-        if lease.binding.generation != generation || lease.used.elapsed() >= Duration::from_secs(60)
-        {
-            return Err(error());
-        }
-        let (slice, _guard) = self
-            .admit_room_display(
-                caller,
-                &lease.session_id,
-                &lease.attachment_id,
-                &lease.viewer_public_key,
-                &lease.slice_id,
-                true,
-                None,
-            )
-            .await?;
-        let audience_epoch = self.room_display_audience_epoch(&lease.session_id);
-        let capture_started = Instant::now();
-        let result = self
-            .room_display_peer(
-                &slice,
-                RelayPeerRequest::RoomSharedDisplay {
-                    session_id: lease.session_id.clone(),
-                    slice_id: lease.slice_id.clone(),
-                    lease_id: id.into(),
-                    command: RoomDisplayCommand::Capture {
-                        after_sequence,
-                        reset,
-                        congested,
-                    },
-                },
-            )
-            .await?;
-        crate::transport::kernel_browser_display::timing("room_capture_peer", capture_started);
-        let RoomDisplayResult::Frame { frame } = result else {
-            return Err(error());
-        };
-        lease.used = Instant::now();
-        if self.room_display_audience_epoch(&lease.session_id) != audience_epoch {
-            return Ok(None);
-        }
-        Ok(frame)
     }
 }
 

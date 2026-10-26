@@ -7,6 +7,8 @@
 use super::*;
 use crate::runtime::state::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
 use std::collections::VecDeque;
+mod window;
+use window::CaptureWindow;
 
 /// Legacy clients have no receiver hold clock. Timed acknowledgements use
 /// an observed frame interval plus RTT jitter instead of this allowance.
@@ -268,6 +270,11 @@ async fn lease_alive(route: &PumpRoute) -> bool {
 /// Dormant until the client's first acknowledgement; credit-mode clients never ack.
 pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
     let generation = pump.with(|state| state.generation);
+    let room = route
+        .router
+        .runtime_state()
+        .is_room_display(&route.display_id);
+    let mut window = CaptureWindow::default();
     loop {
         if pump.with(|state| state.stopped) || !lease_alive(&route).await {
             return;
@@ -293,8 +300,14 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             Gate::Open(credit) => credit,
         };
         let started = Instant::now();
-        let result =
-            capture_frame(&route, &daemon_private_key, generation, last_sent, credit).await;
+        let result = if room {
+            capture_room_window(&route, &mut window, generation, last_sent, credit).await
+        } else {
+            capture_frame(&route, &daemon_private_key, generation, last_sent, credit).await
+        };
+        if result.is_err() {
+            window.invalidate();
+        }
         let captured = match result {
             Ok(result) => {
                 failures = 0;
@@ -305,6 +318,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             Err(DaemonError::UserDomainRefused {
                 reason: crate::error::UserDomainRefusalReason::StaleReference,
             }) => {
+                pump.with(|state| state.reset = true);
                 sleep(Duration::from_millis(10)).await;
                 continue;
             }
@@ -331,6 +345,9 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             continue;
         };
         idle = Duration::ZERO;
+        if pump.with(|state| state.stopped) || !lease_alive(&route).await {
+            return;
+        }
         let at = std::time::Instant::now();
         pump.with(|state| state.sent_frame(sequence, Instant::now()));
         last_sent = sequence;
@@ -352,6 +369,42 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
 
 // One ACK gate and event transport; Room placement supplies worker-sealed CXD1
 // rather than admitting a viewer as a terminal on the worker (MP-08/MP-11).
+async fn capture_room_window(
+    route: &PumpRoute,
+    window: &mut CaptureWindow<crate::runtime::state::CapturedRoomDisplayFrame>,
+    generation: u64,
+    after_sequence: u64,
+    credit: KernelBrowserPushCredit,
+) -> Result<Option<(u64, chariox_relay::protocol::EncryptedRelayPayload)>, DaemonError> {
+    let state = route.router.runtime_state();
+    let next = window
+        .next(after_sequence, credit.reset, |after, reset| {
+            let state = state.clone();
+            let caller = route.caller.caller.clone();
+            let id = route.display_id.clone();
+            async move {
+                Ok(state
+                    .room_display_frame(&caller, &id, generation, after, reset, credit.congested)
+                    .await?
+                    .map(|captured| window::Frame {
+                        sequence: captured.frame.sequence,
+                        bytes: captured.frame.encrypted_event.ciphertext.len(),
+                        value: captured,
+                    }))
+            }
+        })
+        .await?;
+    let Some(next) = next else {
+        return Ok(None);
+    };
+    // Buffered replies may have crossed a join, resume or revocation after
+    // their peer wait completed. Admission belongs to dispatch as well.
+    state
+        .validate_room_display_frame(&route.caller.caller, &route.display_id, &next.value)
+        .await?;
+    Ok(Some((next.sequence, next.value.frame.encrypted_event)))
+}
+
 async fn capture_frame(
     route: &PumpRoute,
     private_key: &str,
@@ -371,7 +424,7 @@ async fn capture_frame(
                 credit.congested,
             )
             .await?
-            .map(|frame| (frame.sequence, frame.encrypted_event)));
+            .map(|captured| (captured.frame.sequence, captured.frame.encrypted_event)));
     }
     let result = state
         .kernel_browser_display_request(

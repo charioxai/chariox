@@ -156,6 +156,7 @@ mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
 mod room_shared_display;
+pub(crate) use room_shared_display::CapturedRoomDisplayFrame;
 mod runtime_tool_call_activity;
 mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
