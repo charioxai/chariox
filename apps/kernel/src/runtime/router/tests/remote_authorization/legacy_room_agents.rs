@@ -203,7 +203,7 @@ async fn f4_legacy_fork_inner() {
         realm_id: "test-realm".into(),
         ..Default::default()
     });
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
     let id = app
         .sessions_mut()
         .create_session(root.session_request())
