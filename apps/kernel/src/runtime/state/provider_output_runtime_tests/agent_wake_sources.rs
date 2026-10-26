@@ -1124,6 +1124,36 @@ async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_sc
 #[tokio::test]
 async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
     let f = fixture("terminal-wake-retry", true).await;
+    let received = f._worktree.path().join("provider-input");
+    {
+        let mut app = f.app.lock().await;
+        app.pty_mut().remove_process(&f.run).unwrap();
+        app.pty_mut()
+            .spawn(crate::pty::PtySpawnRequest {
+                process_key: f.run.clone(),
+                provider_run_id: f.run.clone(),
+                program: "/bin/sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "stty raw -echo; exec cat > \"$1\"".into(),
+                    "wake-provider".into(),
+                    received.display().to_string(),
+                ],
+                env: Default::default(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !received.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the provider transport is ready to receive the wake turn");
     let task = f.begin(&f.prompt_id);
     let token = runtime_token(&f).await;
     f.runtime
@@ -1145,6 +1175,12 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
     .payload;
     let wake_id = armed["wake_id"].as_str().unwrap().to_string();
     f.wait_on(&task, armed["registration_id"].as_str().unwrap());
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    f.runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &f.agent)
+        .expect("the yielding provider turn ends before its terminal finishes");
 
     let events = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
@@ -1159,6 +1195,24 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
     .expect("the rejected occurrence is delivered once the writer accepts it again");
     assert_eq!(events.len(), 1, "exactly one occurrence");
     assert_eq!(f.wake_state(&wake_id), "exited");
+    // No lifecycle sweep runs here: the retry itself must schedule delivery,
+    // and the provider process must read the wake turn from its transport.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let input = std::fs::read_to_string(&received).unwrap();
+            let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+            if input.contains("RETRY-MARK") && events[0].state == "accepted" {
+                assert_eq!(events.len(), 1, "exactly one delivered occurrence");
+                let woken = f.task(&task.task_id);
+                assert_eq!(woken.state, ExecutionState::Working);
+                assert_eq!(woken.prompt_id, events[0].prompt_id.clone().unwrap());
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the retry delivers the wake turn to the provider without a sweep");
 }
 
 #[tokio::test]
