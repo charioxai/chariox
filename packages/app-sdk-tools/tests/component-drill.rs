@@ -42,6 +42,12 @@ struct Counts {
     closed: AtomicUsize,
     cancel_closed: AtomicUsize,
     closed_when_returned: AtomicUsize,
+    transactions: AtomicUsize,
+}
+#[derive(Default)]
+struct StateGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 struct Lease(Arc<Counts>);
 impl Lease {
@@ -69,6 +75,7 @@ struct Host {
     records: BTreeMap<String, state::StateRecord>,
     registered: Vec<String>,
     slow_state: bool,
+    state_gate: Option<Arc<StateGate>>,
     late_response: Arc<tokio::sync::Notify>,
 }
 impl WasiView for Host {
@@ -97,11 +104,18 @@ impl<T: Send> state::HostWithStore<T> for HasSelf<Host> {
         accessor: &Accessor<T, Self>,
         key: String,
     ) -> Result<Option<state::StateRecord>, AppError> {
-        let lease = accessor.with(|mut access| {
+        let (lease, gate) = accessor.with(|mut access| {
             let host = access.get();
-            host.slow_state.then(|| Lease::new(host.counts.clone()))
+            (
+                (host.slow_state || host.state_gate.is_some())
+                    .then(|| Lease::new(host.counts.clone())),
+                host.state_gate.clone(),
+            )
         });
-        if lease.is_some() {
+        if let Some(gate) = gate {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        } else if lease.is_some() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let _lease = lease;
@@ -114,6 +128,7 @@ impl<T: Send> state::HostWithStore<T> for HasSelf<Host> {
         assert_eq!(tx.schema_version, 0, "template has no declared migration");
         accessor.with(|mut access| {
             let host = access.get();
+            host.counts.transactions.fetch_add(1, Ordering::SeqCst);
             for check in tx.checks {
                 if host.records.get(&check.key).map(|r| r.version) != check.version {
                     return Err(AppError {
@@ -239,6 +254,7 @@ async fn instance(file: &str) -> wasmtime::Result<(Store<Host>, Drill, Arc<Count
             records: BTreeMap::new(),
             registered: vec![],
             slow_state: false,
+            state_gate: None,
             late_response: Arc::new(tokio::sync::Notify::new()),
         },
     );
@@ -316,6 +332,56 @@ async fn todo_templates_run_in_one_shared_instance() -> wasmtime::Result<()> {
             counts.cancel_closed.load(Ordering::SeqCst),
             2,
             "{language}: cancel futures must be released after normal completion"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_todo_add_never_starts_a_transaction() -> wasmtime::Result<()> {
+    let directory = std::env::var("CHARIOX_SDK_COMPONENTS")?;
+    for language in ["js", "rust"] {
+        let (mut store, app, counts) = instance(&format!("{directory}/{language}-1.wasm")).await?;
+        let gate = Arc::new(StateGate::default());
+        store.data_mut().state_gate = Some(gate.clone());
+        let result = store
+            .run_concurrent(async |accessor| {
+                let entered = gate.clone();
+                let cancel = accessor.with(|mut access| {
+                    FutureReader::new(&mut access, async move {
+                        entered.entered.notified().await;
+                        Ok::<_, wasmtime::Error>("cancel pending Todo read".to_string())
+                    })
+                })?;
+                let result = app
+                    .chariox_app_handlers()
+                    .call_call_tool(
+                        accessor,
+                        "add".into(),
+                        r#"{"title":"must not be written"}"#.into(),
+                        context(),
+                        cancel,
+                    )
+                    .await?;
+                assert_eq!(result.as_ref().unwrap_err().code, "CANCELLED", "{language}");
+                // Release only after cancellation has returned to the caller.
+                // Keep driving the instance so a detached JS continuation runs.
+                gate.release.notify_one();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok::<_, wasmtime::Error>(result)
+            })
+            .await??;
+        assert_eq!(result.unwrap_err().code, "CANCELLED");
+        assert_eq!(counts.opened.load(Ordering::SeqCst), 1, "{language}");
+        assert_eq!(counts.closed.load(Ordering::SeqCst), 1, "{language}");
+        assert_eq!(
+            counts.transactions.load(Ordering::SeqCst),
+            0,
+            "{language}: cancelled add started a transaction after its read completed"
+        );
+        assert!(
+            store.data().records.is_empty(),
+            "{language}: cancelled add wrote state"
         );
     }
     Ok(())
