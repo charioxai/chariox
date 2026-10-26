@@ -144,7 +144,7 @@ pub(crate) use provider_processes::{
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
     DrainedLeasedProjection, LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteLeaseRuntime,
+    PreparedLeasedProviderRun, RemoteCompletionHarvest, RemoteLeaseRuntime,
 };
 #[cfg(test)]
 pub(crate) use remote_lease::{
