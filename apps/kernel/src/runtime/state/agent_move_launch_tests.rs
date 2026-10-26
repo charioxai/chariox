@@ -2,6 +2,192 @@
 use super::provider_launch_owned_state::owned_runtime_state;
 use super::*;
 
+#[tokio::test]
+async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() {
+    use crate::agent_move::*;
+    use crate::managed_context::development::*;
+
+    let worktree = crate::test_support::TestWorktree::new("move-return-preparation");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, mut agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let config = app.config().clone();
+    let remote = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "machine".into(),
+        execution_lease_id: "lease".into(),
+        leased_agent_id: "leased-agent".into(),
+        active_worker_provider_run_id: None,
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(214),
+    };
+    agent.set_remote_execution(Some(remote.clone()));
+    app.agents().restore_agent(agent.clone());
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let identity = AgentMoveIdentity {
+        operation_id: "return-native-preparation".into(),
+        generation: 2,
+        home_kernel_id: config.daemon_id.clone(),
+        home_session_id: session.id().into(),
+        home_agent_id: agent.id().into(),
+        owner_user_id: agent.owner_user_id().into(),
+        source_kernel_id: remote.worker_kernel_id.clone(),
+        target_kernel_id: config.daemon_id.clone(),
+        home_key_thumbprint: "home-key".into(),
+        source_key_thumbprint: "worker-key".into(),
+        target_key_thumbprint: "home-key".into(),
+        target_public_key: config.relay_public_key.clone(),
+    };
+    let capture = AgentMoveCapture {
+        identity: identity.clone(),
+        source_project_id: session.project_id().into(),
+        archive_project_id: session.project_id().into(),
+        source_provider_run_id: None,
+        source_repositories: Vec::new(),
+        workspace: AgentMoveArtifact {
+            sha256: "0".repeat(64),
+            size_bytes: 1,
+        },
+        native: None,
+        checkpoint_binding: None,
+    };
+    let mut target = runtime
+        .owned
+        .agent_moves
+        .begin_target(capture.clone(), &worktree.path().join("moves"))
+        .unwrap();
+    let primary = target.destination_root.join("primary");
+    std::fs::create_dir_all(&primary).unwrap();
+    let receipt = AgentMoveMaterialization {
+        identity: identity.clone(),
+        archive_sha256: capture.workspace.sha256.clone(),
+        source_project_id: session.project_id().into(),
+        target_project_id: session.project_id().into(),
+        destination_root: target.destination_root.clone(),
+        primary_repository_id: "primary".into(),
+        repositories: vec![DevelopmentImportedRepository {
+            workspace_kind: DevelopmentWorkspaceKind::Directory,
+            repository_id: "primary".into(),
+            role: DevelopmentRepositoryRole::Primary,
+            target_directory: "primary".into(),
+            destination_path: primary.clone(),
+            head_sha: String::new(),
+        }],
+    };
+    target.receipt = Some(receipt.clone());
+    target.backing_session_id = Some(session.id().into());
+    target.backing_agent_id = Some(agent.id().into());
+    runtime
+        .owned
+        .agent_moves
+        .save_target(target.clone())
+        .unwrap();
+    let operation = HomeMoveOperation {
+        identity: identity.clone(),
+        revision: 0,
+        original_agent: agent.clone(),
+        target_ref: None,
+        source_remote: Some(remote.clone()),
+        phase: HomeMovePhase::Bound {
+            capture,
+            receipt,
+            remote: None,
+        },
+    };
+    let operation = runtime.owned.agent_moves.save_home(operation).unwrap();
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+        "model",
+    )
+    .with_agent_id(agent.id())
+    .with_owner_user_id(agent.owner_user_id())
+    .with_working_directory(primary);
+    assert!(runtime
+        .prepare_provider_launch_request_with_vault(request.clone(), "ordinary remote launch")
+        .await
+        .is_err());
+    request.agent_move_preparation = Some(identity.operation_id.clone());
+    let prepared = runtime
+        .prepare_provider_launch_request_with_vault(
+            request.clone(),
+            "prepare returned native session",
+        )
+        .await
+        .expect("the captured Return must prepare before clearing its remote route");
+    assert_eq!(prepared.working_directory, request.working_directory);
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .remote_execution(),
+        Some(&remote),
+    );
+    let mut ordinary = prepared;
+    ordinary.agent_move_preparation = None;
+    let error = runtime.owned.start_provider_launch(ordinary).unwrap_err();
+    assert!(error.to_string().contains("holds provider admission"));
+    assert!(runtime.owned.provider_store.list_runs().is_empty());
+
+    let mut wrong_operation = request.clone();
+    wrong_operation.agent_move_preparation = Some("other-operation".into());
+    let mut wrong_directory = request.clone();
+    wrong_directory.working_directory = Some(worktree.path().join("other"));
+    for invalid in [wrong_operation, wrong_directory] {
+        assert!(runtime
+            .prepare_provider_launch_request_with_vault(invalid, "invalid Return preparation")
+            .await
+            .is_err());
+    }
+    let mut changed_source = remote.clone();
+    changed_source.execution_lease_id = "different-lease".into();
+    let mut rebound = agent.clone();
+    rebound.set_remote_execution(Some(changed_source));
+    runtime.owned.agent_store.restore_agent(rebound);
+    assert!(runtime
+        .prepare_provider_launch_request_with_vault(request.clone(), "changed Return source")
+        .await
+        .is_err());
+    runtime.owned.agent_store.restore_agent(agent.clone());
+    target.active = true;
+    runtime
+        .owned
+        .agent_moves
+        .save_target(target.clone())
+        .unwrap();
+    assert!(runtime
+        .prepare_provider_launch_request_with_vault(request.clone(), "already active Return")
+        .await
+        .is_err());
+    target.active = false;
+    target.retired = true;
+    runtime
+        .owned
+        .agent_moves
+        .save_target(target.clone())
+        .unwrap();
+    assert!(runtime
+        .prepare_provider_launch_request_with_vault(request.clone(), "retired Return")
+        .await
+        .is_err());
+    target.retired = false;
+    runtime.owned.agent_moves.save_target(target).unwrap();
+    let mut uncaptured = operation;
+    uncaptured.phase = HomeMovePhase::Fenced;
+    runtime.owned.agent_moves.save_home(uncaptured).unwrap();
+    assert!(runtime
+        .prepare_provider_launch_request_with_vault(request, "uncaptured Return")
+        .await
+        .is_err());
+}
+
 async fn refuses_bad_receipt(missing: bool) {
     let worktree = crate::test_support::TestWorktree::new("move-launch-receipt");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();

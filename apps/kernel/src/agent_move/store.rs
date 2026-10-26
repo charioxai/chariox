@@ -339,6 +339,53 @@ impl AgentMoveStore {
             .cloned()
     }
 
+    pub(crate) fn prepares_return(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+        source: &crate::agent::RemoteAgentBinding,
+        kernel: &str,
+    ) -> bool {
+        let (Some(operation), Some(agent)) = (
+            request.agent_move_preparation.as_deref(),
+            request.agent_id.as_deref(),
+        ) else {
+            return false;
+        };
+        let records = self.lock();
+        let (Some(home), Some(target)) =
+            (records.homes.get(operation), records.targets.get(operation))
+        else {
+            return false;
+        };
+        let HomeMovePhase::Bound {
+            receipt,
+            remote: None,
+            ..
+        } = &home.phase
+        else {
+            return false;
+        };
+        home.target_ref.is_none()
+            && home.identity.home_kernel_id == kernel
+            && home.identity.target_kernel_id == kernel
+            && home.identity.source_kernel_id == source.worker_kernel_id
+            && home.identity.home_session_id == request.session_id
+            && home.identity.home_agent_id == agent
+            && home.identity.owner_user_id == request.owner_user_id
+            && home.source_remote.as_ref().is_some_and(|binding| {
+                binding.worker_kernel_id == source.worker_kernel_id
+                    && binding.execution_lease_id == source.execution_lease_id
+                    && binding.leased_agent_id == source.leased_agent_id
+            })
+            && target.capture.identity == home.identity
+            && !target.active
+            && !target.retired
+            && target.backing_session_id.as_deref() == Some(request.session_id.as_str())
+            && target.backing_agent_id.as_deref() == Some(agent)
+            && target.receipt.as_ref() == Some(receipt)
+            && receipt.primary_path().ok() == request.working_directory.as_deref()
+    }
+
     pub(crate) fn checkpoint_for_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,

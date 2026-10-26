@@ -183,7 +183,13 @@ impl KernelRuntimeOwnedState {
                     agent_id: agent.id().to_string(),
                 });
             }
-            if agent.remote_execution().is_some() {
+            // Return must probe its native session before committing the local
+            // route. Only its durable preparation may cross this account guard.
+            if agent.remote_execution().is_some_and(|source| {
+                !self
+                    .agent_moves
+                    .prepares_return(&request, source, &config.daemon_id)
+            }) {
                 return Err(DaemonError::LocalTransport {
                     operation: "launch provider run",
                     message: format!(
