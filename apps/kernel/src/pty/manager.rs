@@ -12,6 +12,9 @@ use tokio::sync::Notify;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
+#[cfg(test)]
+mod reap_test_child;
+
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
 const PTY_INPUT_QUEUE_LIMIT: usize = 64;
 const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
@@ -971,13 +974,14 @@ impl PtyManager {
     }
 
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
-        let Some(process_key) = self.process_aliases.remove(provider_run_id) else {
+        let Some(process_key) = self.process_aliases.get(provider_run_id).cloned() else {
             return Ok(false);
         };
+        let removed = self.remove_process_by_key(&process_key, Some(provider_run_id))?;
+        self.process_aliases.remove(provider_run_id);
         self.output_signal
             .unregister_alias(&process_key, provider_run_id);
-
-        self.remove_process_by_key(&process_key, Some(provider_run_id))
+        Ok(removed)
     }
 
     pub fn remove_process_by_key(
@@ -992,45 +996,40 @@ impl PtyManager {
             process.reference_count -= 1;
             return Ok(true);
         }
-
-        self.output_signal.unregister_process(process_key);
-        self.process_aliases
-            .retain(|_, alias_process_key| alias_process_key != process_key);
-        let mut process =
-            self.processes
-                .remove(process_key)
-                .ok_or_else(|| DaemonError::PtyProcessNotFound {
-                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                })?;
-
-        let status = if process.exit_code.is_some() || process.signal.is_some() {
-            // Already reaped by output drain or liveness polling.
-            return Ok(true);
-        } else {
-            try_wait_pty_process(&mut process).map_err(|error| DaemonError::PtyCleanup {
-                provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                message: error.to_string(),
-            })?
+        let cleanup_error = |message: String| DaemonError::PtyCleanup {
+            provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
+            message,
         };
-
-        if status.is_none() {
+        if process.exit_code.is_none()
+            && process.signal.is_none()
+            && try_wait_pty_process(process)
+                .map_err(cleanup_error)?
+                .is_none()
+        {
             terminate_pty_process_group(process.master.as_ref(), process.process_group);
             process
                 .child
                 .kill()
-                .map_err(|error| DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                    message: error.to_string(),
-                })?;
-            process
-                .child
-                .wait()
-                .map_err(|error| DaemonError::PtyCleanup {
-                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
-                    message: error.to_string(),
-                })?;
+                .map_err(|error| cleanup_error(error.to_string()))?;
+            // Killing is not reaping. Keep all ownership records until exit is
+            // confirmed, so a slow OS reap can be retried without losing the child.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            loop {
+                if try_wait_pty_process(process)
+                    .map_err(cleanup_error)?
+                    .is_some()
+                {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(cleanup_error("provider reap is still pending after termination; ownership retained for retry".into()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
-
+        self.output_signal.unregister_process(process_key);
+        self.process_aliases.retain(|_, key| key != process_key);
+        self.processes.remove(process_key);
         Ok(true)
     }
 
@@ -1269,6 +1268,74 @@ mod tests {
             run.set_read_only_discovery(true);
         }
         run
+    }
+
+    #[test]
+    fn removing_a_process_retains_ownership_until_reap_succeeds() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        #[derive(Debug)]
+        struct DeferredReap {
+            child: Box<dyn portable_pty::Child + Send + Sync>,
+            ready: std::sync::Arc<AtomicBool>,
+        }
+        impl portable_pty::ChildKiller for DeferredReap {
+            fn kill(&mut self) -> std::io::Result<()> {
+                self.child.kill()
+            }
+            fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+                self.child.clone_killer()
+            }
+        }
+        impl portable_pty::Child for DeferredReap {
+            fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+                if self.ready.load(Ordering::Acquire) {
+                    self.child.try_wait()
+                } else {
+                    Ok(None)
+                }
+            }
+            fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+                panic!("process removal must never perform a blocking reap")
+            }
+            fn process_id(&self) -> Option<u32> {
+                None
+            }
+            #[cfg(windows)]
+            fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+                self.child.as_raw_handle()
+            }
+        }
+        let run = test_run();
+        let mut manager = PtyManager::new();
+        manager.spawn_for_run(&run).unwrap();
+        let key = manager.process_key(run.id()).unwrap();
+        let ready = std::sync::Arc::new(AtomicBool::new(false));
+        let process = manager.processes.remove(&key).unwrap();
+        manager.processes.insert(
+            key.clone(),
+            super::PtyProcess {
+                child: Box::new(DeferredReap {
+                    child: process.child,
+                    ready: ready.clone(),
+                }),
+                ..process
+            },
+        );
+        let started = std::time::Instant::now();
+        let error = manager.remove_process(run.id()).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(error.to_string().contains("reap"));
+        assert_eq!(manager.process_key(run.id()).unwrap(), key);
+        assert!(
+            manager.has_process_key(&key),
+            "a pending reap must retain its physical owner"
+        );
+        ready.store(true, Ordering::Release);
+        manager
+            .remove_process(run.id())
+            .expect("a retry must reap the retained child");
+        assert!(!manager.has_process_key(&key));
+        assert!(!manager.has_process(run.id()));
     }
 
     fn shared_target_run(id: &str) -> RuntimeProviderRun {

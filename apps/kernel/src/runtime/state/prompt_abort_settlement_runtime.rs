@@ -118,11 +118,23 @@ impl KernelRuntimeState {
             let replace_run = tokio::time::timeout(PROMPT_ABORT_TIMEOUT, attempt)
                 .await
                 .unwrap_or(true);
-            if let Err(error) = state
-                .finish_owned_prompt_abort(&dispatch, replace_run)
-                .await
-            {
-                state.record_prompt_abort_failure(&dispatch, &error);
+            let mut reported_cleanup_failure = false;
+            loop {
+                match state
+                    .finish_owned_prompt_abort(&dispatch, replace_run)
+                    .await
+                {
+                    Ok(()) => break,
+                    Err(error) => {
+                        if !reported_cleanup_failure {
+                            state.record_prompt_abort_failure(&dispatch, &error);
+                            reported_cleanup_failure = true;
+                        }
+                        // A pending reap retains the turn and its workspace claim.
+                        // Yield between attempts without repeating the same notice.
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
             }
         });
     }
@@ -171,36 +183,50 @@ impl KernelRuntimeState {
             .unwrap_or_default();
         // The protocol ACK can precede tool exit. Retire the owned process group
         // before releasing the turn; its persisted provider identity resumes on the next prompt.
-        let finished = self.with_app_side_effect(|app| {
-            let session = self.owned.session_store.get_session(&dispatch.session_id)?;
-            let agent = self.owned.provider_store.get_run(&dispatch.provider_run_id)?
-                .agent_instance_id().map(str::to_string)
-                .ok_or_else(|| DaemonError::NoActiveProviderRun { session_id: dispatch.session_id.clone() })?;
-            self.owned.prompt_state_owner.with_cancelling_prompt_if_matches(
-                &session, &agent, &dispatch.prompt_id, || {
-                    if self.owned.provider_store.get_run_for_agent(&dispatch.session_id, &agent)
-                        .is_none_or(|run| run.id() != dispatch.provider_run_id) {
-                        return Ok(false);
-                    }
-                    let process_key = app.pty().process_key(&dispatch.provider_run_id).ok().or_else(||
-                        self.owned.provider_process_tracking.read().run_processes.get(&dispatch.provider_run_id).cloned());
-                    app.pty_mut().terminate_owned_processes(&dispatch.provider_run_id)?;
-                    let (_, removed_key) = crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&dispatch.provider_run_id)?;
-                    if process_key.as_ref().is_some_and(|key| app.pty().has_process_key(key)) {
-                        return Err(DaemonError::PtyCleanup { provider_run_id: dispatch.provider_run_id.clone(),
-                            message: "the provider process is still shared; cancellation has not physically settled".into() });
-                    }
-                    self.owned.remove_provider_process_tracking_for_run(&dispatch.provider_run_id, removed_key);
-                    // Borrowed endpoints keep their documented interrupt semantics.
-                    // A timed-out run must be replaced even if launch has not materialized its PTY yet.
-                    if process_key.is_some() || replace_run {
-                        let ended = self.owned.provider_store.mark_run_ended_provider_only(&dispatch.session_id, &dispatch.provider_run_id)?;
-                        self.owned.provider_run_projection.update(ended.into_run());
-                        self.owned.clear_active_provider_run_session_pointer(&dispatch.session_id, &dispatch.provider_run_id)?;
-                    }
-                    Ok(true)
-                })
-        }).await?;
+        let finished = {
+            let state = self.clone();
+            let dispatch = dispatch.clone();
+            self.with_app_side_effect_blocking(move |app| {
+                let owned = &state.owned;
+                let session = owned.session_store.get_session(&dispatch.session_id)?;
+                let run = owned.provider_store.get_run(&dispatch.provider_run_id)?;
+                let agent = run.agent_instance_id().ok_or_else(|| DaemonError::NoActiveProviderRun {
+                    session_id: dispatch.session_id.clone(),
+                })?;
+                owned.prompt_state_owner.with_cancelling_prompt_if_matches(
+                    &session, agent, &dispatch.prompt_id, || {
+                        if owned.provider_store.get_latest_run_for_agent(&dispatch.session_id, agent)
+                            .is_none_or(|run| run.id() != dispatch.provider_run_id) {
+                            return Ok(false);
+                        }
+                        let process_key = app.pty().process_key(&dispatch.provider_run_id).ok()
+                            .or_else(|| owned.provider_process_tracking.read().run_processes.get(&dispatch.provider_run_id).cloned());
+                        app.pty_mut().terminate_owned_processes(&dispatch.provider_run_id)?;
+                        let (_, removed_key) = crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&dispatch.provider_run_id)?;
+                        if process_key.as_ref().is_some_and(|key| app.pty().has_process_key(key)) {
+                            return Err(DaemonError::PtyCleanup {
+                                provider_run_id: dispatch.provider_run_id.clone(),
+                                message: "the provider process is still shared; cancellation has not physically settled".into(),
+                            });
+                        }
+                        owned.remove_provider_process_tracking_for_run(&dispatch.provider_run_id, removed_key);
+                        // Borrowed endpoints keep their documented interrupt semantics.
+                        // Replace timed-out runs even if launch has not materialized their PTY yet.
+                        if process_key.is_some() || replace_run {
+                            let ended = owned.provider_store.mark_run_ended_provider_only(
+                                &dispatch.session_id, &dispatch.provider_run_id,
+                            )?;
+                            owned.provider_run_projection.update(ended.into_run());
+                            owned.clear_active_provider_run_session_pointer(
+                                &dispatch.session_id, &dispatch.provider_run_id,
+                            )?;
+                        }
+                        Ok(true)
+                    },
+                )
+            }).await?
+        };
         if finished != Some(true) {
             return Ok(());
         }
