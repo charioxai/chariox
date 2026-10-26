@@ -154,11 +154,18 @@ export function createViewActions() {
   // the App's event dispatch. Forms reuse the SDK's supported-field mapping.
   function controls() {
     if (typeof document === 'undefined') return [];
-    const nodes = document.querySelectorAll('button,input,select,textarea,a[href],summary,[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[role="combobox"],[role="slider"],[contenteditable="true"]');
-    const visible = [...nodes].filter(node => !node.disabled && !node.closest('[inert]')
-      && node.getClientRects().length > 0
-      && node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
-    if (visible.length > 512) throw Object.assign(new Error('the view has more than 512 visible controls'), { code: 'coverage_too_large' });
+    const roots = [document], visible = [];
+    for (const root of roots) {
+      if (root.host?.closest('[inert]')) continue;
+      for (const node of root.querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
+      const nodes = root.querySelectorAll('button,input,select,textarea,a[href],summary,[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[role="combobox"],[role="slider"],[contenteditable="true"]');
+      for (const node of nodes) {
+        if (node.disabled || node.closest('[inert]') || !node.getClientRects().length
+          || !node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+        visible.push(node);
+        if (visible.length > 512) throw Object.assign(new Error('the view has more than 512 visible controls'), { code: 'coverage_too_large' });
+      }
+    }
     return visible.map(node => {
       let name = node.getAttribute('data-chariox-action');
       const form = node.form;

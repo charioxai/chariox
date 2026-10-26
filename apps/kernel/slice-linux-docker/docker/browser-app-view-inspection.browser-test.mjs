@@ -28,6 +28,7 @@ test('A4: inspect covers form fields and annotated actions, warns on an undeclar
     return reply.result.value;
   };
   for (let i=0; i<200 && !await evaluate('window.ready === true'); i++) await new Promise(r => setTimeout(r, 25));
+  await evaluate(`(() => { const widget=document.createElement('div'); document.body.append(widget); widget.attachShadow({mode:'open'}).innerHTML='<button id="shadow-add" data-chariox-action="add">Add</button><button id="shadow-missing">Missing</button>'; })()`);
   const inspected = await host.handle({ id: 2, method: 'browser.app.inspect', params: { target_id: opened.result.target_id } });
   assert.equal(inspected.ok, true, JSON.stringify(inspected));
   const result = inspected.result;
@@ -36,8 +37,8 @@ test('A4: inspect covers form fields and annotated actions, warns on an undeclar
   assert.deepEqual(result.registrations.map(r => r.name), ['add', 'rename']);
   assert.deepEqual(result.state, {ok:true, value:{count:1}});
   assert.equal(result.controls.filter(c => c.action === 'rename').length, 3);
-  assert.equal(result.controls.filter(c => c.action === 'add').length, 1);
-  assert.deepEqual(result.controls.filter(c => c.action === null).map(c => c.control), ['input#unsupported', 'button#reset', 'button#missing']);
+  assert.equal(result.controls.filter(c => c.action === 'add').length, 2);
+  assert.deepEqual(result.controls.filter(c => c.action === null).map(c => c.control), ['input#unsupported', 'button#reset', 'button#missing', 'button#shadow-missing']);
   assert.ok(!JSON.stringify(result).includes('private-'));
   await evaluate('chariox.view.state(() => "x".repeat(65537))');
   const oversized = await evaluate('__charioxViewAgent.inspect()');
