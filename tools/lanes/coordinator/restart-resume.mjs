@@ -34,7 +34,8 @@ export async function resumeAfterRestart({ lane, lanes, status, kernelStartedAtM
   if (recovery?.kernelStartedAtMs !== kernelStartedAtMs) recovery = undefined;
   const promptId = recovery?.promptId ?? status.admittedPromptId ?? run.currentPromptId ?? lane.receipt.promptId;
   if (!recovery && status.admittedPromptAtMs >= kernelStartedAtMs) return false;
-  const sinceMs = recovery?.sentAtMs ?? kernelStartedAtMs;
+  // A provider can fail before the admission reply reaches loopd.
+  const sinceMs = recovery?.sentAtMs ? recovery.attemptedAtMs : kernelStartedAtMs;
   const failure = failureFor(lane, status, promptId, sinceMs);
   if (!failure) return false;
   if (!recovery && failure.atMs > kernelStartedAtMs + RECOVERY_WINDOW_MS) return false;

@@ -180,6 +180,23 @@ test('a service restart retains uncertain delivery identity and the global resum
   assert.equal(attempts.filter(attempt => attempt.key === 'alpha-r1').at(-1).commandId, attempts[0].commandId);
 });
 
+test('a provider 429 that arrives before the admission reply still retries later', async t => {
+  const r = await interruptedRounds(t), adapter = r.options.adapter;
+  r.control.maxSends = 3;
+  r.options.adapter = async (op, input) => {
+    const result = await adapter(op, input);
+    if (op === 'prompt') r.clock.ms += 1000; // the provider can fail before the coordinator receives its receipt
+    if (op === 'status' && input.taskId === 'alpha-r1' && r.sends.filter(send => send.key === input.taskId).length === 1) {
+      return { state: 'error', currentPrompt: null, completedTurn: { promptId: r.resumed.get(input.taskId), status: 'failed',
+        completedAtMs: r.sends.find(send => send.key === input.taskId).atMs,
+        providerTermination: { category: 'explicit_provider_error', reason: 'Codex error [response_too_many_failed_attempts]: last status: 429 Too Many Requests' } } };
+    }
+    return result;
+  };
+  await serve(r.options);
+  assert.equal(r.sends.filter(send => send.key === 'alpha-r1').length, 2);
+});
+
 test('parseEntry accepts a complete entry and normalizes worktrees', () => {
   const entry = parseEntry('integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { worktrees: ['/a', { path: '/b', base: sha }], notes: '/n.md' })));
   assert.equal(entry.key, 'integ2-r35');
