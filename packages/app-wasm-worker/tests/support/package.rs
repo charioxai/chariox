@@ -31,16 +31,17 @@ pub fn package_version(
         "schema":"chariox.app.v2", "appId":"com.example.r4drill", "version":version,
         "publisher":{"id":"com.example","keyId":key_id,"name":"R4 source App drill"},
         "appContractVersion":2, "resourcePolicy":"chariox.app.resources.v1",
-        "world":v2::APP_WORLD,"requiredFeatures":["wasm-component"],"idempotentTools":["echo"],
+        "world":v2::APP_WORLD,"requiredFeatures":["wasm-component","ui-actions"],"idempotentTools":["echo"],
         "runtime":{"engine":"wasm","component":"runtime/app.wasm"},
         "build":{"language":"rust","toolchain":"wit-bindgen 0.57.1","sdkVersion":"1.0.0"},
-        "ui":{"entry":"ui/index.html"},"tools":"schemas/tools.json","capabilities":{}
+        "ui":{"entry":"ui/index.html"},"tools":"schemas/tools.json","uiActions":"schemas/ui-actions.json","capabilities":{}
     }))
     .unwrap();
     let tools: Vec<_> = ["echo","shared","wait","ignore","trap","spin","oom","stream","slow_stream","subscribe","upload","early_response","grace"]
         .map(|name| json!({"name":name,"description":format!("Source App drill: {name}"),"inputSchema":{"type":"object","properties":{"portable":{"type":"string"}},"required":["portable"],"additionalProperties":false}})).into();
     let mut files = BTreeMap::from([
         ("runtime/app.wasm".into(), bytes),
+        ("schemas/ui-actions.json".into(), serde_json::to_vec(&json!({"uiActions":[{"name":"inspect","description":"Read the App view","inputSchema":{"type":"object","additionalProperties":false},"effect":"read"}]})).unwrap()),
         ("schemas/tools.json".into(), serde_json::to_vec(&json!({"tools":tools})).unwrap()),
         ("ui/index.html".into(), b"<!doctype html><title>R4 source App</title><p>Use the echo tool to verify installation.</p>".to_vec()),
     ]);

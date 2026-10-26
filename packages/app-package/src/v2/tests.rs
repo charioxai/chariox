@@ -76,18 +76,6 @@ fn policy() -> PolicyV2 {
     )
 }
 
-#[test]
-fn generic_verifier_refuses_ui_actions_without_a_runtime() {
-    let fixture = base();
-    let bytes = packed(&fixture, &[]);
-    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
-    let error = crate::verify_app(&bytes, &generic)
-        .err()
-        .expect("R4 has no UI-action runtime");
-    assert_eq!(error.code, ErrorCode::IncompatibleProtocol);
-    assert!(error.message.contains("ui-actions"), "{}", error.message);
-}
-
 struct Fixture {
     manifest: ManifestV2,
     files: BTreeMap<String, Vec<u8>>,
@@ -777,4 +765,50 @@ fn idempotent_tool_policy_rejects_undeclared_names_and_changes_signed_content() 
         fixture.manifest.idempotent_tools = names.into_iter().map(String::from).collect();
         assert!(fixture.manifest.validate(&Limits::default()).is_err());
     }
+}
+
+#[test]
+fn generic_verifier_accepts_declared_ui_actions() {
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
+    let verified = crate::verify_app(&bytes, &generic).unwrap();
+    assert!(!crate::VerifiedApp::ui_actions(&verified).is_empty());
+}
+
+#[test]
+fn generic_verifier_refuses_a_signed_unknown_required_feature() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use ed25519_dalek::Signer;
+    use sha2::Digest;
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let entries = archive::parse(&bytes, &Limits::default()).unwrap();
+    let mut manifest: Value = serde_json::from_slice(entries[0].data).unwrap();
+    manifest["requiredFeatures"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("future-not-advertised"));
+    let inventory =
+        read_inventory(entries[1].data, INTEGRITY_SCHEMA_V2, &Limits::default()).unwrap();
+    let subject = signing_bytes_for(SIGNATURE_SCHEMA_V2, &manifest, &inventory).unwrap();
+    let signature = json!({"key_id":manifest["publisher"]["keyId"],"algorithm":"ed25519","digest":format!("sha256:{:x}",sha2::Sha256::digest(&subject)),"value":STANDARD.encode(key().sign(&subject).to_bytes())});
+    let manifest = serde_json_canonicalizer::to_vec(&manifest).unwrap();
+    let signature = serde_json_canonicalizer::to_vec(&signature).unwrap();
+    let mut forged = vec![
+        (archive::CONTROL_PATHS[0], manifest.as_slice()),
+        (archive::CONTROL_PATHS[1], entries[1].data),
+        (archive::CONTROL_PATHS[2], signature.as_slice()),
+    ];
+    forged.extend(
+        entries[3..]
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.data)),
+    );
+    let bytes = archive::encode(&forged, &Limits::default()).unwrap();
+    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
+    assert_eq!(
+        code(crate::verify_app(&bytes, &generic)),
+        crate::ErrorCode::InvalidManifest
+    );
 }
