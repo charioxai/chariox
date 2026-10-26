@@ -10,7 +10,6 @@ mod macos;
 /// Linux address-space ceiling, independent of guest linear-memory limits.
 /// Darwin cannot admit this cap below its existing dyld mappings.
 pub const ADDRESS_SPACE_BYTES: u64 = 1024 * 1024 * 1024;
-pub const CPU_SECONDS: u64 = 300;
 pub const FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DESCRIPTORS: u64 = 64;
 
@@ -37,7 +36,6 @@ fn ceilings() -> io::Result<()> {
         // not a hard allocation limit. Do not claim a native memory cap there.
         #[cfg(target_os = "linux")]
         ("RLIMIT_AS", libc::RLIMIT_AS, ADDRESS_SPACE_BYTES),
-        ("RLIMIT_CPU", libc::RLIMIT_CPU, CPU_SECONDS),
         ("RLIMIT_FSIZE", libc::RLIMIT_FSIZE, FILE_BYTES),
         ("RLIMIT_NOFILE", libc::RLIMIT_NOFILE, DESCRIPTORS),
         ("RLIMIT_CORE", libc::RLIMIT_CORE, 0),
@@ -49,7 +47,7 @@ fn ceilings() -> io::Result<()> {
         if unsafe { libc::getrlimit(resource, &mut old) } != 0 {
             return Err(syscall_error(&format!("getrlimit({name})")));
         }
-        let hard = (value + u64::from(resource == libc::RLIMIT_CPU)) as libc::rlim_t;
+        let hard = value as libc::rlim_t;
         let value = (value as libc::rlim_t).min(old.rlim_cur).min(old.rlim_max);
         let limit = libc::rlimit {
             rlim_cur: value,

@@ -141,10 +141,6 @@ impl Worker {
                 chariox_app_wasm_worker::containment::ADDRESS_SPACE_BYTES,
             ),
             (
-                "Max cpu time",
-                chariox_app_wasm_worker::containment::CPU_SECONDS,
-            ),
-            (
                 "Max file size",
                 chariox_app_wasm_worker::containment::FILE_BYTES,
             ),
@@ -164,14 +160,14 @@ impl Worker {
                 expected.to_string(),
                 "{name} soft ceiling before ready"
             );
-            let hard = expected + u64::from(name == "Max cpu time");
+            let hard = expected;
             assert_eq!(
                 values[1],
                 hard.to_string(),
                 "{name} hard ceiling before ready"
             );
         }
-        println!("DRILL {} OS-observed seccomp, no-new-privileges and hard memory/CPU/file/FD ceilings before Continue: PASS", self.child.id());
+        println!("DRILL {} OS-observed seccomp, no-new-privileges and hard memory/file/FD ceilings before Continue: PASS", self.child.id());
     }
     pub(super) async fn next(&mut self) -> Message {
         let message = tokio::time::timeout(

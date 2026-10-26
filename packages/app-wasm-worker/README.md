@@ -87,10 +87,10 @@ authentication: native code that has already compromised the worker can still
 request an ordinary RX mapping. AOT provenance remains R4's authority.
 
 Hard OS limits cover the whole process, including compiler, runtime and all
-threads: on Linux, 1 GiB address space; on both systems, 300 CPU seconds (301 hard), 8 MiB per regular file,
+threads: on Linux, 1 GiB address space; on both systems, 8 MiB per regular file,
 64 descriptors, zero core dump size. Tighter inherited limits are preserved.
-Memory mappings fail with ENOMEM; CPU stops with SIGXCPU (SIGKILL at the hard
-ceiling); oversized regular-file output stops with SIGXFSZ/EFBIG. These are
+Memory mappings fail with ENOMEM; oversized regular-file output stops with
+SIGXFSZ/EFBIG. These are
 independent of `APP_MEMORY_LIMIT`, `APP_CPU_SLICE` and `INVALID_OUTPUT` returned
 by the component/wire boundaries. A native process stop needs a fresh kernel
 generation; do not replay a non-idempotent call. R4 must retain its existing
@@ -102,6 +102,11 @@ The Mac native memory probe reports this gap explicitly; it does not claim an
 ENOMEM boundary. Guest linear-memory limits remain enforced by Wasmtime.
 R4 must retain its kernel memory monitor; this worker alone does not bound
 native compiler/runtime allocations on macOS.
+The worker introduces no lifetime CPU budget: a healthy long-lived generation
+must not expire after accumulated successful calls. Epoch slices and call
+deadlines bound guest CPU; R4 retains supervisor monitoring for native runaways.
+Inherited OS CPU limits remain in force. The native CPU signal probe lowers
+only its own child's inherited limit to verify that behavior.
 Wasmtime reserves only committed guest memory plus a 64 KiB guard, without
 memfd-backed copy-on-write initialization. The engine configuration digest
 includes these settings; old AOT entries cannot share the new key.

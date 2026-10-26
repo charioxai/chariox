@@ -35,7 +35,7 @@ import ctypes, os, resource
 libc = ctypes.CDLL(None, use_errno=True)
 class Limit(ctypes.Structure):
     _fields_ = [('soft', ctypes.c_uint64), ('hard', ctypes.c_uint64)]
-for name, requested in [('RLIMIT_AS', 1 << 30), ('RLIMIT_CPU', 300),
+for name, requested in [('RLIMIT_AS', 1 << 30),
                         ('RLIMIT_FSIZE', 8 << 20), ('RLIMIT_NOFILE', 64),
                         ('RLIMIT_CORE', 0)]:
     pid = os.fork()
@@ -46,7 +46,7 @@ for name, requested in [('RLIMIT_AS', 1 << 30), ('RLIMIT_CPU', 300),
             old_soft, old_hard = resource.getrlimit(kind)
             bounded = lambda value, old: value if old == resource.RLIM_INFINITY else min(value, old)
             soft = bounded(bounded(requested, old_soft), old_hard)
-            hard = bounded(requested + (name == 'RLIMIT_CPU'), old_hard)
+            hard = bounded(requested, old_hard)
             operation = f'setrlimit({name}, soft={soft}, hard={hard})'
             result = libc.setrlimit(kind, ctypes.byref(Limit(soft, hard)))
             errno = ctypes.get_errno() if result else 0
