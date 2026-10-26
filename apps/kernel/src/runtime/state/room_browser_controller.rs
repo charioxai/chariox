@@ -107,7 +107,7 @@ impl KernelRuntimeState {
                 .is_some()
     }
 
-    pub(super) async fn room_browser_controller_command(
+    pub(crate) async fn room_browser_controller_command(
         &self,
         session_id: &str,
         command: Command,
@@ -389,6 +389,9 @@ impl KernelRuntimeState {
                     crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardHold { duration_ms, .. }
                     | crate::transport::room_browser_controller::RoomComputerInputAction::PointerHold { duration_ms, .. }, ..
                 } => Duration::from_millis(u64::from(*duration_ms) + 15_000),
+                Command::AppView { request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { deadline_ms, .. } } => {
+                    Duration::from_secs(15).saturating_add(Duration::from_millis(*deadline_ms))
+                }
                 _ => Duration::from_secs(15),
             };
             self.send_room_slice_peer_request(&config, target, request(command), timeout)

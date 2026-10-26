@@ -1999,6 +1999,7 @@ impl BrowserControllerProcessStore {
             request,
             super::browser_controller_app_view::BrowserAppViewRequest::Calls
                 | super::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
+                | super::browser_controller_app_view::BrowserAppViewRequest::Agent { .. }
         ) {
             return self.app_view_bridge(session_id, request);
         }
