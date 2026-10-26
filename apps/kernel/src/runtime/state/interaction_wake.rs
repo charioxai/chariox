@@ -187,7 +187,9 @@ impl KernelRuntimeState {
                 if wake.last_sequence.is_some() && wake.last_delivered_at_ms.is_none() {
                     self.schedule_wake_delivery(&wake);
                 }
-            } else if wake.next_due_ms.is_some_and(|deadline| deadline <= now) {
+            } else if matches!(wake.state.as_str(), "starting" | "running")
+                && wake.next_due_ms.is_some_and(|deadline| deadline <= now)
+            {
                 self.owned
                     .timeout_runtime_interaction(&wake.room_id, &wake.id)?;
                 self.schedule_wake_delivery(&wake);

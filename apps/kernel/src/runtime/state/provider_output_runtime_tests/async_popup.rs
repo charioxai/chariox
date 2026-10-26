@@ -81,6 +81,48 @@ fn answers(f: &Fixture, id: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
+#[tokio::test]
+async fn async_popup_cancellation_intent_does_not_fire_its_deadline() {
+    let f = fixture("async-popup-cancelling-deadline", true).await;
+    let task = f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({"timeout_sec":1})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let wake = f.store().agent_wake(id).unwrap().unwrap();
+    // Model a crash after cancellation intent commits but before its driver
+    // finishes removing the card. A deadline cannot answer a cancelled source.
+    f.store()
+        .agent_lifecycle(Operation::CancelWake {
+            id: id.into(),
+            task: task.task_id.clone(),
+            prompt: Some(task.prompt_id.clone()),
+            pending: true,
+        })
+        .unwrap();
+    f.runtime
+        .tick_interaction_wakes(wake.next_due_ms.unwrap())
+        .unwrap();
+    assert!(answers(&f, id).is_empty());
+    assert_eq!(
+        f.store().agent_wake(id).unwrap().unwrap().state,
+        "cancelling"
+    );
+    f.runtime
+        .cancel_wake_source(&wake, &task.task_id, Some(&task.prompt_id))
+        .unwrap();
+    assert_eq!(
+        f.store().agent_wake(id).unwrap().unwrap().state,
+        "cancelled"
+    );
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+}
+
 async fn answer_through_router(
     f: &Fixture,
     id: &str,
