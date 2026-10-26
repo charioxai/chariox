@@ -532,43 +532,20 @@ impl KernelRuntimeState {
             return Ok(());
         }
         let database = self.owned.durable_state_store.path().to_owned();
-        let retained = self
-            .owned
-            .durable_state_store
-            .get_app_installation(owner, installation)
-            .map_err(crate::runtime::app_control::registry_error)?
-            .data_release()
-            .map(|data| data.release.package_digest.clone());
         let (erase_owner, erase_installation) = (owner.to_owned(), installation.to_owned());
-        let wasm = tokio::task::spawn_blocking(move || {
-            use chariox_app_runtime::{
-                release_store::ReleaseStore,
-                worker_process::{wasm::storage, WorkerError},
-            };
+        tokio::task::spawn_blocking(move || {
+            use chariox_app_runtime::worker_process::{wasm::storage, WorkerError};
             storage::delete(&database, &erase_owner, &erase_installation).map_err(|error| {
                 match error {
                     WorkerError::Storage("app_storage_busy") => AppRequestErrorCode::Busy,
                     _ => AppRequestErrorCode::StorageUnavailable,
                 }
-            })?;
-            let Some(digest) = retained else {
-                return Ok(true);
-            };
-            let bytes = ReleaseStore::open_or_create(&database)
-                .and_then(|store| store.open_stored_archive(&digest))
-                .and_then(|mut archive| archive.read_bytes())
-                .map_err(|_| AppRequestErrorCode::StorageUnavailable)?;
-            // This digest-pinned metadata selects storage only; deletion must
-            // still work after the publisher is revoked.
-            chariox_app_package::inspect_manifest(&bytes, &chariox_app_package::Limits::default())
-                .map(|manifest| matches!(manifest, chariox_app_package::ReleaseManifest::Wasm(_)))
-                .map_err(|_| AppRequestErrorCode::StorageUnavailable)
+            })
         })
         .await
         .map_err(|_| AppRequestErrorCode::StorageUnavailable)??;
-        if wasm {
-            return Ok(());
-        }
+        // An installation may own both engines' storage after a Node-to-v2
+        // update. Forgetting data must erase both, regardless of its last release.
         #[cfg(target_os = "linux")]
         self.delete_linux_app_storage(owner, installation).await?;
         #[cfg(target_os = "macos")]

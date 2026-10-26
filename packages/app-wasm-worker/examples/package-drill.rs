@@ -13,7 +13,18 @@ fn main() {
     std::fs::create_dir_all(&output).unwrap();
     let (bytes, publisher) = package::package(&core);
     std::fs::write(output.join("source.cxapp"), bytes).unwrap();
-    std::fs::write(output.join("node.cxapp"), node_package(&publisher)).unwrap();
+    let (bytes, _) = package::package_version(&core, None, "1.1.0", 0);
+    std::fs::write(output.join("no-migration-update.cxapp"), bytes).unwrap();
+    std::fs::write(
+        output.join("node.cxapp"),
+        node_package(
+            &publisher,
+            "com.example.r4node",
+            b"export default function register() {}",
+        ),
+    )
+    .unwrap();
+    std::fs::write(output.join("legacy-source.cxapp"), node_package(&publisher, "com.example.r4drill", b"import {writeFileSync} from 'node:fs'; export default function register() {writeFileSync('/app/data/legacy-marker', 'legacy-owned-data');}")).unwrap();
     std::fs::write(output.join("publisher.json"), serde_json::to_vec(&json!({
         "schema":"chariox.developer-publisher.v1", "algorithm":"ed25519",
         "publisher":{"id":publisher.publisher_id,"keyId":publisher.key_id,"name":"R4 source App drill"},
@@ -30,9 +41,13 @@ fn main() {
 }
 
 // Same public fixture signer, for the real client's rebuild-error drill.
-fn node_package(publisher: &chariox_app_package::TrustedPublisher) -> Vec<u8> {
+fn node_package(
+    publisher: &chariox_app_package::TrustedPublisher,
+    app_id: &str,
+    backend: &[u8],
+) -> Vec<u8> {
     let manifest = serde_json::from_value(json!({
-        "schema":"chariox.app.v1", "appId":"com.example.r4node", "version":"1.0.0",
+        "schema":"chariox.app.v1", "appId":app_id, "version":"1.0.0",
         "publisher":{"id":publisher.publisher_id,"keyId":publisher.key_id,"name":"R4 source App drill"},
         "sdkVersion":chariox_app_package::SUPPORTED_SDK_VERSION, "appContractVersion":1,
         "minKernelProtocol":1,"resourcePolicy":"chariox.app.resources.v1",
@@ -42,10 +57,7 @@ fn node_package(publisher: &chariox_app_package::TrustedPublisher) -> Vec<u8> {
     chariox_app_package::pack(
         &manifest,
         &std::collections::BTreeMap::from([
-            (
-                "runtime/main.js".into(),
-                b"export default function register() {}".to_vec(),
-            ),
+            ("runtime/main.js".into(), backend.to_vec()),
             (
                 "ui/index.html".into(),
                 b"<!doctype html><title>Node rebuild drill</title>".to_vec(),

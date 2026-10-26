@@ -1,6 +1,6 @@
 //! Tests only: App storage without the platform's. Linux App storage belongs
 //! to the root storage helper, which kernel tests and CI do not run (and whose
-//! client refuses root), so uninstalling with `delete_data` fails there. A
+//! helper never admits root). A
 //! test kernel given this fixture deletes from it instead and records each
 //! deletion, so App lifecycles that delete data (a deployment's copy) run on
 //! every platform. Production has no such path: this module is `cfg(test)`.
