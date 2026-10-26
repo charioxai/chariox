@@ -59,7 +59,7 @@ impl Reencode for WithoutForward {
     ) -> Result<(), reencode::Error<Self::Error>> {
         for export in section {
             let export = export?;
-            if export.name.ends_with("#register") {
+            if export.name == "chariox:app/handlers@1.0.0#register" {
                 self.register = Some(export.index);
             }
             self.parse_export(output, export)?;
