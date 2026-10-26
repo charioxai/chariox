@@ -109,6 +109,11 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             &error.to_string(),
             false,
         ),
+        DaemonError::LeasedPromptRunChanged { .. } => relay_error(
+            crate::transport::relay_peer::LEASED_PROMPT_RUN_CHANGED_CODE,
+            &error.to_string(),
+            false,
+        ),
         _ => relay_error("relay_request_failed", &error.to_string(), false),
     }
 }

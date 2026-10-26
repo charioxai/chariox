@@ -1,6 +1,7 @@
 mod browser_peer_version;
 mod client_requests;
 mod cloud_terminal_pairing;
+mod leased_prompt_run_change;
 mod ordinary_lease_caller;
 mod peer_events;
 mod peer_transport;

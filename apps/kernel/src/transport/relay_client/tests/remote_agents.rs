@@ -428,7 +428,7 @@ async fn public_remote_completion_preserves_worker_termination_async() {
     server_task.await.expect("relay server task should join");
 }
 
-async fn wait_for_home_remote_prompt_receipt(
+pub(super) async fn wait_for_home_remote_prompt_receipt(
     app: &Arc<Mutex<DaemonApp>>,
     session_id: &str,
     agent_id: &str,

@@ -1303,7 +1303,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
     /// Completes the leased agent's prompt only when the request names the exact
     /// home prompt and worker provider run that are still current. A late or
-    /// repeated completion of an earlier prompt changes nothing.
+    /// repeated completion of an earlier prompt changes nothing; the same prompt
+    /// on another provider run is refused as a run change, not as a settled prompt.
     pub(crate) fn complete_leased_prompt(
         &mut self,
         leased_agent_id: &str,
@@ -1341,14 +1342,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
         {
             return Err(not_current("the worker is running another prompt"));
         }
+        // The same home prompt is still running here, on another provider run (a relaunch the
+        // home has not followed yet). That is not a settled prompt, so the home must not read it as one.
         if self
             .leased_completion_provider_run_id(&leased_agent)?
             .as_deref()
             != Some(expected_worker_provider_run_id)
         {
-            return Err(not_current(
-                "the worker prompt runs on another provider run",
-            ));
+            return Err(DaemonError::LeasedPromptRunChanged {
+                leased_agent_id: leased_agent_id.to_string(),
+                home_prompt_id: expected_home_prompt_id.to_string(),
+                worker_provider_run_id: expected_worker_provider_run_id.to_string(),
+            });
         }
         self.settle_leased_prompt(leased_agent_id)
     }

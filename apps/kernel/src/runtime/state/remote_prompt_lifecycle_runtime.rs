@@ -1246,6 +1246,21 @@ mod tests {
                 retryable: true,
             }
         ));
+        // The same home prompt still runs on the worker, on another provider run: not settled.
+        let run_changed = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "leased_prompt_run_changed".to_string(),
+            message: "the prompt is still running on another provider run".to_string(),
+            retryable: false,
+        };
+        assert!(run_changed.is_leased_prompt_run_changed());
+        assert!(!run_changed.is_leased_prompt_not_current());
+        assert!(!remote_prompt_completion_should_treat_as_settled(
+            &run_changed
+        ));
+        assert!(!remote_prompt_cancellation_should_treat_as_settled(
+            &run_changed
+        ));
         for error in [
             DaemonError::LocalTransport {
                 operation: "cancel remote prompt",

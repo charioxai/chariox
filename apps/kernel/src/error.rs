@@ -248,6 +248,14 @@ pub enum DaemonError {
         worker_provider_run_id: String,
         reason: &'static str,
     },
+    #[error(
+        "leased agent `{leased_agent_id}` is still running home prompt `{home_prompt_id}`, on another provider run than `{worker_provider_run_id}`; retry the completion once the home follows that run"
+    )]
+    LeasedPromptRunChanged {
+        leased_agent_id: String,
+        home_prompt_id: String,
+        worker_provider_run_id: String,
+    },
     #[error("{message}")]
     NoRemoteKernelAvailable {
         machine_ref: String,
@@ -475,20 +483,29 @@ impl DaemonError {
     /// The worker answered that the prompt a completion names is not its current
     /// one, so the home's prompt already settled there.
     pub(crate) fn is_leased_prompt_not_current(&self) -> bool {
-        match self {
-            Self::LeasedPromptNotCurrent { .. } => true,
+        matches!(self, Self::LeasedPromptNotCurrent { .. })
+            || self
+                .is_exact_peer_refusal(crate::transport::relay_peer::LEASED_PROMPT_NOT_CURRENT_CODE)
+    }
+
+    /// The worker answered that the home's prompt is still running there, on
+    /// another provider run than the completion named. The prompt has not
+    /// settled, so the home keeps its turn active.
+    pub(crate) fn is_leased_prompt_run_changed(&self) -> bool {
+        matches!(self, Self::LeasedPromptRunChanged { .. })
+            || self
+                .is_exact_peer_refusal(crate::transport::relay_peer::LEASED_PROMPT_RUN_CHANGED_CODE)
+    }
+
+    fn is_exact_peer_refusal(&self, expected_code: &str) -> bool {
+        matches!(
+            self,
             Self::RelayTransport {
-                operation,
+                operation: "read relay peer response" | "read temporary relay peer response",
                 code,
                 retryable: false,
                 ..
-            } => {
-                matches!(
-                    *operation,
-                    "read relay peer response" | "read temporary relay peer response"
-                ) && code == crate::transport::relay_peer::LEASED_PROMPT_NOT_CURRENT_CODE
-            }
-            _ => false,
-        }
+            } if code == expected_code
+        )
     }
 }

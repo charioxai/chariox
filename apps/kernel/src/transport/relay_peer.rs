@@ -148,6 +148,7 @@ pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased pro
 /// The worker refused a completion because the prompt it names is not the leased
 /// agent's current prompt (already finished, or replaced by a later one).
 pub const LEASED_PROMPT_NOT_CURRENT_CODE: &str = "leased_prompt_not_current";
+pub const LEASED_PROMPT_RUN_CHANGED_CODE: &str = "leased_prompt_run_changed";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 

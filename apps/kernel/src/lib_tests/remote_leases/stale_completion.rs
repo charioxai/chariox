@@ -85,16 +85,17 @@ fn late_completion_of_an_earlier_leased_prompt_leaves_the_successor_turn_active(
         matches!(late, Err(DaemonError::LeasedPromptNotCurrent { .. })),
         "a completion that belongs to the earlier prompt is refused with a typed reason: {late:?}"
     );
-    // The successor's prompt id with another run is refused as well.
+    // The successor's prompt id with another run is still running there: it is
+    // refused as a run change, which the home must not read as a settled prompt.
     let wrong_run = RemoteLeaseRuntime::new(&mut app).complete_leased_prompt(
         &leased_agent.id,
         "home-prompt-successor",
         "provider-run-other",
     );
-    assert!(matches!(
-        wrong_run,
-        Err(DaemonError::LeasedPromptNotCurrent { .. })
-    ));
+    assert!(
+        matches!(wrong_run, Err(DaemonError::LeasedPromptRunChanged { .. })),
+        "the same prompt on another run is a live run mismatch: {wrong_run:?}"
+    );
     assert_eq!(active(&mut app), Some(successor));
 
     RemoteLeaseRuntime::new(&mut app)
