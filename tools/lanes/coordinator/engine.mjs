@@ -273,6 +273,7 @@ export function createRound(options) {
   };
 
   const collect = async (lane, reason) => {
+    if (lane.run.restartRecovery) lane.run.restartRecovery.pending = false;
     await saveLastMessage(lane);
     try {
       if (['hard_stop', 'stopped'].includes(reason)) await stopLane(lane);

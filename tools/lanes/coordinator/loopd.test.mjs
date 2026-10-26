@@ -56,9 +56,9 @@ async function rig(t) {
 }
 const runFile = (r, lane) => readFile(join(r.layout.agents, lane, 'LOOP_RUN.json'), 'utf8').then(JSON.parse);
 
-async function interruptedRounds(t, failures = {}) {
+async function interruptedRounds(t, failures = {}, alpha = {}) {
   const r = await rig(t);
-  await r.drop('alpha', 'r1'); await r.drop('beta', 'r1');
+  await r.drop('alpha', 'r1', alpha); await r.drop('beta', 'r1');
   r.script.push(async () => r.controller.abort());
   await serve(r.options);
   r.clock.ms += 120_000;
@@ -129,15 +129,15 @@ test('a refused resume waits, replays the same delivery, and does not starve the
   assert.equal(r.logs.filter(event => event.kind === 'restart_resume_failed').length, 1);
 });
 
-for (const ending of ['stopped', 'stopping', 'finished', 'worker_lost']) {
+for (const ending of ['stopped', 'stopping', 'hard_stop', 'finished', 'worker_lost']) {
   test(`a pending recovery lane that is ${ending} cannot block another worker's retry`, async t => {
-    const r = await interruptedRounds(t), adapter = r.options.adapter, attempts = [];
+    const r = await interruptedRounds(t, {}, ending === 'hard_stop' ? { hardStopMinutes: 2 } : {}), adapter = r.options.adapter, attempts = [];
     r.options.reconcileMs = 0;
     r.control.maxSends = 1;
     let endingAlpha = false;
     r.options.adapter = async (op, input) => {
       if (endingAlpha && input.taskId === 'alpha-r1') {
-        if (op === 'stop' && ending === 'stopping') throw Object.assign(new Error('stop refused'), { code: 'stop_refused' });
+        if (op === 'stop' && ['stopping', 'hard_stop'].includes(ending)) throw Object.assign(new Error('stop refused'), { code: 'stop_refused' });
         if (op === 'status' && ending === 'worker_lost') throw Object.assign(new Error('worker gone'), { code: 'agent_not_found' });
         if (op === 'status' && ending === 'finished') return { state: 'idle', currentPrompt: null, completedTurn: { promptId: 'prompt-alpha-r1', status: 'completed' } };
       }
@@ -156,7 +156,7 @@ for (const ending of ['stopped', 'stopping', 'finished', 'worker_lost']) {
     await serve(r.options);
     assert.deepEqual(attempts, ['alpha-r1', 'beta-r1', 'beta-r1']);
     assert.equal(r.sends[0]?.key, 'beta-r1');
-    if (ending !== 'stopping') assert.equal((await runFile(r, 'alpha')).finishReason, ending);
+    if (!['stopping', 'hard_stop'].includes(ending)) assert.equal((await runFile(r, 'alpha')).finishReason, ending);
     else assert.equal((await runFile(r, 'alpha')).stopPending, true);
   });
 }
