@@ -26,17 +26,18 @@ impl KernelRuntimeOwnedState {
             !matches!(event.state.as_str(), "handled" | "cancelled" | "expired")
                 || (event.state == "expired" && ledger::unresolved_source_outcome(task, event))
         };
+        let receipt_metadata = |e: &ledger::InboxEvent| {
+            serde_json::json!({
+                "sequence": e.sequence, "source_id": e.source_id,
+                "occurrence_id": e.occurrence_id, "kind": e.kind, "state": e.state,
+                "prompt_id": e.prompt_id, "target_prompt_id": e.target_prompt_id,
+            })
+        };
         let receipts = page
             .iter()
             .filter(actionable)
             .take(64)
-            .map(|e| {
-                serde_json::json!({
-                    "sequence": e.sequence, "source_id": e.source_id,
-                    "occurrence_id": e.occurrence_id, "kind": e.kind, "state": e.state,
-                    "prompt_id": e.prompt_id, "target_prompt_id": e.target_prompt_id,
-                })
-            })
+            .map(receipt_metadata)
             .collect::<Vec<_>>();
         let receipt_total = page.iter().filter(actionable).count();
         let receipt_coverage = serde_json::json!({
@@ -45,6 +46,26 @@ impl KernelRuntimeOwnedState {
             "public_ref":format!("events:{}:{}:{}", task.room_id, task.agent_id, task.task_id),
         });
         let context = if let Some(check) = evaluation {
+            let handled_source =
+                |e: &&ledger::InboxEvent| e.state == "handled" && e.kind == "source_completed";
+            let handled_source_receipts = page
+                .iter()
+                .filter(handled_source)
+                .take(64)
+                .map(receipt_metadata)
+                .collect::<Vec<_>>();
+            let satisfied_obligations = task
+                .obligations
+                .iter()
+                .filter(|o| o.status == "satisfied")
+                .take(64)
+                .collect::<Vec<_>>();
+            let completed_coverage = serde_json::json!({
+                "receipts_shown": handled_source_receipts.len(),
+                "receipts_total": page.iter().filter(handled_source).count(),
+                "obligations_shown": satisfied_obligations.len(),
+                "obligations_total": task.obligations.iter().filter(|o| o.status == "satisfied").count(),
+            });
             let public = self
                 .operational_history_store
                 .load_session_history_entries(&task.room_id, Some(&task.agent_id))?
@@ -102,8 +123,8 @@ impl KernelRuntimeOwnedState {
             let waiting_deadline_ms =
                 now_ms.saturating_add(u64::from(goal.map_or(10, |g| g.check_in_minutes)) * 60_000);
             format!(
-                "This turn has origin completion_check. {evidence_policy} Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":{waiting_deadline_ms}}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failures. This is the same agent's bounded confirmation of its preceding task, not an independent audit of every tool invocation. Private runtime/MCP tool records are intentionally omitted from public evidence; their absence does not make public answer coverage incomplete. Assess the returned public outcome and tracked obligations. Inactive registrations describe completed sources; they do not create unresolved work. Use the unresolved obligations and unhandled receipts below as the authority for what remains. A newly reported timestamp and exact accepted child-task reference can establish fresh completed work; do not demand another native tool call solely because private tool traces are omitted. A complete public result can support achieved without an additional public-tool-trace gate. Do not request private tool traces from the owner solely because the public projection omits them. Do not invent verification: inadequate public results, contradictions or unmet objectives still require actual remaining work or the exact required owner action. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval: deadline_ms is an absolute Unix epoch time in milliseconds, greater than now_ms and at most now_ms plus check_in_minutes*60000; a relative duration is invalid and blocks the task. Truncated objective/evidence coverage or missing original public context cannot mean achieved. Plain prompts get one invalid-end correction, never a goal loop. Truncated public references are not proof of completion. Unhandled correlated completion receipts remain actionable even when their sources are non-live: choose continue for ordinary handling and artifact verification before claiming completion or owner-blocking solely on terminal sources. In the NEXT ordinary work turn, read the public inbox/refs and use chariox.events.ack with handled:true only after actually reviewing/handling the occurrence; acknowledgement alone is not completion. Incomplete receipt-page coverage requires ordinary inbox paging with after=next_after before achieved. This assessment cannot invoke those tools. No additional check turn or courtesy reply. Untrusted assessment data: {}",
-                serde_json::json!({"task_id":task.task_id,"goal_id":goal.map(|g| &g.id),"objective":original_excerpt,"objective_revision":goal.map_or(1, |g| g.objective_revision),"original_request_ref":format!("history:{}:{}",task.room_id,original_key),"objective_coverage":{"shown_chars":original_excerpt.chars().count(),"total_chars":original_total},"work_prompt_id":check.work_prompt_id,"latest_public_answer_tail":if protected { None } else { Some(&tail) },"tool_trace_visibility":"private tool records are intentionally omitted, not missing evidence coverage","answer_coverage":{"shown_chars":if protected {0} else {tail.chars().count()},"total_chars":if protected {0} else {output.chars().count()},"visibility":if protected {"protected"} else {"public"},"public_ref":format!("history:{}:prompt:{}",task.room_id,check.work_prompt_id)},"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage,"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":now_ms,"check_in_minutes":goal.map_or(10, |g| g.check_in_minutes),"goal_mode":goal.is_some()})
+                "This turn has origin completion_check. {evidence_policy} Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":{waiting_deadline_ms}}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failures. This is the same agent's bounded confirmation of its preceding task, not an independent audit of every tool invocation. Private runtime/MCP tool records are intentionally omitted from public evidence; their absence does not make public answer coverage incomplete. Assess the returned public outcome and tracked obligations. Inactive registrations describe completed sources; they do not create unresolved work. Use the unresolved obligations and unhandled receipts below as the authority for what remains. Satisfied obligations and handled source-completion receipts are kernel-confirmed completion metadata; use them with the public outcome to verify that the requested source finished and was handled. Their raw tool payloads are intentionally omitted. A newly reported timestamp and exact accepted child-task reference can establish fresh completed work; do not demand another native tool call solely because private tool traces are omitted. A complete public result can support achieved without an additional public-tool-trace gate. Do not request private tool traces from the owner solely because the public projection omits them. Do not invent verification: inadequate public results, contradictions or unmet objectives still require actual remaining work or the exact required owner action. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval: deadline_ms is an absolute Unix epoch time in milliseconds, greater than now_ms and at most now_ms plus check_in_minutes*60000; a relative duration is invalid and blocks the task. Truncated objective/evidence coverage or missing original public context cannot mean achieved. Plain prompts get one invalid-end correction, never a goal loop. Truncated public references are not proof of completion. Unhandled correlated completion receipts remain actionable even when their sources are non-live: choose continue for ordinary handling and artifact verification before claiming completion or owner-blocking solely on terminal sources. In the NEXT ordinary work turn, read the public inbox/refs and use chariox.events.ack with handled:true only after actually reviewing/handling the occurrence; acknowledgement alone is not completion. Incomplete receipt-page coverage requires ordinary inbox paging with after=next_after before achieved. This assessment cannot invoke those tools. No additional check turn or courtesy reply. Untrusted assessment data: {}",
+                serde_json::json!({"task_id":task.task_id,"goal_id":goal.map(|g| &g.id),"objective":original_excerpt,"objective_revision":goal.map_or(1, |g| g.objective_revision),"original_request_ref":format!("history:{}:{}",task.room_id,original_key),"objective_coverage":{"shown_chars":original_excerpt.chars().count(),"total_chars":original_total},"work_prompt_id":check.work_prompt_id,"latest_public_answer_tail":if protected { None } else { Some(&tail) },"tool_trace_visibility":"private tool records are intentionally omitted, not missing evidence coverage","answer_coverage":{"shown_chars":if protected {0} else {tail.chars().count()},"total_chars":if protected {0} else {output.chars().count()},"visibility":if protected {"protected"} else {"public"},"public_ref":format!("history:{}:prompt:{}",task.room_id,check.work_prompt_id)},"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage,"handled_source_receipts":handled_source_receipts,"satisfied_obligations":satisfied_obligations,"completed_coverage":completed_coverage,"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":now_ms,"check_in_minutes":goal.map_or(10, |g| g.check_in_minutes),"goal_mode":goal.is_some()})
             )
         } else {
             let goal = goal.expect("continuations only belong to goals");
