@@ -1,5 +1,37 @@
 use super::*;
 
+// MP-08 / MP-09 / MP-10 / MP-11: prompt/provider publications may carry an older
+// agent list while the authoritative store already contains the focused agent.
+#[tokio::test]
+async fn agent_commands_use_authoritative_membership_after_a_stale_projection() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let requests = [
+        LocalDaemonRequest::FocusAgent(crate::local::FocusAgentRequest {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+        }),
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+        }),
+    ];
+    for request in requests {
+        let mut stale = session.clone();
+        stale.set_agents(Vec::new());
+        router.session_projection.update(stale);
+        let command = KernelCommand::from_local_request("stale-membership", None, None, &request);
+        let response = router.dispatch(command, request).await;
+        assert!(
+            response.is_ok(),
+            "current agent rejected by stale projection: {response:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn acknowledge_output_seen_uses_agent_store_membership_projection() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
