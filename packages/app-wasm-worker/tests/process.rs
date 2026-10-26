@@ -436,3 +436,80 @@ async fn broker_failures_are_explicit_and_do_not_masquerade_as_guest_traps() {
     worker.echo("after-body-failure").await;
     println!("DRILL malformed broker replies and mid-body failures have explicit reasons: PASS");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "source App build required; use scripts/drill.sh"]
+async fn dropping_early_response_cancels_pending_upload_while_handler_lives() {
+    let mut worker = Worker::start(vec![]).await;
+    worker.call("early", "early_response", 5000).await;
+    let mut headers = None;
+    let mut write = None;
+    let mut held = Vec::new();
+    let mut cancelled_write = false;
+    let mut cancelled_stream = false;
+    let mut stopped_upload = false;
+    let mut dropped_response = false;
+    while !cancelled_write || !cancelled_stream || !stopped_upload || !dropped_response {
+        let message = tokio::time::timeout(Duration::from_millis(750), worker.next())
+            .await
+            .expect("dropping response must promptly stop upload before invocation ends");
+        match message {
+            Message::Request {
+                id, method, params, ..
+            } => match method.as_str() {
+                "http.open" => worker.answer(id, json!({"streamId":"early"})).await,
+                "http.headers" => headers = Some(id),
+                "http.write" => {
+                    assert!(
+                        write.is_none(),
+                        "discarded upload must not send another chunk"
+                    );
+                    assert_eq!(params["end"], false);
+                    write = Some(id);
+                }
+                "http.read" => {} // The read remains pending until the body is dropped.
+                "http.cancel" => {
+                    assert_eq!(params["streamId"], "early");
+                    assert!(!cancelled_stream, "stream must be released exactly once");
+                    cancelled_stream = true;
+                    worker.answer(id, Value::Null).await;
+                }
+                "state.get" => {
+                    match params["key"].as_str().unwrap() {
+                        "upload-stopped" => stopped_upload = true,
+                        "response-dropped" => dropped_response = true,
+                        other => panic!("unexpected state key {other}"),
+                    }
+                    held.push(id);
+                }
+                other => panic!("unexpected broker call {other}"),
+            },
+            Message::Cancel { id, .. } => {
+                if write.as_ref() == Some(&id) {
+                    cancelled_write = true;
+                }
+            }
+            other => panic!("handler must stay alive until upload ends: {other:?}"),
+        }
+        if write.is_some() {
+            if let Some(id) = headers.take() {
+                worker
+                    .answer(
+                        id,
+                        json!({"status":200,"headers":[],"url":"https://example.com/"}),
+                    )
+                    .await;
+            }
+        }
+    }
+    worker.echo("while-early-alive").await;
+    for id in held {
+        worker.answer(id, Value::Null).await;
+    }
+    assert!(matches!(
+        worker.response("early").await,
+        Outcome::Success(_)
+    ));
+    worker.echo("after-early").await;
+    println!("DRILL early response drop cancels upload and releases stream exactly once while handler lives: PASS");
+}
