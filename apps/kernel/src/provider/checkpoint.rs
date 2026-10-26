@@ -166,6 +166,9 @@ impl ProviderNativeCheckpoint {
             })
             .ok_or(NativeCheckpointFailure::AccountUnavailable)?
             .to_string();
+        // The original home profile may have a catalog utility that predates
+        // the remote turns. Import must not resume a cached native writer.
+        super::invalidate_codex_account_endpoint(&request.owner_user_id, &request.account_profile);
         let endpoint = super::ensure_codex_account_endpoint(
             &request.owner_user_id,
             &request.account_profile,
@@ -191,7 +194,7 @@ impl ProviderNativeCheckpoint {
                 structured_endpoint: Some(endpoint),
             },
         );
-        let imported = self.import(&run);
+        let imported = codex::import_for_move(self, &run);
         // A resumed thread keeps its native writer even after its socket closes.
         // Retire the utility before the real provider opens the same session.
         super::invalidate_codex_account_endpoint(&request.owner_user_id, &request.account_profile);

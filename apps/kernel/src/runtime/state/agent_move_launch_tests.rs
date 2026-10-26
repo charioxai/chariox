@@ -3,7 +3,7 @@ use super::provider_launch_owned_state::owned_runtime_state;
 use super::*;
 
 #[tokio::test]
-async fn mk03_native_probe_authenticates_return_replica_before_prompt_admission() {
+async fn mk03_native_probe_preserves_home_account_before_prompt_admission() {
     use crate::account_profile::ProviderAccountAuthState;
     use crate::provider::{NativeCheckpointFailure, ProviderResumeState};
 
@@ -33,24 +33,15 @@ async fn mk03_native_probe_authenticates_return_replica_before_prompt_admission(
             &owner,
             "codex",
             &source.profile_id,
-            ProviderAccountAuthState::Authenticated,
+            ProviderAccountAuthState::Unknown,
             Some("source@example.invalid".into()),
             None,
             None,
             None,
         )
         .unwrap();
-    let mut materialization = registry
-        .export_materialization(&owner, "codex", &source.profile_id)
-        .unwrap();
-    materialization.profile.profile_id = "return-native-profile".into();
-    materialization.profile.is_default = false;
-    let replica = registry
-        .materialize_replica(&owner, &materialization)
-        .unwrap();
-    assert_eq!(replica.auth_state, ProviderAccountAuthState::Unknown);
     agent.set_provider("codex");
-    agent.set_account_profile(Some(replica.profile_id.clone()));
+    agent.set_account_profile(Some(source.profile_id.clone()));
     app.agents().restore_agent(agent.clone());
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -64,13 +55,13 @@ async fn mk03_native_probe_authenticates_return_replica_before_prompt_admission(
     assert!(runtime
         .finish_agent_move_native_probe(
             &owner,
-            &replica.profile_id,
+            &source.profile_id,
             Err(NativeCheckpointFailure::AccountMismatch),
         )
         .is_err());
     assert_eq!(
         registry
-            .get(&owner, "codex", &replica.profile_id)
+            .get(&owner, "codex", &source.profile_id)
             .unwrap()
             .auth_state,
         ProviderAccountAuthState::Unknown
@@ -78,7 +69,7 @@ async fn mk03_native_probe_authenticates_return_replica_before_prompt_admission(
     runtime
         .finish_agent_move_native_probe(
             &owner,
-            &replica.profile_id,
+            &source.profile_id,
             Ok(ProviderResumeState::from_codex_thread_id(
                 "00000000-0000-0000-0000-000000000008",
             )),
@@ -92,6 +83,18 @@ async fn mk03_native_probe_authenticates_return_replica_before_prompt_admission(
         ),
         "a successful native account/session probe must admit the returned agent's next prompt"
     );
+    registry
+        .update_observation(
+            &owner,
+            "codex",
+            &source.profile_id,
+            ProviderAccountAuthState::Authenticated,
+            Some("source@example.invalid".into()),
+            None,
+            None,
+            None,
+        )
+        .expect("ordinary auth observation must keep the original home account usable");
     let original = registry.get(&owner, "codex", &source.profile_id).unwrap();
     assert_eq!(original.auth_state, ProviderAccountAuthState::Authenticated);
     assert_eq!(
@@ -278,13 +281,70 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .is_err());
     target.retired = false;
     runtime.owned.agent_moves.save_target(target).unwrap();
-    let mut uncaptured = operation;
+    let mut uncaptured = operation.clone();
     uncaptured.phase = HomeMovePhase::Fenced;
     runtime.owned.agent_moves.save_home(uncaptured).unwrap();
     assert!(runtime
         .prepare_provider_launch_request_with_vault(request, "uncaptured Return")
         .await
         .is_err());
+
+    let before = runtime.owned.session_snapshot(session.id()).unwrap();
+    assert!(before.agents()[0].remote_execution().is_some());
+    let sequence = runtime
+        .owned
+        .session_projection
+        .session_change_sequence(session.id());
+    let mut committed = runtime
+        .owned
+        .agent_moves
+        .for_agent(session.id(), agent.id())
+        .unwrap();
+    let mut target = runtime
+        .owned
+        .agent_moves
+        .target(&identity.operation_id)
+        .unwrap();
+    target.ready = true;
+    committed.phase = HomeMovePhase::Committed {
+        receipt: target.receipt.clone().unwrap(),
+    };
+    runtime.owned.agent_moves.save_target(target).unwrap();
+    runtime
+        .owned
+        .agent_moves
+        .save_home(committed.clone())
+        .unwrap();
+    // The offline worker can delay source retirement, but the committed local
+    // route must already be visible to existing Room subscribers.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.resume_agent_move_operation(committed),
+    )
+    .await;
+    assert!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .remote_execution()
+            .is_none(),
+        "the recovered durable mutation must have cleared the route before checking publication"
+    );
+    let projected = runtime.owned.session_projection.get(session.id()).unwrap();
+    assert!(
+        projected.agents()[0].remote_execution().is_none(),
+        "recovered Committed Return must publish the local route without a fresh client read"
+    );
+    assert!(
+        runtime
+            .owned
+            .session_projection
+            .session_change_sequence(session.id())
+            > sequence,
+        "existing Room subscriptions must wake for the recovered Return"
+    );
 }
 
 async fn refuses_bad_receipt(missing: bool) {

@@ -170,6 +170,23 @@ pub(super) fn import(
     checkpoint: &ProviderNativeCheckpoint,
     run: &RuntimeProviderRun,
 ) -> Result<ProviderResumeState, Failure> {
+    import_checkpoint(checkpoint, run, false)
+}
+
+#[cfg(unix)]
+pub(super) fn import_for_move(
+    checkpoint: &ProviderNativeCheckpoint,
+    run: &RuntimeProviderRun,
+) -> Result<ProviderResumeState, Failure> {
+    import_checkpoint(checkpoint, run, true)
+}
+
+#[cfg(unix)]
+fn import_checkpoint(
+    checkpoint: &ProviderNativeCheckpoint,
+    run: &RuntimeProviderRun,
+    allow_extension: bool,
+) -> Result<ProviderResumeState, Failure> {
     if run.provider() != "codex"
         || model(run.model()) != checkpoint.binding.model
         || variant(run.variant()) != checkpoint.binding.variant.as_deref()
@@ -202,7 +219,16 @@ pub(super) fn import(
                 .and_then(|p| p.strip_prefix(root).ok())
                 .and_then(Path::to_str)
                 .ok_or(Failure::TargetConflict)?;
-            verify_required_artifact(&directory, relative, &checkpoint.binding)?;
+            match verify_required_artifact(&directory, relative, &checkpoint.binding) {
+                Ok(()) => {}
+                Err(Failure::TargetConflict) if allow_extension => {
+                    // A returned thread extends the stopped home thread. Preserve
+                    // every home byte and refuse any divergent native history.
+                    directory.extend(relative, &checkpoint.contents)?;
+                    verify_required_artifact(&directory, relative, &checkpoint.binding)?;
+                }
+                Err(error) => return Err(error),
+            }
             true
         }
         Err(crate::DaemonError::ProviderProtocol {
@@ -316,6 +342,14 @@ pub(super) fn export(_: &RuntimeProviderRun) -> Result<ProviderNativeCheckpoint,
 }
 #[cfg(not(unix))]
 pub(super) fn import(
+    _: &ProviderNativeCheckpoint,
+    _: &RuntimeProviderRun,
+) -> Result<ProviderResumeState, Failure> {
+    Err(Failure::UnsupportedPlatform)
+}
+
+#[cfg(not(unix))]
+pub(super) fn import_for_move(
     _: &ProviderNativeCheckpoint,
     _: &RuntimeProviderRun,
 ) -> Result<ProviderResumeState, Failure> {

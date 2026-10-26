@@ -399,6 +399,8 @@ impl KernelRuntimeState {
                             Ok::<_, DaemonError>(())
                         })
                         .await?;
+                        self.owned
+                            .session_snapshot(&operation.identity.home_session_id)?;
                         let mut target = self
                             .owned
                             .agent_moves

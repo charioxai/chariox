@@ -70,8 +70,8 @@ async function turnProgress(r, label, snapshot) {
         agentState: agent?.state, isProcessing: agent?.isProcessing,
         tuiFocusedAgentId: snapshot.session.focusedAgentId,
         homeFocusedAgentId: core.session.focused_agent_id,
-        tuiRemoteKernelId: agent?.remote_execution?.worker_kernel_id,
-        tuiAccountProfile: agent?.account_profile,
+        tuiRemoteKernelId: agent?.remoteExecution?.workerKernelId,
+        tuiAccountProfile: agent?.accountProfile,
         homeAccountProfile: actual?.account_profile,
         statusLine: snapshot.statusLine,
         fatalError: snapshot.fatalError,
@@ -83,6 +83,21 @@ async function turnProgress(r, label, snapshot) {
         interactions: (snapshot.interactions ?? []).map(i => ({kind: i.kind, title: i.title, choices: i.choices?.map(c => c.id)})),
         providerRun: run && {id: run.id, state: run.state, phase: run.phase, workingDirectory: run.working_directory},
     });
+}
+async function assertTuiRoute(r, agentId, remoteKernelId, label) {
+    let observed;
+    for (let n = 0; n < 120; n++) {
+        const snapshot = await r.tui.send('snapshot');
+        const agent = snapshot.session.agents.find(a => a.id === agentId);
+        observed = agent?.remoteExecution?.workerKernelId ?? null;
+        if (agent && observed === remoteKernelId) {
+            await record(label + '-tui-route', {remoteKernelId: observed, accountProfile: agent.accountProfile, statusLine: snapshot.statusLine});
+            return;
+        }
+        await sleep(250);
+    }
+    await captureTui(r, label + '-stale-route');
+    assert.equal(observed, remoteKernelId, 'Attached TUI must apply the recovered execution route');
 }
 async function turn(r, text, label) {
     const before = new Set(entries(await r.tui.send('snapshot')).map(row => row.id));
@@ -194,6 +209,7 @@ try {
     assert.equal(sourceRun.model, 'gpt-6-luna');
     assert.equal(sourceRun.variant, 'low');
     const sourceAccount = await accountIdentity(sourceRun);
+    const originalProfiles = variant(await source.client.send({ListProviderAccountProfiles: {provider: 'codex'}}), 'ProviderAccountProfilesListed').profiles.map(p => p.profile_id).sort();
     const webProof = await captureWeb(source, sessionId, agentId, 'source');
     const forward = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 1, true);
     const movedState = await state(source, sessionId);
@@ -201,6 +217,7 @@ try {
     assert.equal(movedAgent.remote_execution?.worker_kernel_id, target.status.daemon_id);
     assert.ok(movedAgent.remote_execution?.leased_agent_id, 'Move must continue through a leased agent');
     await record('leased-agent', {homeRoom: sessionId, homeAgent: agentId, targetKernel: target.status.daemon_id, leasedAgent: movedAgent.remote_execution.leased_agent_id});
+    await assertTuiRoute(source, agentId, target.status.daemon_id, 'moved-idle');
     await captureTui(source, 'moved-idle');
     webProof.push(...await captureWeb(source, sessionId, agentId, 'moved-idle'));
     const primary = forward.repositories.find(r => r.role === 'primary').destinationPath;
@@ -229,6 +246,7 @@ try {
     await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true, nativeSessionId: targetRun.provider_session_id, providerWorkingDirectory: targetRun.working_directory, model: targetRun.model, effort: targetRun.variant, sameAuthenticatedAccount: true, receiptWorktreeSelected: true});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'target'));
     const returned = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 2, false);
+    await assertTuiRoute(source, agentId, null, 'returned-idle');
     await captureTui(source, 'returned-idle');
     webProof.push(...await captureWeb(source, sessionId, agentId, 'returned-idle'));
     const home = returned.repositories.find(r => r.role === 'primary').destinationPath;
@@ -237,6 +255,15 @@ try {
     const returnedState = await state(source, sessionId);
     const returnedAgent = returnedState.session.agents.find(a => a.id === agentId);
     assert.ok(!returnedAgent.remote_execution, 'Return must clear the remote route');
+    assert.equal(returnedAgent.account_profile, sourceAgent.account_profile,
+        'Return must reuse the original home account profile');
+    const observedAccount = variant(await source.client.send({GetProviderAuthStatus: {
+        provider: 'codex', account_profile: returnedAgent.account_profile,
+    }}), 'ProviderAuthStatus').status;
+    assert.equal(observedAccount.auth_state, 'authenticated');
+    const returnedProfiles = variant(await source.client.send({ListProviderAccountProfiles: {provider: 'codex'}}), 'ProviderAccountProfilesListed').profiles.map(p => p.profile_id).sort();
+    assert.deepEqual(returnedProfiles, originalProfiles, 'Return must not create a second account profile');
+    await record('return-account-observed', {sameHomeProfile: true, ordinaryAuthObservation: 'PASS'});
     assert.equal(returnedAgent.worktree_id, home, 'Return must select the fresh receipt worktree');
     assert.equal(await readFile(home + '/input', 'utf8'), 'latest target work\n');
     assert.equal(await readFile(homeNotes + '/nested/document', 'utf8'), 'latest target notes\n');

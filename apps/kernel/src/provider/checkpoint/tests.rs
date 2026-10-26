@@ -556,6 +556,24 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
         .expect("the first real launch must accept intact history after its readiness probe");
     let after_launch = std::fs::read(&artifact).unwrap();
     assert!(after_launch.starts_with(&after_probe) && after_launch.len() > after_probe.len());
+    let mut returned = checkpoint.clone();
+    returned.contents = after_launch.clone();
+    returned.contents.extend_from_slice(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"remote turn\"}}\n");
+    returned.binding.artifact_sha256 = digest(&returned.contents);
+    assert!(
+        matches!(
+            returned.import(&run),
+            Err(NativeCheckpointFailure::TargetConflict)
+        ),
+        "ordinary checkpoint import must not advance existing native history"
+    );
+    codex::import_for_move(&returned, &run).expect(
+        "Return must extend the original home profile's native thread without creating another account",
+    );
+    assert!(std::fs::read(&artifact)
+        .unwrap()
+        .starts_with(&returned.contents));
+    checkpoint = returned;
     let mut wrong_account = checkpoint.clone();
     wrong_account.binding.account_sha256 = "0".repeat(64);
     assert!(matches!(
@@ -573,9 +591,18 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
     ));
     let mut rewritten = checkpoint.contents.clone();
     rewritten[0] ^= 1;
-    std::fs::write(&artifact, rewritten).unwrap();
+    std::fs::write(&artifact, &rewritten).unwrap();
     assert!(matches!(
         checkpoint.import(&run),
         Err(NativeCheckpointFailure::TargetConflict)
     ));
+    assert!(matches!(
+        codex::import_for_move(&checkpoint, &run),
+        Err(NativeCheckpointFailure::TargetConflict)
+    ));
+    assert_eq!(
+        std::fs::read(&artifact).unwrap(),
+        rewritten,
+        "Return must preserve divergent home history without changing any bytes"
+    );
 }

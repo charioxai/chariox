@@ -1,7 +1,6 @@
 //! Attach a verified publication, then probe the required native session.
 use super::*;
 use crate::agent_move::{error as move_error, AgentMoveIdentity};
-use sha2::Digest;
 impl KernelRuntimeState {
     pub(super) async fn attach_agent_move_target(
         &self,
@@ -104,26 +103,10 @@ impl KernelRuntimeState {
         )?;
         if let Some(checkpoint) = self.owned.agent_moves.native_checkpoint(&target.capture)? {
             if !leased {
-                let account_owner =
-                    self.provider_account_authority_owner_user_id(agent.owner_user_id());
-                let profile = format!(
-                    "move-{:x}",
-                    sha2::Sha256::digest(identity.operation_id.as_bytes())
-                );
-                let profiles = &self.owned.provider_account_profiles;
-                if profiles.find(&account_owner, "codex", &profile)?.is_none() {
-                    let mut materialization = profiles.export_materialization(
-                        &account_owner,
-                        "codex",
-                        agent.provider_account_profile(),
-                    )?;
-                    materialization.profile.profile_id = profile.clone();
-                    materialization.profile.is_default = false;
-                    profiles.materialize_replica(&account_owner, &materialization)?;
-                }
-                target.target_account_profile = Some(profile.clone());
+                // The home agent retains its original account selection while
+                // leased execution is remote. Return must use that same identity.
+                target.target_account_profile = Some(agent.provider_account_profile().to_string());
                 self.owned.agent_moves.save_target(target.clone())?;
-                agent.set_account_profile(Some(profile));
             }
             let resume = crate::provider::ProviderResumeState::from_codex_thread_id(
                 checkpoint.provider_session_id(),

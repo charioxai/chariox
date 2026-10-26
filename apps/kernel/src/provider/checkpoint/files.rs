@@ -135,6 +135,23 @@ impl Directory {
     }
 
     pub(super) fn publish(&self, path: &str, bytes: &[u8]) -> Result<(), Failure> {
+        self.publish_file(path, bytes, None)
+    }
+
+    pub(super) fn extend(&self, path: &str, bytes: &[u8]) -> Result<(), Failure> {
+        let previous = self.read(path)?;
+        if previous.is_empty() || !previous.ends_with(b"\n") || !bytes.starts_with(&previous) {
+            return Err(Failure::TargetConflict);
+        }
+        self.publish_file(path, bytes, Some(&previous))
+    }
+
+    fn publish_file(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        previous: Option<&[u8]>,
+    ) -> Result<(), Failure> {
         let (parent, name) = self.parent(path, true)?;
         let temporary = component(&format!(
             ".chariox-checkpoint-{:032x}.part",
@@ -156,6 +173,26 @@ impl Directory {
             file.write_all(bytes)
                 .and_then(|()| file.sync_all())
                 .map_err(|_| Failure::StorageUnavailable)?;
+            if let Some(previous) = previous {
+                // The source provider is stopped and Move fences new launches.
+                // Recheck after staging, then atomically publish its extension so
+                // a crash cannot leave half a JSONL record in the native thread.
+                if self.read(path)? != previous {
+                    return Err(Failure::SourceChanged);
+                }
+                let renamed = unsafe {
+                    libc::renameat(
+                        parent.0.as_raw_fd(),
+                        temporary.as_ptr(),
+                        parent.0.as_raw_fd(),
+                        name.as_ptr(),
+                    )
+                };
+                if renamed != 0 {
+                    return Err(Failure::StorageUnavailable);
+                }
+                return parent.0.sync_all().map_err(|_| Failure::StorageUnavailable);
+            }
             // Hard-link publication is atomic and can never replace user data.
             let result = unsafe {
                 libc::linkat(
@@ -177,7 +214,10 @@ impl Directory {
             parent.0.sync_all().map_err(|_| Failure::StorageUnavailable)
         })();
         let removed = unsafe { libc::unlinkat(parent.0.as_raw_fd(), temporary.as_ptr(), 0) };
-        if removed != 0 {
+        if removed != 0
+            && !(previous.is_some()
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound)
+        {
             return Err(Failure::StorageUnavailable);
         }
         parent
