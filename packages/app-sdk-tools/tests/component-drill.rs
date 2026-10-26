@@ -205,7 +205,7 @@ impl<T: Send> http::HostWithStore<T> for HasSelf<Host> {
                     &mut access,
                     Body {
                         _lease: lease,
-                        sent: false,
+                        sent: request.url.ends_with("/stalled"),
                     },
                 )
             })
@@ -436,6 +436,26 @@ async fn quickjs_abandoned_import_and_response_release_host_resources() -> wasmt
         .unwrap();
     assert_eq!(encoded, "\"Todo 🍋 日本語\"");
     assert_eq!(counts.cancel_closed.load(Ordering::SeqCst), 5);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn quickjs_aborted_response_body_rejects_without_a_chunk() -> wasmtime::Result<()> {
+    let directory = std::env::var("CHARIOX_SDK_COMPONENTS")?;
+    let (mut store, app, counts) = instance(&format!("{directory}/resources.wasm")).await?;
+    for name in ["abortBody", "abortUnreadBody"] {
+        let error = call(&mut store, &app, name, "{}", None)
+            .await?
+            .expect_err("an aborted response body must not return successful bytes");
+        assert_eq!(error.code, "CANCELLED", "{name}");
+        assert_eq!(error.message, "abort response body", "{name}");
+        assert_eq!(
+            counts.opened.load(Ordering::SeqCst),
+            counts.closed.load(Ordering::SeqCst),
+            "{name}: aborted body must release the host stream"
+        );
+    }
+    assert_eq!(counts.cancel_closed.load(Ordering::SeqCst), 2);
     Ok(())
 }
 

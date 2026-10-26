@@ -45,10 +45,12 @@ export class AppResponse {
     if (this.bodyUsed) throw new TypeError('response body has already been consumed');
     this.bodyUsed = true;
     try {
+      this.#scope.signal.throwIfAborted();
       for await (const chunk of this.#tuple[1]) {
         this.#scope.signal.throwIfAborted();
         yield chunk;
       }
+      this.#scope.signal.throwIfAborted();
     } finally { await this.#scope.release(this.#tuple); }
   }
   async bytes({ limit = 1024 * 1024 } = {}) {

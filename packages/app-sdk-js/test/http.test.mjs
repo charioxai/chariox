@@ -75,3 +75,48 @@ test('aborting one fetch leaves its sibling and invocation alive', async () => {
   await scope.close();
   assert.deepEqual(dropped.sort(), ['https://example.com/a', 'https://example.com/b', 'https://example.com/c']);
 });
+
+test('aborting a stalled body rejects empty and partial buffered responses', async () => {
+  for (const method of ['bytes', 'text']) {
+    for (const partial of [false, true]) {
+      let waiting, finish, closed = 0;
+      const stalled = new Promise(resolve => { waiting = resolve; });
+      let first = partial;
+      const body = {
+        [Symbol.asyncIterator]() { return this; },
+        next() {
+          if (first) { first = false; return Promise.resolve({ value: new Uint8Array([65]), done: false }); }
+          waiting();
+          return new Promise(resolve => { finish = resolve; });
+        },
+        async return() { closed++; finish?.({ done: true }); return { done: true }; },
+      };
+      const controller = new AbortController();
+      const fetch = createFetch({ fetch: async () => [{ status: 200, headers: [], url: 'https://example.com/' }, body] });
+      const response = await fetch('https://example.com/', { signal: controller.signal });
+      const reason = new Error('abort stalled body');
+      const result = assert.rejects(response[method](), error => error === reason);
+      await stalled;
+      controller.abort(reason);
+      await result;
+      assert.equal(closed, 1);
+    }
+  }
+});
+
+test('body consumption after abort rejects before reading the stream', async () => {
+  let reads = 0, closed = 0;
+  const body = {
+    [Symbol.asyncIterator]() { return this; },
+    async next() { reads++; return { done: true }; },
+    async return() { closed++; return { done: true }; },
+  };
+  const controller = new AbortController();
+  const fetch = createFetch({ fetch: async () => [{ status: 200, headers: [], url: 'https://example.com/' }, body] });
+  const response = await fetch('https://example.com/', { signal: controller.signal });
+  const reason = new Error('abort before consuming body');
+  controller.abort(reason);
+  await assert.rejects(response.bytes(), error => error === reason);
+  assert.equal(reads, 0);
+  assert.equal(closed, 1);
+});

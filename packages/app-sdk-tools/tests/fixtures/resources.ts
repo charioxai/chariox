@@ -17,6 +17,18 @@ export const handlers = defineApp({ tools: {
     const [head] = await ctx.resources.own(pending, ([, body]) => body.return());
     return head.status;
   },
+  async abortBody(_input, ctx) {
+    const controller = new AbortController();
+    const response = await ctx.fetch('https://example.com/stalled', { signal: controller.signal });
+    setTimeout(() => controller.abort({ code: 'CANCELLED', message: 'abort response body' }), 20);
+    return response.text();
+  },
+  async abortUnreadBody(_input, ctx) {
+    const controller = new AbortController();
+    const response = await ctx.fetch('https://example.com/stalled', { signal: controller.signal });
+    controller.abort({ code: 'CANCELLED', message: 'abort response body' });
+    return Array.from(await response.bytes());
+  },
   async encoding() {
     const message = 'Todo 🍋 日本語';
     return new TextDecoder().decode(new TextEncoder().encode(message));
