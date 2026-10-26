@@ -36,6 +36,44 @@ impl KernelRuntimeState {
         None
     }
 
+    /// The one route of every home-to-worker request for a leased agent: the
+    /// relay connection that already reaches the worker (its identity and its
+    /// cached peer key), else a temporary connection on the binding's relay.
+    /// A temporary connection discovers the worker through relay metadata,
+    /// which hosted and slice workers are not visible to.
+    pub(super) async fn enqueue_leased_worker_request(
+        &self,
+        config: &crate::config::DaemonConfig,
+        target: chariox_relay::protocol::ClientTarget,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+        response_timeout: std::time::Duration,
+    ) -> Result<crate::transport::relay_client::RelayPeerResponseWaiter, DaemonError> {
+        match self.connected_relay_state_for_config(config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
+                    config,
+                    &relay_state,
+                    target,
+                    request,
+                    response_timeout,
+                )
+                .await
+            }
+            None => {
+                // Temporary sockets have no shared FIFO sender with manifest
+                // updates, so keep this fallback serialized through its response.
+                let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    config,
+                    target,
+                    request,
+                    response_timeout,
+                )
+                .await?;
+                Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(response))
+            }
+        }
+    }
+
     pub(crate) fn spawn_remote_prompt_dispatch(
         &self,
         dispatch: crate::app::KernelRemotePromptDispatch,
