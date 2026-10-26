@@ -201,3 +201,7 @@ Set `AMASK_LEGACY_BIN` to a separately built base-version CLI entry and
 The drill attaches it to the same Room, shows an async question and answers
 through the older client's existing interaction control. Record that build's
 source and entry hash separately; the normal candidate TUI remains attached.
+
+`AMASK_DELETE_ONLY=1` runs a short supplement: a real provider asks and ends
+its turn, then the TUI `/agent delete` command removes the asking agent. The
+question must disappear with a final reason and without applying its default.

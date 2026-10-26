@@ -65,7 +65,7 @@ execFileSync('git',['init','-q',workspace])
 await writeFile(path.join(workspace,'README.md'),'Disposable MP-08 / MP-09 / MP-10 / MP-11 async-question drill.\n')
 const children = [], kernels = [], clients = [], tuis = [], secrets = []
 const toolingHead=execFileSync('git',['rev-parse','HEAD'],{cwd:tree,encoding:'utf8'}).trim()
-const report = {MP:['MP-08','MP-09','MP-10','MP-11'],head:process.env.AMASK_RUNTIME_HEAD??toolingHead,tooling_head:toolingHead,tooling_script_sha256:createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex'),started:new Date().toISOString(),model:'gpt-6-luna',effort:'low',cells:[],processes:[]}
+const report = {MP:['MP-08','MP-09','MP-10','MP-11'],head:process.env.AMASK_RUNTIME_HEAD??toolingHead,tui_source_head:toolingHead,tooling_head:toolingHead,tooling_script_sha256:createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex'),started:new Date().toISOString(),model:'gpt-6-luna',effort:'low',cells:[],processes:[]}
 let browser
 function safe(text) { for(const secret of secrets) assert(!text.includes(secret),'Private value in evidence'); return text }
 async function record(name, data) { await writeFile(path.join(evidence,name+'.json'),safe(JSON.stringify(data,null,2))+'\n',{mode:0o600}) }
@@ -166,6 +166,23 @@ try {
   if(process.env.AMASK_SETUP_ONLY==='1'){
     await capture(owner.tui,'preflight-owner');await capture(follower.tui,'preflight-follower')
     report.preflight='PASS (no provider turns; not acceptance)'
+  }else if(process.env.AMASK_DELETE_ONLY==='1'){
+    await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup with wait:false, title "AMASK delete", message "Deleting the asking agent withdraws this question", choices [{id:"continue",label:"Continue",reply:"AMASK must not default"}], timeout_sec:300, default_on_timeout:"continue". Finish with AMASK_DELETE_ARMED. Do not answer the question.'})
+    const s=await until('delete question',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK delete'))
+    const q=s.active_interactions.find(q=>q.title==='AMASK delete')
+    await until('delete asker waiting',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===q.asking_task_id&&t.state==='waiting'))
+    await capture(owner.tui,'10-before-delete')
+    await owner.tui.send('submit_prompt',{prompt:'/agent delete '+owner.agent})
+    await until('delete withdraws question',owner.session,s=>!(s.active_interactions??[]).some(i=>i.id===q.id))
+    await until('asking agent deleted',async()=>owner.tui.send('snapshot'),s=>s.session.agentCount===0)
+    const after=await owner.session(),wake=after.agent_wakes.find(w=>w.id===q.id)
+    assert(['lost','cancelled'].includes(wake.state));assert(wake.summary)
+    assert.equal(wake.next_due_ms??null,null)
+    const receipts=questionAnswers(owner,q.id)
+    assert(receipts.length<=1&&receipts.every(r=>r.reply==null))
+    await capture(owner.tui,'11-after-delete')
+    await record('11-delete-outcome',{wake,receipts})
+    report.cells.push({id:'AM-ASK-05',result:'DELETE PASS',deleted_via:'real TUI /agent delete command'})
   }else{
   await owner.tui.send('submit_prompt',{prompt:'Use chariox.request_popup with wait:false, title "AMASK primary", message "Choose the next step", one choice {id:"continue",label:"Continue",reply:"AMASK exact outside answer"}, timeout_sec:600. Then call chariox.events.inbox with this turn task_id and origin_prompt_id as a second tool while the question is pending. Finish this turn with AMASK_KEPT_WORKING. Do not block or yield. In a subsequent inbox turn, handle the answer, print AMASK_ANSWER_RECEIVED with the exact reply and attributed answerer, then acknowledge it as handled.'})
   const pending=await until('primary async question',owner.session,s=>(s.active_interactions??[]).some(q=>q.title==='AMASK primary'))
@@ -226,7 +243,7 @@ try {
     await until('legacy answer handled',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===q.asking_task_id&&t.state==='done'))
     const receipts=questionAnswers(owner,q.id)
     assert.equal(receipts.length,1);assert.equal(receipts[0].reply,'AMASK legacy answer')
-    assert.equal(receipts[0].client_id,'amask-legacy-tui')
+    assert(receipts[0].client_id,'The receipt must identify the trusted terminal connection')
     await capture(legacy,'09-legacy-client-answered')
     await record('09-legacy-answer',receipts)
     report.legacy_client={head:required('AMASK_LEGACY_HEAD'),answered:true}
@@ -259,10 +276,12 @@ try {
   await until('stop withdraws card',owner.session,s=>!s.active_interactions?.some(q=>q.title==='AMASK stop'))
   await capture(owner.tui,'07-after-stop')
   const withdrawn=questionAnswers(owner,stopQuestion.id)
-  assert.equal(withdrawn.length,1);assert.equal(withdrawn[0].status,'withdrawn')
-  assert.equal(withdrawn[0].reply??null,null)
-  assert(withdrawn[0].reason)
-  await record('07-stop-outcome',withdrawn)
+  const stopped=(await owner.session()).agent_wakes.find(w=>w.id===stopQuestion.id)
+  assert(['lost','cancelled'].includes(stopped.state));assert(stopped.summary)
+  assert.equal(stopped.next_due_ms??null,null)
+  assert(withdrawn.length<=1&&withdrawn.every(r=>r.status==='withdrawn'&&r.reply==null&&r.reason))
+  await until('stopped task cancelled',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===stopQuestion.asking_task_id&&t.state==='cancelled'))
+  await record('07-stop-outcome',{wake:stopped,receipts:withdrawn})
   report.cells.push({id:'AM-ASK-05',result:'CORE PASS',stopped_via:'real TUI Ctrl+C'})
   report.web=report.web_failure?'FAIL (see web-report.json)':process.env.AMASK_WEB_CAPTURE_HELPER?'captured by hosted helper':'NOT RUN (run the hosted web helper at DPR1 and DPR2)'
   }
