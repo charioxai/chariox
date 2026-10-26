@@ -410,6 +410,9 @@ impl KernelRuntimeState {
                                 "Target activation is uncertain; retry this move generation",
                             ));
                         }
+                        self.owned
+                            .kernel_browser_host
+                            .revoke_agent(&operation.identity.home_agent_id);
                     } else {
                         self.with_app_side_effect(|app| {
                             let mut agent =

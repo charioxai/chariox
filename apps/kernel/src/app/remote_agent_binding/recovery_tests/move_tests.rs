@@ -1396,6 +1396,33 @@ async fn mk03_slice_detach_survives_completion_crash() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mk03_forward_commit_retires_home_desktop_grant() {
+    let (fixture, session, _) = crash_fixture().await;
+    {
+        let home = fixture.home.lock().await;
+        home.kernel_browser_host
+            .grant_desktop("local", &fixture.agent_id, "test-surface");
+        assert!(home
+            .kernel_browser_host
+            .grant_holders()
+            .iter()
+            .any(|(_, agent)| agent == &fixture.agent_id));
+    }
+    move_request(&fixture, &session, true).await;
+    assert!(
+        !fixture
+            .home
+            .lock()
+            .await
+            .kernel_browser_host
+            .grant_holders()
+            .iter()
+            .any(|(_, agent)| agent == &fixture.agent_id),
+        "moving execution must retire its home user-domain grant"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mk03_abort_captured_move_when_target_disappears() {
     let (mut fixture, session, _) = crash_fixture().await;
     interrupt_public_move(&fixture, &session, "captured").await;
