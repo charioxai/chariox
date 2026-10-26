@@ -14,9 +14,10 @@ export function createViewActions() {
   const MAX_CHANGE_BYTES = 16 * 1024;
   const MAX_BUFFERED_CHANGES = 256;
   const MAX_WAIT_MS = 30_000;
-  // Fields the product protects (Vault-filled targets) are never agent form input.
-  const PROTECTED = '[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]';
-  const SKIPPED_INPUTS = /^(?:submit|button|reset|image|file|hidden|password)$/;
+  // Password and protected controls take what the agent supplies like any other:
+  // a value the agent knows is its own input. The product masks what a Vault fill
+  // put there in model-bound observations; this module neither reads nor echoes it.
+  const SKIPPED_INPUTS = /^(?:submit|button|reset|image|file|hidden)$/;
 
   const registered = new Map();
   let stateProvider = null;
@@ -57,8 +58,7 @@ export function createViewActions() {
   const controlsOf = form => [...form.elements].filter(control =>
     /^(?:INPUT|SELECT|TEXTAREA)$/.test(control.tagName) && control.name && !control.disabled
     && !(control.tagName === 'INPUT' && SKIPPED_INPUTS.test(control.type))
-    && !(control.tagName === 'SELECT' && control.multiple)
-    && !control.closest?.(PROTECTED));
+    && !(control.tagName === 'SELECT' && control.multiple));
   function fieldsOf(form) {
     const fields = new Map();
     for (const control of controlsOf(form)) {

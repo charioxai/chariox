@@ -9,7 +9,9 @@ function control(attrs, ownerForm) {
   const events = [];
   return { disabled: false, required: false, multiple: false, value: '', checked: false, ...attrs, events,
     closest: selector => (attrs.protected ? { selector } : null),
-    dispatchEvent: event => events.push(event.type), checkValidity() { return !(this.required && this.value === ''); }, form: ownerForm };
+    dispatchEvent: event => events.push(event.type), checkValidity() { return !(this.required && this.value === ''); }, form: ownerForm,
+    // A native click toggles a checkbox and selects a radio, then fires its events.
+    click() { this.checked = this.type === 'radio' ? true : !this.checked; events.push('click'); } };
 }
 function form(name, attributes, controls) {
   const node = { elements: [], submitted: 0, valid: true,
@@ -19,8 +21,13 @@ function form(name, attributes, controls) {
   node.elements = controls.map(c => control(c, node));
   return node;
 }
+// The prototype setters a framework's value tracker does not wrap; a write through
+// them is recorded in `native`, a plain assignment is not.
+const nativeSetter = () => ({ prototype: Object.defineProperty({}, 'value', {
+  set(value) { this.native = [...(this.native ?? []), value]; this.value = value; } }) });
 function page(forms = []) {
   const context = { document: { querySelectorAll: () => forms }, TextEncoder, Event: class { constructor(type) { this.type = type; } },
+    HTMLInputElement: nativeSetter(), HTMLSelectElement: nativeSetter(), HTMLTextAreaElement: nativeSetter(),
     setTimeout, clearTimeout };
   const api = vm.runInNewContext(`(${createViewActions.toString()})()`, context);
   return { api, forms };
@@ -118,9 +125,10 @@ test('a form is an action whose schema comes from its simple controls', async ()
     name: 'rename_list', description: 'Rename the list', effect: 'write',
     inputSchema: { type: 'object', additionalProperties: false, required: ['title'], properties: {
       title: { type: 'string' }, position: { type: 'number' }, pinned: { type: 'boolean' },
-      color: { type: 'string', enum: ['red', 'blue'] }, sort: { type: 'string', enum: ['a', 'b'] }, note: { type: 'string' } } },
+      color: { type: 'string', enum: ['red', 'blue'] }, sort: { type: 'string', enum: ['a', 'b'] }, note: { type: 'string' },
+      pw: { type: 'string' }, card: { type: 'string' } } },
   }]);
-  const answer = await api.agent.invoke('rename_list', { title: 'Groceries', pinned: true, color: 'blue', sort: 'b' });
+  const answer = await api.agent.invoke('rename_list', { title: 'Groceries', pinned: true, color: 'blue', sort: 'b', pw: 'hunter2', card: '4111' });
   assert.deepEqual(JSON.parse(JSON.stringify(answer)), { ok: true, value: { submitted: true } });
   const byName = Object.fromEntries(rename.elements.map(c => [c.name + (c.type === 'radio' ? c.value : ''), c]));
   assert.equal(byName.title.value, 'Groceries');
@@ -128,6 +136,9 @@ test('a form is an action whose schema comes from its simple controls', async ()
   assert.equal(byName.colorblue.checked, true);
   assert.equal(byName.colorred.checked, false);
   assert.equal(byName.sort.value, 'b');
+  // Values the agent knows go into password and protected controls like any other.
+  assert.equal(byName.pw.value, 'hunter2');
+  assert.equal(byName.card.value, '4111');
   assert.deepEqual(byName.title.events, ['input', 'change']);
   assert.equal(rename.submitted, 1);
 });
@@ -139,8 +150,10 @@ test('a form refuses what it cannot take and approval markup carries its reason'
   ]);
   const { api } = page([strict]);
   assert.equal(api.agent.registrations()[0].approvalReason, 'Deletes all');
-  for (const params of [{ nope: 'x' }, { title: 5 }, { pw: 'secret' }]) assert.equal((await api.agent.invoke('wipe', params)).code, 'invalid_params');
+  for (const params of [{ nope: 'x' }, { title: 5 }, { pw: 5 }]) assert.equal((await api.agent.invoke('wipe', params)).code, 'invalid_params');
   assert.equal((await api.agent.invoke('wipe', {})).code, 'invalid_form');
   assert.equal(strict.submitted, 0);
-  assert.equal(strict.elements[1].value, '', 'a password field is never filled');
+  assert.equal((await api.agent.invoke('wipe', { title: 'x', pw: 'secret' })).ok, true, 'an agent may enter a password it knows');
+  assert.equal(strict.elements[1].value, 'secret');
+  assert.equal(strict.submitted, 1);
 });

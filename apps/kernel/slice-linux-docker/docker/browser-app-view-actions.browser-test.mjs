@@ -45,9 +45,10 @@ const script = `
   rename.addEventListener('submit', event => { event.preventDefault(); document.getElementById('title').textContent = rename.title.value + '|' + rename.sort.value + '|' + rename.pinned.checked; });
   window.addTodo = add;`;
 
-async function openApp(label) {
+async function openApp(label, files = { 'index.html': html, 'app.js': script }) {
   const reply = await host.handle({ id: ++requests, method: 'browser.app.open', params: {
-    origin_label: label, installation_id: label, assets: [asset('index.html', 'text/html', html), asset('app.js', 'text/javascript', script)] } });
+    origin_label: label, installation_id: label,
+    assets: Object.entries(files).map(([name, text]) => asset(name, name.endsWith('.js') ? 'text/javascript' : 'text/html', text)) } });
   assert.equal(reply.ok, true, JSON.stringify(reply));
   const { connection, sessionId } = await host.browser.resolvePageTarget(reply.result.target_id);
   const evaluate = async expression => {
@@ -59,13 +60,13 @@ async function openApp(label) {
   return { evaluate, agent: (call) => evaluate(`__charioxViewAgent.${call}`) };
 }
 
-test('A1: the page registers declaration-shaped actions and form markup, with no protected field', async () => {
+test('A1: the page registers declaration-shaped actions and form markup, password included', async () => {
   const app = await openApp('view-registrations');
   const registrations = await app.agent('registrations()');
   assert.deepEqual(registrations.map(r => r.name), ['add_todo', 'wipe', 'rename_list']);
   const rename = registrations[2];
   assert.deepEqual(rename.inputSchema, { type: 'object', additionalProperties: false, required: ['title'], properties: {
-    title: { type: 'string' }, sort: { type: 'string', enum: ['a', 'b'] }, pinned: { type: 'boolean' } } });
+    title: { type: 'string' }, sort: { type: 'string', enum: ['a', 'b'] }, pinned: { type: 'boolean' }, pin: { type: 'string' } } });
   assert.equal(registrations[1].approvalReason, 'Deletes the list');
 });
 
@@ -84,8 +85,9 @@ test('A1: a form action fills the real controls and submits through the real sub
   assert.equal(await app.evaluate('document.getElementById("title").textContent'), 'Groceries|b|true');
   await app.evaluate('rename.title.value = ""');
   assert.equal((await app.agent(`invoke('rename_list', { sort: 'a' })`)).code, 'invalid_form', 'the required title is empty');
-  assert.equal((await app.agent(`invoke('rename_list', { pin: '1234' })`)).code, 'invalid_params');
-  assert.equal(await app.evaluate('document.querySelector("[name=pin]").value'), '', 'a password field is never filled');
+  await app.evaluate('rename.title.value = "Kept"');
+  assert.equal((await app.agent(`invoke('rename_list', { pin: '1234' })`)).ok, true);
+  assert.equal(await app.evaluate('document.querySelector("[name=pin]").value'), '1234', 'an agent may enter a password it knows');
 });
 
 test('A1: the bridge object stays frozen and the agent handle cannot be replaced by the page', async () => {
@@ -93,3 +95,4 @@ test('A1: the bridge object stays frozen and the agent handle cannot be replaced
   assert.equal(await app.evaluate(`(() => { try { chariox.action = null } catch {} ; return typeof chariox.action })()`), 'function');
   assert.equal(await app.evaluate(`(() => { try { __charioxViewAgent = null } catch {} ; return typeof __charioxViewAgent.invoke })()`), 'function');
 });
+

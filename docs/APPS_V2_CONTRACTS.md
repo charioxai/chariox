@@ -134,6 +134,8 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   Answers are `{ok, value}` or `{ok:false, code, message}`; bounds are 64 KiB
   state, 256 KiB result, 16 KiB per change, 256 buffered changes.
 - Form markup derives its schema from simple controls (text-like, number,
-  checkbox, radio, select, textarea); password, hidden, file, multi-select and
-  product-protected fields are not agent input. Anything richer uses
-  `chariox.action`, whose schema the developer writes.
+  checkbox, radio, select, textarea, password, and fields the product masks);
+  hidden, file and multi-select controls are not agent input. An agent may
+  enter a value it knows into a password or masked field; the product keeps
+  masking what a Vault fill put there in model-bound observations. Anything
+  richer uses `chariox.action`, whose schema the developer writes.
