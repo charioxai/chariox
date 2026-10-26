@@ -32,6 +32,7 @@ export function buildCommand({ component, source, output, version, revision, mod
 
 async function rejectPrivateFiles(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isSymbolicLink() || !entry.isFile() && !entry.isDirectory()) throw Error('linked or special entry in exact source archive')
     if (entry.isDirectory()) await rejectPrivateFiles(join(directory, entry.name))
     if ((/^\.env(?:\.|$)/.test(entry.name) && entry.name !== '.env.example') ||
       ['auth.json', '.credentials.json', 'id_rsa', 'id_ed25519'].includes(entry.name)) throw Error('private filename in exact source archive')
@@ -41,6 +42,9 @@ async function rejectPrivateFiles(directory) {
 export async function build(options) {
   const plan = buildCommand(options)
   if (plan.mode === 'plan') return plan
+  if (plan.component.startsWith('cloud-') && (!options.cloudTools?.startsWith('/') || !/^[0-9a-f]{40}$/.test(options.workflowRevision))) throw Error('trusted Cloud main tooling and exact workflow revision required')
+  if (plan.component.startsWith('cloud-') && (run('git', ['rev-parse', 'HEAD'], { cwd: options.cloudTools }) !== options.workflowRevision ||
+      run('git', ['status', '--porcelain'], { cwd: options.cloudTools }))) throw Error('trusted Cloud main tooling revision mismatch or dirty checkout')
   await resourceGuard(plan.source)
   const { component, revision, version, source, output } = plan
   if (run('git', ['rev-parse', `${revision}^{commit}`], { cwd: source }) !== revision) throw Error('source commit missing')
@@ -50,6 +54,7 @@ export async function build(options) {
   const facts = { component, revision, version, mode: plan.mode }
   try {
     if (component.startsWith('cloud-')) {
+      facts.packaging_revision = options.workflowRevision
       const tar = join(output, 'source.tar')
       run('git', ['archive', '--format=tar', `--output=${tar}`, revision], { cwd: source })
       run('tar', ['-xf', tar, '-C', context])
@@ -67,9 +72,9 @@ export async function build(options) {
       const production = await digest(component === 'cloud-web' ? 'deploy/production/cloud-control.compose.yml' : 'deploy/production/publication-services.compose.yml')
       const extra = ['--build-arg', `CHARIOX_CLOUD_REVISION=${revision}`, '--build-arg', `CHARIOX_PRODUCTION_COMPOSE_SHA256=${production}`]
       const archive = join(output, 'cloud.tar.gz')
-      run('sh', [join(context, 'deploy/openship/create-cloud-staging-release.sh'), source, revision, archive], { log })
+      run('sh', [join(options.cloudTools, 'deploy/openship/create-cloud-staging-release.sh'), source, revision, archive], { log })
       facts.archive_sha256 = await hashFile(archive)
-      facts.source_sha256 = run('node', [join(context, 'deploy/openship/release-source-digest.mjs'), context])
+      facts.source_sha256 = run('node', [join(options.cloudTools, 'deploy/openship/release-source-digest.mjs'), context])
       if (component === 'cloud-services') extra.push('--build-arg', `CHARIOX_STAGING_COMPOSE_SHA256=${await digest('deploy/openship/publication-services.compose.yml')}`,
         '--build-arg', `CHARIOX_RELEASE_SOURCE_SHA256=${facts.source_sha256}`)
       plan.args.splice(plan.args.length - 1, 0, ...extra)
