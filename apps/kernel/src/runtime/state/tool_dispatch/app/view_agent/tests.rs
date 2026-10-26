@@ -561,15 +561,29 @@ async fn action_approvals_keep_their_choice_action_and_generation_scope() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_a3_catalog_opens_granted_app_without_a_human_view() {
-    check_live_binding(false).await;
+    check_live_binding(LiveBindingCheck::Catalog).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_a3_page_panel_survives_agent_state_on_an_adopted_tab() {
-    check_live_binding(true).await;
+    check_live_binding(LiveBindingCheck::Panel).await;
 }
 
-async fn check_live_binding(panel: bool) {
+// MP-08/MP-10/MP-11: page-controlled registration failures cross the same
+// observation boundary as action results, including the stable-handle probe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_registration_errors_are_scrubbed_on_every_agent_path() {
+    check_live_binding(LiveBindingCheck::RegistrationErrors).await;
+}
+
+#[derive(PartialEq)]
+enum LiveBindingCheck {
+    Catalog,
+    Panel,
+    RegistrationErrors,
+}
+
+async fn check_live_binding(check: LiveBindingCheck) {
     use crate::runtime::browser_controller_process::BrowserControllerProcessStore;
     use chariox_app_package::{verify, VerificationPolicy};
     use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
@@ -654,7 +668,53 @@ async fn check_live_binding(panel: bool) {
             view["state"].get("unavailable").is_none(),
             "the controller answered state: {listed}"
         );
-        if panel {
+        if check == LiveBindingCheck::RegistrationErrors {
+            const SECRET: &str = "registration-vault-value";
+            rig.runtime
+                .owned
+                .room_secret_observations
+                .register(&rig.session, SECRET)
+                .unwrap();
+            std::fs::write(rig.root.join("registration-error"), "").unwrap();
+            for (tool, arguments) in [
+                (STATE, json!({"view": APP})),
+                (CHANGES, json!({"view": APP})),
+                (BATCH, json!({"view": APP, "steps": []})),
+            ] {
+                let error = rig
+                    .runtime
+                    .app_view_tool(&rig.run, &rig.agent, tool, arguments)
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code, "view_unavailable");
+                assert!(
+                    !error.message.contains(SECRET),
+                    "registration probe leaked a known secret through {tool}"
+                );
+            }
+            let catalog = rig
+                .runtime
+                .app_view_tool(&rig.run, &rig.agent, CATALOG, json!({}))
+                .await
+                .unwrap();
+            assert!(
+                !catalog.to_string().contains(SECRET),
+                "catalog probe leaked a known secret"
+            );
+            let context = rig.runtime.bound_view(&rig.agent, "actor-target").unwrap();
+            let error = rig
+                .runtime
+                .run_in_view(&context, "roundtrip", json!({}))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "view_unavailable");
+            assert!(
+                !error.message.contains(SECRET),
+                "action registration check leaked a known secret"
+            );
+            return;
+        }
+        if check == LiveBindingCheck::Panel {
             rig.runtime
                 .ensure_room_app_view(
                     "alice",

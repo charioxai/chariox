@@ -369,7 +369,7 @@ impl KernelRuntimeState {
                     // The drain can lag idle retirement. Registrations run no App
                     // code and prove liveness without resetting an adopted layout.
                     match self
-                        .controller_call(&context, ViewAgentCallKind::Registrations, None, None)
+                        .view_call(&context, ViewAgentCallKind::Registrations, None, None)
                         .await
                     {
                         Ok(_) => Some(context.target),
@@ -533,7 +533,7 @@ impl KernelRuntimeState {
         input: Value,
     ) -> Result<Value, ViewError> {
         let registrations = self
-            .controller_call(context, ViewAgentCallKind::Registrations, None, None)
+            .view_call(context, ViewAgentCallKind::Registrations, None, None)
             .await?;
         declared_actions::check_registered(&context.declared, &registrations, name)
             .map_err(action_error)?;

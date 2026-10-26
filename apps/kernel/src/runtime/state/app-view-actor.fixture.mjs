@@ -7,6 +7,13 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const [directory, root] = process.argv.slice(2);
 const { AppTabs } = await import(pathToFileURL(join(directory, 'browser-controller-apps.mjs')));
+const originalAgent = AppTabs.prototype.agent;
+AppTabs.prototype.agent = async function (params) {
+  if (params.call === 'registrations' && existsSync(join(root, 'registration-error'))) {
+    throw new Error('registration-vault-value');
+  }
+  return originalAgent.call(this, params);
+};
 const originalOpen = AppTabs.prototype.open;
 AppTabs.prototype.open = function (params) {
   appendFileSync(join(root, 'app-opens'), 'open\n');
