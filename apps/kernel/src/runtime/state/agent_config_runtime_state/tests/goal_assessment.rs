@@ -107,6 +107,39 @@ async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
         context.contains("handled:true"),
         "continue normal handling/verification before owner-blocking on terminal sources"
     );
+    apply(Operation::Ack {
+        room: room.clone(),
+        agent: agent.clone(),
+        sequence: events[0].sequence,
+        handled: true,
+        now: 4,
+    });
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.goal.is_some())
+        .unwrap();
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["handled_source_receipts"][0]["sequence"],
+        events[0].sequence
+    );
+    assert_eq!(
+        data["handled_source_receipts"][0]["kind"],
+        "source_completed"
+    );
+    assert_eq!(data["handled_source_receipts"][0]["state"], "handled");
+    assert_eq!(data["satisfied_obligations"][0]["id"], "delegate");
+    assert_eq!(data["satisfied_obligations"][0]["status"], "satisfied");
+    assert!(data["unhandled_receipts"].as_array().unwrap().is_empty());
+    assert!(!context.contains("DO_NOT_INCLUDE_RAW_RECEIPT_BODY"));
 }
 
 #[tokio::test]
