@@ -162,7 +162,7 @@ function agentCall(params) {
   } else {
     throw invalid("unknown view agent call");
   }
-  return { agent: params.agent, expression, deadline };
+  return { agent: params.agent, expression, deadline, runsAppCode: params.call === "invoke" || params.call === "state" };
 }
 
 export class AppTabs {
@@ -222,15 +222,17 @@ export class AppTabs {
     const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
     if (!entry) throw invalid("unknown App tab");
     const [sessionId, app] = entry;
-    const { agent, expression, deadline } = agentCall(params);
-    if (app.agentRunning) {
+    const { agent, expression, deadline, runsAppCode } = agentCall(params);
+    // Reading the change log or the registrations runs no App code: it neither
+    // attributes the Tab to the agent nor waits for a running handler.
+    if (runsAppCode && app.agentRunning) {
       return { ok: false, code: "view_busy", message: "An earlier action in this view is still running; retry when it has finished" };
     }
-    this.noteAgent(app.targetId, agent);
+    if (runsAppCode) this.noteAgent(app.targetId, agent);
     const connection = this.connection;
     const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)
       .finally(() => { if (app.agentRunning === running) app.agentRunning = null; });
-    app.agentRunning = running;
+    if (runsAppCode) app.agentRunning = running;
     let timer;
     const late = new Promise((resolve) => {
       timer = setTimeout(() => resolve("late"), deadline);

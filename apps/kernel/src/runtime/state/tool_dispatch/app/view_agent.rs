@@ -214,8 +214,9 @@ impl KernelRuntimeState {
             CHANGES => {
                 let call: ChangesArguments =
                     serde_json::from_value(arguments).map_err(malformed)?;
+                // The change log runs no App code, so a wait for it holds
+                // no turn: other actions on the view go on meanwhile.
                 let context = self.view_context(agent, &call.view).await?;
-                let _turn = self.view_turn(&context).await?;
                 let wait = call.wait_ms.min(CHANGES_MAX_WAIT_MS);
                 self.view_call(
                     &context,

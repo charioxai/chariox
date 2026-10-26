@@ -64,6 +64,8 @@ async function openApp(label) {
 test('A2: an agent invoke runs the view function as that agent and the state and changes show the result', async () => {
   const app = await openApp('agent-invoke');
   const serving = app.serve();
+  assert.equal((await app.agent({ call: 'registrations' })).ok, true);
+  assert.deepEqual(app.calls, [], 'reading the registrations is not agent input to the Tab');
   assert.deepEqual(await app.agent({ call: 'invoke', name: 'add_todo', input: { text: 'milk' } }), { ok: true, value: { count: 1 } });
   assert.deepEqual(app.calls, [{ method: 'todo.add', actor: { kind: 'agent', id: 'agent-7' } }], 'the handler\'s kernel call is the agent\'s, never the person\'s');
   assert.deepEqual(await app.agent({ call: 'state' }), { ok: true, value: { todos: ['milk'] } });
@@ -88,6 +90,7 @@ test('A2: a handler that outlives its deadline keeps the view single-flight unti
   const first = await app.agent({ call: 'invoke', name: 'slow', deadline_ms: 150 });
   assert.equal(first.code, 'deadline');
   assert.equal((await app.agent({ call: 'state' })).code, 'view_busy', 'a second handler must not interleave with the running one');
+  assert.equal((await app.agent({ call: 'changes', since: 0 })).ok, true, 'reading the change log runs no App code, so it does not wait');
   await new Promise(r => setTimeout(r, 800));
   assert.deepEqual(await app.agent({ call: 'invoke', name: 'slow' }), { ok: true, value: { done: true } });
 });
