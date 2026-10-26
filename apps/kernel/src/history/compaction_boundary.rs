@@ -196,7 +196,7 @@ impl OperationalHistoryStore {
         connection
             .execute(
                 "DELETE FROM history_agent_compaction_reloads
-                 WHERE session_id = ?1 AND agent_id = ?2 AND revision <= ?3",
+                 WHERE session_id = ?1 AND agent_id = ?2 AND revision = ?3",
                 params![session_id, agent_id, revision as i64],
             )
             .map(|_| ())
@@ -291,6 +291,57 @@ fn compaction_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn acknowledging_one_native_session_keeps_the_others_partial_reloads() {
+        for first_to_finish in [0, 1] {
+            let root = crate::test_support::TestWorktree::new("partial-native-reloads");
+            let path = root.path().join("history.db");
+            let store = OperationalHistoryStore::open(path.clone()).unwrap();
+            let revisions = ["native-a", "native-b"].map(|native| {
+                store
+                    .record_agent_compaction_boundary(
+                        "s",
+                        "a",
+                        "claude",
+                        "haiku",
+                        "account",
+                        Some(native),
+                    )
+                    .unwrap()
+            });
+            for revision in revisions {
+                store
+                    .record_agent_compaction_reload("s", "a", revision, "review", "digest-1")
+                    .unwrap();
+            }
+            store
+                .deliver_agent_compaction_boundary("s", "a", revisions[first_to_finish])
+                .unwrap();
+            assert!(store
+                .agent_compaction_reloads("s", "a", revisions[first_to_finish])
+                .unwrap()
+                .is_empty());
+            drop(store);
+            let store = OperationalHistoryStore::open(path).unwrap();
+            let pending = revisions[1 - first_to_finish];
+            store
+                .record_agent_compaction_reload("s", "a", pending, "audit", "digest-2")
+                .unwrap();
+            assert_eq!(
+                store.agent_compaction_reloads("s", "a", pending).unwrap(),
+                [
+                    ("review".into(), "digest-1".into()),
+                    ("audit".into(), "digest-2".into())
+                ]
+                .into_iter()
+                .collect(),
+                "finishing native session {first_to_finish} erased another session's progress"
+            );
+            store
+                .deliver_agent_compaction_boundary("s", "a", pending)
+                .unwrap();
+        }
+    }
     #[test]
     fn observed_compaction_replay_after_acknowledgement_and_restart_is_idempotent() {
         let root = crate::test_support::TestWorktree::new("observed-compaction-replay");

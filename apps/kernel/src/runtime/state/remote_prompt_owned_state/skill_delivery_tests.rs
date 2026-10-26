@@ -1409,6 +1409,11 @@ async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
 // make the other look held on the next turn.
 #[tokio::test]
 async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowledged() {
+    partial_compaction_recovery(false).await;
+    partial_compaction_recovery(true).await;
+}
+
+async fn partial_compaction_recovery(other_session_is_newer: bool) {
     use super::super::skills_dispatch::ReportedWorkerRun;
     use crate::skill::service::SkillCatalogService;
     let (runtime, session_id, agent_id, attachment, binding) =
@@ -1560,6 +1565,21 @@ async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowl
     .await
     .unwrap();
     complete();
+    let other_boundary = || {
+        runtime
+            .owned
+            .operational_history_store
+            .record_agent_compaction_boundary(
+                &session_id,
+                &agent_id,
+                "claude",
+                "haiku",
+                "other-account",
+                Some("other-native"),
+            )
+            .unwrap()
+    };
+    let older = (!other_session_is_newer).then(other_boundary);
     super::super::skills_dispatch::record_worker_compactions(
         &runtime,
         &session_id,
@@ -1584,6 +1604,12 @@ async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowl
     .await
     .unwrap();
     complete();
+    let other = older.unwrap_or_else(other_boundary);
+    runtime
+        .owned
+        .operational_history_store
+        .deliver_agent_compaction_boundary(&session_id, &agent_id, other)
+        .unwrap();
     let third = submit("next-turn", "continue", vec![]);
     assert!(
         bodies(remote(&third.prompt_id)).contains("Audit source."),
