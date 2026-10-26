@@ -741,8 +741,9 @@ async fn sudo_review_shell_cutoff_refreshes_for_each_bound_turn() {
         .unwrap();
     // The parent publishes $! before its child execs. Capture the requested
     // executable, rather than a transient bash identity that exec invalidates.
+    let mut children = SiblingCleanup::new(vec![first]);
     let first_identity = wait_for_sleep_exec(first).await;
-    let mut children = SiblingCleanup(vec![first_identity.clone()]);
+    children.0 = vec![first_identity.clone()];
     assert!(f.state.sudo_for_peer(&first_identity).is_ok());
     let session = f
         .state
