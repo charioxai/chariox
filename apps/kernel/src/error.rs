@@ -477,8 +477,16 @@ impl DaemonError {
     pub(crate) fn is_leased_prompt_not_current(&self) -> bool {
         match self {
             Self::LeasedPromptNotCurrent { .. } => true,
-            Self::RelayTransport { code, .. } => {
-                code == crate::transport::relay_peer::LEASED_PROMPT_NOT_CURRENT_CODE
+            Self::RelayTransport {
+                operation,
+                code,
+                retryable: false,
+                ..
+            } => {
+                matches!(
+                    *operation,
+                    "read relay peer response" | "read temporary relay peer response"
+                ) && code == crate::transport::relay_peer::LEASED_PROMPT_NOT_CURRENT_CODE
             }
             _ => false,
         }

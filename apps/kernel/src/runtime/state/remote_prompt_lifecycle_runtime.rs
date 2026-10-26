@@ -1229,6 +1229,23 @@ mod tests {
                 retryable: false,
             }
         ));
+        // A completion naming a prompt the worker no longer runs: the home's prompt settled there.
+        assert!(remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "leased_prompt_not_current".to_string(),
+                message: "worker is running another prompt".to_string(),
+                retryable: false,
+            }
+        ));
+        assert!(!remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "leased_prompt_not_current".to_string(),
+                message: "worker is running another prompt".to_string(),
+                retryable: true,
+            }
+        ));
         for error in [
             DaemonError::LocalTransport {
                 operation: "cancel remote prompt",
