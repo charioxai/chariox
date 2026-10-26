@@ -1122,15 +1122,17 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     let run = worker.run_for(&fixture, &agent, &home_prompt).await;
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
     let worker_session = run.session_id().to_string();
-    let attached = dispatch_json(
-        &worker.router,
-        json!({"AttachToSession":{
-            "session_id":worker_session,"client_id":"a10-worker-terminal",
-            "capability_level":"FullTerminal"
-        }}),
-    )
-    .await
-    .unwrap();
+    // A client cannot attach to the backing session; the attachment is made inside the worker
+    // kernel so the sudo refusal below is still exercised on the leased backing agent.
+    let attachment_id = crate::app::KernelSessionService::new(&mut *worker.router.app.lock().await)
+        .attach(crate::attachment::AttachRequest::new(
+            &worker_session,
+            "a10-worker-terminal",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap()
+        .id()
+        .to_string();
     let worker_owner = worker
         .router
         .app
@@ -1146,10 +1148,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         worker.router.runtime_state.submit_sudo_prompt(
             crate::local::SubmitPromptRequest {
                 session_id: worker_session,
-                attachment_id: attached["SessionAttached"]["attachment"]["id"]
-                    .as_str()
-                    .unwrap()
-                    .into(),
+                attachment_id,
                 target_agent_id: run.agent_instance_id().map(str::to_owned),
                 prompt: "/sudo MP-10 A10 worker-local entry".into(),
                 attachments: Vec::new(),
