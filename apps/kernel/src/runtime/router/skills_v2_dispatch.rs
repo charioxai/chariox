@@ -50,6 +50,7 @@ impl CommandRouter {
             }
         } else {
             self.runtime_state
+                .with_skills_catalog_caller(command)
                 .execute_skills_catalog_request(request, caller_user_id.to_owned())
                 .await
         }

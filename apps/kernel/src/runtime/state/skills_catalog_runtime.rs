@@ -52,6 +52,15 @@ fn skill_error(message: &str) -> DaemonError {
 }
 
 impl KernelRuntimeState {
+    pub(crate) fn with_skills_catalog_caller(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+    ) -> Self {
+        let mut state = self.clone();
+        state.skills_catalog_caller = Some((command.source.clone(), command.caller.clone()));
+        state
+    }
+
     pub(crate) fn skills_v2_runtime_available(&self) -> bool {
         catalog_available(&self.owned.durable_state_store)
     }
@@ -118,6 +127,18 @@ impl KernelRuntimeState {
 
     pub(super) fn skills_host_owner(&self, user: &str) -> bool {
         let config = self.owned.config_projection.snapshot();
+        if let Some((source, caller)) = &self.skills_catalog_caller {
+            return caller
+                .user_id
+                .as_deref()
+                .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID)
+                == user
+                && crate::runtime::cloud_relay_authorization::kernel_cloud_caller_owner(
+                    &config, source, caller,
+                );
+        }
+        // Internal skill tools and feeds supply an owner from kernel-owned agent
+        // or attachment state. Client requests must retain their transport identity.
         user == crate::session::DEFAULT_LOCAL_USER_ID
             || config
                 .cloud_relay
@@ -669,6 +690,138 @@ mod capability_tests {
 #[cfg(test)]
 mod owner_gate_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn catalog_owner_requires_the_authenticated_relay_principal() {
+        use crate::runtime::command::{
+            KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource,
+        };
+        let mut config = crate::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "owner".into(),
+            realm_id: "owner-realm".into(),
+            ..Default::default()
+        });
+        let app = crate::DaemonApp::bootstrap(config).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        crate::test_support::install_skill_through_requests(&router, "owner-skill", 0).await;
+        for (kind, user, realm, allowed) in [
+            (
+                KernelCallerKind::RemoteClient,
+                "owner",
+                Some("wrong-realm"),
+                false,
+            ),
+            (KernelCallerKind::RemoteClient, "owner", None, false),
+            (
+                KernelCallerKind::RemoteKernel,
+                "owner",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::HostedService,
+                "owner",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::LocalClient,
+                "local",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::RemoteClient,
+                "local",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::RemoteClient,
+                "member",
+                Some("owner-realm"),
+                false,
+            ),
+            (
+                KernelCallerKind::RemoteClient,
+                "owner",
+                Some("owner-realm"),
+                true,
+            ),
+        ] {
+            let hosted_service = kind == KernelCallerKind::HostedService;
+            let caller = KernelCaller {
+                caller_kind: kind,
+                user_id: Some(user.into()),
+                realm_id: realm.map(str::to_owned),
+                ..KernelCaller::for_source(&KernelCommandSource::RelayClient)
+            };
+            for request in [
+                SkillsV2Request::Preview {
+                    mutation: install_probe("probe"),
+                },
+                SkillsV2Request::Mutate {
+                    mutation: install_probe("probe"),
+                    review_receipt_id: "not-issued".into(),
+                },
+            ] {
+                let preview = matches!(request, SkillsV2Request::Preview { .. });
+                let request = LocalDaemonRequest::SkillsV2(request);
+                let command = KernelCommand::from_local_request_with_caller(
+                    "owner-probe",
+                    KernelCommandSource::RelayClient,
+                    caller.clone(),
+                    None,
+                    None,
+                    &request,
+                );
+                let result = router.dispatch(command, request).await;
+                if allowed {
+                    if preview {
+                        assert!(matches!(
+                            result.unwrap(),
+                            crate::local::LocalDaemonResponse::SkillsV2 {
+                                result: SkillsV2Response::Preview { .. }
+                            }
+                        ));
+                    } else if let Err(error) = result {
+                        assert!(!error.to_string().contains("home kernel owner"), "{error}");
+                    }
+                } else {
+                    let error =
+                        result.expect_err("a user ID alone must not grant catalog ownership");
+                    assert!(
+                        error.to_string().contains("home kernel owner")
+                            || (hosted_service
+                                && error
+                                    .to_string()
+                                    .contains("authorize hosted service request")),
+                        "{error}"
+                    );
+                }
+            }
+        }
+        let snapshot = router
+            .runtime_state()
+            .skills_catalog_service()
+            .unwrap()
+            .storage
+            .snapshot()
+            .unwrap();
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(
+            snapshot
+                .catalogs
+                .iter()
+                .map(|catalog| catalog.skills.len())
+                .sum::<usize>(),
+            1
+        );
+    }
 
     fn install_probe(name: &str) -> SkillCatalogMutation {
         SkillCatalogMutation {

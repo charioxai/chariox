@@ -1,5 +1,17 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 Skills catalog owner identity (2026-10-26)
+
+Client Skills operations retain their authenticated caller kind, source, user
+and realm through catalog review and publication. Owner checks reuse the Cloud
+authority check, including its local transport rule and remote principal/realm
+pin. Kernel-owned agent and attachment identities retain their existing internal
+authorization path. A matching user ID from another realm or a relay peer cannot
+authorize catalog mutations. This is shared kernel behavior with no placement
+branch or protocol change. Router regressions cover those identities and unchanged
+catalog state; they do not close hosted collaborator acceptance or the broader
+MP-10 matrix. The authorization anchor needs current independent semantic review.
+
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
 The real WHATWG navigation timed out repeatedly creating a world that Chromium

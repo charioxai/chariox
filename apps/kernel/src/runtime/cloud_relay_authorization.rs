@@ -102,9 +102,17 @@ pub(crate) fn authorize_kernel_cloud_request(
 // Use the complete authenticated caller, not a user-ID-only projection.
 // Session membership permits waiting-room access, never owner inventory.
 pub(crate) fn kernel_cloud_owner(config: &DaemonConfig, command: &KernelCommand) -> bool {
-    if command.caller.caller_kind == KernelCallerKind::LocalClient
+    kernel_cloud_caller_owner(config, &command.source, &command.caller)
+}
+
+pub(crate) fn kernel_cloud_caller_owner(
+    config: &DaemonConfig,
+    source: &KernelCommandSource,
+    caller: &KernelCaller,
+) -> bool {
+    if caller.caller_kind == KernelCallerKind::LocalClient
         && matches!(
-            command.source,
+            source,
             KernelCommandSource::LocalCli
                 | KernelCommandSource::LocalIpc
                 | KernelCommandSource::DaemonBackground
@@ -112,7 +120,7 @@ pub(crate) fn kernel_cloud_owner(config: &DaemonConfig, command: &KernelCommand)
     {
         return true;
     }
-    cloud_relay_caller_owner(config, &command.caller)
+    cloud_relay_caller_owner(config, caller)
 }
 
 pub(crate) fn cloud_relay_caller_owner(config: &DaemonConfig, caller: &KernelCaller) -> bool {

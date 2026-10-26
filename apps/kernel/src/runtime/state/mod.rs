@@ -166,6 +166,10 @@ pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
+    skills_catalog_caller: Option<(
+        crate::runtime::command::KernelCommandSource,
+        crate::runtime::command::KernelCaller,
+    )>,
     room_provider_origin: Option<(String, String)>,
     room_request_origin: Option<(String, LocalDaemonRequest)>,
     /// MP-08 / MP-11: the transport admitted this command from a terminal
@@ -909,6 +913,7 @@ impl KernelRuntimeState {
         };
         let runtime = Self {
             external_command_authority: None,
+            skills_catalog_caller: None,
             room_provider_origin: None,
             room_request_origin: None,
             terminal_caller: false,
