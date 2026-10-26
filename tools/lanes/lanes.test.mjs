@@ -29,7 +29,7 @@ test('steer transmits the expected prompt fence without submitting a new prompt'
   await assert.rejects(run('steer', { kernel: 'b', taskId: 'lane', sessionId: 's', attachmentId: 't', agentId: 'a', prompt: 'x' }, { execute }));
 });
 
-test('launch persists partial ownership, refreshes, uploads brief and arms before prompt', async () => {
+test('launch persists partial ownership, refreshes and uploads before prompt', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-launch-'));
   try {
     const calls = [];
@@ -37,11 +37,11 @@ test('launch persists partial ownership, refreshes, uploads brief and arms befor
       if (argv[0] === 'files') { calls.push('files put'); return { sha256: 'a'.repeat(64) }; }
       const req = JSON.parse(stdin); const op = Object.keys(req)[0]; calls.push(op);
       return {
-        RelayStatus: { RelayStatus: { status: { capabilities: ['agent_deadline_v1'] } } }, GetAgentDeadline: { AgentDeadline: { deadline: { state: 'armed' } } }, CreateSession: { SessionCreated: { session: { id: 's' } } },
+        RelayStatus: { RelayStatus: { status: { capabilities: [] } } }, CreateSession: { SessionCreated: { session: { id: 's' } } },
         AttachToSession: { SessionAttached: { attachment: { id: 't' } } },
         RefreshProviderAccountProfile: { ProviderAccountProfile: { profile: { auth_state: 'authenticated' } } },
         SpawnAgent: { AgentSpawned: { agent: { id: 'a' } } },
-        SetAgentDeadline: { AgentDeadline: { deadline: { state: 'armed' } } },
+
         SubmitPrompt: { PromptSubmitted: { outcome: { Started: { prompt: { id: 'p' } } } } },
       }[op];
     };
@@ -49,7 +49,7 @@ test('launch persists partial ownership, refreshes, uploads brief and arms befor
     const stateFile = join(dir, 'launch.json');
     const result = await run('launch', { kernel: 'b', taskId: 'lane', alias: 'lane', worktree: '/repo', provider: 'codex', profile: 'profile', model: 'gpt-6-luna', effort: 'low', permission: 'required', brief, remoteBrief: '/repo/BRIEF.md', stateFile, deadlineMs: Date.now() + 60_000 }, { execute });
     assert.equal(result.agentId, 'a');
-    assert.deepEqual(calls, ['CreateSession', 'AttachToSession', 'RefreshProviderAccountProfile', 'SpawnAgent', 'files put', 'RelayStatus', 'SetAgentDeadline', 'GetAgentDeadline', 'SubmitPrompt']);
+    assert.deepEqual(calls, ['CreateSession', 'AttachToSession', 'RefreshProviderAccountProfile', 'SpawnAgent', 'files put', 'SubmitPrompt']);
     assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).agentId, 'a');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -89,11 +89,11 @@ test('a transport retry uses the same command id and body exactly once', async (
 });
 
 test('status selects the target agent and never borrows another agents prompt', async () => {
-  const result = await run('status', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a' }, { execute: async (_, body) => 'RelayStatus' in JSON.parse(body) ? { RelayStatus: { status: { capabilities: ['agent_deadline_v1'] } } } : JSON.parse(body).GetSessionState ? { SessionState: { agents: [{ id: 'a', is_processing: false, last_activity_at_ms: 123 }], session: { active_prompt: { id: 'other', target_agent_id: 'b' } } } } : { AgentDeadline: { deadline: { state: 'reached' } } } });
+  const result = await run('status', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a' }, { execute: async (_, body) => 'RelayStatus' in JSON.parse(body) ? { RelayStatus: { status: { capabilities: [] } } } : JSON.parse(body).GetSessionState ? { SessionState: { agents: [{ id: 'a', is_processing: false, last_activity_at_ms: 123 }], session: { active_prompt: { id: 'other', target_agent_id: 'b' } } } } : assert.fail('unexpected request') });
   assert.equal(result.currentPrompt, null);
   assert.equal(result.state, 'idle');
   assert.equal(result.lastActivityMs, 123);
-  assert.deepEqual(result.capabilities, ['agent_deadline_v1']);
+  assert.deepEqual(result.capabilities, []);
 });
 
 test('stop destroys an idle agent after typed no-active-prompt refusal', async () => {
@@ -146,7 +146,7 @@ for (const [lane, field] of [['amint', 'rows[0].head'], ['dictation', 'rows[0].h
 
 test('status lists the decisions the target agent is waiting on, and only its own', async () => {
   const active = [{ id: 'perm-1', agent_id: 'a', kind: 'permission', level: 'warning', title: 'Approve Claude Code Write?', message: 'secret body', choices: [{ id: 'allow_once', label: 'Allow once', reply: 'x' }, { id: 'allow_session', label: 'Allow for session', reply: 'y' }, { id: 'deny', label: 'Deny', reply: 'z' }] }, { id: 'perm-2', agent_id: 'b', kind: 'permission', title: 'Approve Claude Code Read?' }];
-  const result = await run('status', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a' }, { execute: async (_, body) => 'RelayStatus' in JSON.parse(body) ? { RelayStatus: { status: { capabilities: ['agent_deadline_v1'] } } } : JSON.parse(body).GetSessionState ? { SessionState: { agents: [{ id: 'a', is_processing: true }], session: { active_interactions: active } } } : { AgentDeadline: { deadline: { state: 'armed' } } } });
+  const result = await run('status', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a' }, { execute: async (_, body) => 'RelayStatus' in JSON.parse(body) ? { RelayStatus: { status: { capabilities: [] } } } : JSON.parse(body).GetSessionState ? { SessionState: { agents: [{ id: 'a', is_processing: true }], session: { active_interactions: active } } } : assert.fail('unexpected request') });
   assert.deepEqual(result.interactions, [{ id: 'perm-1', kind: 'permission', level: 'warning', ownerOnly: false, title: 'Approve Claude Code Write?', choices: ['allow_once', 'allow_session', 'deny'] }]);
 });
 
@@ -173,12 +173,11 @@ test('bundle hash mismatch refuses local fetch', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-bundle-'));
   try {
     const execute = async (argv, body) => {
-      if (argv[0] === 'request') return { KernelFileStat: { stat: { sha256: '0'.repeat(64) } } };
-      if (argv[0] === 'files') { await writeFile(argv.at(-1), 'changed bytes'); return {}; }
+      if (argv[0] === 'files') { assert.ok(argv.includes('--sha256')); throw new LaneError('file_hash_mismatch'); }
       if (argv[1] === 'open') return { terminal: { terminal_id: 't' } };
-      return { fired: { kind: 'finished', exit_code: 0 } };
+      return { fired: { kind: 'finished', exit_code: 0 }, screen_text: `${'0'.repeat(64)}  /repo/lane.bundle` };
     };
-    await assert.rejects(run('bundle', { kernel: 'b', taskId: 'lane', sessionId: 's', worktree: '/repo', base: 'a'.repeat(40), head: 'b'.repeat(40), remoteBundle: '/repo/lane.bundle', localBundle: join(dir, 'lane.bundle'), repository: dir }, { execute, git: async () => { throw Error('must not fetch'); } }), { code: 'bundle_hash_mismatch' });
+    await assert.rejects(run('bundle', { kernel: 'b', taskId: 'lane', sessionId: 's', worktree: '/repo', base: 'a'.repeat(40), head: 'b'.repeat(40), remoteBundle: '/repo/lane.bundle', localBundle: join(dir, 'lane.bundle'), repository: dir }, { execute, git: async () => { throw Error('must not fetch'); } }), { code: 'file_hash_mismatch' });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -194,11 +193,11 @@ test('bundle verifies real git history and imports into an empty local repositor
     await writeFile(join(source, 'sum.test.cjs'), 'require("node:assert/strict").equal(require("./sum.cjs")(2,3),5);\n'); git(source, 'add', 'sum.test.cjs');
     git(source, '-c', 'user.name=Lane Test', '-c', 'user.email=lane@example.invalid', 'commit', '-m', 'Test sum [skip ci]'); const head = git(source, 'rev-parse', 'HEAD');
     const remote = join(source, 'lane.bundle'), downloaded = join(dir, 'download.bundle');
+    let screenText = '';
     const remoteCli = async (argv, body) => {
-      if (argv[0] === 'request') return { KernelFileStat: { stat: { sha256: createHash('sha256').update(await readFile(remote)).digest('hex') } } };
       if (argv[0] === 'files') { await copyFile(remote, downloaded); return {}; }
-      if (argv[1] === 'open') { const command = argv.slice(argv.indexOf('--') + 1); execFileSync(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] }); return { terminal: { terminal_id: 't' } }; }
-      return { fired: { kind: 'finished', exit_code: 0 } };
+      if (argv[1] === 'open') { const command = argv.slice(argv.indexOf('--') + 1); screenText = execFileSync(command[0], command.slice(1), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); return { terminal: { terminal_id: 't' } }; }
+      return { fired: { kind: 'finished', exit_code: 0 }, screen_text: screenText };
     };
     const result = await run('bundle', { kernel: 'b', taskId: 'lane', sessionId: 's', worktree: source, base, head, remoteBundle: remote, localBundle: downloaded, repository: local }, { execute: remoteCli });
     assert.equal(result.head, head); assert.equal(git(local, 'rev-parse', 'refs/remotes/lanes/lane'), head);
@@ -207,22 +206,21 @@ test('bundle verifies real git history and imports into an empty local repositor
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('launch resumes after deadline refusal without creating another agent or upload', async () => {
+test('launch resumes after upload refusal without creating another agent', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-resume-'));
   try {
     const brief = join(dir, 'brief.md'); await writeFile(brief, 'MP-11: task');
     const input = { kernel: 'b', taskId: 'lane', alias: 'lane', worktree: '/repo', provider: 'codex', profile: 'profile', model: 'gpt-6-luna', effort: 'low', permission: 'required', brief, remoteBrief: '/repo/BRIEF.md', stateFile: join(dir, 'state.json'), deadlineMs: Date.now() + 60_000 };
     let refused = true; const calls = [];
     const execute = async (argv, body) => {
-      if (argv[0] === 'files') { calls.push('upload'); return {}; }
+      if (argv[0] === 'files') { calls.push('upload'); if (refused) throw new LaneError('kernel_incompatible'); return {}; }
       const op = Object.keys(JSON.parse(body))[0]; calls.push(op);
-      if (op === 'SetAgentDeadline' && refused) throw new LaneError('kernel_incompatible');
-      return { RelayStatus: { RelayStatus: { status: { capabilities: ['agent_deadline_v1'] } } }, GetAgentDeadline: { AgentDeadline: { deadline: { state: 'armed' } } }, CreateSession: { SessionCreated: { session: { id: 's' } } }, AttachToSession: { SessionAttached: { attachment: { id: 't' } } }, RefreshProviderAccountProfile: { ProviderAccountProfile: { profile: { auth_state: 'authenticated' } } }, SpawnAgent: { AgentSpawned: { agent: { id: 'a' } } }, HeartbeatAttachments: { AttachmentsHeartbeated: { lapsed: [] } }, SetAgentDeadline: {}, SubmitPrompt: { PromptSubmitted: { outcome: { Started: { prompt: { id: 'p' } } } } } }[op];
+      return { RelayStatus: { RelayStatus: { status: { capabilities: [] } } }, CreateSession: { SessionCreated: { session: { id: 's' } } }, AttachToSession: { SessionAttached: { attachment: { id: 't' } } }, RefreshProviderAccountProfile: { ProviderAccountProfile: { profile: { auth_state: 'authenticated' } } }, SpawnAgent: { AgentSpawned: { agent: { id: 'a' } } }, HeartbeatAttachments: { AttachmentsHeartbeated: { lapsed: [] } },  SubmitPrompt: { PromptSubmitted: { outcome: { Started: { prompt: { id: 'p' } } } } } }[op];
     };
     await assert.rejects(run('launch', input, { execute }), { code: 'kernel_incompatible' });
     assert.equal(JSON.parse(await readFile(input.stateFile)).agentId, 'a');
     refused = false; const state = await run('launch', input, { execute });
-    assert.equal(state.agentId, 'a'); assert.equal(calls.filter(op => op === 'SpawnAgent').length, 1); assert.equal(calls.filter(op => op === 'upload').length, 1);
+    assert.equal(state.agentId, 'a'); assert.equal(calls.filter(op => op === 'SpawnAgent').length, 1); assert.equal(calls.filter(op => op === 'upload').length, 2);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -322,14 +320,13 @@ test('resumed launch replaces a lapsed attachment without duplicating Room, agen
     const input = {kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'launch.json'),deadlineMs:Date.now()+60_000};
     const calls = []; let resumed = false;
     const execute = async (argv, body) => {
-      if (argv[0] === 'files') return {};
+      if (argv[0] === 'files') { if (!resumed) throw new LaneError('kernel_incompatible'); return {}; }
       const req = JSON.parse(body); const op = Object.keys(req)[0]; calls.push({op, argv, req});
-      if (op === 'SetAgentDeadline' && !resumed) throw new LaneError('kernel_incompatible');
       if (op === 'SubmitPrompt') {
         assert.equal(req[op].attachment_id, 'new-attachment');
         return {PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}};
       }
-      return {HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:[]}},GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:resumed?'new-attachment':'old-attachment'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['old-attachment']}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
+      return {HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:[]}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:resumed?'new-attachment':'old-attachment'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['old-attachment']}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},RelayStatus:{RelayStatus:{status:{capabilities:[]}}}}[op];
     };
     await assert.rejects(run('launch',input,{execute}), {code:'kernel_incompatible'});
     resumed = true;
@@ -360,7 +357,7 @@ test('attachment replacement first replays an uncertain prompt with identical by
         if (req[op].attachment_id === 't1') throw new LaneError('attachment_not_found');
         return {PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}};
       }
-      return {HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:[]}},GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
+      return {HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:[]}},CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},RelayStatus:{RelayStatus:{status:{capabilities:[]}}}}[op];
     };
     await assert.rejects(run('launch',input,{execute}),{code:'kernel_connection_lost'});
     resumed = true;
@@ -374,31 +371,36 @@ test('attachment replacement first replays an uncertain prompt with identical by
 });
 
 
-test('launch and status negotiate deadline support without sending unknown requests', async () => {
-  for (const supported of [false, true]) {
-    const dir = await mkdtemp(join(tmpdir(), 'dogfood-deadline-capability-'));
+test('launch and status use coordinator deadlines on current and 615 request fixtures', async t => {
+  for (const version of [609, 615]) await t.test(String(version), async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dogfood-primitives-'));
     try {
-      const brief = join(dir,'brief.md'); await writeFile(brief,'MP-11: task');
+      const brief = join(dir, 'brief.md'); await writeFile(brief, 'MP-11: task');
       const input = {kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'state.json'),deadlineMs:Date.now()+60_000};
-      const calls = []; const timers = [];
+      const responses = {
+        CreateSession:{SessionCreated:{session:{id:'s'}}}, AttachToSession:{SessionAttached:{attachment:{id:'t'}}},
+        RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}}, SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},
+        SubmitPrompt:{PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}},
+        RelayStatus:{RelayStatus:{status:{protocol_version:version,capabilities:[]}}},
+        GetSessionState:{SessionState:{agents:[{id:'a',is_processing:false}],session:{active_prompt:null}}},
+      };
+      const calls = [];
       const execute = async (argv, body) => {
         if (argv[0] === 'files') return {};
         const op = Object.keys(JSON.parse(body))[0]; calls.push(op);
-        if (!supported && ['SetAgentDeadline','GetAgentDeadline'].includes(op)) throw new LaneError('invalid_request');
-        return {RelayStatus:{RelayStatus:{status:{capabilities:supported?['agent_deadline_v1']:[]}}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:'t'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SubmitPrompt:{PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}},SetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},GetSessionState:{SessionState:{agents:[{id:'a',is_processing:false}],session:{active_prompt:null}}}}[op];
+        assert.ok(Object.hasOwn(responses, op), `unexpected request on protocol ${version}: ${op}`);
+        return responses[op];
       };
-      const dependencies = {execute, startTimer:async (file)=>{timers.push(file);return {pid:1234,receipt:`${file}.deadline.json`};}};
-      const launched = await run('launch',input,dependencies);
-      assert.equal(launched.deadline.mode,supported?'kernel':'coordinator');
-      assert.equal(timers.length,0);
-      if (!supported) assert.equal(launched.coordinatorTimer.state,'required');
-      if (!supported) assert.match(launched.deadline.message,/no kernel deadline/i);
-      const status = await run('status',{kernel:'b',taskId:'lane',sessionId:'s',agentId:'a',stateFile:input.stateFile},dependencies);
-      assert.equal(status.deadline.mode,supported?'kernel':'coordinator');
-      assert.equal(calls.includes('SetAgentDeadline'),supported);
-      assert.equal(calls.includes('GetAgentDeadline'),supported);
-    } finally {await rm(dir,{recursive:true,force:true});}
-  }
+      const launched = await run('launch', input, {execute});
+      assert.equal(launched.deadline.mode, 'coordinator');
+      assert.equal(launched.coordinatorTimer.state, 'required');
+      assert.match(launched.deadline.message, /no kernel deadline/i);
+      const status = await run('status', {...input,sessionId:'s',agentId:'a'}, {execute});
+      assert.equal(status.deadline.deadline_ms, input.deadlineMs);
+      assert.equal(status.deadline.mode, 'coordinator');
+      assert.deepEqual(calls, ['CreateSession','AttachToSession','RefreshProviderAccountProfile','SpawnAgent','SubmitPrompt','GetSessionState','RelayStatus']);
+    } finally { await rm(dir, {recursive:true,force:true}); }
+  });
 });
 
 
@@ -432,7 +434,7 @@ test('replayed successful submission renews its expired attachment without a sec
         if(!replay)throw new LaneError('kernel_connection_lost');
         return {PromptSubmitted:{outcome:{Started:{prompt:{id:'original'}}}}};
       }
-      return {RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}},CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},GetAgentDeadline:{AgentDeadline:{deadline:{state:'armed'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['t1']}}}[op];
+      return {RelayStatus:{RelayStatus:{status:{capabilities:[]}}},CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['t1']}}}[op];
     };
     await assert.rejects(run('launch',input,{execute}),{code:'kernel_connection_lost'});
     replay=true;
@@ -460,7 +462,7 @@ test('foreground deadline command rejects another launch and propagates cleanup 
     assert.equal(calls,1);
     assert.equal(JSON.parse(await readFile(`${stateFile}.deadline.json`)).status,'failed');
     await writeFile(stateFile,JSON.stringify({...state,deadline:{mode:'kernel'}}));
-    await assert.rejects(run('deadline',input,dependencies),{code:'invalid_operation'});
+    await assert.rejects(run('deadline',input,dependencies),/invalid coordinator deadline receipt/);
     assert.equal(calls,1);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
@@ -493,21 +495,7 @@ test('resumed fallback launch refuses new prompt admission after its coordinator
   }finally{Date.now=originalNow;await rm(dir,{recursive:true,force:true});}
 });
 
-test('advertised kernel support must yield an armed deadline before prompt admission', async () => {
-  const dir=await mkdtemp(join(tmpdir(),'dogfood-missing-deadline-'));
-  try {
-    const brief=join(dir,'brief.md');await writeFile(brief,'MP-11: task');
-    const input={kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'state.json'),deadlineMs:Date.now()+60_000};
-    let submitted=false;
-    const execute=async(argv,body)=>{
-      if(argv[0]==='files')return {};
-      const op=Object.keys(JSON.parse(body))[0];if(op==='SubmitPrompt')submitted=true;
-      return {RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}},CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:'t'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{AgentDeadline:{deadline:null}},GetAgentDeadline:{AgentDeadline:{deadline:null}},SubmitPrompt:{PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}}}[op];
-    };
-    await assert.rejects(run('launch',input,{execute}),{code:'agent_deadline_missing'});
-    assert.equal(submitted,false);
-  }finally{await rm(dir,{recursive:true,force:true});}
-});
+
 
 test('guarded cancellation and unconditional cleanup use separate command receipts', async () => {
   const receipts=new Map(),calls=[];

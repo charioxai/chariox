@@ -47,15 +47,18 @@ async function bundleRig(t) {
   git(['-C', source, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'Update fixture [skip ci]']);
   const head = git(['-C', source, 'rev-parse', 'HEAD']).trim();
   const input = { ...common, base, worktree: source, remoteBundle: join(dir, 'remote.bundle'), localBundle: join(dir, 'local.bundle'), repository };
+  let screenText = '';
   const execute = async (argv, body) => {
     if (argv[0] === 'terminal') {
-      if (argv[1] === 'open') { const command = argv.slice(argv.indexOf('--') + 1); execFileSync(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] }); return { terminal: { terminal_id: 'owned' } }; }
-      if (argv[1] === 'wait') return { fired: { kind: 'finished', exit_code: 0 } };
+      if (argv[1] === 'open') { const command = argv.slice(argv.indexOf('--') + 1); screenText = execFileSync(command[0], command.slice(1), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); return { terminal: { terminal_id: 'owned' } }; }
+      if (argv[1] === 'wait') return { fired: { kind: 'finished', exit_code: 0 }, screen_text: screenText };
       return {};
     }
-    if (argv[0] === 'files') { await copyFile(argv.at(-2), argv.at(-1)); return {}; }
-    assert.ok(JSON.parse(body).StatKernelFile);
-    return { KernelFileStat: { stat: { sha256: createHash('sha256').update(await readFile(input.remoteBundle)).digest('hex') } } };
+    if (argv[0] === 'files') {
+      assert.equal(argv[argv.indexOf('--sha256') + 1], createHash('sha256').update(await readFile(input.remoteBundle)).digest('hex'));
+      await copyFile(argv.at(-2), argv.at(-1)); return {};
+    }
+    assert.fail(`unexpected request: ${body}`);
   };
   return { input, head, git, execute };
 }

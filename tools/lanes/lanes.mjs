@@ -27,10 +27,7 @@ const remediation = code => ({
   no_active_prompt: 'Run lane-status; there is no matching active prompt. Do not submit a replacement automatically.',
   prompt_steer_rejected: 'Run lane-status and use its expected current prompt id; do not submit a replacement automatically.',
   agent_deadline_reached: 'The lane deadline was reached; start a new lane agent for new work.',
-  agent_deadline_requires_executor: 'Arm the deadline on the executing kernel; deadline-bound agents cannot move to a leased worker.',
-  agent_deadline_extension_refused: 'Deadlines cannot be extended; start a new lane agent.',
   invalid_acceptance: 'Fix ACCEPTANCE_UPDATE.json: full area/ROW ids, a known status, a date, and one full 40-character commit id as every row head; then collect again.',
-  agent_deadline_invalid: 'Supply deadline_ms as a positive bounded epoch millisecond.',
 }[code] || 'chariox refused the operation; inspect its typed code and retained lane state');
 
 // Never include child diagnostics in errors: provider/terminal text can contain values.
@@ -195,17 +192,9 @@ export async function run(operation, input, dependencies = {}) {
       return text(agent.id, 'agent id');
     });
     await remember('briefUploaded', async () => { await call(['files', 'put', ...common, '--overwrite', input.brief, input.remoteBrief]); return true; });
-    const capabilities = variant(await request('RelayStatus', null, 'deadline-capability', false), 'RelayStatus').status.capabilities;
-    if (Array.isArray(capabilities) && capabilities.includes('agent_deadline_v1')) {
-      await remember('deadlineArmed', async () => { await request('SetAgentDeadline', { session_id: session(), agent_id: agent(), deadline_ms: input.deadlineMs }, 'deadline'); return true; });
-      const receipt = variant(await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-read', false), 'AgentDeadline').deadline;
-      if (!receipt) fail('agent_deadline_missing', 'The executing kernel did not retain its lane deadline; inspect GetAgentDeadline before admitting work.');
-      state.deadline = { ...receipt, mode: 'kernel' };
-    } else {
-      state.deadline = coordinatorDeadline(input.deadlineMs);
-    }
+    state.deadline = coordinatorDeadline(input.deadlineMs);
     await save(input.stateFile, state);
-    if (state.deadline.mode === 'coordinator' && !state.promptId && Date.now() >= input.deadlineMs) fail('agent_deadline_reached', 'The coordinator deadline was reached; use the retained Room/agent state to stop the lane.');
+    if (!state.promptId && Date.now() >= input.deadlineMs) fail('agent_deadline_reached', 'The coordinator deadline was reached; use the retained Room/agent state to stop the lane.');
     await remember('promptId', async () => {
       const submit = async () => {
         if (!state.pendingPrompt) {
@@ -232,22 +221,19 @@ export async function run(operation, input, dependencies = {}) {
     if (replayingPrompt) {
       await refreshAttachment(); await attach();
     }
-    if (state.deadline.mode === 'coordinator') {
-      // Foreground coordinator jobs retain the OS ancestry of its access grant.
-      // An orphaned timer would lose that authority when this CLI exits.
-      state.coordinatorTimer = {
-        state: 'required', receipt: `${resolve(input.stateFile)}.deadline.json`,
-        argv: [process.execPath, fileURLToPath(new URL('./lane-deadline.mjs', import.meta.url))],
-        input: { kernel, taskId, sessionId: session(), agentId: agent(), stateFile: resolve(input.stateFile) },
-      };
-      await save(input.stateFile, state);
-    }
+    // Foreground coordinator jobs retain the OS ancestry of its access grant.
+    // An orphaned timer would lose that authority when this CLI exits.
+    state.coordinatorTimer = {
+      state: 'required', receipt: `${resolve(input.stateFile)}.deadline.json`,
+      argv: [process.execPath, fileURLToPath(new URL('./lane-deadline.mjs', import.meta.url))],
+      input: { kernel, taskId, sessionId: session(), agentId: agent(), stateFile: resolve(input.stateFile) },
+    };
+    await save(input.stateFile, state);
     return state;
   }
   if (operation === 'deadline') {
     const saved = JSON.parse(await readFile(text(input.stateFile, 'stateFile'), 'utf8'));
     if (saved.kernel !== kernel || saved.taskId !== taskId || saved.sessionId !== session() || saved.agentId !== agent()) fail('launch_conflict');
-    if (saved.deadline?.mode !== 'coordinator') fail('invalid_operation', 'the kernel owns this lane deadline');
     const { enforceCoordinatorDeadline } = await import('./coordinator-deadline.mjs');
     const receipt = await enforceCoordinatorDeadline(input.stateFile, { stop: value => run('stop', value, dependencies) });
     if (receipt.status === 'failed') fail(receipt.code, receipt.message);
@@ -282,19 +268,13 @@ export async function run(operation, input, dependencies = {}) {
     if (!selected) fail('agent_not_in_session', 'use ListAgents in the lane Room');
     const activity = state.agent_activity?.[agent()] || state.session?.agent_activity?.[agent()];
     const capabilities = variant(await request('RelayStatus', null, 'deadline-capability', false), 'RelayStatus').status.capabilities;
-    let deadline;
-    if (Array.isArray(capabilities) && capabilities.includes('agent_deadline_v1')) {
-      const receipt = variant(await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-status', false), 'AgentDeadline').deadline;
-      deadline = receipt ? { ...receipt, mode: 'kernel' } : { mode: 'kernel', state: 'unset', deadline_ms: null };
-    } else {
-      let deadlineMs = input.deadlineMs;
-      if (input.stateFile) {
-        const saved = JSON.parse(await readFile(input.stateFile, 'utf8'));
-        if (saved.kernel !== kernel || saved.taskId !== taskId || saved.sessionId !== session() || saved.agentId !== agent()) fail('launch_conflict');
-        deadlineMs = saved.deadlineMs;
-      }
-      deadline = coordinatorDeadline(deadlineMs);
+    let deadlineMs = input.deadlineMs;
+    if (input.stateFile) {
+      const saved = JSON.parse(await readFile(input.stateFile, 'utf8'));
+      if (saved.kernel !== kernel || saved.taskId !== taskId || saved.sessionId !== session() || saved.agentId !== agent()) fail('launch_conflict');
+      deadlineMs = saved.deadlineMs;
     }
+    const deadline = coordinatorDeadline(deadlineMs);
     const active = state.session.active_prompt;
     return { agentId: agent(), state: activity?.status || (selected.is_processing ? 'working' : 'idle'), currentPrompt: activity?.active_turn?.prompt_id || (active?.target_agent_id === agent() ? active.id : null), lastActivityMs: selected.last_activity_at_ms, ...(activity?.last_completed_turn && { completedTurn: { promptId: activity.last_completed_turn.prompt_id, status: activity.last_completed_turn.settlement_status, completedAtMs: activity.last_completed_turn.completed_at_ms } }), interactions: (state.session.active_interactions || []).filter(value => value.agent_id === agent()).map(value => ({ id: value.id, kind: value.kind, level: value.level, ownerOnly: Boolean(value.handoff || value.provider_login || value.sudo_request || value.requester), title: value.title, choices: (value.choices || []).map(choice => choice.id) })), deadline, capabilities: Array.isArray(capabilities) ? capabilities : [] };
   }
@@ -326,12 +306,14 @@ export async function run(operation, input, dependencies = {}) {
     const worktree = text(input.worktree, 'worktree'), remote = text(input.remoteBundle, 'remoteBundle');
     const local = resolve(text(input.localBundle, 'localBundle')), repo = resolve(text(input.repository, 'repository'));
     const guard = expectedHead ? `test "$(git rev-parse HEAD)" = ${quote(expectedHead)}; ` : '';
-    const command = `set -eu; cd ${quote(worktree)}; ${guard}git merge-base --is-ancestor ${quote(base)} HEAD; git bundle create ${quote(remote)} HEAD`;
-    await terminalCommand(['/bin/bash', '-lc', command]);
-    const before = variant(await request('StatKernelFile', { path: remote, with_sha256: true }, 'bundle-stat', false), 'KernelFileStat').stat;
-    await mkdir(dirname(local), { recursive: true }); await call(['files', 'get', ...common, '--overwrite', remote, local]);
-    const digest = createHash('sha256').update(await readFile(local)).digest('hex');
-    if (digest !== before.sha256) fail('bundle_hash_mismatch');
+    const command = `set -eu; cd ${quote(worktree)}; ${guard}git merge-base --is-ancestor ${quote(base)} HEAD; git bundle create ${quote(remote)} HEAD; sha256sum -- ${quote(remote)}`;
+    const created = await terminalCommand(['/bin/bash', '-lc', command]);
+    // Match the checksum record, not terminal prompt/command echo or a partial hash.
+    const checksums = created.screenText.split(/\r?\n/).map(line => /^([a-f0-9]{64}) [ *]/.exec(line)).filter(Boolean);
+    if (checksums.length !== 1) fail('bundle_hash_missing', 'Bundle creation returned no unique SHA-256 record; inspect the terminal output.');
+    const digest = checksums[0][1];
+    await mkdir(dirname(local), { recursive: true });
+    await call(['files', 'get', ...common, '--overwrite', '--sha256', digest, remote, local]);
     const git = dependencies.git || ((argv) => execute(argv, '', 'git', true));
     await git(['-C', repo, 'bundle', 'verify', local]);
     const heads = String(await git(['bundle', 'list-heads', local])).trim().split('\n');

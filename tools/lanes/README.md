@@ -15,9 +15,9 @@ Keep inputs, state and transferred artifacts in your own directory outside git.
 | Operation | Additional input | Result |
 | --- | --- | --- |
 | `launch` | `alias`, `worktree`, `provider`, `profile`, `model`, `effort`, `permission`, local `brief`, absolute `remoteBrief`, local `stateFile`, epoch `deadlineMs` | Durable local receipt with Room, attachment, agent and submitted prompt; partial ownership survives a failed step. |
-| `deadline` | `sessionId`, `agentId`, local launch `stateFile` | Foreground coordinator timer for a kernel without deadline support; waits, stops the lane, and records its result. |
+| `deadline` | `sessionId`, `agentId`, local launch `stateFile` | Foreground coordinator timer; waits, stops the lane, and records its result. |
 | `steer` | `sessionId`, `attachmentId`, `agentId`, `expectedPromptId`, `prompt`, unique `steerId` | Kernel compare-and-steer response. A race remains a refusal. |
-| `status` | `sessionId`, `agentId` | State, current prompt, last activity, durable deadline receipt and executing kernel capabilities. |
+| `status` | `sessionId`, `agentId` | State, current prompt, last activity, coordinator deadline receipt and executing kernel capabilities. |
 | `fetch` | `worktree`, local `directory` | Downloads `LANE_STATUS.md`, `PUSH_READY.md`, `ACCEPTANCE_UPDATE.json` with file hashes. |
 | `bundle` | `sessionId` (operations Room), `worktree`, full `base`, optional expected `head`, absolute `remoteBundle`, local `localBundle`, existing local Git `repository` | Verified SHA-256, source HEAD/base ancestry, bundle tips, imported base ancestry and `refs/remotes/lanes/<taskId>`. |
 | `slot` | `sessionId` (operations Room), `worktree`, absolute `slotScript`, string array `argv`, optional `timeout` seconds | Opens a Room terminal, runs the slot script, waits for its actual exit and closes the terminal. |
@@ -25,13 +25,11 @@ Keep inputs, state and transferred artifacts in your own directory outside git.
 
 `launch` accepts optional `operationsAlias` to create an operations Room too. It creates a lane Room and attachment, refreshes the selected profile through
 `RefreshProviderAccountProfile`, spawns the agent, uploads the brief with
-`files put`, checks `RelayStatus.status.capabilities` for `agent_deadline_v1`,
-then submits its first prompt. With that capability, launch sets and reads the
-kernel deadline before submission; status reads it too. Reuse the exact input
-and state file to resume an interrupted launch; a lapsed attachment is renewed.
+`files put`, then submits its first prompt. Reuse the exact input and state
+file to resume an interrupted launch; a lapsed attachment is renewed.
 An uncertain submission first replays the original command bytes and identity.
-
-Without the capability, neither adapter sends the unknown deadline requests.
+The orchestrator always owns the deadline timer, on current and protocol 615
+kernels alike. A resumed launch replaces any older deadline mode in its receipt.
 Both report `deadline.mode:"coordinator"` and plainly say the lane has no kernel
 deadline. Launch returns `coordinatorTimer.state:"required"`, its `argv` and JSON
 `input`. Start that `lane-deadline` command as a **foreground coordinator job**
@@ -47,8 +45,6 @@ coordinator/access loss. Stop/clean the job only by its verified owned PID when
 ending early. Pass `stateFile` to status for the saved coordinator deadline;
 without it the deadline time is unknown. Timer failures require restoring
 access and an explicit unconditional `stop`.
-The durable deadline branch uses allocated local584 and advertises
-`agent_deadline_v1`; it is optional, not a dependency of these adapters.
 
 `status` also accepts `waitForIdle:true`, `attachmentId`, `expectedPromptId`
 and `timeout` (1–1800 seconds). It watches real CLI session events, requires
@@ -64,6 +60,12 @@ remain the central acceptance tracker's responsibility.
 MP-08 / MP-10: `fetch` reports an already consumed acceptance JSON explicitly;
 other file errors and invalid rows still fail. `bundle` resolves the sole `HEAD`
 tip from the verified bundle; a supplied expected head remains a strict guard.
+
+`bundle` runs `sha256sum` in the same terminal command that creates the bundle,
+then downloads with `files get --sha256 <hex>`. The CLI rejects changed bytes
+before importing them. A missing or ambiguous terminal checksum fails clearly.
+The tools use `events wait --timeout 0` for a nonblocking inbox read (exit 5 is
+an empty timeout); they use no kernel file metadata or deadline requests.
 
 `bundle` includes source history so it also works with an empty local Git
 repository. A failed local ancestry check leaves only an incoming lane ref

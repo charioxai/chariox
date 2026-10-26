@@ -46,12 +46,11 @@ verified independently, so a consumed update cannot hide or manufacture a head.
 | `node tools/lanes/coordinator/deliver.mjs LANE REVIEW_FILE` | Reads the review text already obtained on the Mac and steers the current prompt with a compare fence. Confirms via a matching §14 event when advertised, otherwise via the acknowledged response and one status read. Identical review/current-prompt pairs reuse their receipt. New instructions for a settled worker are refused. |
 | `node tools/lanes/coordinator/lanefin.mjs LANE...` | Checks status once, fetches the worker's handoffs, then verifies/imports its bundle. The bundle supplies the actual head; `bases[LANE]` supplies its base. A present acceptance update must identify one matching head. Review notes and the final message belong in `LANE_STATUS.md`/`PUSH_READY.md`. |
 | `node tools/lanes/coordinator/lanehealth.mjs [LANE]` | One status/deadline snapshot per selected lane (all recorded lanes when omitted), with LONG-ROUND and SILENT flags; no recurring poller or automatic destruction. |
-| `node tools/lanes/coordinator/stop.mjs LANE` | Unconditionally stops the recorded worker, then archives/acknowledges its exact removal event before returning. The kernel's durable deadline operates even while the coordinator is disconnected. |
+| `node tools/lanes/coordinator/stop.mjs LANE` | Unconditionally stops the recorded worker, then archives/acknowledges its exact removal event before returning. The coordinator timer requires its process, network and grant to remain available. |
 
-The launch adapter reports a coordinator timer when an older kernel lacks
-`agent_deadline_v1`; run its returned foreground job as documented in the parent
-README. That mode does not establish a durable deadline. This round requires the
-kernel capability. Never treat the health script as a deadline replacement.
+The launch adapter always returns a required coordinator timer; run its foreground
+job as documented in the parent README. It is not durable across orchestrator
+failure. Never treat the health script as a deadline replacement.
 
 The original Mac scripts remain read-only. GitHub review lookup, usage accounting,
 host rental and central acceptance merge remain there. These replacements take
