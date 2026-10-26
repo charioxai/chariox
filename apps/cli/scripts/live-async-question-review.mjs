@@ -25,8 +25,10 @@ function taskEvidence(owner,id) {
 export async function reviewQuestions({owner,root,until,sleep,capture,record,questionEvidence,report}) {
   const results=[]
   report.review=results
-  report.review_phase=process.env.AMASK_REVIEW_PHASE??'all'
-  if(process.env.AMASK_REVIEW_PHASE!=='failure'){
+  const phase=process.env.AMASK_REVIEW_PHASE??'all'
+  assert(['all','busy','deadline','timing','failure'].includes(phase),'Unknown review phase')
+  report.review_phase=phase
+  if(phase==='all'||phase==='busy'){
   const marker=path.join(root,'busy-marker')
   await owner.tui.send('submit_prompt',{prompt:`Call chariox.request_popup with wait:false, title "AMASK review busy", message "Answer while work continues", choices [{id:"continue",label:"Continue",reply:"AMASK busy answer"}], timeout_sec:300. Then run this exact shell command and wait for it: touch '${marker}'; sleep 90. After it finishes print AMASK_BUSY_DONE. When later woken, read events.inbox, handle the answer and acknowledge it as handled.`})
   const busy=await until('busy question',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK review busy'))
@@ -47,7 +49,9 @@ export async function reviewQuestions({owner,root,until,sleep,capture,record,que
   await capture(owner.tui,'review-02-busy-after-minute')
   await until('busy answer task handled',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===q.asking_task_id&&t.state==='done'),120_000)
 
-  await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup twice, wait:false for both. First title "AMASK review long", message "Ten day deadline", choices [{id:"continue",label:"Continue",reply:"Long answer"}], timeout_sec:864000. Second title "AMASK review unbounded", message "No timeout", same choices, omit timeout_sec. Finish with AMASK_LONG_ARMED. Leave both questions pending. When later woken, read events.inbox, handle and acknowledge the answers, and finish.'})
+  }
+  if(phase==='all'||phase==='deadline'){
+  await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup twice, wait:false for both. First title "AMASK review long", message "Ten day deadline", choices [{id:"continue",label:"Continue",reply:"Long answer"}], timeout_sec:864000. Second title "AMASK review unbounded", message "No timeout", same choices, omit timeout_sec. Do not call events.yield or create an explicit wait. End this turn normally with the final text AMASK_LONG_ARMED; automatic question retention is what this drill tests. Leave both questions pending. When later woken, read events.inbox, handle and acknowledge the answers, and finish.'})
   const long=await until('long questions retained',owner.session,s=>{
     const qs=(s.active_interactions??[]).filter(q=>q.title?.startsWith('AMASK review '))
     return qs.length===2&&s.agent_tasks?.some(t=>t.task_id===qs[0].asking_task_id&&t.state==='waiting')
@@ -55,6 +59,7 @@ export async function reviewQuestions({owner,root,until,sleep,capture,record,que
   const questions=long.active_interactions.filter(q=>q.title?.startsWith('AMASK review '))
   const task=taskEvidence(owner,questions[0].asking_task_id)
   await record('review-03-retained-deadlines',{questions,task})
+  assert.equal(task.reason,'Waiting for the answer to a non-blocking question','This drill requires normal settlement, not an explicit provider yield')
   results.push({finding:'question deadline',pass:task.wait.deadline_ms===8_639_999_999_999_999,deadline_ms:task.wait.deadline_ms})
   await capture(owner.tui,'review-03-long-questions')
   assert(!JSON.stringify(await owner.tui.send('snapshot')).includes('Invalid wait deadline'),'The retained deadline must render in the real TUI')
@@ -65,6 +70,8 @@ export async function reviewQuestions({owner,root,until,sleep,capture,record,que
   }
   await until('long question answers handled',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===questions[0].asking_task_id&&t.state==='done'),120_000)
 
+  }
+  if(phase==='all'||phase==='timing'){
   await owner.tui.send('submit_prompt',{prompt:'For this timer/question deadline drill call chariox.events.timer with delay_ms:3000, label "AMASK review timer" and this turn task metadata. Call chariox.request_popup twice with wait:false, titles "AMASK review timeout default" and "AMASK review timeout empty", timeout_sec:10, choices [{id:"continue",label:"Continue",reply:"AMASK review timed out"}]. Only the first has default_on_timeout:"continue". Then yield with all three registration ids, this turn metadata, and a finite deadline 60 seconds from now. When woken read events.inbox, report and handle every received timer/question outcome, acknowledge each as handled, and yield again on any remaining live source. Finish once all three outcomes are handled.'})
   const timed=await until('independent timer and both question deadlines',owner.session,s=>{
     const wakes=(s.agent_wakes??[]).filter(w=>w.label==='AMASK review timer'||w.detail?.title?.startsWith('AMASK review timeout '))
@@ -83,6 +90,7 @@ export async function reviewQuestions({owner,root,until,sleep,capture,record,que
   report.cells.push({id:'AM-ASK-04',result:'REVIEW PASS',independent_timer:true,default_and_empty_timeout:true})
 
   }
+  if(phase==='all'||phase==='failure'){
   const failureMarker=path.join(root,'failure-marker')
   await owner.tui.send('submit_prompt',{prompt:`Call chariox.request_popup with wait:false, title "AMASK review failure", message "Provider failure must stay visible", choices [{id:"continue",label:"Continue",reply:"Failure answer"}], timeout_sec:300. Then run this exact shell command and wait for it: touch '${failureMarker}'; sleep 90. Leave the question pending.`})
   const failure=await until('failure question',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK review failure'))
@@ -116,6 +124,7 @@ export async function reviewQuestions({owner,root,until,sleep,capture,record,que
   await capture(owner.tui,'review-05-failed-provider')
   await record('review-05-failure',{task:failedTask,question_pending:ended.active_interactions?.some(q=>q.id===failedQuestion.id),provider_pid:active[0].pid})
   results.push({finding:'provider failure visibility',pass:failedTask.state==='blocked'&&failedTask.reason.startsWith('Provider run failed:')&&ended.active_interactions?.some(q=>q.id===failedQuestion.id),state:failedTask.state,reason:failedTask.reason})
+  }
   report.review=results
   await record('review-results',results)
   if(process.env.AMASK_EXPECT_REVIEW_RED==='1')assert(results.every(r=>!r.pass),'Every review regression should reproduce before the fixes')
