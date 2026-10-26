@@ -429,6 +429,69 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Resolve terminal shorthand before collecting authority, then fence the
+    /// same goal and revision when an owner answers the sudo popup.
+    pub(super) fn prepare_goal_control(
+        &self,
+        request: &crate::local::SubmitPromptRequest,
+        owner: &str,
+    ) -> Result<Option<crate::local::SubmitPromptRequest>, DaemonError> {
+        let Some(rest) = request.prompt.trim().strip_prefix("/goal ") else {
+            return Ok(None);
+        };
+        let mut words = rest.splitn(4, ' ');
+        let action = words.next().unwrap_or_default();
+        if !matches!(action, "pause" | "resume" | "cancel" | "interval" | "edit") {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let attachment = self
+            .owned
+            .ensure_attachment_in_session(session.id(), &request.attachment_id)?;
+        if session.owner_user_id() != owner
+            || attachment.owner_user_id() != owner
+            || !matches!(
+                attachment.capability_level(),
+                crate::attachment::ClientCapabilityLevel::FullTerminal
+                    | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+            )
+        {
+            return Err(ledger::error("only the room owner controls a goal"));
+        }
+        let rest = rest.strip_prefix(action).unwrap_or_default().trim();
+        if rest.starts_with("goal:") {
+            return Ok(Some(request.clone()));
+        }
+        let agent = request
+            .target_agent_id
+            .as_deref()
+            .or(session.focused_agent_id())
+            .ok_or_else(|| ledger::error("goal control needs a focused agent"))?;
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent))?
+            .into_iter()
+            .find(|task| {
+                task.goal.is_some()
+                    && !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+            })
+            .ok_or_else(|| ledger::error("no active goal on the focused agent"))?;
+        let mut request = request.clone();
+        request.target_agent_id = Some(agent.into());
+        request.prompt = format!(
+            "/goal {action} {} {}{}",
+            task.goal.as_ref().unwrap().id,
+            task.revision,
+            if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" {rest}")
+            }
+        );
+        Ok(Some(request))
+    }
+
     /// Owner controls travel as a terminal command on the existing prompt route.
     /// The client includes the displayed task revision, fencing stale views.
     pub(crate) async fn control_goal_prompt(
@@ -439,6 +502,19 @@ impl KernelRuntimeState {
         if let Some(response) = self.adopt_legacy_goal(request, owner)? {
             return Ok(Some(response));
         }
+        self.control_goal_prompt_with_sudo(request, owner, None)
+            .await
+    }
+
+    pub(super) async fn control_goal_prompt_with_sudo(
+        &self,
+        request: &crate::local::SubmitPromptRequest,
+        owner: &str,
+        sudo: Option<&crate::local::KernelSudoTurn>,
+    ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        let Some(request) = self.prepare_goal_control(request, owner)? else {
+            return Ok(None);
+        };
         let Some(rest) = request.prompt.trim().strip_prefix("/goal ") else {
             return Ok(None);
         };
@@ -516,18 +592,37 @@ impl KernelRuntimeState {
         self.retract_stale_task_owner_interactions(&next.room_id, std::slice::from_ref(&next))
             .await;
         if action == "resume" {
-            let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
-            let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
-            Box::pin(
-                self.dispatch_task_continuation(
-                    &next,
-                    &attachment,
-                    self.owned
-                        .goal_continuation_context(&next)?
-                        .unwrap_or_default(),
-                ),
-            )
-            .await?;
+            let resumed = async {
+                if let Some(sudo) = sudo {
+                    self.bind_sudo_goal_resume(sudo, &next)?;
+                }
+                let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
+                let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
+                Box::pin(
+                    self.dispatch_task_continuation(
+                        &next,
+                        &attachment,
+                        self.owned
+                            .goal_continuation_context(&next)?
+                            .unwrap_or_default(),
+                    ),
+                )
+                .await
+            }
+            .await;
+            if let Err(error) = resumed {
+                // A failed authorization or dispatch cannot leave resumed work
+                // claiming to run without an executor. Keep the original task.
+                self.owned.durable_state_store.agent_lifecycle(Operation::Block {
+                    task: next.task_id.clone(), prompt: next.prompt_id.clone(),
+                    reason: format!("Goal resume failed: {}. Retry /sudo /goal resume when the provider is ready.", crate::secret_redaction::redact_secrets(&error.to_string())),
+                })?;
+                self.owned.session_snapshot(session.id())?;
+                self.owned
+                    .terminal_stream
+                    .notify_terminal_projection_change(session.id());
+                return Err(error);
+            }
         } else if action == "cancel" {
             Box::pin(self.cancel_agent_task_resources(&next)).await?;
         } else if action == "pause" || action == "edit" {

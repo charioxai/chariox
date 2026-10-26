@@ -128,6 +128,21 @@ impl KernelRuntimeState {
         if prompt.trim().is_empty() {
             return Err(error("usage: /sudo <prompt>"));
         }
+        // Goal controls refer to existing work, never a new goal objective.
+        // Capture shorthand's revision before the owner answers the popup.
+        let mut goal_request = request.clone();
+        goal_request.prompt = prompt.into();
+        if let Some(control) = self.prepare_goal_control(&goal_request, owner)? {
+            if !control.prompt.starts_with("/goal resume ") {
+                return self
+                    .control_goal_prompt(&control, owner)
+                    .await?
+                    .ok_or_else(|| {
+                        error("goal control unavailable; use /goal on the focused agent")
+                    });
+            }
+            request.prompt = control.prompt;
+        }
         self.sweep_sudo();
         let entry = KernelSudoTurn {
             entry_id: format!("sudo:{:016x}", rand::random::<u64>()),
@@ -456,6 +471,17 @@ impl KernelRuntimeState {
                 }
                 relaunch_deadline = None;
             }
+            if !reload
+                && !self.sudo_agent_busy(entry)?
+                && request.prompt.starts_with("/goal resume ")
+            {
+                return self
+                    .control_goal_prompt_with_sudo(request, &entry.owner_user_id, Some(entry))
+                    .await?
+                    .ok_or_else(|| {
+                        error("goal resume unavailable; use /goal on the focused agent")
+                    });
+            }
             let submission = self.try_start_sudo(entry, request, prompt, &attachments, !reload)?;
             if let Some(mut submission) = submission {
                 if let Some(dispatch) = submission.remote_dispatch.take() {
@@ -506,7 +532,10 @@ impl KernelRuntimeState {
     }
     /// The current window while its first turn has not started; Extend may
     /// have renewed it since the caller's read.
-    fn live_queued_sudo(&self, entry: &KernelSudoTurn) -> Result<KernelSudoTurn, DaemonError> {
+    pub(super) fn live_queued_sudo(
+        &self,
+        entry: &KernelSudoTurn,
+    ) -> Result<KernelSudoTurn, DaemonError> {
         let current = self
             .owned
             .sudo_turns
