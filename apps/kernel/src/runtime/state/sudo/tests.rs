@@ -35,7 +35,7 @@ async fn a12_owner_sudo_reaches_passkey_when_agent_decisions_fill_the_cap() {
     }
     let state = f.state.clone();
     let mut request = f.request.clone();
-    request.prompt = "/sudo /goal resume".into();
+    request.prompt = "/sudo protected task".into();
     let pending = tokio::spawn(async move {
         state
             .submit_sudo_prompt(request, "local", "sudo-terminal")
