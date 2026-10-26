@@ -188,14 +188,41 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let output_follow_up_exhausted =
+            self.output_follow_up_exhausted(session_id, prompt, provider_run_id)?;
         let activity_mutation = self.begin_managed_activity_mutation();
         self.workflow_complete_prompt_with_activity_mutation_and_rollback(
             session_id,
             prompt,
             provider_run_id,
+            output_follow_up_exhausted,
             None,
             activity_mutation,
             || {},
+        )
+    }
+
+    /// Evaluated once per settlement, before the task ledger moves: ending the
+    /// task as failed makes it look supervised to a second evaluation.
+    pub(super) fn output_follow_up_exhausted(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let (Some(run), Some(node), Some(provider)) = (
+            prompt.workflow_run_id(),
+            prompt.workflow_node_run_id(),
+            provider_run_id,
+        ) else {
+            return Ok(false);
+        };
+        crate::app::workflow_output_follow_up::output_follow_up_exhausted(
+            &self.durable_state_store,
+            session_id,
+            prompt,
+            self.workflow_prompt_has_completion_output(session_id, run, node, provider),
+            self.provider_run_terminal_diagnostic(provider).is_some(),
         )
     }
 
@@ -204,6 +231,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
+        output_follow_up_exhausted: bool,
         prompt_agent_id: Option<&str>,
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
         rollback_prompt: impl FnOnce(),
@@ -223,17 +251,6 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         };
-        let output_follow_up_exhausted = prompt
-            .id()
-            .starts_with(crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX)
-            && provider_run_id.is_some_and(|provider| {
-                !self.workflow_prompt_has_completion_output(
-                    session_id,
-                    workflow_run_id,
-                    workflow_node_run_id,
-                    provider,
-                )
-            });
         if !output_follow_up_exhausted
             && self.config_projection.snapshot().room_agent_tools
             && self

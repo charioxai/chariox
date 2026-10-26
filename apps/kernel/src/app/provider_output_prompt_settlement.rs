@@ -317,18 +317,15 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
             return Ok(false);
         }
-        if self
-            .provider_store
-            .get_run(provider_run_id)?
-            .terminal_diagnostic()
-            .is_none()
-            && crate::app::workflow_output_follow_up::supervised_task(
-                &self.app.durable_state_store(),
-                session_id,
-                &prompt,
-            )?
-            .is_some()
-        {
+        if !crate::app::workflow_output_follow_up::missing_output_is_final(
+            &self.app.durable_state_store(),
+            session_id,
+            &prompt,
+            self.provider_store
+                .get_run(provider_run_id)?
+                .terminal_diagnostic()
+                .is_some(),
+        )? {
             return Ok(false);
         }
         Ok(

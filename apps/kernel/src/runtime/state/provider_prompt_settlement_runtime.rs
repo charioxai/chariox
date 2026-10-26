@@ -546,20 +546,8 @@ impl KernelRuntimeState {
         // complete (for example, when a managed provider socket is replaced during recovery).
         // Keep this fact so the common completion path can create a replacement run for queued
         // work instead of leaving the queue parked behind the ended run.
-        let output_follow_up_exhausted = active_prompt
-            .id()
-            .starts_with(crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX)
-            && active_prompt
-                .workflow_run_id()
-                .zip(active_prompt.workflow_node_run_id())
-                .is_some_and(|(run, node)| {
-                    !owned.workflow_prompt_has_completion_output(
-                        session_id,
-                        run,
-                        node,
-                        provider_run_id,
-                    )
-                });
+        let output_follow_up_exhausted =
+            owned.output_follow_up_exhausted(session_id, &active_prompt, Some(provider_run_id))?;
         let task_settlement = if output_follow_up_exhausted {
             owned.end_failed_agent_task_with_reason(
                 session_id,
@@ -672,6 +660,7 @@ impl KernelRuntimeState {
                     session_id,
                     &reserved_prompt,
                     Some(provider_run_id),
+                    output_follow_up_exhausted,
                     Some(&agent_id),
                     activity_mutation,
                     || {

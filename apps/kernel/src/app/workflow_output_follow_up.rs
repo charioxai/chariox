@@ -132,6 +132,33 @@ pub(crate) fn supervised_task(
         }))
 }
 
+/// The one rule for a workflow turn that ended without output, shared by the
+/// local, app and home-lease settlement paths: the node fails unless the
+/// provider is healthy and a recorded wait/Yield still supervises the task.
+pub(crate) fn missing_output_is_final(
+    durable: &DurableKernelStateStore,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+    provider_failed: bool,
+) -> Result<bool, DaemonError> {
+    Ok(provider_failed || supervised_task(durable, session_id, prompt)?.is_none())
+}
+
+/// The reminder turn is the last chance: it ending without output and
+/// without a wait ends the node.
+pub(crate) fn output_follow_up_exhausted(
+    durable: &DurableKernelStateStore,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+    has_output: bool,
+    provider_failed: bool,
+) -> Result<bool, DaemonError> {
+    if has_output || !prompt.id().starts_with(FOLLOW_UP_PREFIX) {
+        return Ok(false);
+    }
+    missing_output_is_final(durable, session_id, prompt, provider_failed)
+}
+
 pub(crate) fn local_dispatch(
     session_id: &str,
     provider_run_id: &str,
@@ -304,16 +331,14 @@ mod tests {
         .unwrap()
     }
 
-    fn yield_to_helper(
+    fn register_helper(
         app: &crate::app::DaemonApp,
         session: &str,
         prompt: &PromptQueueItem,
         run: &str,
     ) {
-        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Registration};
-        let store = app.durable_state_store();
-        let now = crate::session::unix_epoch_ms();
-        store
+        use crate::durable_state::agent_lifecycle::Operation;
+        app.durable_state_store()
             .agent_lifecycle(Operation::RegisterObligation {
                 owner: "local".into(),
                 room: session.into(),
@@ -323,16 +348,29 @@ mod tests {
                 id: "helper".into(),
                 kind: "delegate".into(),
                 resource: Some("helper-agent".into()),
-                now,
+                now: crate::session::unix_epoch_ms(),
             })
             .unwrap();
+    }
+
+    /// Subscribe and Yield on the helper from `prompt`'s turn. `task_id` is the id
+    /// of the task the turn belongs to: the first prompt's id, also for the reminder.
+    fn yield_to_helper(
+        app: &crate::app::DaemonApp,
+        session: &str,
+        task_id: &str,
+        prompt: &PromptQueueItem,
+    ) {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Registration};
+        let store = app.durable_state_store();
+        let now = crate::session::unix_epoch_ms();
         store
             .agent_lifecycle(Operation::Subscribe {
-                task: prompt.id().into(),
+                task: task_id.into(),
                 prompt: prompt.id().into(),
                 registration: Registration {
                     id: "helper-wait".into(),
-                    task_id: prompt.id().into(),
+                    task_id: task_id.into(),
                     source_id: "helper-agent".into(),
                     obligation_id: Some("helper".into()),
                     source_cursor: 0,
@@ -342,7 +380,7 @@ mod tests {
             .unwrap();
         store
             .agent_lifecycle(Operation::Yield {
-                task: prompt.id().into(),
+                task: task_id.into(),
                 prompt: prompt.id().into(),
                 registrations: vec!["helper-wait".into()],
                 cursor: 0,
@@ -359,23 +397,35 @@ mod tests {
         assert!(task.wait.is_some());
     }
 
+    fn yield_first_turn(
+        app: &crate::app::DaemonApp,
+        session: &str,
+        prompt: &PromptQueueItem,
+        run: &str,
+    ) {
+        register_helper(app, session, prompt, run);
+        yield_to_helper(app, session, prompt.id(), prompt);
+    }
+
     #[test]
     fn workflow_output_follow_up_skips_yield_before_native_settlement() {
         let (app, session, prompt, _worktree) = fixture();
-        yield_to_helper(&app, &session, &prompt, "run");
+        yield_first_turn(&app, &session, &prompt, "run");
         assert!(
             prepare(&app, &session, &prompt).is_none(),
             "Yield must retain the supervised turn"
         );
     }
 
-    #[test]
-    fn workflow_yield_wait_survives_app_settlement() {
-        let (mut app, session, prompt, _worktree) = fixture();
+    fn launch_delivered_run(
+        app: &mut crate::app::DaemonApp,
+        session: &str,
+        prompt: &PromptQueueItem,
+    ) -> String {
         let run = app
             .launch_provider(
                 crate::provider::LaunchProviderRequest::new(
-                    &session,
+                    session,
                     "dev-stub",
                     "claude-code",
                     "default",
@@ -386,7 +436,7 @@ mod tests {
             .unwrap();
         app.update_provider_run_projection(run.clone());
         app.mark_active_prompt_delivery(
-            &session,
+            session,
             prompt.target_agent_id(),
             prompt.id(),
             DurablePromptDeliveryPhase::Delivered,
@@ -394,31 +444,92 @@ mod tests {
             None,
         )
         .unwrap();
-        yield_to_helper(&app, &session, &prompt, run.id());
-        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+        crate::transport::flow_control::note_prompt_started(app, run.id());
+        run.id().into()
+    }
+
+    fn settle_app_completion(app: &mut crate::app::DaemonApp, session: &str, run: &str) {
         let providers = app.providers.clone();
         let turns = app.active_turns.clone();
         let activity = app.prompt_activity.clone();
         let projection = app.agent_runtime_projection_store();
         let mut settlement =
             crate::app::provider_output_prompt_settlement::ProviderOutputPromptSettlement::new(
-                &mut app, providers, turns, activity, projection,
+                app, providers, turns, activity, projection,
             );
         settlement
-            .settle_structured_completion(&session, run.id(), true, false)
+            .settle_structured_completion(session, run, true, false)
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(
             crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
         ));
         settlement
-            .settle_structured_completion(&session, run.id(), false, false)
+            .settle_structured_completion(session, run, false, false)
             .unwrap();
-        assert_supervised_wait(&app, &session, &prompt);
+    }
+
+    /// The reminder turn runs under the first turn's task; dispatch moves the
+    /// task onto the reminder's prompt id.
+    fn begin_reminder_turn(
+        app: &crate::app::DaemonApp,
+        session: &str,
+        reminder: &PromptQueueItem,
+        run: &str,
+    ) {
+        assert!(reminder.id().starts_with(FOLLOW_UP_PREFIX));
+        app.durable_state_store()
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: "local".into(),
+                room: session.into(),
+                agent: reminder.target_agent_id().into(),
+                prompt: reminder.id().into(),
+                run: Some(run.into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
     }
 
     #[test]
-    fn workflow_yield_wait_survives_home_lease_projection() {
+    fn workflow_yield_wait_survives_app_settlement() {
         let (mut app, session, prompt, _worktree) = fixture();
+        let run = launch_delivered_run(&mut app, &session, &prompt);
+        yield_first_turn(&app, &session, &prompt, &run);
+        settle_app_completion(&mut app, &session, &run);
+        assert_supervised_wait(&app, &session, &prompt, 0);
+    }
+
+    #[test]
+    fn workflow_yield_during_reminder_survives_app_settlement() {
+        let (mut app, session, prompt, _worktree) = fixture();
+        let run = launch_delivered_run(&mut app, &session, &prompt);
+        register_helper(&app, &session, &prompt, &run);
+        settle_app_completion(&mut app, &session, &run);
+        let reminder = app
+            .prompt_owner_active_prompt_for_agent(&session, prompt.target_agent_id())
+            .unwrap()
+            .expect("the first miss admits the reminder");
+        begin_reminder_turn(&app, &session, &reminder, &run);
+        yield_to_helper(&app, &session, prompt.id(), &reminder);
+        settle_app_completion(&mut app, &session, &run);
+        assert_supervised_wait(&app, &session, &reminder, 1);
+    }
+
+    #[test]
+    fn workflow_reminder_without_wait_fails_once_on_app_path() {
+        let (mut app, session, prompt, _worktree) = fixture();
+        let run = launch_delivered_run(&mut app, &session, &prompt);
+        register_helper(&app, &session, &prompt, &run);
+        settle_app_completion(&mut app, &session, &run);
+        let reminder = app
+            .prompt_owner_active_prompt_for_agent(&session, prompt.target_agent_id())
+            .unwrap()
+            .expect("the first miss admits the reminder");
+        begin_reminder_turn(&app, &session, &reminder, &run);
+        settle_app_completion(&mut app, &session, &run);
+        assert_failed_once(&app, &session, &prompt);
+    }
+
+    fn bind_leased_agent(app: &mut crate::app::DaemonApp, prompt: &PromptQueueItem) {
         app.agents
             .bind_remote_execution(
                 prompt.target_agent_id(),
@@ -436,39 +547,98 @@ mod tests {
                 },
             )
             .unwrap();
-        let projected = crate::provider::projected_leased_provider_run_id("leased", "run");
-        yield_to_helper(&app, &session, &prompt, &projected);
-        let outcome = crate::app::RemoteLeaseRuntime::new(&mut app)
+    }
+
+    fn project_lease_completion(
+        app: &mut crate::app::DaemonApp,
+        session: &str,
+        agent: &str,
+        home_prompt_id: &str,
+    ) -> usize {
+        crate::app::RemoteLeaseRuntime::new(app)
             .project_remote_runtime_projection(
                 crate::runtime::relay_peer_authority::test_projection_authority("worker"),
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                    home_session_id: session.clone(),
-                    home_agent_id: prompt.target_agent_id().into(),
+                    home_session_id: session.into(),
+                    home_agent_id: agent.into(),
                     provider_run_id: "run".into(),
                     provider_run: None,
-                    prompts: vec![],
-                    output_chunks: vec![],
-                    notices: vec![],
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
                     completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                        message_id: "yielded".into(),
+                        message_id: format!("completion-{home_prompt_id}"),
                         completed_at_ms: crate::session::unix_epoch_ms(),
-                        home_prompt_id: Some(prompt.id().into()),
+                        home_prompt_id: Some(home_prompt_id.into()),
                         provider_termination: None,
                     }],
                 },
             )
-            .unwrap();
-        assert_eq!(outcome.completions.len(), 1);
+            .unwrap()
+            .completions
+            .len()
+    }
+
+    #[test]
+    fn workflow_yield_wait_survives_home_lease_projection() {
+        let (mut app, session, prompt, _worktree) = fixture();
+        bind_leased_agent(&mut app, &prompt);
+        let projected = crate::provider::projected_leased_provider_run_id("leased", "run");
+        yield_first_turn(&app, &session, &prompt, &projected);
+        let completions =
+            project_lease_completion(&mut app, &session, prompt.target_agent_id(), prompt.id());
+        assert_eq!(completions, 1);
         assert!(app
             .take_deferred_workflow_remote_prompt_dispatches()
             .is_empty());
-        assert_supervised_wait(&app, &session, &prompt);
+        assert_supervised_wait(&app, &session, &prompt, 0);
+    }
+
+    #[test]
+    fn workflow_yield_during_reminder_survives_home_lease_projection() {
+        let (mut app, session, prompt, _worktree) = fixture();
+        bind_leased_agent(&mut app, &prompt);
+        let projected = crate::provider::projected_leased_provider_run_id("leased", "run");
+        register_helper(&app, &session, &prompt, &projected);
+        project_lease_completion(&mut app, &session, prompt.target_agent_id(), prompt.id());
+        let reminder = app
+            .prompt_owner_active_prompt_for_agent(&session, prompt.target_agent_id())
+            .unwrap()
+            .expect("the first miss admits the reminder");
+        assert_eq!(
+            app.take_deferred_workflow_remote_prompt_dispatches().len(),
+            1
+        );
+        begin_reminder_turn(&app, &session, &reminder, &projected);
+        yield_to_helper(&app, &session, prompt.id(), &reminder);
+        project_lease_completion(&mut app, &session, prompt.target_agent_id(), reminder.id());
+        assert!(app
+            .take_deferred_workflow_remote_prompt_dispatches()
+            .is_empty());
+        assert_supervised_wait(&app, &session, &reminder, 1);
+    }
+
+    #[test]
+    fn workflow_reminder_without_wait_fails_once_on_home_lease_path() {
+        let (mut app, session, prompt, _worktree) = fixture();
+        bind_leased_agent(&mut app, &prompt);
+        let projected = crate::provider::projected_leased_provider_run_id("leased", "run");
+        register_helper(&app, &session, &prompt, &projected);
+        project_lease_completion(&mut app, &session, prompt.target_agent_id(), prompt.id());
+        let reminder = app
+            .prompt_owner_active_prompt_for_agent(&session, prompt.target_agent_id())
+            .unwrap()
+            .expect("the first miss admits the reminder");
+        begin_reminder_turn(&app, &session, &reminder, &projected);
+        project_lease_completion(&mut app, &session, prompt.target_agent_id(), reminder.id());
+        assert_failed_once(&app, &session, &prompt);
     }
 
     fn assert_supervised_wait(
         app: &crate::app::DaemonApp,
         session: &str,
         prompt: &PromptQueueItem,
+        follow_ups: usize,
     ) {
         let state = app.sessions.get_session(session).unwrap();
         assert!(
@@ -498,9 +668,48 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.payload["reason"] == "workflow_task_waiting"));
-        assert!(!events
-            .iter()
-            .any(|event| event.payload["reason"] == "workflow_output_follow_up"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.payload["reason"] == "workflow_output_follow_up")
+                .count(),
+            follow_ups
+        );
+    }
+
+    fn assert_failed_once(app: &crate::app::DaemonApp, session: &str, prompt: &PromptQueueItem) {
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session, prompt.target_agent_id())
+            .unwrap()
+            .is_none());
+        let state = app.sessions.get_session(session).unwrap();
+        let run = state
+            .workflow_run(prompt.workflow_run_id().unwrap())
+            .cloned()
+            .or_else(|| {
+                app.durable_state_store()
+                    .resolve_workflow_run(
+                        state.host_daemon_id(),
+                        session,
+                        prompt.workflow_run_id().unwrap(),
+                    )
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(run.status(), WorkflowRunStatus::Failed);
+        assert_eq!(
+            run.failure_events().last().unwrap().kind(),
+            crate::session::WorkflowFailureKind::MissingStructuredOutput
+        );
+        assert_eq!(
+            app.durable_state_store()
+                .load_events_by_kind("workflow.runtime.updated")
+                .unwrap()
+                .iter()
+                .filter(|event| event.payload["reason"] == "workflow_output_follow_up")
+                .count(),
+            1
+        );
     }
 
     #[test]
