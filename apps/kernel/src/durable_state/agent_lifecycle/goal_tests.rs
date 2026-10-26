@@ -893,7 +893,11 @@ fn a12_unadmitted_checkin_ack_cannot_consume_a_waiting_goal_deadline() {
         now: 60009,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
-    assert_eq!(f.task().no_progress_wakes, waiting.no_progress_wakes + 1);
+    assert_eq!(
+        f.task().no_progress_wakes,
+        waiting.no_progress_wakes,
+        "an admitted check-in on a live source does not spend the guard"
+    );
 }
 
 #[test]
@@ -903,6 +907,11 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     f.register();
     f.subscribe();
     f.settle("p", true);
+    let continued = check(&f, assessment("continue"));
+    assert_eq!(continued.no_progress_wakes, 1);
+    let work = continued.pending_prompt_id.unwrap();
+    f.begin(&work);
+    f.settle(&work, true);
     check(
         &f,
         serde_json::json!({"status":"waiting","reason":"peer required","registration_ids":["reg"],"deadline_ms":60004}),
