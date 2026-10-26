@@ -111,13 +111,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
                         }))
                 {
-                    // Settle blocks at the limit, so a Waiting task is always below it.
+                    let check_in = super::goals::is_check_in_event(&t, &e);
                     super::goals::clock(&mut t, now);
                     if let Some(g) = &mut t.goal {
                         g.continuation_sequence += 1;
                         g.next_check_in_ms = None;
                     }
-                    t.no_progress_wakes += 1;
+                    if !check_in {
+                        t.no_progress_wakes += 1;
+                    }
                     t.pending_prompt_id = Some(prompt);
                     t.state = ExecutionState::Working;
                     t.revision += 1;
@@ -246,7 +248,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             };
             if e.state == "pending" {
                 if let Some(prompt) = e.prompt_id.as_deref() {
-                    revert_refused_wake(tx, &e.room_id, &e.agent_id, prompt)?;
+                    revert_refused_wake(tx, &e, prompt)?;
                 }
                 // Steering is a busy refusal even when its receipt arrives
                 // after the turn ends or the admitted attempt times out.
@@ -373,20 +375,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
 // the attempt is not a no-progress strike. The pending event retries later.
 fn revert_refused_wake(
     tx: &Transaction<'_>,
-    room: &str,
-    agent: &str,
+    event: &InboxEvent,
     prompt: &str,
 ) -> Result<(), DaemonError> {
     for mut t in tasks(tx)? {
-        if t.room_id == room
-            && t.agent_id == agent
+        if t.room_id == event.room_id
+            && t.agent_id == event.agent_id
             && t.state == ExecutionState::Working
             && t.wait.is_some()
             && (t.pending_prompt_id.as_deref() == Some(prompt) || t.prompt_id == prompt)
         {
             t.state = ExecutionState::Waiting;
             t.pending_prompt_id = None;
-            t.no_progress_wakes = t.no_progress_wakes.saturating_sub(1);
+            if !super::goals::is_check_in_event(&t, event) {
+                t.no_progress_wakes = t.no_progress_wakes.saturating_sub(1);
+            }
             t.revision += 1;
             save(tx, &t)?;
         }
