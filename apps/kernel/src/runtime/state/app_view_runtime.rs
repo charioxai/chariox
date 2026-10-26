@@ -44,7 +44,9 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         let owner = match request {
-            LocalDaemonRequest::OpenAppView(_) | LocalDaemonRequest::SetAppViewPanel(_) => {
+            LocalDaemonRequest::OpenAppView(_)
+            | LocalDaemonRequest::SetAppViewPanel(_)
+            | LocalDaemonRequest::InspectAppView(_) => {
                 match crate::runtime::app_control::owner(command) {
                     Ok(owner) => owner,
                     Err(code) => return Some(Ok(crate::runtime::app_control::failed(code))),
@@ -53,6 +55,9 @@ impl KernelRuntimeState {
             _ => return None,
         };
         Some(match request {
+            LocalDaemonRequest::InspectAppView(request) => {
+                self.inspect_app_view(owner, request).await
+            }
             LocalDaemonRequest::OpenAppView(request) => {
                 self.open_app_view(owner, &request.session_id, &request.installation_id)
                     .await
@@ -183,7 +188,7 @@ impl KernelRuntimeState {
     /// Room command holds it (that rejection means it never ran; an Open is
     /// not idempotent, and a Reload refused this way would unbind a working
     /// view). An answer is idempotent, so any failure is retried.
-    async fn app_view_command<T: serde::de::DeserializeOwned>(
+    pub(super) async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,

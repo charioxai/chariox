@@ -20,6 +20,26 @@
         ]
       },
       {
+        "id": "app-actions",
+        "label": "actions",
+        "description": "Show the open App view actions, bounded state and coverage warnings",
+        "value": "/app actions",
+        "surfaces": [
+          "session"
+        ],
+        "children": [
+          {
+            "id": "app-actions-toggle",
+            "label": "toggle",
+            "description": "Toggle the DEV agent-view inspector",
+            "value": "/app actions toggle",
+            "surfaces": [
+              "session"
+            ]
+          }
+        ]
+      },
+      {
         "id": "app-set",
         "label": "set",
         "description": "Show this kernel's App set: releases, approved capabilities and configuration",

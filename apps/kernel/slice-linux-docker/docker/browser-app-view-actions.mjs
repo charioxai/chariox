@@ -149,11 +149,45 @@ export function createViewActions() {
     },
   });
 
+  // Coverage is explicit for JS handlers: annotate their control with
+  // data-chariox-action. DOM listeners cannot be inspected without replacing
+  // the App's event dispatch. Forms reuse the SDK's supported-field mapping.
+  function controls() {
+    if (typeof document === 'undefined') return [];
+    const nodes = document.querySelectorAll('button,input,select,textarea,a[href],summary,[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[role="combobox"],[role="slider"],[contenteditable="true"]');
+    const visible = [...nodes].filter(node => !node.disabled && !node.closest('[inert]')
+      && node.getClientRects().length > 0
+      && node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+    if (visible.length > 512) throw Object.assign(new Error('the view has more than 512 visible controls'), { code: 'coverage_too_large' });
+    return visible.map(node => {
+      let name = node.getAttribute('data-chariox-action');
+      const form = node.form;
+      if (!name && form?.hasAttribute('data-chariox-action')
+        && (controlsOf(form).includes(node) || (node.type === 'submit' && /^(?:BUTTON|INPUT)$/.test(node.tagName)))) {
+        name = form.getAttribute('data-chariox-action');
+      }
+      return { control: (node.tagName.toLowerCase() + (node.id ? '#' + node.id : node.name ? '[name="' + node.name + '"]' : '')).slice(0, 256), action: name || null };
+    });
+  }
+
   // The kernel's side. Every answer is `{ok: true, value}` or `{ok: false, code, message}`.
   const agent = Object.freeze({
     /** Declaration-shaped descriptors, compared by the kernel with the signed ones. */
     registrations() {
       return [...[...registered.values()].map(({ descriptor }) => JSON.parse(JSON.stringify(descriptor))), ...forms().map(describeForm)];
+    },
+    /** One bounded observation used by the kernel catalog and DEV inspector. */
+    async inspect() {
+      let timer;
+      try {
+        const state = await Promise.race([
+          agent.state(),
+          new Promise(resolve => { timer = setTimeout(() => resolve(fail('state_timeout', 'the state provider did not answer within 2 seconds')), 2000); }),
+        ]);
+        const observation = bounded({ registrations: agent.registrations(), state, controls: controls() }, MAX_RESULT_BYTES, 'inspection_too_large', 'the inspection');
+        if (!observation.ok) throw Object.assign(new Error(observation.message), { code: observation.code });
+        return observation.value;
+      } finally { clearTimeout(timer); }
     },
     async invoke(name, params) {
       const entry = registered.get(name);

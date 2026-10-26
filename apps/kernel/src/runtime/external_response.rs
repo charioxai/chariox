@@ -133,6 +133,7 @@ response_policies! {
         UserAppViewClosed,
         UserAppViewFrontend,
         UserAppViewCallResult,
+        AppViewInspected,
         UserAppViewsChanged,
         DebugBundleExported,
         McpServerInstalled,

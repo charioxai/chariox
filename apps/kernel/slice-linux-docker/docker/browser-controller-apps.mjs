@@ -175,6 +175,25 @@ export class AppTabs {
     return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
   }
 
+  async inspect(params) {
+    const entry = [...this.apps].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry || !entry[1].ready || !entry[1].document) throw new BrowserControllerError('app_view_not_ready', 'Reload the App view before inspecting it');
+    const [sessionId, app] = entry;
+    const document = app.document;
+    const reply = await this.connection.send('Runtime.evaluate', {
+      expression: '(async () => { try { return {ok:true,value:await globalThis.__charioxViewAgent.inspect()} } catch (error) { return {ok:false,code:error?.code} } })()', awaitPromise: true, returnByValue: true,
+    }, sessionId);
+    if (this.apps.get(sessionId) !== app || app.document !== document || !app.ready) throw new BrowserControllerError('app_view_changed', 'The App view changed during inspection; retry');
+    if (reply.exceptionDetails || !reply.result?.value) throw new BrowserControllerError('app_view_inspection_failed', 'The App view could not be inspected; reload it and retry');
+    const result = reply.result.value;
+    if (result.ok !== true) {
+      if (result.code === 'coverage_too_large') throw new BrowserControllerError('app_view_coverage_too_large', 'The App has more than 512 visible controls; ask its developer to reduce the inspected view');
+      if (result.code === 'inspection_too_large') throw new BrowserControllerError('app_view_inspection_too_large', 'The App inspection exceeds 256 KiB; ask its developer to reduce the declarations or state');
+      throw new BrowserControllerError('app_view_inspection_failed', 'The App view could not be inspected; reload it and retry');
+    }
+    return result.value;
+  }
+
   async open(params) {
     const origin = appOrigin(params?.origin_label);
     if (typeof params?.installation_id !== "string" || !params.installation_id) throw invalid("missing installation");

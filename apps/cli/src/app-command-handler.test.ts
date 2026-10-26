@@ -276,3 +276,13 @@ test("TUI App slash command makes an expired receipt clear without retrying", as
   assert.equal(sends, 1)
   assert.deepEqual(flashes, [["App receipt expired. This request was not re-executed; check the App state before issuing a new command.", "error"]])
 })
+
+test("/app actions toggle reaches the DEV inspector without invoking a backend tool", async () => {
+  const calls:string[][]=[]
+  await handleAppSlashCommand({
+    appActions:{handle:async args => {calls.push(args);return true}},
+    sendAppRequest:async () => assert.fail("inspector owns this command"),
+    appendNotice:() => assert.fail("no backend output"),flashFooter:message => assert.fail(message),
+  },{kind:"app",raw:"/app actions toggle",args:["actions","toggle"]})
+  assert.deepEqual(calls,[["actions","toggle"]])
+})

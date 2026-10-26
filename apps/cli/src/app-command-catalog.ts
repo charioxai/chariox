@@ -26,6 +26,7 @@ export const appCommandCatalog: readonly AppCommandEntry[] = [
   { verb: "operation", tui: "operation [REQUEST-ID]", summary: "show an App install or update" },
   { verb: "cancel", tui: "cancel [REQUEST-ID]", summary: "cancel an App install or update" },
   both("list", "[--after ID] [--limit 1..100]", "list installed Apps"),
+  { verb: "actions", cli: "actions [--tab TARGET] [--session SESSION] [--json]", tui: "actions [--tab TARGET] [--json] | actions toggle", summary: "show actions, state and coverage; toggle the DEV agent view" },
   both("set", "", "show your App set: releases, capabilities and configuration"),
   both("status", "INSTALLATION", "show an App installation"),
   both("journal", "INSTALLATION", "show retained App updates"),

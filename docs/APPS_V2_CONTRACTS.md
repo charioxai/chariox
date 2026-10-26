@@ -151,3 +151,39 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   enter a value it knows into a password or masked field; the product keeps
   masking what a Vault fill put there in model-bound observations. Anything
   richer uses `chariox.action`, whose schema the developer writes.
+
+## A4 inspection (MP-08 / MP-10 / MP-11)
+
+`InspectAppView` (local 646; peer 245) reads an **existing** Room App Tab.
+The kernel selects the focused Tab unless the caller supplies `target_id`,
+checks Room membership, the kernel's App binding, DEV Room scope, current
+publisher trust and generation before and after the read. It uses the existing
+`AppView` home/worker command with `op: inspect`; it cannot invoke an action,
+open a headless Tab or grant a capability. A2's runtime MCP surface is separate.
+
+The controller reads `__charioxViewAgent.inspect()` from the bound App document
+and refuses a document change. The SDK returns its registrations, state and
+visible control mapping. State is bounded at 64 KiB with a two-second provider
+wait; the observation is bounded at 256 KiB, 256 registrations and 512 controls.
+Errors and missing state providers remain explicit results. No DOM field value
+is read for coverage. Supported form fields reuse A1's `controlsOf`; submit
+controls inherit their form's action. For JS actions annotate the visible
+control with `data-chariox-action="name"`; event-listener closures are opaque.
+Unsupported form controls and unannotated buttons remain uncovered.
+
+`chariox_app_runtime::view_catalog::ViewCatalog::from_observation` compares
+runtime registrations with A1's signed action declarations and reports
+`declaration_mismatch` and `undeclared_control`. `actions` is signed authority;
+`registrations` is diagnostic only. The current D1 active-release service reads
+v1 packages, which cannot declare signed `uiActions`: it therefore supplies an
+empty signed action list and reports registrations as mismatches. This does
+not extend v1's manifest or admit its registrations as agent actions. Wiring
+`VerifiedPackageV2::ui_actions()` into the read requires R4's v2 activation.
+
+`/app actions [--tab TARGET] [--json]` and `chariox app actions --session ROOM`
+share the same read. `--json` emits `catalog_json`, serialized once by the kernel; the client never reserializes it (number formatting and numeric object keys must survive). `/app actions
+toggle` opens the DEV-only TUI inspector using that same JSON; A/Esc closes it,
+R refreshes the bound Tab, and a Room/kernel change closes it. This shared
+serialization proves inspector/read equivalence; equivalence with A2's agent
+catalog needs its integration drill. The web inspector remains a proposal until
+Miguel approves a prototype-copy mock; no web behavior ships in A4.

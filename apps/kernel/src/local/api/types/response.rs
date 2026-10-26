@@ -70,6 +70,7 @@ pub enum LocalDaemonResponse {
     UserAppViewCallResult { result: Option<serde_json::Value>, error: Option<AppViewChannelError> },
     UserAppViewsChanged { cursor: u64, views: Vec<UserAppView>, interactions: Vec<crate::session::RuntimeInteraction> },
     UserDomainInteractionAnswered { interaction_id: String },
+    AppViewInspected { installation_id: String, target_id: String, generation: String, development: bool, catalog_json: String },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
     /// The user's panel choice for the App's views in this session.
     AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },

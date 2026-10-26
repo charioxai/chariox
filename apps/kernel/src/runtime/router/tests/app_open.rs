@@ -133,6 +133,17 @@ async fn app_open_drill() {
     assert!(no_browser.contains("/room bind"));
     assert!(!no_browser.contains("stale revision"));
 
+    let inspection = |room: &str| {
+        LocalDaemonRequest::InspectAppView(crate::local::InspectAppViewRequest {
+            session_id: room.into(),
+            target_id: Some("inspection-tab".into()),
+        })
+    };
+    assert!(request(&router, inspection(&rooms[0]))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not an open App view"));
     let controller = scratch.0.join("controller.sh");
     std::fs::write(&controller, r#"#!/bin/sh
 while IFS= read -r request; do
@@ -140,6 +151,7 @@ while IFS= read -r request; do
   id=${id%%,*}
   case "$request" in
     *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.app.inspect"'*) printf '{"id":%s,"ok":true,"result":{"registrations":[{"name":"add","description":"Add","inputSchema":{"type":"object"},"effect":"write"}],"state":{"ok":true,"value":{"count":1}},"controls":[{"control":"button#missing","action":null}]}}\n' "$id" ;;
     *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
     *) exit 1 ;;
   esac
@@ -170,6 +182,66 @@ done
     assert!(!wrong_room.contains("stale revision"));
     // A failed open neither stops nor reassigns the admitted Room's browser.
     assert!(processes.acquire(&rooms[0]).is_ok());
+    let active_generation = store
+        .get_app_installation("alice", "installed")
+        .unwrap()
+        .generation;
+    let views = router.runtime_state.app_control().views().clone();
+    let binding = crate::runtime::app_views::AppViewBinding {
+        owner: "alice".into(),
+        installation: "installed".into(),
+        generation: active_generation,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    views.register(&rooms[0], "inspection-tab", binding.clone());
+    let LocalDaemonResponse::AppViewInspected {
+        catalog_json,
+        development,
+        generation,
+        ..
+    } = request(&router, inspection(&rooms[0])).await.unwrap()
+    else {
+        panic!("inspection")
+    };
+    let catalog: chariox_app_runtime::view_catalog::ViewCatalog =
+        serde_json::from_str(&catalog_json).unwrap();
+    assert!(!development);
+    assert_eq!(generation, active_generation.to_string());
+    assert_eq!(
+        catalog.state,
+        serde_json::json!({"ok":true,"value":{"count":1}})
+    );
+    assert_eq!(catalog.registrations.len(), 1);
+    assert_eq!(catalog.warnings.len(), 2);
+    assert_eq!(catalog.warnings[1].code, "undeclared_control");
+    assert!(request(&router, inspection(&rooms[1]))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not an open App view"));
+    let denied = inspection(&rooms[0]);
+    let denied = router
+        .dispatch(remote_command_for_request(&denied, Some("bob")), denied)
+        .await;
+    assert!(
+        denied.is_err(),
+        "Room membership must apply to observations too"
+    );
+    views.register(
+        &rooms[0],
+        "inspection-tab",
+        crate::runtime::app_views::AppViewBinding {
+            generation: active_generation + 1,
+            ..binding
+        },
+    );
+    assert!(request(&router, inspection(&rooms[0]))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("old generation"));
+    views.unbind(&rooms[0], "inspection-tab");
     processes.shutdown().unwrap();
     let stopped = request(&router, open(&rooms[0]))
         .await

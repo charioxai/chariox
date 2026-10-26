@@ -29,6 +29,10 @@ pub(crate) enum BrowserAppViewRequest {
         page: AppViewPage,
     },
     Calls,
+    /// Read the exact bound document through the View SDK, without invoking actions.
+    Inspect {
+        target_id: String,
+    },
     /// End only the exact kernel-bound App target.
     Close {
         target_id: String,
@@ -54,6 +58,7 @@ impl BrowserAppViewRequest {
         match self {
             Self::Open { .. } => "browser.app.open",
             Self::Calls => "browser.app.calls",
+            Self::Inspect { .. } => "browser.app.inspect",
             Self::Close { .. } => "browser.app.close",
             Self::Reload { .. } => "browser.app.reload",
             Self::Layout { .. } => "browser.app.layout",

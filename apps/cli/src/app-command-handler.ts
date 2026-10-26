@@ -12,6 +12,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import type { AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 
 export type AppCommandHandlerDeps = {
+  appActions?: { handle(args: string[]): Promise<boolean> }
   userAppViews?: { handle(args: string[]): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   appHostTerminal?: AppHostTerminal
   currentAppHostOperationIds?: () => string[]
@@ -79,6 +80,7 @@ export async function handleAppSlashCommand(
     return
   }
   const args = appSlashArgs(command.raw)
+  if (deps.appActions && await deps.appActions.handle(args)) return
   if (deps.userAppViews && await deps.userAppViews.handle(args)) return
   if (args[0] === "view" || args[0] === "views") {
     throw new Error("Enable CHARIOX_USER_APP_VIEWS_PROTOTYPE=1 to use the App text prototype")

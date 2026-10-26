@@ -1,3 +1,4 @@
+import { createCliAppActionsComposition } from "./cli-app-actions-composition.js"
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
@@ -783,6 +784,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     refreshSplitPaneFocusRepaint: () => refreshSplitPaneFocusRepaint(),
   })
   const applySessionState = sessionStateApplyController.apply
+  let appActions: ReturnType<typeof createCliAppActionsComposition>
   let userAppViews: ReturnType<typeof createCliUserAppViewsComposition>
   const kernelApprovals = createCliKernelApprovalComposition({
     client, renderer, session: sessionState, dimensions, themeRevision,
@@ -791,7 +793,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     kernelConnected: () => !daemonDisconnected(),
     currentFocus: currentFocusedRenderable,
     promptFocus: promptInputRefController.currentOrNull,
-    closeOtherDialog: () => { userAppViews?.hide(); closeActiveDialogOverlay() },
+    closeOtherDialog: () => { appActions?.hide(); userAppViews?.hide(); closeActiveDialogOverlay() },
     applySession: applySessionState,
     notify: (message) => flashFooter(message, "info"),
     attachmentId: () => attachmentState()?.id ?? null,
@@ -801,6 +803,14 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client: () => (client as MutableLocalIpcClient).currentClient(), renderer, dimensions, themeRevision,
     currentFocus: currentFocusedRenderable, promptFocus: promptInputRefController.currentOrNull,
     notify: message => flashFooter(message, "info"), approvalOwnsInput: kernelApprovals.ownsInput,
+  })
+
+  appActions = createCliAppActionsComposition({
+    client: () => (client as MutableLocalIpcClient).currentClient(), session: () => isAttached() ? sessionState().id : undefined,
+    renderer, dimensions, themeRevision, currentFocus: currentFocusedRenderable,
+    promptFocus: promptInputRefController.currentOrNull,
+    closeOtherDialog: () => { userAppViews?.hide(); kernelApprovals.close(); closeActiveDialogOverlay() },
+    notify: message => flashFooter(message, "error"),
   })
 
   const runUiBatch = uiBatchController.run
@@ -1043,7 +1053,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
-    userAppViews,
+    userAppViews, appActions,
     bootstrapProviderLaunch: props.bootstrap.deferred?.providerLaunch,
     onProviderAccountPromptBlocked: (target: {sessionId: string; agentId: string}) => { blockedAccountTarget = target },
     providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
@@ -1105,9 +1115,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openWorkflowNodeInstructionsEditor: workflowActions.openWorkflowNodeInstructionsEditor,
     closeWorkflowNodeInstructionsEditor: workflowActions.closeWorkflowNodeInstructionsEditor,
     focusedAgentInteraction, interactionChoiceStore, renderAgentInteractions, handleHotkeysToggleShortcut,
-    handleKernelApprovalKey: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => kernelApprovals.handleKey(event) || userAppViews?.handleKey(event) || false,
+    handleKernelApprovalKey: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => appActions?.handleKey(event) || kernelApprovals.handleKey(event) || userAppViews?.handleKey(event) || false,
     openKernelApprovals: kernelApprovals.openFromCommand,
-    kernelApprovalOwnsInput: () => kernelApprovals.ownsInput() || Boolean(userAppViews?.ownsInput()),
+    kernelApprovalOwnsInput: () => kernelApprovals.ownsInput() || Boolean(appActions?.ownsInput()) || Boolean(userAppViews?.ownsInput()),
     hydrateComposer, hydratePromptInputHistory, dialogOverlayOpen, closeActiveDialogOverlay, activePrompt, handleCommandCenterKey,
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
@@ -1228,7 +1238,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       promptInputMaxHeight={promptInputMaxHeight()}
       promptAreaBackground={promptAreaBackground()}
       handleRootMouseUp={() => {
-        if (!kernelApprovals.ownsInput() && !userAppViews?.ownsInput() && !providerAccountRecovery.ownsInput() && !roomWorkflows.ownsInput()) retainPromptFocus()
+        if (!kernelApprovals.ownsInput() && !appActions?.ownsInput() && !userAppViews?.ownsInput() && !providerAccountRecovery.ownsInput() && !roomWorkflows.ownsInput()) retainPromptFocus()
         // OpenTUI finishes or clears the selection after this handler returns.
         startTimeout(flushDeferredRebuild, 0)
       }}
@@ -1249,7 +1259,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
       assignPasskeyPopupBanner={kernelApprovals.assignPopupBanner}
       assignProviderAccountRecoveryBox={providerAccountRecovery.assignBox}
-      kernelApprovalOwnsInput={() => kernelApprovals.ownsInput() || Boolean(userAppViews?.ownsInput())}
+      kernelApprovalOwnsInput={() => kernelApprovals.ownsInput() || Boolean(appActions?.ownsInput()) || Boolean(userAppViews?.ownsInput())}
       handlePromptKeyDown={handlePromptKeyDown}
       handlePromptContentChange={handlePromptContentChange}
       focusedAgentInteraction={focusedAgentInteraction}
