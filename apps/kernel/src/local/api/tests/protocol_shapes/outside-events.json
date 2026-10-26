@@ -1,6 +1,6 @@
 {
-  "local_protocol": 609,
-  "peer_protocol": 215,
+  "local_protocol": 613,
+  "peer_protocol": 219,
   "requests": [
     {
       "SubscribeEvents": {
@@ -169,9 +169,28 @@
             "value": {
               "reason": "cancelled"
             }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "agent_id": "agent-a",
+            "at_ms": 8,
+            "summary": "error: overloaded, retryable",
+            "refs": {},
+            "cursor": 8,
+            "type": "agent",
+            "value": {
+              "run_state": "error",
+              "failure": {
+                "cause": "overloaded",
+                "retryable": true,
+                "message": "Selected model is at capacity. Please try a different model."
+              }
+            }
           }
         ],
-        "next_cursor": 7,
+        "next_cursor": 8,
         "oldest_cursor": 1,
         "timed_out": false
       }

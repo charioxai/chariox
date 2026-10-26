@@ -256,15 +256,26 @@ pub(crate) fn provider_turn_failure_reason(
 }
 
 fn provider_failure_code(detail: &str) -> Option<&str> {
-    ["Codex error [", "Claude StopFailure ["]
+    split_coded_failure(detail).map(|(code, _, _)| code)
+}
+
+/// The code, native message and optional native retryability in an adapter frame.
+pub(super) fn split_coded_failure(detail: &str) -> Option<(&str, &str, Option<bool>)> {
+    ["Codex error [", "Claude StopFailure [", "OpenCode error ["]
         .into_iter()
         .find_map(|prefix| {
-            let (code, _) = detail.strip_prefix(prefix)?.split_once("]: ")?;
+            let (info, message) = detail.strip_prefix(prefix)?.split_once("]: ")?;
+            let (code, retryable) = match info.split_once("; retryable=") {
+                Some((code, "true")) => (code, Some(true)),
+                Some((code, "false")) => (code, Some(false)),
+                Some(_) => return None,
+                None => (info, None),
+            };
             (!code.is_empty()
                 && code
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
-            .then_some(code)
+            .then_some((code, message, retryable))
         })
 }
 
@@ -299,6 +310,14 @@ fn bounded_reason_snippet(text: &str) -> String {
         snippet.push_str("...");
     }
     snippet
+}
+
+/// A usage, quota, credit or rate limit in a provider's own words, including
+/// Claude's limit dialogs.
+pub(super) fn text_reports_resource_limit(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    provider_normalized_text_reports_resource_limit(&normalized)
+        || claude_normalized_text_reports_resource_limit_dialog(&normalized)
 }
 
 fn provider_normalized_text_reports_resource_limit(normalized: &str) -> bool {

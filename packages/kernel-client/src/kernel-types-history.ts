@@ -1,3 +1,5 @@
+import type { ProviderFailure } from "./kernel-types-runtime.js"
+
 export type SessionHistoryPageEntry = {
   entry_index: number
   sequence_end?: number
@@ -63,6 +65,7 @@ export type SessionHistoryOutlineTurn = {
   external_provider_turn_id?: string | null
   started_at_ms: number
   lifecycle: "open" | "completed" | "cancelled" | "failed" | string
+  failure?: ProviderFailure
   completed_at_ms: number | null
   user_prompt: SessionHistoryPageEntry
   entries: SessionHistoryPageEntry[]

@@ -75,7 +75,7 @@ impl KernelRuntimeOwnedState {
                         return Ok(());
                     }
                 }
-                self.provider_account_profiles.require_authenticated(
+                self.provider_account_profiles.admit_launch(
                     &owner,
                     provider,
                     run.account_profile(),

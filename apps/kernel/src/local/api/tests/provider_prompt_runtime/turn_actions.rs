@@ -352,6 +352,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
                 Some(300),
                 crate::git_observer::CompletedTurnSettlementStatus::Failed,
                 Some(termination.clone()),
+                termination.failure.clone(),
             );
         app.completed_git_turn_snapshot_store()
             .record_prompt_settlement_with_termination(
@@ -362,6 +363,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
                 450,
                 Some(300),
                 crate::git_observer::CompletedTurnSettlementStatus::Completed,
+                None,
                 None,
             );
     });

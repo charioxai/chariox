@@ -227,11 +227,12 @@ impl<'a> KernelAgentService<'a> {
                         leased_agent_id: remote_execution.leased_agent_id.clone(),
                     },
                 ));
-        let (remote_provider_run_id, provider_termination) = match completion_response {
+        let (remote_provider_run_id, provider_termination, failure) = match completion_response {
             Ok(response) => match response {
                 RelayPeerResponse::LeasedPromptCompleted {
                     provider_run_id,
                     provider_termination,
+                    provider_diagnostic,
                     git_observations,
                     workspace_live_sync_change,
                     ..
@@ -256,7 +257,18 @@ impl<'a> KernelAgentService<'a> {
                         );
                     }
                     revalidate(self.app)?;
-                    (provider_run_id, provider_termination)
+                    let native_failure = provider_termination
+                        .as_ref()
+                        .and_then(|t| t.failure.clone());
+                    let failure = match (native_failure, provider_diagnostic) {
+                        (Some(failure), _) => Some(failure),
+                        (None, Some(message)) => Some(crate::provider::ProviderFailure::classify(
+                            self.app.agents.get_agent(&agent_id)?.provider(),
+                            &message,
+                        )),
+                        (None, None) => None,
+                    };
+                    (provider_run_id, provider_termination, failure)
                 }
                 other => {
                     return Err(DaemonError::LocalTransport {
@@ -277,7 +289,7 @@ impl<'a> KernelAgentService<'a> {
                         "error": error.to_string(),
                     }),
                 );
-                (None, None)
+                (None, None, None)
             }
             Err(error) => return Err(error),
         };
@@ -287,7 +299,7 @@ impl<'a> KernelAgentService<'a> {
             expected_prompt.id(),
             &remote_execution,
         )?;
-        let settlement_status = if provider_termination.is_some() {
+        let settlement_status = if provider_termination.is_some() || failure.is_some() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
             crate::git_observer::CompletedTurnSettlementStatus::Completed
@@ -302,6 +314,7 @@ impl<'a> KernelAgentService<'a> {
             next_queued_prompt,
             settlement_status,
             provider_termination,
+            failure,
         })
     }
 
@@ -309,7 +322,9 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         completion: KernelPromptOwnerCompletion,
     ) -> Result<PromptCompletion, DaemonError> {
-        if completion.provider_termination.is_some() {
+        if completion.settlement_status
+            == crate::git_observer::CompletedTurnSettlementStatus::Failed
+        {
             let _ = self
                 .app
                 .agents()
@@ -336,6 +351,7 @@ impl<'a> KernelAgentService<'a> {
                 Some(&remote_provider_run_id),
                 settled_at_ms,
                 completion.settlement_status.as_str(),
+                completion.failure.as_ref(),
             );
         self.app
             .completed_git_turn_snapshot_store()
@@ -348,6 +364,7 @@ impl<'a> KernelAgentService<'a> {
                 started_at_ms,
                 completion.settlement_status,
                 completion.provider_termination.clone(),
+                completion.failure.clone(),
             );
         let recipient_attachment_ids = self
             .app
