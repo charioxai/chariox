@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { BoxRenderable } from "@opentui/core"
+import { BoxRenderable, TextareaRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import type { KernelSudoTurn } from "@chariox/kernel-client/kernel-types"
 import { createSudoWindowBand } from "./sudo-window-band.js"
@@ -110,5 +110,90 @@ test("MP-08/MP-10/MP-11 live click seam: a closed command center cannot cover Ex
     await harness.mockMouse.click(frame[row]!.indexOf("[Extend]") + 1, row)
     assert.deepEqual(clicked, [window.entry_id])
     assert.equal(overlay.visible, false)
+  } finally { harness.renderer.destroy() }
+})
+
+async function keyboardHarness(windows: readonly KernelSudoTurn[]) {
+  const harness = await createTestRenderer({ width: 120, height: 10, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { flexDirection: "column" })
+  harness.renderer.root.add(box)
+  const calls: string[] = []
+  let focusChanges = 0
+  let submitted = 0
+  const prompt = new TextareaRenderable(harness.renderer, {
+    initialValue: "draft kept", keyBindings: [{ name: "return", action: "submit" }],
+    onSubmit: () => { if (!band.ownsInput()) submitted += 1 },
+  })
+  harness.renderer.root.add(prompt)
+  const band = createSudoWindowBand(harness.renderer, {
+    extend: (w) => calls.push(`extend ${w.entry_id}@${w.revision}`),
+    revoke: (w) => calls.push(`revoke ${w.entry_id}`),
+    focusChanged: () => { focusChanges += 1 },
+  })
+  band.assign(box)
+  harness.renderer.keyInput.on("keypress", band.handleKey)
+  band.render(windows, Date.parse("2026-10-07T13:58:00Z"), () => "builder")
+  prompt.focus()
+  await harness.renderOnce()
+  return { harness, band, prompt, calls, submitted: () => submitted, focusChanges: () => focusChanges }
+}
+
+// MP-08/MP-10/MP-11 G06: the TUI runs with the mouse off by default, so the
+// band's controls must be reachable by keys the real renderer delivers.
+test("MP-08/MP-10/MP-11 G06 F9 reaches Revoke from the keyboard without touching the prompt", async () => {
+  const { harness, band, prompt, calls, submitted } = await keyboardHarness([window])
+  try {
+    await harness.mockInput.pressKeys(["F9"])
+    assert.equal(band.ownsInput(), true)
+    await harness.renderOnce()
+    assert.match(harness.captureCharFrame(), /> \[Extend\]/)
+    await harness.mockInput.pressKeys(["ARROW_RIGHT"])
+    await harness.renderOnce()
+    assert.match(harness.captureCharFrame(), /> \[Revoke\]/)
+    await harness.mockInput.pressKeys(["RETURN"])
+    assert.deepEqual(calls, ["revoke sudo:00aa"])
+    assert.equal(band.ownsInput(), false)
+    assert.equal(submitted(), 0, "the band's Enter is not a prompt submit")
+    assert.equal(prompt.plainText, "draft kept")
+  } finally { harness.renderer.destroy() }
+})
+
+test("MP-08/MP-10/MP-11 G06 Enter on the first control extends the window the keyboard is on", async () => {
+  const second = { ...window, entry_id: "sudo:00bb", agent_id: "agent-2", revision: 5 }
+  const { harness, calls } = await keyboardHarness([window, second])
+  try {
+    await harness.mockInput.pressKeys(["F9", "ARROW_DOWN", "RETURN"])
+    assert.deepEqual(calls, ["extend sudo:00bb@5"])
+  } finally { harness.renderer.destroy() }
+})
+
+test("MP-08/MP-10/MP-11 G06 Esc gives the keyboard back and a band with no window ignores F9", async () => {
+  const { harness, band, calls, focusChanges, submitted } = await keyboardHarness([window])
+  try {
+    await harness.mockInput.pressKeys(["F9"])
+    await harness.mockInput.pressKeys(["ESCAPE"])
+    // A bare ESC is held briefly to distinguish it from a terminal sequence.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(band.ownsInput(), false)
+    assert.deepEqual(calls, [])
+    assert.equal(focusChanges(), 2)
+    await harness.mockInput.pressKeys(["RETURN"])
+    assert.equal(submitted(), 1, "Enter reaches the prompt again")
+    band.render([], Date.now(), () => "builder")
+    await harness.mockInput.pressKeys(["F9"])
+    assert.equal(band.ownsInput(), false)
+    assert.equal(focusChanges(), 2)
+  } finally { harness.renderer.destroy() }
+})
+
+test("MP-08/MP-10/MP-11 G06 the window ending under the keyboard releases it", async () => {
+  const { harness, band, calls, focusChanges } = await keyboardHarness([window])
+  try {
+    await harness.mockInput.pressKeys(["F9"])
+    band.render([], Date.now(), () => "builder")
+    assert.equal(band.ownsInput(), false)
+    assert.equal(focusChanges(), 2)
+    await harness.mockInput.pressKeys(["RETURN"])
+    assert.deepEqual(calls, [])
   } finally { harness.renderer.destroy() }
 })

@@ -109,6 +109,7 @@ export function createCliKernelApprovalComposition(deps: {
   // windows with Extend (fresh passkey popup) and Revoke.
   const report = (failure: unknown) => deps.notify(failure instanceof Error ? failure.message : String(failure))
   const band = createSudoWindowBand(deps.renderer, {
+    focusChanged: (focused) => { if (focused) opened(); else closed() },
     extend: (window) => {
       const attachment = deps.attachmentId()
       if (!attachment) return
@@ -169,8 +170,8 @@ export function createCliKernelApprovalComposition(deps: {
     assignBanner(value: BoxRenderable) { surface.assignBanner(value); controller.sync() },
     assignSudoBand(value: BoxRenderable) { band.assign(value); renderBand() },
     /** The popup takes keys first: it sits over the panel. */
-    handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || controller.handleKey(event),
-    ownsInput: () => popup.ownsInput() || controller.ownsInput(),
+    handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || (!controller.ownsInput() && band.handleKey(event)) || controller.handleKey(event),
+    ownsInput: () => popup.ownsInput() || band.ownsInput() || controller.ownsInput(),
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
     assignPopupBanner(value: BoxRenderable) { popupSurface.assignBanner(value); popupSurface.render(popup.view(), deps.dimensions()) },
     assignPopupBox(value: BoxRenderable) { popupSurface.assign(value); popupSurface.render(popup.view(), deps.dimensions()) },

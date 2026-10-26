@@ -22,6 +22,7 @@ const GLOBAL_HOTKEYS: HotkeyItem[] = [
 
 const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: `${approvalShortcutLabel()} · /approvals`, description: "Open pending approvals; critical actions need your passkey." },
+  { keys: "F9", description: "Control a live sudo window from the keyboard: Left/Right pick Extend or Revoke, Up/Down pick the window, Enter runs it, Esc closes." },
   { keys: "Enter", description: "Submit the current prompt." },
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
   { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },
