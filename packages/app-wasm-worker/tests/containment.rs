@@ -135,7 +135,23 @@ fn child(scenario: &str, mode: &str) {
     let outside = std::env::var("PROBE_OUTSIDE").unwrap();
     let executable = std::env::current_exe().unwrap();
     let original_cpu_budget = cpu_budget();
-    let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    let (reader, writer) = UnixStream::pair().unwrap();
+    // Cargo may leave jobserver descriptors in the child. Place broker IPC at
+    // its real ABI positions rather than assuming socketpair returns FD3/4.
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let relocate = |fd| {
+        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10) };
+        assert!(copy >= 10);
+        unsafe { OwnedFd::from_raw_fd(copy) }
+    };
+    let left = relocate(reader.as_raw_fd());
+    let right = relocate(writer.as_raw_fd());
+    drop((reader, writer));
+    assert_eq!(unsafe { libc::dup2(left.as_raw_fd(), 3) }, 3);
+    assert_eq!(unsafe { libc::dup2(right.as_raw_fd(), 4) }, 4);
+    drop((left, right));
+    let mut reader = unsafe { UnixStream::from_raw_fd(3) };
+    let mut writer = unsafe { UnixStream::from_raw_fd(4) };
     // The worker must discard even an accidentally inherited outside-file FD.
     // A path-only policy would leave this descriptor usable.
     use std::os::fd::IntoRawFd;
