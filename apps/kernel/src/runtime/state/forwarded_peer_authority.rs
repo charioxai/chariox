@@ -50,7 +50,7 @@ impl KernelRuntimeState {
                 retryable: false,
             })?;
         self.authorize_forwarded_worker(&remote.worker_kernel_id)?;
-        super::worker_lease_trust::ensure_worker_machine_trusted(&remote)?;
+        super::worker_lease_trust::ensure_worker_machine_trusted(remote)?;
         let prompt_matches = context.home_prompt_id.as_deref().is_none_or(|expected| {
             self.owned
                 .prompt_state_owner
