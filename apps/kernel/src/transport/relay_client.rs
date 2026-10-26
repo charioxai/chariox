@@ -295,4 +295,6 @@ fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
 type RelayCommandResultCache = Arc<CommandResultCache>;
 
 #[cfg(test)]
+mod admission_drill;
+#[cfg(test)]
 mod tests;

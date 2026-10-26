@@ -250,7 +250,9 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                         .await
                         .expect("empty projection response should send");
                 }
-                RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
+                RelayPeerRequest::CompleteLeasedPrompt {
+                    leased_agent_id, ..
+                } => {
                     assert_eq!(leased_agent_id, "termination-leased-agent");
                     break (relay_request_id, decrypted.sender_public_key);
                 }
@@ -426,7 +428,7 @@ async fn public_remote_completion_preserves_worker_termination_async() {
     server_task.await.expect("relay server task should join");
 }
 
-async fn wait_for_home_remote_prompt_receipt(
+pub(super) async fn wait_for_home_remote_prompt_receipt(
     app: &Arc<Mutex<DaemonApp>>,
     session_id: &str,
     agent_id: &str,
@@ -3375,7 +3377,7 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session_async() {
             // The normal output pump may already have completed cancellation.
             // Finish the fixture only while the same worker prompt is still owned.
             crate::app::RemoteLeaseRuntime::new(&mut worker)
-                .complete_leased_prompt(&binding.leased_agent_id)
+                .settle_leased_prompt(&binding.leased_agent_id)
                 .expect("authoritative worker completion should settle cancellation");
         }
     }

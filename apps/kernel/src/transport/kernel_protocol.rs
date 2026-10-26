@@ -957,6 +957,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::NoActiveProviderRun { .. } => {
             kernel_error("no_active_provider_run", error, false)
         }
+        DaemonError::LeasedBackingSessionRefused { .. } => {
+            kernel_error("leased_backing_session_refused", error, false)
+        }
         DaemonError::ProviderRunNotFound { .. } => {
             kernel_error("provider_run_not_found", error, false)
         }

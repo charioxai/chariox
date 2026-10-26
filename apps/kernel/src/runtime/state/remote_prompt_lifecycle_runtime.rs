@@ -696,6 +696,13 @@ impl KernelRuntimeState {
             }
             Ok(())
         };
+        let completion_worker_run_id = remote_execution
+            .active_worker_provider_run_id
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "complete remote prompt",
+                message: "the worker provider run is not bound yet; retry completion".to_string(),
+            })?;
         let completion_response = self
             .with_app_side_effect(|app| {
                 self.authorize_prompt_command(authority)?;
@@ -710,6 +717,8 @@ impl KernelRuntimeState {
                         },
                         RelayPeerRequest::CompleteLeasedPrompt {
                             leased_agent_id: remote_execution.leased_agent_id.clone(),
+                            home_prompt_id: completion_prompt.id().to_string(),
+                            worker_provider_run_id: completion_worker_run_id,
                         },
                         std::time::Duration::from_millis(relay_config.relay_request_timeout_ms),
                         || self.authorize_prompt_command(authority),
@@ -765,6 +774,25 @@ impl KernelRuntimeState {
                         provider_diagnostic,
                         provider_termination,
                     )
+                }
+                Err(error) if error.is_leased_prompt_run_changed() => {
+                    // The same prompt still runs on the worker; the home settles nothing until it
+                    // follows the successor run and the completion names it.
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt completion names a provider run the worker left",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": target_agent_id,
+                            "worker_kernel_id": remote_execution.worker_kernel_id,
+                            "leased_agent_id": remote_execution.leased_agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return Err(DaemonError::LocalTransport {
+                        operation: "complete remote prompt",
+                        message: "the worker prompt moved to another provider run; retry the completion once the home follows it".to_string(),
+                    });
                 }
                 Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
                     crate::logging::warn_with_fields(
@@ -1024,6 +1052,9 @@ fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bo
 }
 
 fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
+    if error.is_leased_prompt_not_current() {
+        return true;
+    }
     match error {
         DaemonError::NoActivePrompt { .. } => true,
         DaemonError::RelayTransport {
@@ -1216,6 +1247,38 @@ mod tests {
                 message: "worker reports no active prompt".to_string(),
                 retryable: false,
             }
+        ));
+        // A completion naming a prompt the worker no longer runs: the home's prompt settled there.
+        assert!(remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "leased_prompt_not_current".to_string(),
+                message: "worker is running another prompt".to_string(),
+                retryable: false,
+            }
+        ));
+        assert!(!remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "leased_prompt_not_current".to_string(),
+                message: "worker is running another prompt".to_string(),
+                retryable: true,
+            }
+        ));
+        // The same home prompt still runs on the worker, on another provider run: not settled.
+        let run_changed = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "leased_prompt_run_changed".to_string(),
+            message: "the prompt is still running on another provider run".to_string(),
+            retryable: false,
+        };
+        assert!(run_changed.is_leased_prompt_run_changed());
+        assert!(!run_changed.is_leased_prompt_not_current());
+        assert!(!remote_prompt_completion_should_treat_as_settled(
+            &run_changed
+        ));
+        assert!(!remote_prompt_cancellation_should_treat_as_settled(
+            &run_changed
         ));
         for error in [
             DaemonError::LocalTransport {

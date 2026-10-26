@@ -120,15 +120,14 @@ async fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
 
 /// The home projects the worker run just before the worker's backing prompt is
 /// active; finish it as soon as it is.
-async fn complete_worker_turn(fixture: &LiveWorker, backing_session: &str) {
+/// The worker's provider ends the leased turn inside the worker kernel; a client request on the
+/// hidden backing session is refused, so the fixture settles it the way the kernel does.
+pub(super) async fn complete_worker_turn(worker: &CommandRouter, leased_agent_id: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        match dispatch_json(
-            &fixture.worker,
-            json!({"CompletePrompt":{"session_id":backing_session}}),
-        )
-        .await
-        {
+        let settled = crate::app::RemoteLeaseRuntime::new(&mut *worker.app.lock().await)
+            .settle_leased_prompt(leased_agent_id);
+        match settled {
             Ok(_) => return,
             Err(DaemonError::NoActivePrompt { .. }) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(25)).await;
@@ -249,11 +248,7 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
         .await
         .unwrap();
         let leased = binding(&fixture, &child).await.leased_agent_id;
-        let (backing_session, _) =
-            crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)
-                .leased_agent_backing(&leased)
-                .expect("worker backing agent");
-        complete_worker_turn(&fixture, &backing_session).await;
+        complete_worker_turn(&fixture.worker, &leased).await;
     } else {
         dispatch_json(&fixture.home, json!({"CompletePrompt":{"session_id":room}}))
             .await
@@ -344,11 +339,7 @@ async fn leased_requested_reply_carries_worker_answer() {
         .record_leased_answer_for_test(&room, &child, "MP-10 A10 requested reply answer")
         .unwrap();
     let remote = binding(&fixture, &child).await;
-    let (backing_session, _) =
-        crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)
-            .leased_agent_backing(&remote.leased_agent_id)
-            .unwrap();
-    complete_worker_turn(&fixture, &backing_session).await;
+    complete_worker_turn(&fixture.worker, &remote.leased_agent_id).await;
     let logical = format!("agent-event-{child}-{}", request.sequence);
     let replies = eventually("the correlated requested reply", || {
         let events: Vec<_> = store
@@ -1131,15 +1122,17 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     let run = worker.run_for(&fixture, &agent, &home_prompt).await;
     let token = run.runtime_mcp_auth_token().unwrap().to_string();
     let worker_session = run.session_id().to_string();
-    let attached = dispatch_json(
-        &worker.router,
-        json!({"AttachToSession":{
-            "session_id":worker_session,"client_id":"a10-worker-terminal",
-            "capability_level":"FullTerminal"
-        }}),
-    )
-    .await
-    .unwrap();
+    // A client cannot attach to the backing session; the attachment is made inside the worker
+    // kernel so the sudo refusal below is still exercised on the leased backing agent.
+    let attachment_id = crate::app::KernelSessionService::new(&mut *worker.router.app.lock().await)
+        .attach(crate::attachment::AttachRequest::new(
+            &worker_session,
+            "a10-worker-terminal",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap()
+        .id()
+        .to_string();
     let worker_owner = worker
         .router
         .app
@@ -1155,10 +1148,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         worker.router.runtime_state.submit_sudo_prompt(
             crate::local::SubmitPromptRequest {
                 session_id: worker_session,
-                attachment_id: attached["SessionAttached"]["attachment"]["id"]
-                    .as_str()
-                    .unwrap()
-                    .into(),
+                attachment_id,
                 target_agent_id: run.agent_instance_id().map(str::to_owned),
                 prompt: "/sudo MP-10 A10 worker-local entry".into(),
                 attachments: Vec::new(),
@@ -1621,16 +1611,7 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         .record_leased_answer_for_test(&room, &agent, "MP-10 A10 waiting on the timer")
         .unwrap();
     let leased = binding(&fixture, &agent).await.leased_agent_id;
-    let (backing_session, _) =
-        crate::app::RemoteLeaseRuntime::new(&mut *worker.router.app.lock().await)
-            .leased_agent_backing(&leased)
-            .expect("worker backing agent");
-    dispatch_json(
-        &worker.router,
-        json!({"CompletePrompt":{"session_id":backing_session}}),
-    )
-    .await
-    .expect("the worker finishes the elevated turn");
+    complete_worker_turn(&worker.router, &leased).await;
     let store = store(&fixture).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {

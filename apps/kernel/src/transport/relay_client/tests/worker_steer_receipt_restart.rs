@@ -377,6 +377,8 @@ async fn accepted_queued_steer_receipt_reconciles_after_worker_restart_without_r
             },
             RelayPeerRequest::CompleteLeasedPrompt {
                 leased_agent_id: leased_agent.id.clone(),
+                home_prompt_id: target_home_prompt_id.to_string(),
+                worker_provider_run_id: worker_provider_run_id.clone(),
             },
         )
         .await

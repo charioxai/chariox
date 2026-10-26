@@ -53,16 +53,7 @@ async fn waiting_leased_task_reports_disconnect_and_recovery() {
         .record_leased_answer_for_test(&room, &agent, "Waiting on G03")
         .unwrap();
     let remote = binding(&fixture, &agent).await;
-    let (backing_session, _) =
-        crate::app::RemoteLeaseRuntime::new(&mut *worker.router.app.lock().await)
-            .leased_agent_backing(&remote.leased_agent_id)
-            .unwrap();
-    dispatch_json(
-        &worker.router,
-        json!({"CompletePrompt":{"session_id":backing_session}}),
-    )
-    .await
-    .expect("the independent worker finishes its leased turn");
+    super::complete_worker_turn(&worker.router, &remote.leased_agent_id).await;
     let before = eventually("the leased task waits", || {
         store
             .agent_tasks(Some(&room), Some(&agent))

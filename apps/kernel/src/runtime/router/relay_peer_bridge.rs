@@ -687,8 +687,16 @@ impl CommandRouter {
     pub(crate) async fn relay_complete_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        relay_peer_runtime::complete_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
+        relay_peer_runtime::complete_relay_leased_prompt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        )
+        .await
     }
 
     pub(crate) async fn relay_resolve_leased_project_environment_setup_target(

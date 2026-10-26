@@ -111,7 +111,7 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         .contains("<chariox-scheduled-prompt schedule_id=\"schedule-remote\">"));
 
     let completion = RemoteLeaseRuntime::new(&mut app)
-        .complete_leased_prompt(&leased_agent.id)
+        .settle_leased_prompt(&leased_agent.id)
         .expect("leased prompt should complete");
     assert_eq!(
         completion.completed.target_agent_id(),

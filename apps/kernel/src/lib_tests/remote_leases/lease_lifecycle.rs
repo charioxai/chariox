@@ -853,3 +853,49 @@ async fn destroying_a_leased_agent_or_its_lease_stops_its_room_terminals() {
         std::fs::remove_dir_all(worktree).expect("leased worktree should clean up");
     }
 }
+
+/// MP-08 / MP-09 / MP-10 / MP-11 F6: the hidden backing session of a leased agent is projected, so
+/// daemon health does not report its agent as a record without a projected session.
+#[test]
+fn a_leased_agents_backing_session_passes_the_projection_invariants() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-home",
+            "agent-home",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let snapshot = app.session_state_projection_store().invariant_snapshot(
+        &app.agent_runtime_projection_store(),
+        &app.agents().list_agents(),
+        &std::collections::BTreeMap::new(),
+        &[],
+    );
+
+    assert!(
+        snapshot.mismatches.is_empty(),
+        "the backing agent {} is healthy: {:?}",
+        leased_agent.backing_agent_id,
+        snapshot.mismatches
+    );
+}

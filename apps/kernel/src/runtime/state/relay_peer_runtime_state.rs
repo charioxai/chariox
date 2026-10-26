@@ -1075,12 +1075,20 @@ impl KernelRuntimeState {
     pub(crate) async fn complete_relay_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
+        let home_prompt_id = home_prompt_id.to_string();
+        let worker_provider_run_id = worker_provider_run_id.to_string();
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.complete_leased_prompt(&leased_agent_id)
+            runtime.complete_leased_prompt(
+                &leased_agent_id,
+                &home_prompt_id,
+                &worker_provider_run_id,
+            )
         })
         .await
     }

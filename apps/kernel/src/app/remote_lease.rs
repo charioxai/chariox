@@ -731,6 +731,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some(caller) = caller.as_ref() {
             self.retain_leased_agent_caller(&agent.id, caller)?;
         }
+        // The hidden backing session stays out of lists but is a real session: health checks
+        // the backing agent against the session projection.
+        crate::app::KernelSessionReadService::new(&*self.app).session_snapshot(session.id())?;
         Ok(agent)
     }
 
