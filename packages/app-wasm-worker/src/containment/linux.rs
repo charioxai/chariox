@@ -135,6 +135,29 @@ pub(super) fn enter() -> io::Result<()> {
             ret(ALLOW),
         ],
     );
+    // Wasmtime publishes AArch64 code with private SYNC_CORE and its matching
+    // registration. Global barriers, other commands and nonzero flags stay out.
+    #[cfg(target_arch = "aarch64")]
+    case(
+        &mut filter,
+        libc::SYS_membarrier,
+        &[
+            load(arg(0) + 4),
+            eq(0, 1, 0),
+            ret(DENY),
+            load(arg(0)),
+            eq(32, 2, 0),
+            eq(64, 1, 0),
+            ret(DENY),
+            load(arg(1) + 4),
+            eq(0, 1, 0),
+            ret(DENY),
+            load(arg(1)),
+            eq(0, 1, 0),
+            ret(DENY),
+            ret(ALLOW),
+        ],
+    );
     // Wasmtime publishes RW code as RX. Simultaneous writable/executable
     // mappings and pkey_mprotect are never admitted, including in new threads.
     for syscall in [libc::SYS_mmap, libc::SYS_mprotect] {

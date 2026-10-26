@@ -78,6 +78,8 @@ delegated cgroup or privileged host change is required for the WASM entry.
 Landlock is not required: all path syscalls are already refused by seccomp,
 and inherited descriptors are closed before that boundary.
 Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready.
+On aarch64 Linux only, seccomp admits the private code-cache membarrier commands
+32/64 with zero flags for Wasmtime publication; other commands remain denied.
 
 The Linux executable-memory policy is W^X: seccomp refuses simultaneous WRITE
 and EXEC on mmap/mprotect and denies pkey_mprotect; inherited READ_IMPLIES_EXEC
