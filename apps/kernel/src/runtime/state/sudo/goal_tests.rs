@@ -96,6 +96,187 @@ async fn sudo_goal_resume_never_starts_ordinary_work_when_busy_turn_settles() {
     reauthorize_existing_goal(true).await;
 }
 
+#[tokio::test]
+async fn sudo_goal_resume_busy_wait_ends_when_window_is_revoked() {
+    for reload in [false, true] {
+        queued_goal_resume_window_ends(reload, false).await;
+    }
+}
+
+#[tokio::test]
+async fn sudo_goal_resume_busy_wait_ends_when_window_expires() {
+    for reload in [false, true] {
+        queued_goal_resume_window_ends(reload, true).await;
+    }
+}
+
+async fn queued_goal_resume_window_ends(reload: bool, expire: bool) {
+    let f = if reload {
+        super::tests::fixture_with_catalog_reload()
+    } else {
+        fixture_with_options(None, true)
+    };
+    let original = blocked_task(&f, true);
+    let mut request = f.request.clone();
+    request.prompt = "/sudo /goal resume".into();
+    let pending = f
+        .state
+        .submit_sudo_prompt(request, "local", "sudo-terminal");
+    tokio::pin!(pending);
+    let consent = tokio::select! {
+        consent = popup(&f.state) => consent,
+        result = &mut pending => panic!("resume ended before consent: {result:?}"),
+    };
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .sync_external_active_prompt(
+            &session,
+            &original.agent_id,
+            Some(PromptQueueItem::new(
+                "unrelated-busy-turn",
+                &f.request.attachment_id,
+                &original.agent_id,
+                "Unrelated ordinary work",
+                PromptStatus::Running,
+            )),
+        );
+    super::window_tests::approve(&f, &consent, None)
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), &mut pending)
+            .await
+            .is_err(),
+        "a live window must keep waiting for ordinary work"
+    );
+    let window = f.state.list_sudo_turns("local").pop().unwrap();
+    assert!(window.prompt_id.is_none());
+    if expire {
+        f.state
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .get_mut(&window.entry_id)
+            .unwrap()
+            .deadline = Some(std::time::Instant::now());
+    } else {
+        f.state
+            .revoke_sudo(Some("local"), Some(&window.entry_id), "owner_revoked")
+            .unwrap();
+    }
+    let result = tokio::time::timeout(Duration::from_millis(500), &mut pending).await;
+    // Check durable work even on the red path, before the prompt future drops.
+    let tasks = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), None)
+        .unwrap();
+    let current = tasks
+        .iter()
+        .find(|task| task.task_id == original.task_id)
+        .unwrap();
+    assert_eq!(
+        current, &original,
+        "ended authority must not commit ControlGoal resume"
+    );
+    assert_eq!(
+        f.state
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &original.agent_id)
+            .unwrap()
+            .id(),
+        "unrelated-busy-turn"
+    );
+    let error = result
+        .expect("ended sudo must stop waiting while unrelated work stays busy")
+        .unwrap_err();
+    assert!(
+        matches!(error, DaemonError::LocalTransport { operation: "kernel access", ref message }
+        if message == "queued sudo was revoked"),
+        "{error}"
+    );
+    assert!(f.state.list_sudo_turns("local").is_empty());
+}
+
+#[tokio::test]
+async fn sudo_goal_resume_live_window_waits_until_agent_is_idle() {
+    let f = fixture_with_options(None, true);
+    let original = blocked_task(&f, true);
+    let mut request = f.request.clone();
+    request.prompt = "/sudo /goal resume".into();
+    let pending = f
+        .state
+        .submit_sudo_prompt(request, "local", "sudo-terminal");
+    tokio::pin!(pending);
+    let consent = tokio::select! {
+        consent = popup(&f.state) => consent,
+        result = &mut pending => panic!("resume ended before consent: {result:?}"),
+    };
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .sync_external_active_prompt(
+            &session,
+            &original.agent_id,
+            Some(PromptQueueItem::new(
+                "unrelated-busy-turn",
+                &f.request.attachment_id,
+                &original.agent_id,
+                "Unrelated ordinary work",
+                PromptStatus::Running,
+            )),
+        );
+    super::window_tests::approve(&f, &consent, None)
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), &mut pending)
+            .await
+            .is_err()
+    );
+    let tasks = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), None)
+        .unwrap();
+    assert_eq!(tasks[0], original);
+    f.state
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &original.agent_id)
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(2), &mut pending)
+        .await
+        .unwrap()
+        .unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected goal resume")
+    };
+    assert_eq!(task.task_id, original.task_id);
+    assert_ne!(task.state, ExecutionState::Blocked);
+    let window = f.state.list_sudo_turns("local").pop().unwrap();
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "test_cleanup")
+        .unwrap();
+}
+
 async fn reauthorize_existing_goal(settle_after_busy: bool) {
     let f = fixture_with_options(None, true);
     let original = blocked_task(&f, true);
