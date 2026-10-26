@@ -398,7 +398,35 @@ fn codex_error_info_code(error: &Value) -> Option<String> {
             return None;
         }
     }
-    (!code.is_empty()).then_some(code)
+    if code.is_empty() {
+        return None;
+    }
+    // Codex frames HTTP refusals as connection failures too. Preserve the
+    // status meaning before the generic transport code loses that detail.
+    let http_status = info
+        .as_object()
+        .and_then(|fields| fields.values().next())
+        .and_then(|detail| {
+            detail
+                .get("httpStatusCode")
+                .or_else(|| detail.get("http_status_code"))
+        })
+        .and_then(Value::as_u64);
+    if matches!(
+        code.as_str(),
+        "http_connection_failed"
+            | "response_stream_connection_failed"
+            | "response_stream_disconnected"
+    ) {
+        let code = match http_status {
+            Some(401) => "unauthorized",
+            Some(429) => "rate_limit_exceeded",
+            Some(503 | 529) => "server_overloaded",
+            _ => return Some(code),
+        };
+        return Some(code.to_string());
+    }
+    Some(code)
 }
 
 pub(super) fn rpc_error_message(message: &JsonRpcMessage) -> Option<String> {

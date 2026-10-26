@@ -1104,6 +1104,113 @@ mod tests {
         );
     }
 
+    /// EA2-75: Codex app-server errors (`codexErrorInfo`) keep the harness
+    /// text and give the typed cause. Payload shapes are the app-server
+    /// `error` / `turn/completed` notifications; the capacity text is Codex's
+    /// own string (culinux r58), the 401 and `other` texts are recorded in
+    /// agents/accam/agent.log (lines 287245 and 310662), and the routing text
+    /// was recorded by the r39 drill.
+    #[test]
+    fn codex_errors_are_typed_from_their_error_info() {
+        use crate::provider::{ProviderFailure, ProviderFailureCause::*};
+        let error_text = |error: serde_json::Value| {
+            let notification = parse_notification(JsonRpcMessage {
+                id: None,
+                method: Some("error".to_string()),
+                params: Some(
+                    json!({"threadId": "t", "turnId": "u", "willRetry": false, "error": error}),
+                ),
+                result: None,
+                error: None,
+            })
+            .expect("error notification");
+            match notification {
+                CodexNotification::TurnScoped { notification, .. } => match *notification {
+                    CodexNotification::Error { message } => message,
+                    other => panic!("unexpected {other:?}"),
+                },
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        let cases = [
+            (
+                json!({"message": "Selected model is at capacity. Please try a different model.", "codexErrorInfo": "serverOverloaded"}),
+                Overloaded,
+                true,
+                "Selected model is at capacity. Please try a different model.",
+            ),
+            (
+                json!({"message": "You've hit your usage limit. Try again later.", "codexErrorInfo": "usageLimitExceeded"}),
+                UsageLimit,
+                false,
+                "You've hit your usage limit. Try again later.",
+            ),
+            (
+                json!({"message": "unexpected status 401 Unauthorized: Encountered invalidated oauth token for user, failing request", "codexErrorInfo": "unauthorized"}),
+                SignInRequired,
+                false,
+                "unexpected status 401 Unauthorized: Encountered invalidated oauth token for user, failing request",
+            ),
+            (
+                json!({"message": "stream disconnected before completion: error sending request", "codexErrorInfo": "other"}),
+                Network,
+                true,
+                "stream disconnected before completion: error sending request",
+            ),
+            // Recorded native message from the real empty-home Codex app-server
+            // (extagent/r40/first-live/signin/codex-signin-history-turn.json).
+            (
+                json!({"message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5086be55fac6f5a-CDG, request id: req_1257193f8497421cab34eb0c147f8fc2", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 401}}}),
+                SignInRequired,
+                false,
+                "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a5086be55fac6f5a-CDG, request id: req_1257193f8497421cab34eb0c147f8fc2",
+            ),
+            // Native schema fixtures: status details must remain authoritative
+            // even when the provider's wording gives no clue, and older error
+            // frames may omit the status detail entirely.
+            (
+                json!({"message": "Request rejected", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 401}}}),
+                SignInRequired, false, "Request rejected",
+            ),
+            (
+                json!({"message": "Try later", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 429}}}),
+                UsageLimit, true, "Try later",
+            ),
+            (
+                json!({"message": "Service unavailable", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 503}}}),
+                Overloaded, true, "Service unavailable",
+            ),
+            (
+                json!({"message": "unexpected status 401 Unauthorized", "codexErrorInfo": "httpConnectionFailed"}),
+                SignInRequired, false, "unexpected status 401 Unauthorized",
+            ),
+            // Recorded live (r39 drill): Codex with an unreachable proxy.
+            (
+                json!({"message": "workspace routing discovery failed", "codexErrorInfo": "other"}),
+                Network,
+                true,
+                "workspace routing discovery failed",
+            ),
+            (
+                json!({"message": "stream closed", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 502}}}),
+                Network,
+                true,
+                "stream closed",
+            ),
+        ];
+        for (error, cause, retryable, message) in cases {
+            assert_eq!(
+                ProviderFailure::classify("codex", &error_text(error.clone())),
+                ProviderFailure {
+                    cause,
+                    retryable,
+                    message: message.to_string()
+                },
+                "{error}"
+            );
+        }
+    }
+
     #[test]
     fn parse_notification_recognizes_codex_terminal_events() {
         let v2_completed = parse_notification(JsonRpcMessage {
