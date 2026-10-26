@@ -111,11 +111,6 @@ impl Installed {
             .commit_verified(&token, "owner", &trust, 6)
             .unwrap();
         let binding = registry.active_trust("owner", "source-app").unwrap();
-        let catalog =
-            chariox_app_runtime::app_catalog::AppCatalog::compile(&verified, &binding, &trust)
-                .unwrap();
-        assert_eq!(catalog.ui_actions().len(), 1);
-        assert_eq!(catalog.ui_actions()[0].name, "inspect");
         Self {
             root,
             database,

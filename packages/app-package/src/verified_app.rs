@@ -206,7 +206,6 @@ pub fn verify_app<'a>(
         let mut v2_policy = v2::PolicyV2::new(
             [
                 v2::RequiredFeature::WasmComponent,
-                v2::RequiredFeature::UiActions,
                 v2::RequiredFeature::AgentPanel,
                 v2::RequiredFeature::Connections,
                 v2::RequiredFeature::DirectedEvents,
