@@ -1,0 +1,42 @@
+{
+  "wit-bindgen": "0.63.0",
+  "wasi-sdk": "33.0",
+  "platforms": {
+    "Linux-x86_64": [
+      {
+        "url": "https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.63.0/wit-bindgen-0.63.0-x86_64-linux.tar.gz",
+        "sha256": "bf4efe883ab70d34a4740253911dda20caf895d58a003af58369506b04684cbe",
+        "directory": "wit-bindgen-0.63.0-x86_64-linux"
+      },
+      {
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz",
+        "sha256": "0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce",
+        "directory": "wasi-sdk-33.0-x86_64-linux"
+      }
+    ],
+    "Darwin-arm64": [
+      {
+        "url": "https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.63.0/wit-bindgen-0.63.0-aarch64-macos.tar.gz",
+        "sha256": "cccbf4b17e00c11b020b389ddfcd4d3a214bc072295566263fc8b358b336815a",
+        "directory": "wit-bindgen-0.63.0-aarch64-macos"
+      },
+      {
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-macos.tar.gz",
+        "sha256": "85c997a2665ead91673b5bb88b7d0df3fc8900df3bfa244f720d478187bbdc78",
+        "directory": "wasi-sdk-33.0-arm64-macos"
+      }
+    ],
+    "Darwin-x86_64": [
+      {
+        "url": "https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.63.0/wit-bindgen-0.63.0-x86_64-macos.tar.gz",
+        "sha256": "d566ac4d3313bf6b524da3f85e82edc165374fb688255f16ddae4bf06aa1bfc2",
+        "directory": "wit-bindgen-0.63.0-x86_64-macos"
+      },
+      {
+        "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-macos.tar.gz",
+        "sha256": "18f3f201ba9734e6a4455b0b6410690395a55e9ffa9f6f5066f66083a94b93b3",
+        "directory": "wasi-sdk-33.0-x86_64-macos"
+      }
+    ]
+  }
+}
