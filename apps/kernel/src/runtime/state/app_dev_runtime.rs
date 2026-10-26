@@ -2,31 +2,25 @@
 //! Normal grants retain their existing trust check, audit and tool refresh.
 use super::*;
 use crate::extension::ExtensionKind;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
 pub(super) struct DevAppBindings {
-    next_scan_ms: AtomicU64,
+    next_scan_ms: tokio::sync::Mutex<u64>,
 }
 
 impl KernelRuntimeState {
     pub(super) async fn sync_dev_app_bindings(&self) -> Result<(), DaemonError> {
         let state = &self.owned.dev_app_bindings;
+        // Keep the deadline locked for the full scan: a slow pass cannot
+        // overlap the next maintenance tick and race its own grant attempts.
+        let Ok(mut next_scan_ms) = state.next_scan_ms.try_lock() else {
+            return Ok(());
+        };
         let now = crate::session::unix_epoch_ms();
-        let next = state.next_scan_ms.load(Ordering::Relaxed);
-        if now < next
-            || state
-                .next_scan_ms
-                .compare_exchange(
-                    next,
-                    now.saturating_add(1000),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_err()
-        {
+        if now < *next_scan_ms {
             return Ok(());
         }
+        *next_scan_ms = now.saturating_add(1000);
         let store = self.owned.durable_state_store.clone();
         let installations =
             tokio::task::spawn_blocking(move || store.active_dev_app_installations())
