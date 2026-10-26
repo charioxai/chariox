@@ -5416,6 +5416,30 @@ Only agent/task states, interaction state, terminal job exits, delivered steers 
 session changes are collected. Passkey interactions carry the section 8 approval pointer, without
 the prompt body. Session agents retain their existing session-scoped event tools.
 
+Typed failure cause (EA2-75, local protocol 613, relay peer 219): a turn that
+fails says why in one general shape, `failure { cause, retryable, message }`.
+`cause` is `overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`,
+`network` or `other`. `retryable` is whether a later attempt may succeed without
+anyone changing anything (overload, crash, network loss and a plain HTTP 429 are;
+an exhausted plan, a missing sign-in and an unrecognised error are not). `message`
+is the harness's own error text, with credentials removed; whitespace and diagnostic length are preserved. Chariox adds no retry,
+backoff or quota policy; the provider's own behaviour is unchanged and the orchestrating agent
+decides. The kernel types it once from the harness's native error: Codex
+`codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode
+error names with their HTTP status and native `isRetryable` flag, then the words of the error; a process exit,
+signal or transport loss is `provider_crashed` or `network` without any text.
+The cause rides the existing representation of a failed turn: the `failure` of
+the completed turn action (`last_completed_turn`, also `provider_termination.failure`
+when the provider run's termination is known), the relay peer's projected completion
+and its persisted replay (including failures with no termination evidence), the `failure` of the `agent` event whose `run_state`
+is `error` (summary `error: overloaded, retryable`), and the `failure` of a `failed`
+history outline turn (read back from the durable settlement entry). All are omitted
+for turns that did not fail. A failure the provider reported without a protocol
+frame, such as a rejected dispatch, is typed from its text; it does not become
+termination evidence. If native sign-in recovery is declined, the failed turn retains
+the original native cause and message while the existing recovery notice explains
+what happened.
+
 Every source kernel filters its own durable part. The gateway commits imported
 records and each source cursor together before acknowledging that source. Target
 restart and relay loss preserve parts and cursors. Pending inboxes retain at most
