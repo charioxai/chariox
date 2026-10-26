@@ -53,7 +53,7 @@ impl KernelRuntimeState {
         let session = self
             .owned
             .agent_moves
-            .execution_session(&self.owned.session_store.get_session(session_id)?, agent_id);
+            .execution_session(&self.owned.session_store.get_session(session_id)?, agent_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let _claim = self
             .owned

@@ -415,19 +415,19 @@ impl AgentMoveStore {
         &self,
         session: &crate::session::RuntimeSession,
         agent: &str,
-    ) -> crate::session::RuntimeSession {
-        self.target_for_agent(session.id(), agent)
-            .and_then(|target| target.receipt)
-            .and_then(|receipt| {
-                receipt.primary_path().ok().map(|path| {
-                    session.for_execution_project(
-                        &receipt.target_project_id,
-                        &path.display().to_string(),
-                        &path.display().to_string(),
-                    )
-                })
-            })
-            .unwrap_or_else(|| session.clone())
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let Some(target) = self.target_for_agent(session.id(), agent) else {
+            return Ok(session.clone());
+        };
+        let receipt = target.receipt.ok_or_else(|| {
+            error("Move target receipt is missing; finish or repair the move before launching")
+        })?;
+        let path = receipt.primary_path()?;
+        Ok(session.for_execution_project(
+            &receipt.target_project_id,
+            &path.display().to_string(),
+            &path.display().to_string(),
+        ))
     }
 }
 

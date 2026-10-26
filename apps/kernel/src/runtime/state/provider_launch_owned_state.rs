@@ -246,6 +246,7 @@ impl KernelRuntimeOwnedState {
             .agent_id
             .as_deref()
             .map(|agent| self.agent_moves.execution_session(&session, agent))
+            .transpose()?
             .unwrap_or(session);
         let config = self.config_projection.snapshot();
         let agent = request
@@ -386,6 +387,7 @@ impl KernelRuntimeOwnedState {
             .agent_id
             .as_deref()
             .map(|agent| self.agent_moves.execution_session(&session, agent))
+            .transpose()?
             .unwrap_or(session);
         let agent = request
             .agent_id
