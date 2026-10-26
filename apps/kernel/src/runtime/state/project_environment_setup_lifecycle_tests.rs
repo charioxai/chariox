@@ -5050,16 +5050,17 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
         state_home,
         shutdown_home_rx,
     ));
-    let _ = runtime
-        .execute_project_environment_setup_request(
-            LocalDaemonRequest::RetryProjectEnvironmentSetup(RetryProjectEnvironmentSetupRequest {
-                operation_id: "setup-stale-binding-cancel".to_string(),
-                session_id: session_id.clone(),
-            }),
-            "user-1",
-        )
-        .await
-        .expect("home should advance cancelled attempt one to attempt two offline");
+    // Seed the next attempt without starting Retry's background status watcher.
+    // The explicit public Get below must own the recovery Retry we hold at the
+    // worker; another watcher would correctly fence that Get as already in flight.
+    project_environment_setup_ack::retry_remote_setup_ordered(
+        &runtime,
+        "setup-stale-binding-cancel",
+        &session_id,
+        "user-1",
+    )
+    .await
+    .expect("home should advance cancelled attempt one to attempt two offline");
     let (_, home_attempt_two, _) = runtime
         .owned
         .project_environment_setups
