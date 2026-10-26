@@ -39,9 +39,11 @@ export async function exerciseReturnFailures({source, target, sessionId, agentId
     let response;
     pending = client.send(request).then(value => {response = value;}, error => {response = {error: String(error)};});
     let captured;
-    for (let n = 0; n < 6000; n++) {
+    for (let n = 0; n < 60000; n++) {
         const value = await journal(source, 3);
         if (value?.phase.phase === 'captured') {captured = value; break;}
+        if (n % 400 === 0) await record('return-abort-capture-progress', {phase: value?.phase.phase, response});
+        assert.notEqual(value?.phase.phase, 'rolled_back', 'Return must capture before rolling back');
         assert.ok(!response, 'Return must reach capture before target publication');
         await sleep(5);
     }
