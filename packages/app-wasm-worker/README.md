@@ -109,7 +109,8 @@ must not expire after accumulated successful calls. Epoch slices and call
 deadlines bound guest CPU; R4 retains supervisor monitoring for native runaways.
 Inherited OS CPU limits remain in force. The native CPU signal probe lowers
 only its own child's inherited limit to verify that behavior.
-Wasmtime reserves only committed guest memory plus a 64 KiB guard, without
+Wasmtime reserves committed guest memory plus 4 MiB of growth headroom and a
+64 KiB guard, avoiding copies on every small grow, without
 memfd-backed copy-on-write initialization. The engine configuration digest
 includes these settings; old AOT entries cannot share the new key.
 
