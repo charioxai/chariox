@@ -747,6 +747,11 @@ pub(crate) fn can_skip_session_snapshot(
     // a window opens, warns, extends or ends alongside another projection delta.
     emitted_projection_delta
         && previous_snapshot.is_some_and(|previous| {
+            // Interaction and task deltas cannot carry a changed execution route
+            // or account. Keep the full agent projection alongside those deltas.
+            if previous.session.agents() != snapshot.session.agents() {
+                return false;
+            }
             if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
                 return false;
             }
