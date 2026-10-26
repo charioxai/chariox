@@ -700,6 +700,7 @@ async fn emit_kernel_event(
         &runtime.transport_health,
         KernelOutgoingFrame::Event {
             event_id,
+            kernel: None,
             event: Box::new(event),
         },
         session_id,
@@ -766,6 +767,7 @@ pub(super) async fn replay_recent_events(
             &runtime.transport_health,
             KernelOutgoingFrame::Event {
                 event_id: persisted.event_id,
+                kernel: None,
                 event: Box::new(persisted.event.clone()),
             },
             Some(session_id),
@@ -781,6 +783,7 @@ pub(super) async fn replay_recent_events(
         close_requested,
         &runtime.transport_health,
         KernelOutgoingFrame::Event {
+            kernel: None,
             event_id: match runtime
                 .event_log
                 .append(

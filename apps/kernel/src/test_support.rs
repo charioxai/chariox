@@ -15,6 +15,7 @@ pub(crate) use claude_executable::TestClaudeExecutable;
 mod pre_exec_child;
 mod room_turn;
 mod runtime_mcp;
+pub(crate) mod task_delta;
 mod task_subscription;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]

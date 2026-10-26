@@ -10,11 +10,12 @@ import { extractPromptInputHistoryEntries } from "@chariox/kernel-client/prompt-
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
-import { settleAttachProviderRun } from "./attach-provider-run.js"
+import { settleAttachProviderRun, type AttachProviderRunSettlement } from "./attach-provider-run.js"
 import { sessionHistoryCursorForVisibleAgent } from "@chariox/kernel-client/session-history-outline"
 
 import type {
   AttachLaunch,
+  AttachLaunchIssue,
   ComposerInventory,
   CliOptions,
   BootstrapState,
@@ -297,40 +298,15 @@ async function settleAttachLaunch(
   )
   if (providerSettlement.action === "deferred") {
     return { sessionId: session.id, session: null, providerRun: null, issue: null,
-      providerLaunch: { sessionId: session.id, agentId: providerSettlement.targetAgentId,
-        isPending: providerSettlement.isPending, start: providerSettlement.start } }
+      providerLaunch: { sessionId: session.id, agentId: providerSettlement.targetAgentId, isPending: providerSettlement.isPending,
+        start: async () => {
+          const launched = await providerSettlement.start()
+          logSkippedAttachLaunch(deps, session.id, attachedSession.focused_agent_id, launched)
+          return { providerRun: launched.providerRun, issue: launchIssue(launched) }
+        } } }
   }
   const settledSession = providerSettlement.session
-  if (providerSettlement.action === "skipped") {
-    if (providerSettlement.recoveredRemotePlacement) {
-      deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "no_visible_agents") {
-      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
-        session_id: session.id,
-        focused_agent_id: settledSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "missing_focused_agent") {
-      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
-        session_id: session.id,
-        focused_agent_id: settledSession.focused_agent_id,
-      })
-    } else if (providerSettlement.reason === "remote_backed_agent") {
-      deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-      })
-    } else if (providerSettlement.reason === "credential_vault_locked") {
-      deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
-        session_id: session.id,
-        agent_id: providerSettlement.targetAgent?.id ?? null,
-      })
-    }
-  }
+  logSkippedAttachLaunch(deps, session.id, settledSession.focused_agent_id, providerSettlement)
   // The new attachment already buffers output after its history read. Let the
   // live runtime drain it; catch-up would discard rows absent from this view.
   if (!hasInitialView) await deps.catchUpAttachedSession(client, session.id, attachmentId, settledSession, deps.logger)
@@ -342,8 +318,49 @@ async function settleAttachLaunch(
       ? await deps.getSessionState(client, session.id)
       : settledSession === attachedSession ? null : settledSession,
     providerRun: providerSettlement.providerRun,
-    issue: providerSettlement.action === "skipped" && providerSettlement.reason === "credential_vault_locked"
-      ? "credential_vault_locked" : null,
+    issue: launchIssue(providerSettlement),
+  }
+}
+
+function launchIssue(settlement: AttachProviderRunSettlement): AttachLaunchIssue | null {
+  return settlement.action === "skipped" && settlement.reason === "credential_vault_locked"
+    ? "credential_vault_locked" : null
+}
+
+function logSkippedAttachLaunch(
+  deps: Pick<BootstrapDeps, "logger">,
+  sessionId: string,
+  focusedAgentId: string | null,
+  settlement: AttachProviderRunSettlement,
+) {
+  if (settlement.action !== "skipped") return
+  if (settlement.recoveredRemotePlacement) {
+    deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
+      session_id: sessionId,
+      agent_id: settlement.targetAgent?.id ?? null,
+      worker_kernel_id: settlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+    })
+  } else if (settlement.reason === "no_visible_agents") {
+    deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
+      session_id: sessionId,
+      focused_agent_id: focusedAgentId,
+    })
+  } else if (settlement.reason === "missing_focused_agent") {
+    deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
+      session_id: sessionId,
+      focused_agent_id: focusedAgentId,
+    })
+  } else if (settlement.reason === "remote_backed_agent") {
+    deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
+      session_id: sessionId,
+      agent_id: settlement.targetAgent?.id ?? null,
+      worker_kernel_id: settlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+    })
+  } else if (settlement.reason === "credential_vault_locked") {
+    deps.logger?.warn("skipping attach-time provider launch because the credential vault is locked", {
+      session_id: sessionId,
+      agent_id: settlement.targetAgent?.id ?? null,
+    })
   }
 }
 

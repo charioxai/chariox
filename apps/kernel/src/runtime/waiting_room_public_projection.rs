@@ -529,6 +529,8 @@ fn build_waiting_room_public_snapshot_from_summaries(
         structural_version,
         activity_revision,
         generated_at_ms,
+        sessions_total: sessions.len(),
+        sessions_next_cursor: None,
         sessions,
         projects,
         external_provider_sessions,

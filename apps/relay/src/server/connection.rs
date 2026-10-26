@@ -109,6 +109,7 @@ pub(crate) async fn handle_connection(
 ) -> Result<(), std::io::Error> {
     stream.set_nodelay(true)?;
     let mut chunks = false;
+    let mut unsupported_transport = false;
     let mut binary_events = false;
     let mut initial_resume_negotiated = false;
     let handshake = accept_hdr_async(
@@ -120,20 +121,12 @@ pub(crate) async fn handle_connection(
                     .split('&')
                     .any(|part| part == crate::frame_transport::TRANSPORT_QUERY)
             });
-            // MP-08/MP-10/MP-11: never send multiplexed chunks to a v1 receiver.
-            if request.uri().query().is_some_and(|query| {
+            unsupported_transport = request.uri().query().is_some_and(|query| {
                 query.split('&').any(|part| {
                     part.starts_with("chariox_transport=")
                         && part != crate::frame_transport::TRANSPORT_QUERY
                 })
-            }) {
-                return Err(tokio_tungstenite::tungstenite::http::Response::builder()
-                    .status(426)
-                    .body(Some(
-                        "relay requires chunks-v2 (protocol 532 / peer 140)".into(),
-                    ))
-                    .unwrap());
-            }
+            });
             let protocols = request
                 .headers()
                 .get("sec-websocket-protocol")
@@ -172,11 +165,23 @@ pub(crate) async fn handle_connection(
             Ok(response)
         },
     );
-    let socket = match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, handshake).await {
+    let mut socket = match tokio::time::timeout(RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT, handshake).await
+    {
         Ok(Ok(socket)) => socket,
         Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
         Err(_) => return Ok(()),
     };
+    if unsupported_transport {
+        // MP-08 / MP-10 / MP-11: old TUIs discard HTTP 426 bodies, but surface
+        // close reasons. Refuse before registration or any multiplexed reply.
+        let close = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy,
+            reason: "Update Chariox: relay requires chunks-v2 (protocol 532 / peer 140)".into(),
+        };
+        let _ =
+            tokio::time::timeout(RELAY_WEBSOCKET_CLOSE_TIMEOUT, socket.close(Some(close))).await;
+        return Ok(());
+    }
     let (writer, mut reader) = socket.split();
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
     let routes = registry.read().await.route_index();

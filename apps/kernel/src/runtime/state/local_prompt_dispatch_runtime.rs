@@ -349,19 +349,11 @@ impl KernelRuntimeState {
                 .is_leased_provider_run(&dispatch.provider_run_id)
         {
             if !dispatch.steering {
-                owned.durable_state_store.agent_lifecycle(
-                    crate::durable_state::agent_lifecycle::Operation::Begin {
-                        owner: owned
-                            .session_store
-                            .get_session(&dispatch.session_id)?
-                            .owner_user_id()
-                            .into(),
-                        room: dispatch.session_id.clone(),
-                        agent: dispatch.agent_id.clone(),
-                        prompt: dispatch.prompt_id.clone(),
-                        run: Some(dispatch.provider_run_id.clone()),
-                        now: crate::session::unix_epoch_ms(),
-                    },
+                owned.bind_agent_task_run(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
                 )?;
             }
             if let Some(hint) = owned.agent_task_context_hint(
@@ -932,7 +924,7 @@ impl KernelRuntimeState {
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
-                    &dispatch_failure,
+                    &crate::terminal::user_facing_dispatch_failure(&error),
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -1022,6 +1014,25 @@ impl KernelRuntimeState {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
         }
+        if dispatch_owns_active_prompt {
+            // MP-08/MP-10/MP-11: offer owner retry/cancel now, rather than
+            // waiting for the periodic lifecycle sweep after a failed request.
+            let restored_wait = self
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(&dispatch.session_id), Some(&dispatch.agent_id))?
+                .iter()
+                .any(|task| {
+                    task.prompt_id == dispatch.prompt_id
+                        && task.state
+                            == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+                });
+            // A proven refusal retries on the periodic sweep. Rescheduling
+            // from every failed retry would spin until the provider recovers.
+            if !restored_wait {
+                self.schedule_agent_lifecycle_sweep();
+            }
+        }
         if let Some(next_dispatch) = next_dispatch {
             self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
         }
@@ -1064,6 +1075,12 @@ impl KernelRuntimeState {
                 state
                     .advance_project_queued_prompt_after_settlement(&session_id, &agent_id)
                     .await;
+            });
+        }
+        for (settlement, prompt) in dispatches.stopped_task_settlements {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state.finish_stopped_agent_task(settlement, &prompt).await;
             });
         }
         for task in dispatches.starting_metaagent_tasks {
@@ -1583,6 +1600,12 @@ impl KernelRuntimeState {
                             &dispatch.provider_run_id,
                             &dispatch.prompt_id,
                         ) {
+                            let settlement = state.owned.settle_stopped_agent_task(
+                                &dispatch.session_id,
+                                &agent_id,
+                                &prompt,
+                                &dispatch.provider_run_id,
+                            );
                             let _ = state
                                 .owned
                                 .workflow_cancel_prompt(&dispatch.session_id, &prompt);
@@ -1594,6 +1617,9 @@ impl KernelRuntimeState {
                                     &dispatch.prompt_id,
                                     Some(&dispatch.provider_run_id),
                                 );
+                            if let Some(settlement) = settlement {
+                                state.finish_stopped_agent_task(settlement, &prompt).await;
+                            }
                         }
                         PromptAbortDispatchOutcome::Done
                     }
@@ -2253,6 +2279,176 @@ pub(in crate::runtime::state) mod tests {
             .snapshot()
             .run_processes
             .contains_key(&provider_run_id));
+
+        let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
+        let _ = crate::secret::clear_vault_secret_process_cache();
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // After a kernel restart a Claude agent has no provider run. The owner's first prompt
+    // then launches one with the Vaulted token: the kernel must ask for the Vault unlock
+    // and start the run, not refuse the prompt with `credential_vault_locked`.
+    #[tokio::test]
+    async fn first_prompt_after_restart_asks_for_the_vault_unlock_and_starts() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        #[cfg(unix)]
+        let _claude = crate::test_support::TestClaudeExecutable::new();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-first-prompt-vault-unlock-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test root should exist");
+        std::env::set_var("CHARIOX_HOME", &root);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
+        let vault_path = root.join("credentials.vault");
+        let mut config =
+            DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "First prompt Claude",
+            )
+            .expect("managed Claude profile should create");
+        let agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "claude")
+                    .with_model("claude-sonnet")
+                    .with_account_profile(profile.profile_id.clone()),
+            )
+            .expect("Claude agent should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "first-prompt-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("test client should attach");
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "correct horse battery staple",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .expect("vault should initialize");
+        crate::provider::store_provider_account_credential(
+            &config,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+            "setup-token-secret",
+            false,
+        )
+        .expect("provider credential should store");
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
+        crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let prompt = crate::session::PromptQueueItem::new(
+            runtime.owned.session_store.reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "hello after the restart",
+            crate::session::PromptStatus::Queued,
+        );
+        let submit = tokio::spawn({
+            let runtime = runtime.clone();
+            let session_id = session.id().to_string();
+            async move {
+                runtime
+                    .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                        session_id,
+                        prompt,
+                        force_queue: false,
+                        refresh_projection: true,
+                    })
+                    .await
+            }
+        });
+
+        let wait_for_choice = |choice: &'static str| {
+            let runtime = runtime.clone();
+            let (session, agent) = (session.id().to_string(), agent.id().to_string());
+            async move {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if let Some(interaction) = runtime
+                            .owned
+                            .session_store
+                            .get_session(&session)
+                            .expect("session should remain available")
+                            .active_interaction_for_agent(&agent)
+                            .filter(|interaction| {
+                                choice == "passphrase"
+                                    || interaction.choices().iter().any(|c| c.id() == choice)
+                            })
+                        {
+                            break interaction.id().to_string();
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("the locked Vault must raise the unlock popup for the first prompt")
+            }
+        };
+        let passphrase = wait_for_choice("passphrase").await;
+        runtime
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                &passphrase,
+                "passphrase",
+                Some("correct horse battery staple"),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .expect("vault passphrase interaction should resolve");
+        let duration = wait_for_choice("unlock_operation").await;
+        runtime
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                &duration,
+                "unlock_operation",
+                None,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .expect("vault unlock interaction should resolve");
+        let submission = tokio::time::timeout(std::time::Duration::from_secs(10), submit)
+            .await
+            .expect("the prompt must finish after the unlock")
+            .unwrap()
+            .expect("the first prompt must start once the Vault is unlocked");
+        assert!(submission.dispatch.is_some());
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .is_some());
 
         let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
         let _ = crate::secret::clear_vault_secret_process_cache();
@@ -3922,6 +4118,122 @@ pub(in crate::runtime::state) mod tests {
                 .state(),
             crate::agent::AgentState::Error,
         );
+    }
+
+    #[tokio::test]
+    async fn amfix_r19_dispatch_failure_blocks_exact_durable_task_immediately() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .owner_user_id()
+                    .into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: dispatch.prompt_id.clone(),
+                run: Some(provider_run_id.clone()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        runtime
+            .fail_prompt_dispatch(
+                dispatch.clone(),
+                DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.clone(),
+                    operation: "provider_catalog",
+                    message: "Resource temporarily unavailable (os error 11)".into(),
+                },
+            )
+            .await
+            .expect_err("failed dispatch must retain its error");
+        let tasks = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap();
+        let task = tasks
+            .iter()
+            .find(|t| t.task_id == dispatch.prompt_id)
+            .unwrap();
+        assert_eq!(
+            task.state,
+            ExecutionState::Blocked,
+            "failed dispatch must not wait for the lost-executor sweep"
+        );
+        assert!(task.reason.contains("model list"));
+        assert!(!task.reason.contains("provider_catalog"));
+        assert!(!task.reason.contains("provider protocol"));
+        assert!(task.reason.contains("Resume"));
+        assert!(!task.reason.contains("No live provider turn"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .any(|i| i.id().starts_with("task-blocked-"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("failed dispatch must offer owner actions without the periodic sweep");
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap(),
+                &agent_id
+            )
+            .is_none());
+        assert!(
+            runtime
+                .owned
+                .terminal_stream
+                .drain_output_records(&session_id, &observer_id)
+                .into_iter()
+                .all(|record| record.kind != crate::terminal::TerminalOutputKind::ProviderError),
+            "kernel dispatch diagnostics must not become agent output"
+        );
+        let revision = task.revision;
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::ProviderProtocol {
+                    provider_run_id,
+                    operation: "session_prompt",
+                    message: "late duplicate".into(),
+                },
+            )
+            .await
+            .expect_err("duplicate failure still returns its error");
+        let tasks = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap();
+        assert_eq!(tasks[0].revision, revision);
+        assert!(!tasks[0].reason.contains("late duplicate"));
     }
 
     #[tokio::test]

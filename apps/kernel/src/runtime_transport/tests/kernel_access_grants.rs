@@ -456,10 +456,28 @@ impl Client {
         self.send(request);
         self.result()
     }
+    fn request_on(&mut self, kernel: &str, request: Value) -> Value {
+        let mut frame = frame(request);
+        frame["kernel"] = kernel.into();
+        writeln!(self.input, "{frame}").unwrap();
+        self.result()
+    }
     fn cached_request(&mut self, request: Value, command: &str) -> Value {
         let mut frame = frame(request);
         frame["command_id"] = command.into();
         writeln!(self.input, "{frame}").unwrap();
+        self.result()
+    }
+    fn attach(&mut self) -> String {
+        let attach = self.request(serde_json::json!({"AttachToSession":{"session_id":SESSION,"client_id":"external-holder", "capability_level":"FullTerminal"}}));
+        assert!(attach["error"].is_null(), "{attach}");
+        attach["response"]["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+    fn subscribe_on(&mut self, kernel: &str, attachment_id: &str) -> Value {
+        writeln!(self.input, "{}", serde_json::json!({"type":"subscribe", "request_id":"subscribe", "session_id":SESSION, "attachment_id":attachment_id, "kernel":kernel})).unwrap();
         self.result()
     }
     fn subscribe(&mut self) {
@@ -502,6 +520,8 @@ impl Kernel {
         // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
         let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
         std::fs::create_dir(&root).unwrap();
+        crate::config::validate_local_socket_path(&root.join("run/k.sock"))
+            .expect("the test kernel's socket does not fit under this TMPDIR; use a shorter one");
         let child = Command::new(std::env::current_exe().unwrap())
             .args(["kernel_access_child_server", "--ignored", "--nocapture"])
             .env("CHARIOX_ACCESS_TEST_ROOT", &root)
@@ -632,12 +652,21 @@ impl Kernel {
         .unwrap()
     }
     async fn answer(&mut self, id: &str, passkey: Option<&str>, minutes: Option<u32>) -> Value {
+        self.answer_with(id, passkey, minutes.map(|m| m.to_string()))
+            .await
+    }
+    async fn answer_with(
+        &mut self,
+        id: &str,
+        passkey: Option<&str>,
+        reply: Option<String>,
+    ) -> Value {
         let scope = if id.ends_with("-grant") || id.ends_with("-extension") {
             crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE
         } else {
             SESSION
         };
-        self.request(serde_json::json!({"RespondToInteraction": {"session_id":scope, "interaction_id":id, "choice_id":"approve", "passkey":passkey, "custom_reply":minutes.map(|m|m.to_string())}})).await
+        self.request(serde_json::json!({"RespondToInteraction": {"session_id":scope, "interaction_id":id, "choice_id":"approve", "passkey":passkey, "custom_reply":reply}})).await
     }
     async fn control(&self, action: &str) {
         let _ = std::fs::remove_file(self.root.join("ack"));
@@ -692,9 +721,12 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     // structured requester and the audit record.
     assert_eq!(
         prompt["message"],
-        "An external agent wants access to Chariox. Allow?"
+        "An external agent wants access to this kernel and your other kernels. Allow?"
     );
     assert_eq!(prompt["title"], "External agent access");
+    // The popup starts on the kernel default; pre-568 clients read the minutes too.
+    assert_eq!(prompt["term"], serde_json::json!({"minutes": 480}));
+    assert_eq!(prompt["lifetime_minutes"], 480);
     assert!(prompt["requester"]["pid"].is_u64());
     kernel.control("guest").await;
     let missing = kernel.answer(&id, None, None).await;
@@ -712,8 +744,8 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     let result = holder.result();
     assert!(result["error"].is_null(), "{result}");
     assert_eq!(
-        result["response"]["KernelAccessGranted"]["grant"]["lifetime_minutes"],
-        15
+        result["response"]["KernelAccessGranted"]["grant"]["term"],
+        serde_json::json!({"minutes": 15})
     );
     result["response"]["KernelAccessGranted"]["grant"]["grant_id"]
         .as_str()
@@ -900,7 +932,8 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
             let listed = kernel
                 .request(serde_json::json!({"ListKernelAccessGrants":{}}))
                 .await;
-            if listed["response"]["KernelAccessGrantsListed"]["grants"][0]["lifetime_minutes"] == 45
+            if listed["response"]["KernelAccessGrantsListed"]["grants"][0]["term"]
+                == serde_json::json!({"minutes": 45})
             {
                 break;
             }
@@ -1071,14 +1104,17 @@ async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_
     assert!(message.contains("full external prompt"));
     let refused = kernel.request(serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":id,"choice_id":"refuse"}})).await;
     assert!(refused["error"].is_null(), "{refused}");
-    assert!(holder.result()["error"]["message"]
+    let refused = holder.result();
+    assert_eq!(refused["error"]["code"], "kernel_sudo_refused", "{refused}");
+    assert!(refused["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("refused"));
+        .contains("sudo request refused"));
     kernel.tcp.close(None).await.unwrap();
     holder.send(request);
     kernel.control("sudo-timeout").await;
     let expired = holder.result();
+    assert_eq!(expired["error"]["code"], "kernel_sudo_expired", "{expired}");
     assert!(
         expired["error"]["message"]
             .as_str()
@@ -1163,4 +1199,496 @@ async fn unix_mutation_response_loss_retries_once_with_live_grant_and_refuses_re
             .len(),
         before_count + 2
     );
+}
+
+async fn grant_until_exit(kernel: &mut Kernel, holder: &mut Client) -> Value {
+    holder.send(
+        serde_json::json!({"RequestKernelAccess":{"holder_pid":0, "term":"until_holder_exits"}}),
+    );
+    let prompt = kernel.access_popup("-grant").await;
+    assert_eq!(prompt["term"], "until_holder_exits", "{prompt}");
+    assert!(prompt.get("lifetime_minutes").is_none(), "{prompt}");
+    let id = prompt["interaction_id"].as_str().unwrap().to_owned();
+    kernel.control("guest").await;
+    let approved = kernel
+        .answer_with(&id, Some(PASSKEY), Some("until_exit".into()))
+        .await;
+    assert!(approved["error"].is_null(), "{approved}");
+    let result = holder.result();
+    assert!(result["error"].is_null(), "{result}");
+    result["response"]["KernelAccessGranted"]["grant"].clone()
+}
+
+// EA2-01 / EA2-02: the until-exit term has no deadline, is listed as such, and
+// ends with its holder or a reused PID, like every other grant.
+#[tokio::test]
+async fn until_exit_grant_has_no_deadline_and_ends_with_its_holder() {
+    for action in ["exit", "reuse", "revoke"] {
+        let mut kernel = Kernel::start().await;
+        let mut holder = Client::start(&kernel.root);
+        let grant = grant_until_exit(&mut kernel, &mut holder).await;
+        assert_eq!(grant["term"], "until_holder_exits", "{grant}");
+        assert!(
+            grant.get("expires_at_ms").is_none_or(Value::is_null),
+            "{grant}"
+        );
+        // Passing the deadline of every timed grant leaves it alone.
+        kernel.control("expire").await;
+        let alive = holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+        assert!(alive["error"].is_null(), "{action}: {alive}");
+        let list = kernel
+            .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+            .await;
+        let listed = &list["response"]["KernelAccessGrantsListed"]["grants"];
+        assert_eq!(listed[0]["term"], "until_holder_exits", "{list}");
+        let started = std::time::Instant::now();
+        match action {
+            "reuse" => kernel.control("reuse").await,
+            "revoke" => {
+                let revoked = kernel
+                    .request(serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":grant["grant_id"]}}))
+                    .await;
+                assert!(revoked["error"].is_null(), "{revoked}");
+                // The approved holder itself returns: its access ended, it is not a stranger.
+                holder.command("reconnect");
+                assert_eq!(holder.result()["reconnected"], true);
+                let ended =
+                    holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+                assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
+            }
+            _ => drop(holder),
+        }
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let list = kernel
+                    .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+                    .await;
+                if list["response"]["KernelAccessGrantsListed"]["grants"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "{action}: grant outlived its holder by {:?}",
+                started.elapsed()
+            )
+        });
+        let mut stranger = Client::start(&kernel.root);
+        assert_eq!(
+            stranger.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))
+                ["error"]["code"],
+            "kernel_access_not_covered"
+        );
+    }
+}
+
+#[tokio::test]
+async fn access_request_refuses_out_of_policy_and_unknown_terms() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    for term in [
+        serde_json::json!({"minutes": 0}),
+        serde_json::json!({"minutes": 100000}),
+        serde_json::json!("forever"),
+    ] {
+        let refused = holder
+            .request(serde_json::json!({"RequestKernelAccess":{"holder_pid":0, "term":term}}));
+        assert!(refused["error"].is_object(), "{term}: {refused}");
+    }
+    // Nothing was left pending by the refusals.
+    assert!(kernel
+        .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+        .await["response"]["KernelAccessGrantsListed"]["grants"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+// EA2-05 / EA2-12: a heartbeat for attachments says which of them are gone, and a
+// subscription on a kernel is decided by the same kernel lookup as a request.
+#[tokio::test]
+async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_names_its_outcome() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let attachment = holder.attach();
+    let beat = holder.request(serde_json::json!({"HeartbeatAttachments":{"attachments":[
+        {"session_id":SESSION,"attachment_id":attachment},
+        {"session_id":SESSION,"attachment_id":"gone"},
+        {"session_id":"other-session","attachment_id":attachment},
+    ]}}));
+    assert!(beat["error"].is_null(), "{beat}");
+    assert_eq!(
+        beat["response"]["AttachmentsHeartbeated"]["lapsed"],
+        serde_json::json!(["gone", attachment]),
+        "{beat}"
+    );
+    // Pairing is a person's act at a terminal; a grant holder is refused, locally or on a kernel.
+    for request in [
+        serde_json::json!({"JoinKernelLink":{"link":"chariox-terminal-pair-v1.x"}}),
+        serde_json::json!({"ForgetGatewayKernel":{"name":"b3"}}),
+    ] {
+        let refused = holder.request(request.clone());
+        assert_eq!(
+            refused["error"]["code"], "kernel_access_human_only",
+            "{refused}"
+        );
+        let refused = holder.request_on("b3", request);
+        assert_eq!(
+            refused["error"]["code"], "kernel_access_human_only",
+            "{refused}"
+        );
+    }
+    let subscribed = holder.subscribe_on("b3", &attachment);
+    assert_eq!(
+        subscribed["error"]["code"], "kernel_unknown",
+        "{subscribed}"
+    );
+    assert_eq!(subscribed["kernel"], "b3", "{subscribed}");
+}
+
+// EA2-07 (target half): a grant holder moves a file in chunks through the kernel,
+// reads it back, and a wrong request is told what to do next.
+#[tokio::test]
+async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let target = kernel.root.join("moved.bin");
+    let path = target.display().to_string();
+    let first = holder.request(serde_json::json!({"WriteKernelFile":{"path":path,"offset":0,"data_base64":"aGVsbG8g","total_size":11}}));
+    assert_eq!(
+        first["response"]["KernelFileWritten"]["complete"], false,
+        "{first}"
+    );
+    let skipped = holder.request(serde_json::json!({"WriteKernelFile":{"path":path,"offset":3,"data_base64":"d29ybGQ=","total_size":11}}));
+    assert_eq!(
+        skipped["error"]["code"], "file_offset_mismatch",
+        "{skipped}"
+    );
+    assert!(
+        skipped["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("continue at offset 6"),
+        "{skipped}"
+    );
+    let last = holder.request(serde_json::json!({"WriteKernelFile":{"path":path,"offset":6,"data_base64":"d29ybGQ=","total_size":11}}));
+    assert_eq!(
+        last["response"]["KernelFileWritten"]["complete"], true,
+        "{last}"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"hello world");
+    let read =
+        holder.request(serde_json::json!({"ReadKernelFile":{"path":path,"offset":6,"length":100}}));
+    assert_eq!(
+        read["response"]["KernelFileChunk"]["data_base64"], "d29ybGQ=",
+        "{read}"
+    );
+    assert_eq!(read["response"]["KernelFileChunk"]["eof"], true, "{read}");
+    let missing = holder.request(serde_json::json!({"StatKernelFile":{"path":"relative.txt"}}));
+    assert_eq!(missing["error"]["code"], "file_path_invalid", "{missing}");
+    assert!(
+        missing["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("start it with /"),
+        "{missing}"
+    );
+}
+
+// EA2-04 / EA2-10 (origin half): a request that names a kernel is decided by the
+// local kernel first. Unknown kernels and human-only shapes end here, with a
+// definitive code, before anything leaves the kernel; nothing falls back to local.
+#[tokio::test]
+async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let listed = holder.request(serde_json::json!({"ListGatewayKernels":{}}));
+    assert!(listed["error"].is_null(), "{listed}");
+    assert!(listed["kernel"].is_null(), "{listed}");
+    assert_eq!(
+        listed["response"]["GatewayKernelsListed"]["kernels"],
+        serde_json::json!([]),
+        "a kernel with no relay has no kernels"
+    );
+    let unknown = holder.request_on(
+        "b3",
+        serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
+    );
+    assert_eq!(unknown["error"]["code"], "kernel_unknown", "{unknown}");
+    assert_eq!(
+        unknown["kernel"], "b3",
+        "the answer names the kernel it concerns: {unknown}"
+    );
+    assert!(
+        unknown["response"].is_null(),
+        "never answered locally: {unknown}"
+    );
+    let passkey = holder.request_on(
+        "b3",
+        serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":"i","choice_id":"approve","passkey":PASSKEY}}),
+    );
+    assert_eq!(
+        passkey["error"]["code"], "kernel_access_human_only",
+        "{passkey}"
+    );
+    let relay = holder.request_on(
+        "b3",
+        serde_json::json!({"ConfigureRelay":{"relay_url":"wss://elsewhere.invalid","relay_token":null}}),
+    );
+    assert_eq!(
+        relay["error"]["code"], "kernel_access_human_only",
+        "{relay}"
+    );
+    // A stranger gets no kernel reach: the grant is the only door.
+    let mut stranger = Client::start(&kernel.root);
+    let refused = stranger.request_on(
+        "b3",
+        serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
+    );
+    assert_eq!(
+        refused["error"]["code"], "kernel_access_not_covered",
+        "{refused}"
+    );
+}
+
+// EA2-10: a grant request that names a kernel is a gateway request, never a
+// local grant request: it raises no popup here and is human-only for a holder.
+// EA2-26: kernel routing, which carries the outside event requests to other kernels, belongs to
+// the local grant holder; a token-authenticated TCP terminal is refused before any kernel is named.
+#[tokio::test]
+async fn a_token_terminal_cannot_route_requests_or_event_subscriptions_to_another_kernel() {
+    let mut kernel = Kernel::start().await;
+    // An ordinary request that names another kernel gets no answer from this one.
+    for (request_id, request) in [
+        ("routed", serde_json::json!({"GetEventSubscription":{}})),
+        ("routed-list", serde_json::json!({"ListSessions":null})),
+    ] {
+        let mut routed = frame(request);
+        routed["kernel"] = "b3".into();
+        routed["request_id"] = request_id.into();
+        kernel
+            .tcp
+            .send(Message::Text(routed.to_string().into()))
+            .await
+            .unwrap();
+        let refused = response(&mut kernel.tcp, request_id).await;
+        assert_eq!(
+            refused["error"]["code"], "kernel_not_available",
+            "{refused}"
+        );
+        assert!(refused["response"].is_null(), "{refused}");
+    }
+    let subscribe = serde_json::json!({"type":"subscribe", "request_id":"routed-subscribe", "kernel":"b3",
+        "session_id":SESSION, "attachment_id":"", "subscription_scope":"session"});
+    kernel
+        .tcp
+        .send(Message::Text(subscribe.to_string().into()))
+        .await
+        .unwrap();
+    let refused = response(&mut kernel.tcp, "routed-subscribe").await;
+    assert_eq!(
+        refused["error"]["code"], "kernel_not_available",
+        "{refused}"
+    );
+}
+
+#[tokio::test]
+async fn a_grant_request_naming_a_machine_is_not_a_local_grant_request() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let again = holder.request_on(
+        "b3",
+        serde_json::json!({"RequestKernelAccess":{"holder_pid":0}}),
+    );
+    assert_eq!(
+        again["error"]["code"], "kernel_access_human_only",
+        "{again}"
+    );
+    let mut stranger = Client::start(&kernel.root);
+    let asked = stranger.request_on(
+        "b3",
+        serde_json::json!({"RequestKernelAccess":{"holder_pid":0}}),
+    );
+    assert_eq!(
+        asked["error"]["code"], "kernel_access_not_covered",
+        "{asked}"
+    );
+}
+
+// EA2-19: a request that does not parse tells the agent what the kernel expected,
+// instead of "details are available only in the host terminal".
+#[tokio::test]
+async fn a_malformed_request_explains_itself_to_the_grant_holder() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let refused = holder.request(serde_json::json!({"CreateSessoin": {"workspace_id": "/tmp"}}));
+    assert_eq!(refused["error"]["code"], "invalid_request", "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("CreateSessoin") && message.contains("CreateSession"),
+        "{message}"
+    );
+}
+
+// EA2-06: a grant holder learns what is wrong with its terminal (an id it sent) from the
+// terminal service's own sentence, through the real socket, instead of "details are
+// available only in the host terminal".
+#[tokio::test]
+async fn an_unknown_terminal_is_explained_to_the_grant_holder() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let refused = holder.request(serde_json::json!({"RoomTerminal": {
+        "session_id": SESSION,
+        "operation": {"operation": "snapshot", "terminal_id": "t-missing"}
+    }}));
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("this Room has no terminal `t-missing`"),
+        "{refused}"
+    );
+    assert_eq!(refused["error"]["code"], "terminal_refused", "{refused}");
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: revocation may deliver only its final control record.
+#[tokio::test]
+async fn outside_unix_wait_delivers_subscription_ended_after_revoke() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let grant_id = grant(&mut kernel, &mut holder).await;
+    let subscribed=holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}));
+    assert!(
+        subscribed["error"].is_null(),
+        "subscription failed: {subscribed}"
+    );
+    // The decision open before this subscribe is already told (cursor 1); wait past it.
+    holder.send(serde_json::json!({"WaitEvents":{"since":1,"timeout_ms":30000}}));
+    sleep(Duration::from_millis(200)).await;
+    let revoked = kernel
+        .request(serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":grant_id}}))
+        .await;
+    assert!(revoked["error"].is_null());
+    let response = timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || holder.result()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        response["response"]["EventsListed"]["events"][0]["type"], "subscription_ended",
+        "{response}"
+    );
+    assert_eq!(
+        response["response"]["EventsListed"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// One request on the holder's socket, answered or reported as a hang.
+async fn answered_within(holder: Client, request: Value) -> (Client, Value) {
+    timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            let mut holder = holder;
+            let answer = holder.request(request);
+            (holder, answer)
+        }),
+    )
+    .await
+    .expect("the request hung after the grant expired")
+    .unwrap()
+}
+
+// MP-08 / MP-10: the grant's own deadline passes while nothing asks the kernel
+// to sweep. A wait in flight ends, and the holder's next event request of every
+// kind is refused as ended: it neither hangs nor sees an event.
+#[tokio::test]
+async fn every_event_request_is_refused_as_ended_after_a_real_grant_expiry() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let subscribed=holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}));
+    assert!(subscribed["error"].is_null(), "{subscribed}");
+    // The decision open before this subscribe is already told (cursor 1); wait past it.
+    holder.send(serde_json::json!({"WaitEvents":{"since":1,"timeout_ms":30000}}));
+    sleep(Duration::from_millis(200)).await;
+    kernel.control("expire-soon").await;
+    let waited = timeout(
+        Duration::from_secs(8),
+        tokio::task::spawn_blocking(move || (holder.result(), holder)),
+    )
+    .await
+    .expect("the wait hung past the grant's deadline")
+    .unwrap();
+    let (waited, mut holder) = waited;
+    assert_eq!(
+        waited["response"]["EventsListed"]["events"][0]["type"], "subscription_ended",
+        "{waited}"
+    );
+    holder.command("reconnect");
+    assert_eq!(holder.result()["reconnected"], true);
+    for request in [
+        serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}),
+        serde_json::json!({"WaitEvents":{"timeout_ms":30000}}),
+        serde_json::json!({"AckEvents":{"cursor":0}}),
+        serde_json::json!({"ListEvents":{}}),
+        serde_json::json!({"GetEventSubscription":{}}),
+        serde_json::json!({"UnsubscribeEvents":{"all":true}}),
+    ] {
+        let (back, answer) = answered_within(holder, request.clone()).await;
+        holder = back;
+        assert_eq!(
+            answer["error"]["code"], "kernel_access_ended",
+            "{request}: {answer}"
+        );
+        assert!(answer["response"].is_null(), "{request}: {answer}");
+    }
+}
+
+#[test]
+fn outside_events_use_their_own_ledger_instead_of_transport_cache() {
+    for value in [
+        serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}),
+        serde_json::json!({"UnsubscribeEvents":{"all":true}}),
+        serde_json::json!({"GetEventSubscription":{}}),
+        serde_json::json!({"ListEvents":{}}),
+        serde_json::json!({"WaitEvents":{"timeout_ms":100}}),
+        serde_json::json!({"AckEvents":{"cursor":0}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        assert!(!request_is_cacheable(&request));
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: event refusals are kernel constants with next steps.
+#[tokio::test]
+async fn outside_unix_invalid_target_has_an_actionable_error() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let response=holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"missing-session"}]}}));
+    assert_eq!(
+        response["error"]["code"], "events_refused",
+        "event target errors must keep their public code"
+    );
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ListSessions"));
 }

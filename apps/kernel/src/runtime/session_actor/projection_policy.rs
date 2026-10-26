@@ -259,12 +259,15 @@ pub(super) fn session_id_for_projection_refresh(
             Some(session_id.clone())
         }
         Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
-        Ok(LocalDaemonResponse::AgentSpawned { agent })
+        Ok(LocalDaemonResponse::AgentSpawned {
+            agent,
+            event_subscription_error: None,
+        })
         | Ok(LocalDaemonResponse::AgentAliased { agent, .. })
         | Ok(LocalDaemonResponse::AgentConfigUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentProfileUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentDestroyed { agent }) => Some(agent.session_id().to_string()),
-        Ok(LocalDaemonResponse::AgentsSpawned { agents }) => {
+        Ok(LocalDaemonResponse::AgentsSpawned { agents, .. }) => {
             agents.first().map(|agent| agent.session_id().to_string())
         }
         Ok(LocalDaemonResponse::TurnUndone { result }) => Some(result.session_id.clone()),

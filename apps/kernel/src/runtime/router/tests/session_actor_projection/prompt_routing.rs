@@ -436,6 +436,7 @@ async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: session_id.clone(),
         alias: Some("spawned".to_string()),
@@ -457,7 +458,7 @@ async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
         .await
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected spawn response"),
     };
 

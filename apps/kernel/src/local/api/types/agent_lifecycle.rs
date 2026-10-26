@@ -9,6 +9,8 @@ pub struct AliasAgentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnAgentRequest {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_subscribe: bool,
     pub session_id: String,
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,6 +36,8 @@ pub struct SpawnAgentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnAgentsRequest {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_subscribe: bool,
     pub session_id: String,
     pub agents: Vec<SpawnAgentsRequestItem>,
 }
@@ -65,6 +69,7 @@ pub struct SpawnAgentsRequestItem {
 impl SpawnAgentsRequestItem {
     pub fn into_spawn_agent_request(self, session_id: String) -> SpawnAgentRequest {
         SpawnAgentRequest {
+            no_subscribe: false,
             session_id,
             alias: self.alias,
             provider: self.provider,

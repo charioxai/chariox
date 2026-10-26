@@ -113,6 +113,7 @@ fn session_snapshot_frame_redacts_remote_relay_credentials() {
     }));
     projection.session.set_agents(vec![agent]);
     let frame = KernelOutgoingFrame::Event {
+        kernel: None,
         event_id: 1,
         event: Box::new(KernelEvent::SessionSnapshot {
             room_workflows: projection.room_workflows,
@@ -749,6 +750,8 @@ fn waiting_room_snapshot(
         structural_version: format!("structural-{inventory_version}"),
         activity_revision: format!("activity-{inventory_version}"),
         generated_at_ms: 100,
+        sessions_total: sessions.len(),
+        sessions_next_cursor: None,
         sessions,
         projects: Vec::new(),
         external_provider_sessions: Vec::new(),
@@ -1105,7 +1108,7 @@ fn missing_account_resolution_is_definitive_on_kernel_transport() {
         message: "account is absent on this kernel; copy login or sign in".into(),
     };
     let mapped = map_kernel_error(&error);
-    assert_eq!(mapped.code, "local_transport_error");
+    assert_eq!(mapped.code, "provider_profile_unavailable");
     assert!(!mapped.retryable);
     assert_eq!(mapped.message, error.to_string());
     let transient = DaemonError::LocalTransport {
@@ -1157,4 +1160,162 @@ fn dictation_command_errors_keep_the_speech_service_code() {
         assert_eq!(mapped.code, code);
         assert!(!mapped.retryable);
     }
+}
+
+// MP-08 / MP-10 / MP-11: paging metadata changes without a visible-row change.
+#[test]
+fn waiting_room_row_updates_keep_the_full_catalog_count_and_cursor_current() {
+    let initial = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
+    let mut wire = serde_json::to_value(initial).unwrap();
+    wire["sessions_total"] = serde_json::json!(10_100);
+    wire["sessions_next_cursor"] = serde_json::json!("page-a");
+    let previous = serde_json::from_value(wire.clone()).unwrap();
+    wire["inventory_version"] = serde_json::json!("inventory-b");
+    wire["sessions_total"] = serde_json::json!(10_101);
+    wire["sessions_next_cursor"] = serde_json::json!("page-b");
+    let current = serde_json::from_value(wire).unwrap();
+    let event = waiting_room_rows_changed_event(current, Some(&previous))
+        .expect("catalog metadata must be pushed even when the recent rows stay the same");
+    let wire = serde_json::to_value(event).unwrap();
+    assert_eq!(wire["sessions_total"], 10_101);
+    assert_eq!(wire["sessions_next_cursor"], "page-b");
+}
+
+fn ledger_task(
+    task_id: &str,
+    state: &str,
+    revision: u64,
+) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
+    serde_json::from_value(serde_json::json!({
+        "task_id": task_id, "room_id": "session-a", "agent_id": "agent-a", "prompt_id": task_id,
+        "provider_run_id": null, "revision": revision, "state": state, "reason": "",
+        "obligations": [], "wait": null, "last_progress_at_ms": 1, "progress_sequence": 0,
+        "no_progress_wakes": 0, "correction_used": false, "pending_prompt_id": null,
+    }))
+    .unwrap()
+}
+
+fn ledger_wake(state: &str) -> crate::durable_state::agent_lifecycle::AgentWake {
+    serde_json::from_value(serde_json::json!({
+        "id": "wake-a", "task_id": "task-a", "room_id": "session-a", "agent_id": "agent-a",
+        "registration_id": "reg-a", "kind": "timer", "label": "tick", "state": state,
+        "created_at_ms": 1, "verified_at_ms": 1, "next_due_ms": 9, "interval_ms": null,
+        "command": [], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+            "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null, "last_sequence": null,
+        "last_delivery": null, "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
+        "alerted_sequence": null,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_changed_agent_task_is_one_small_event_and_skips_the_full_snapshot() {
+    let mut previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
+    previous.session.set_agent_tasks(vec![
+        ledger_task("task-a", "working", 1),
+        ledger_task("task-b", "done", 2),
+    ]);
+    let mut current = previous.clone();
+    current.session.set_agent_tasks(vec![
+        ledger_task("task-a", "waiting", 2),
+        ledger_task("task-b", "done", 2),
+    ]);
+
+    let events = session_projection_changed_events(&current, Some(&previous));
+
+    assert!(can_skip_session_snapshot(&current, Some(&previous), true));
+    match events.as_slice() {
+        [KernelEvent::AgentTaskUpdated { session_id, task }] => {
+            assert_eq!(
+                (session_id.as_str(), task.task_id.as_str()),
+                ("session-a", "task-a")
+            );
+            assert_eq!(task.revision, 2);
+        }
+        other => panic!("expected one task event, got {other:?}"),
+    }
+    let wire = serde_json::to_value(&events[0]).unwrap();
+    assert_eq!(wire["event"], "agent_task_updated");
+    assert_eq!(wire["task"]["state"], "waiting");
+    assert!(session_projection_changed_events(&current, None).is_empty());
+}
+
+#[test]
+fn a_wake_change_or_a_vanished_task_keeps_the_full_snapshot() {
+    let mut previous = session_snapshot_with_workflow_status(WorkflowRunStatus::Created);
+    previous
+        .session
+        .set_agent_tasks(vec![ledger_task("task-a", "working", 1)]);
+    previous
+        .session
+        .set_agent_wakes(vec![ledger_wake("scheduled")]);
+
+    let mut woken = previous.clone();
+    woken.session.set_agent_wakes(vec![ledger_wake("fired")]);
+    assert!(!can_skip_session_snapshot(&woken, Some(&previous), true));
+
+    let mut aged_out = previous.clone();
+    aged_out.session.set_agent_tasks(Vec::new());
+    assert!(!can_skip_session_snapshot(&aged_out, Some(&previous), true));
+
+    assert!(can_skip_session_snapshot(
+        &previous.clone(),
+        Some(&previous),
+        true
+    ));
+    assert!(!can_skip_session_snapshot(&previous, None, true));
+}
+
+// MP-08/MP-10/MP-11: a task delta covers no concurrent prompt or provider state.
+#[test]
+fn task_deltas_keep_concurrent_session_changes_in_the_snapshot() {
+    let mut previous = session_snapshot_with_agent();
+    previous
+        .session
+        .set_agent_tasks(vec![ledger_task("task-a", "working", 1)]);
+    let mut task_only = previous.clone();
+    task_only
+        .session
+        .set_agent_tasks(vec![ledger_task("task-a", "done", 2)]);
+
+    let mut prompt_change = task_only.clone();
+    let mut session_value = serde_json::to_value(&prompt_change.session).unwrap();
+    let next_prompt = PromptQueueItem::new(
+        "next-prompt",
+        "attachment-a",
+        "agent-a",
+        "next",
+        PromptStatus::Running,
+    );
+    session_value["prompt_states"] = serde_json::json!({"agent-a": {
+        "active_prompt": next_prompt, "queued_prompts": [],
+    }});
+    session_value["active_prompt"] = serde_json::to_value(next_prompt).unwrap();
+    session_value["scheduler_state"] = serde_json::json!("Running");
+    prompt_change.session = serde_json::from_value(session_value).unwrap();
+
+    let mut provider_change = task_only.clone();
+    provider_change.provider_run = Some(RuntimeProviderRun::from_control_capability_inference(
+        "provider-run-next",
+        "session-a".into(),
+        Some("agent-a".into()),
+        "codex".into(),
+    ));
+    let mut metadata_change = task_only.clone();
+    metadata_change.session.set_alias(Some("renamed".into()));
+
+    for current in [provider_change, prompt_change, metadata_change] {
+        assert!(
+            current.session != previous.session || current.provider_run != previous.provider_run,
+            "each fixture must contain a concurrent change"
+        );
+        assert!(session_projection_changed_events(&current, Some(&previous))
+            .iter()
+            .any(|event| matches!(event, KernelEvent::AgentTaskUpdated { .. })));
+        assert!(
+            !can_skip_session_snapshot(&current, Some(&previous), true),
+            "a task event must not suppress concurrent session changes"
+        );
+    }
+    assert!(can_skip_session_snapshot(&task_only, Some(&previous), true));
 }

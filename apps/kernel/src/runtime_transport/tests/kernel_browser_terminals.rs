@@ -16,6 +16,7 @@ async fn request(socket: &mut Socket, id: &str, command: Browser) -> KernelOutgo
         command_id: Some(id.into()),
         causation_id: None,
         correlation_id: None,
+        kernel: None,
         request: LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command }),
     };
     socket

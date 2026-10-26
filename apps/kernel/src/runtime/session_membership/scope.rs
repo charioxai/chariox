@@ -166,6 +166,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -202,6 +208,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::RoomTerminal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::RoomBrowserArtifact(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -630,9 +639,24 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
         | LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+        | LocalDaemonRequest::SubscribeEvents(_)
+        | LocalDaemonRequest::UnsubscribeEvents(_)
+        | LocalDaemonRequest::GetEventSubscription(_)
+        | LocalDaemonRequest::ListEvents(_)
+        | LocalDaemonRequest::WaitEvents(_)
+        | LocalDaemonRequest::AckEvents(_)
+        | LocalDaemonRequest::ListGatewayKernels(_)
+        | LocalDaemonRequest::HeartbeatAttachments(_)
+        | LocalDaemonRequest::JoinKernelLink(_)
+        | LocalDaemonRequest::ForgetGatewayKernel(_)
+        | LocalDaemonRequest::StatKernelFile(_)
+        | LocalDaemonRequest::ListKernelDirectory(_)
+        | LocalDaemonRequest::ReadKernelFile(_)
+        | LocalDaemonRequest::WriteKernelFile(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
@@ -701,6 +725,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RefreshProviderAccountProfile(_)
         | LocalDaemonRequest::RemoveProviderAccountProfile(_)
         | LocalDaemonRequest::DeleteProviderAccountProfileData(_)
+        | LocalDaemonRequest::CopyProviderAccountToKernel(_)
         | LocalDaemonRequest::SetProviderAccountCredential(_)
         | LocalDaemonRequest::InstallMcpServer(_)
         | LocalDaemonRequest::UpdateMcpServer(_)
@@ -801,6 +826,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetWaitingRoomInventory(_)
         | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
+        | LocalDaemonRequest::ListWaitingRoomSessions(_)
         | LocalDaemonRequest::ListExternalProviderSessions(_)
         | LocalDaemonRequest::RefreshExternalProviderSessions(_)
         | LocalDaemonRequest::ImportExternalProviderSession(_)

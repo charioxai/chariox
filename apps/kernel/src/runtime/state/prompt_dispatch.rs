@@ -555,7 +555,7 @@ impl KernelRuntimeState {
             }
             other => {
                 return Err(DaemonError::LocalTransport {
-                    operation: "steer agent message",
+                    operation: "read remote agent message steer response",
                     message: format!("unexpected remote message response: {other:?}"),
                 });
             }
@@ -695,6 +695,10 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
+            owned.ensure_agent_before_deadline(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )?;
             owned.validate_goal_prompt(&prepared)?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
@@ -770,12 +774,22 @@ impl KernelRuntimeState {
                             return Ok(submission);
                         }
                     } else {
-                        self.with_app_side_effect(|app| {
-                            // The app mutex can outlive the grant. Reauthorize only
-                            // after acquiring it, before launching a cold provider.
-                            authorize()?;
-                            app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
-                        })
+                        // A cold launch (first prompt after a restart) may need the
+                        // locked Vault, e.g. for a Claude token: ask the owner to unlock.
+                        self.with_project_prompt_environment(
+                            &session_id,
+                            &target_agent_id,
+                            |app| {
+                                // The app mutex can outlive the grant. Reauthorize only
+                                // after acquiring it, before launching a cold provider.
+                                authorize()?;
+                                app.ensure_prompt_provider_run_for_agent(
+                                    &session_id,
+                                    &target_agent_id,
+                                )
+                                .map(|_| ())
+                            },
+                        )
                         .await?;
                     };
                     authorize()?;

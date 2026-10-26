@@ -1,5 +1,9 @@
 //! Compatibility guidance in existing transport error messages, without changing
 //! the request or response contracts. Keep serde's detail for client diagnostics.
+/// The prefix of the message for a request that does not parse; the only `invalid_request`
+/// text an external grant holder may read.
+pub(crate) const DECODE_PREFIX: &str = "invalid request";
+
 pub(crate) fn message(prefix: &str, error: &serde_json::Error) -> String {
     let detail = format!("{prefix}: {error}");
     if !error.is_data() {

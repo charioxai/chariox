@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import { LocalIpcClient, type LocalIpcClientOptions } from "@chariox/kernel-client/ipc"
 import { defaultKernelUnixSocketPath, kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socket-path"
 
-export function kernelUnixClient(socket?: string): LocalIpcClient {
+export function kernelUnixClient(socket?: string, route: Pick<LocalIpcClientOptions, "kernel" | "commandId" | "onSubscriptionEnded"> = {}): LocalIpcClient {
   const configRoot = kernelSocketConfigRoot()
   let socketPath = socket ?? process.env.CHARIOX_DAEMON_SOCKET
   if (!socketPath) {
@@ -20,5 +20,5 @@ export function kernelUnixClient(socket?: string): LocalIpcClient {
     socketPath = defaultKernelUnixSocketPath(kernelId, configRoot)
   }
   if (!socketPath.startsWith("/")) throw new Error("--socket requires an absolute path")
-  return new LocalIpcClient(`ws+unix://${socketPath}`, { controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 24 * 60 * 60 * 1000 })
+  return new LocalIpcClient(`ws+unix://${socketPath}`, { ...route, controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 24 * 60 * 60 * 1000 })
 }

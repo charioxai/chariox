@@ -130,7 +130,11 @@ impl KernelRuntimeOwnedState {
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
+        // Kernel-owned wake and correction turns keep the id their receipts name.
+        let prompt = if will_queue
+            || self.config_projection.snapshot().room_agent_tools
+            || crate::session::is_internal_prompt_echo_id(prompt.id())
+        {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
@@ -240,7 +244,10 @@ impl KernelRuntimeOwnedState {
                 });
                 debug_assert!(prompt_sent_at_ms.is_some());
             }
-            crate::session::PromptSubmissionOutcome::Queued { prompt } => {
+            // Kernel instructions queued behind a running turn are agent-only.
+            crate::session::PromptSubmissionOutcome::Queued { prompt }
+                if !crate::session::is_internal_prompt_echo_id(prompt.id()) =>
+            {
                 self.record_notice_for_agent(
                     &session_id,
                     provider_run_id.as_deref(),
@@ -254,6 +261,7 @@ impl KernelRuntimeOwnedState {
                     ),
                 );
             }
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {}
         }
         let session = if prepared.refresh_projection {
             self.session_snapshot(&session_id)?

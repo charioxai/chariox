@@ -1,4 +1,6 @@
+use super::external::remote_requester_projection;
 use super::*;
+use crate::runtime::kernel_access::SudoRequestFailure;
 
 // MP-08/MP-10/MP-11: includes the policy relaunch delay and provider startup.
 const SUDO_PROVIDER_RELAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -26,6 +28,16 @@ fn catalog_refresh_failed(cause: DaemonError) -> DaemonError {
 
 fn catalog_not_ready() -> DaemonError {
     sudo_ended("provider catalog refresh failed", &not_ready())
+}
+
+/// A Room created before enrollment keeps the `local` owner; say so, so the caller
+/// can fix it instead of seeing a generic refusal.
+pub(super) fn not_session_host(session_owner: &str) -> DaemonError {
+    if session_owner == crate::session::DEFAULT_LOCAL_USER_ID {
+        SudoRequestFailure::RoomOwnerLocal.error()
+    } else {
+        error("only the session host can authorize sudo")
+    }
 }
 
 impl KernelRuntimeState {
@@ -78,10 +90,10 @@ impl KernelRuntimeState {
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let session = self.owned.session_store.get_session(&request.session_id)?;
-        if session.owner_user_id() != owner
-            || session.status() == SessionStatus::Ended
-            || agent.session_id() != session.id()
-        {
+        if session.owner_user_id() != owner {
+            return Err(not_session_host(session.owner_user_id()));
+        }
+        if session.status() == SessionStatus::Ended || agent.session_id() != session.id() {
             return Err(error("only the session host can authorize sudo"));
         }
         if agent.is_metaagent() {
@@ -146,10 +158,11 @@ impl KernelRuntimeState {
             if entry.requester.as_ref().is_some_and(|requester| {
                 access.values().any(|turn| {
                     turn.prompt_id.is_none()
-                        && turn
-                            .requester
-                            .as_ref()
-                            .is_some_and(|pending| pending.holder_pid == requester.holder_pid)
+                        && turn.requester.as_ref().is_some_and(|pending| {
+                            pending.holder_pid == requester.holder_pid
+                                && (requester.holder_pid != 0
+                                    || pending.grant_id == requester.grant_id)
+                        })
                 })
             }) {
                 return Err(error("this requester already has a pending sudo request"));
@@ -202,23 +215,41 @@ impl KernelRuntimeState {
         ) * 60;
         // MP-08 / MP-11: establish display facts in the same kernel operation,
         // before registration publishes the first popup. Never parse display copy.
-        let requester = entry.requester.as_ref().and_then(|grant| {
-            self.owned
-                .kernel_access
-                .lock()
-                .expect("access state poisoned")
-                .grants
-                .get(&grant.grant_id)
-                .map(|grant| crate::runtime::kernel_access::requester::project(&grant.holder))
-        });
+        let (requester, origin_name) = entry
+            .requester
+            .as_ref()
+            .map(|grant| {
+                let access = self
+                    .owned
+                    .kernel_access
+                    .lock()
+                    .expect("access state poisoned");
+                match access.remote_requesters.get(&grant.grant_id) {
+                    Some(remote) => (
+                        Some(remote_requester_projection(remote)),
+                        Some(remote.origin_name.clone()),
+                    ),
+                    None => (
+                        access.grants.get(&grant.grant_id).map(|grant| {
+                            crate::runtime::kernel_access::requester::project(&grant.holder)
+                        }),
+                        None,
+                    ),
+                }
+            })
+            .unwrap_or_default();
         let requester_name = if entry.requester.is_none() {
-            "You"
+            "You".to_string()
         } else {
-            match requester.as_ref().and_then(|r| r.provider_harness) {
+            let harness = match requester.as_ref().and_then(|r| r.provider_harness) {
                 Some(KernelAccessProviderHarness::Claude) => "Claude Code",
                 Some(KernelAccessProviderHarness::Codex) => "Codex",
                 Some(KernelAccessProviderHarness::Opencode) => "OpenCode",
                 None => "An external agent",
+            };
+            match origin_name {
+                Some(origin) => format!("{harness} via {origin}"),
+                None => harness.to_string(),
             }
         };
         let agent = self.owned.agent_store.get_agent(&entry.agent_id)?;
@@ -239,7 +270,7 @@ impl KernelRuntimeState {
             task_summary.push('…');
         }
         let presentation = SudoRequestPresentation {
-            requester_name: requester_name.into(),
+            requester_name: requester_name.clone(),
             agent_name: agent.alias().unwrap_or(agent.agent_ref()).into(),
             session_name: session.alias().unwrap_or("Unnamed session").into(),
             task_summary,
@@ -292,15 +323,13 @@ impl KernelRuntimeState {
         }
         let answer = tokio::time::timeout(Duration::from_secs(seconds), rx)
             .await
-            .map_err(|_| error("sudo request expired; answer the popup in a Chariox terminal"))?
+            .map_err(|_| SudoRequestFailure::Expired.error())?
             .map_err(|_| error("sudo request cancelled"))?;
         if answer.status == "timed_out" {
-            return Err(error(
-                "sudo request expired; answer the popup in a Chariox terminal",
-            ));
+            return Err(SudoRequestFailure::Expired.error());
         }
         if answer.choice_id.as_deref() != Some("approve") {
-            return Err(error("sudo request refused"));
+            return Err(SudoRequestFailure::Refused.error());
         }
         let minutes = super::sudo_window_minutes(answer.reply.as_deref())?;
         let verified = self

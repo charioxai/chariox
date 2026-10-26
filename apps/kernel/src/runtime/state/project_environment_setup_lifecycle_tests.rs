@@ -5152,6 +5152,9 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
                 }
                 Some(TestPeerRequestObservation::RetryProjectEnvironmentSetup {
                     release, ..
+                })
+                | Some(TestPeerRequestObservation::InstallProviderAccountCopy {
+                    release, ..
                 }) => {
                     let _ = release.send(());
                 }
@@ -5217,7 +5220,8 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
                 ..
             }
             | TestPeerRequestObservation::GetProjectEnvironmentSetupStatus { release, .. }
-            | TestPeerRequestObservation::RetryProjectEnvironmentSetup { release, .. } => {
+            | TestPeerRequestObservation::RetryProjectEnvironmentSetup { release, .. }
+            | TestPeerRequestObservation::InstallProviderAccountCopy { release, .. } => {
                 let _ = release.send(());
             }
             TestPeerRequestObservation::StartProjectEnvironmentSetup { .. } => {}
@@ -5251,7 +5255,8 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
                 | TestPeerRequestObservation::GetProjectEnvironmentSetupStatus {
                     release, ..
                 }
-                | TestPeerRequestObservation::RetryProjectEnvironmentSetup { release, .. } => {
+                | TestPeerRequestObservation::RetryProjectEnvironmentSetup { release, .. }
+                | TestPeerRequestObservation::InstallProviderAccountCopy { release, .. } => {
                     let _ = release.send(());
                 }
                 TestPeerRequestObservation::StartProjectEnvironmentSetup { .. } => {}

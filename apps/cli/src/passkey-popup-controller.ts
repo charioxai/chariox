@@ -47,6 +47,18 @@ export type PasskeyPopupPaste = {
   stopPropagation(): void
 }
 
+/** What an access or sudo popup answer asks for: minutes, or (access grants only) until the agent exits. */
+export type AccessLifetime = number | typeof UNTIL_AGENT_EXITS
+
+export const UNTIL_AGENT_EXITS = "until_exit"
+
+/** The lifetime a popup starts on: the kernel's sudo window, or the term of an access request. */
+function startingLifetime(prompt: PasskeyPrompt): AccessLifetime | null {
+  if (prompt.kind === "sudo") return prompt.lifetime_minutes ?? null
+  if (prompt.term === "until_holder_exits") return UNTIL_AGENT_EXITS
+  return prompt.term?.minutes ?? null
+}
+
 export type PasskeyPopupView = {
   /** The popup is shown; otherwise pending prompts only show an indicator. */
   open: boolean
@@ -54,7 +66,7 @@ export type PasskeyPopupView = {
   index: number
   prompt: PasskeyPrompt | null
   /** Hidden entry: only the passkey's length ever leaves the controller. */
-  passkey: { length: number; rememberMinutes: number; accessLifetimeMinutes?: number | null }
+  passkey: { length: number; rememberMinutes: number; lifetime?: AccessLifetime | null }
   pending: boolean
   connected: boolean
   error: string | null
@@ -111,7 +123,9 @@ export function createPasskeyPopupController(deps: {
   // The passkey lives only here until it is sent, then it is dropped.
   let value = ""
   let remember = 0
-  let accessLifetime: number | null = null
+  let accessLifetime: AccessLifetime | null = null
+  // This terminal's own remember window; the kernel remains the authority.
+  let rememberedUntil = 0
   let connectionEpoch = 0
   let pending: object | null = null
   let pendingKey: string | null = null
@@ -130,7 +144,7 @@ export function createPasskeyPopupController(deps: {
   const current = () => prompts[index] ?? null
   const view = (): PasskeyPopupView => ({
     open, count: prompts.length, index, prompt: current(),
-    passkey: { length: Array.from(value).length, rememberMinutes: remember, ...(current()?.kind !== "critical_approval" && current()?.lifetime_minutes ? { accessLifetimeMinutes: accessLifetime ?? current()?.lifetime_minutes ?? null } : {}) },
+    passkey: { length: Array.from(value).length, rememberMinutes: remember, ...(current() && current()!.kind !== "critical_approval" && startingLifetime(current()!) !== null ? { lifetime: accessLifetime ?? startingLifetime(current()!) } : {}) },
     detailsOpen,
     pending: pending !== null, connected: deps.connected(), error,
     remainingMs: current() && deps.serverClock?.now() != null ? Math.max(0, current()!.expires_at_ms - deps.serverClock.now()!) : null,
@@ -238,7 +252,7 @@ export function createPasskeyPopupController(deps: {
     const minutes = prompt.kind === "critical_approval" ? remember : 0
     value = ""
     await send(prompt, prompt.approve_choice_id,
-      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension", "sudo"].includes(prompt.kind) ? { accessLifetimeMinutes: accessLifetime ?? prompt.lifetime_minutes } : {}) } : undefined)
+      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension", "sudo"].includes(prompt.kind) ? { accessLifetime: accessLifetime ?? startingLifetime(prompt) } : {}) } : undefined)
   }
   const refuse = async () => {
     const prompt = current()
@@ -251,11 +265,14 @@ export function createPasskeyPopupController(deps: {
     const prompt = current()
     if (prompt && prompt.kind !== "critical_approval") {
       const max = prompt.max_lifetime_minutes
-      if (!max || !prompt.lifetime_minutes) return
+      const start = startingLifetime(prompt)
+      if (!max || start === null) return
       // Sudo windows: one hour by default, 2, 4 or 8 hours per fresh passkey.
-      const offered = prompt.kind === "sudo" ? SUDO_WINDOW_MINUTES : [prompt.lifetime_minutes, 5, 15, 30, 60, 120, max]
-      const options = [...new Set(offered)].filter(m => m <= max).sort((a,b) => a-b)
-      accessLifetime = options[(options.indexOf(accessLifetime ?? prompt.lifetime_minutes) + 1) % options.length]!
+      const minutes = prompt.kind === "sudo" ? SUDO_WINDOW_MINUTES : [typeof start === "number" ? start : 0, 5, 15, 30, 60, 120, max]
+      const options: AccessLifetime[] = [...new Set(minutes)].filter(m => m > 0 && m <= max).sort((a, b) => a - b)
+      // Only a new access grant can last until its agent exits; an extension adds time.
+      if (prompt.kind === "access_grant") options.push(UNTIL_AGENT_EXITS)
+      accessLifetime = options[(options.indexOf(accessLifetime ?? start) + 1) % options.length]!
       render()
       return
     }

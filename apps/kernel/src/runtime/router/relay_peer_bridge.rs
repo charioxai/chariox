@@ -180,6 +180,19 @@ impl CommandRouter {
             public_key,
         )
     }
+    /// Admission of an event stream (and of every event on it): a terminal that is paired
+    /// here, and a gateway key the owner has not revoked. Revoking a gateway ends its
+    /// streams as it ends its requests.
+    pub(crate) fn admit_relay_stream(
+        &self,
+        public_key: &str,
+    ) -> Result<Option<crate::config::PersistedClientPairing>, DaemonError> {
+        let grant = self.admit_self_host_terminal(public_key)?;
+        if !self.kernel_gateway.admit_origin(public_key, None)? {
+            return Err(DaemonError::GatewayKeyRevoked);
+        }
+        Ok(grant)
+    }
     pub(crate) fn self_host_terminal_pairing_required(&self) -> bool {
         crate::runtime::self_host_terminal_grants::required(&self.config_projection.snapshot())
     }
@@ -442,6 +455,17 @@ impl CommandRouter {
             data_base64,
         )
         .await
+    }
+
+    pub(crate) async fn relay_room_terminal(
+        &self,
+        leased_agent_id: &str,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RoomTerminalOperation,
+    ) -> Result<crate::local::RoomTerminalResult, DaemonError> {
+        self.runtime_state
+            .relay_room_terminal(leased_agent_id, actor, operation)
+            .await
     }
 
     pub(crate) async fn relay_resize_leased_provider_terminal(

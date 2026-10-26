@@ -6,6 +6,8 @@ import { runCloudClientCommand } from "./cloud-client-command.js"
 import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
 import { runSudoCommand } from "./sudo-command.js"
 import { runAccessCommand } from "./access-command.js"
+import { runKernelsCommand } from "./kernels-command.js"
+import { runTerminalCommand } from "./terminal-command.js"
 
 import { render } from "@opentui/solid"
 
@@ -35,6 +37,8 @@ async function main() {
   if (await runCloudClientCommand(argv)) return
   if (await runSudoCommand(argv)) return
   if (await runAccessCommand(argv)) return
+  if (await runKernelsCommand(argv)) return
+  if (await runTerminalCommand(argv)) return
   if (await runAppCommand(argv)) return
   if (argv[0] === "logs") {
     await runLogViewer(argv.slice(1))

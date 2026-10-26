@@ -8,7 +8,7 @@ passkey. The critical-approval remember window never satisfies sudo. Never type
 a passkey into an agent transcript, provider prompt or shell command.
 
 The window starts at that fresh verification and covers only the work the
-owner authorized. With `CHARIOX_ROOM_AGENT_TOOLS=1` this is the prompt's durable
+owner authorized. This is the prompt's durable
 task: the agent keeps `chariox_kernel_request` across its yields, waits and
 kernel-correlated continuations (delegate, workflow or watcher results, owner
 resume, corrections, the expiry re-evaluation). Without durable tasks the
@@ -112,7 +112,8 @@ Its `request` argument is one serialized
 ```
 
 External agents holding a process-bound local-kernel grant can request a window
-over that kernel's Unix socket:
+over that kernel's Unix socket. A sudo window is one turn on that kernel: it does
+not reach other machines, and a request with `--kernel` is refused:
 
 ```sh
 chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /absolute/kernel.sock]

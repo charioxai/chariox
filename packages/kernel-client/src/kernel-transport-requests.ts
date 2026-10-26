@@ -4,6 +4,7 @@ export type KernelTransportRequest =
     request_id: string
     command_id: string
     request: unknown
+    kernel?: string
   }
   | {
     type: "subscribe"
@@ -13,6 +14,7 @@ export type KernelTransportRequest =
     subscription_scope: string | null
     resume_from_event_id: number | null
     heartbeat_interval_ms?: number
+    kernel?: string
   }
   | {
     type: "unsubscribe"
@@ -30,7 +32,9 @@ export type KernelTransportControlRequest =
   }
   | { type: "unsubscribe" }
 
-export function normalizeWebSocketRequest(requestId: string, request: unknown): KernelTransportRequest {
+export type KernelRequestRoute = { kernel?: string | undefined; commandId?: string | undefined }
+
+export function normalizeWebSocketRequest(requestId: string, request: unknown, route: KernelRequestRoute = {}): KernelTransportRequest {
   const transportRequest = extractTransportRequest(request)
   if (transportRequest?.type === "subscribe") {
     return {
@@ -43,6 +47,7 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown): 
       ...(transportRequest.heartbeat_interval_ms === undefined
         ? {}
         : { heartbeat_interval_ms: transportRequest.heartbeat_interval_ms }),
+      ...(route.kernel === undefined ? {} : { kernel: route.kernel }),
     }
   }
   if (transportRequest?.type === "unsubscribe") {
@@ -54,8 +59,9 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown): 
   return {
     type: "request",
     request_id: requestId,
-    command_id: requestId,
+    command_id: route.commandId ?? requestId,
     request,
+    ...(route.kernel === undefined ? {} : { kernel: route.kernel }),
   }
 }
 

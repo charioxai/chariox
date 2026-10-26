@@ -98,6 +98,11 @@ export function nextCommandCenterIndex(
 
 export function shouldBypassCommandCenterSubmitSelection(prompt: string): boolean {
   const command = parseSlashCommand(prompt)
+  // Browser access has a different authority from the fuzzy kernel-access
+  // catalog match. Preserve the typed command for its normal protocol gate.
+  if (command?.kind === "access") {
+    return true
+  }
   if (command?.kind === "agent") {
     return command.args.length >= 3
       && ["provider", "account", "model", "variant"].includes(command.args[0] ?? "")

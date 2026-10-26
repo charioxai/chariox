@@ -73,6 +73,8 @@ type KernelEventDispatchControllerDeps = {
     activityRevision: string
     sessions: WaitingRoomPublicSessionSummary[]
     removedSessionIds: string[]
+    sessionsTotal?: number
+    sessionsNextCursor?: string | null
     projects: WaitingRoomProjectSummary[]
     removedProjectIds: string[]
   }) => Promise<unknown> | unknown
@@ -380,7 +382,17 @@ export function createKernelEventDispatchController(
       deps.appendNotice("Kernel sent malformed waiting-room removed-project update.", "warning")
       return
     }
+    if (event.sessions_total !== undefined && (!Number.isSafeInteger(event.sessions_total) || event.sessions_total < 0)) {
+      deps.appendNotice("Kernel sent malformed waiting-room session count.", "warning")
+      return
+    }
+    if (event.sessions_next_cursor !== undefined && event.sessions_next_cursor !== null && typeof event.sessions_next_cursor !== "string") {
+      deps.appendNotice("Kernel sent malformed waiting-room session cursor.", "warning")
+      return
+    }
     await deps.applyWaitingRoomRowsChanged({
+      ...(event.sessions_total !== undefined ? { sessionsTotal: event.sessions_total } : {}),
+      ...(event.sessions_next_cursor !== undefined ? { sessionsNextCursor: event.sessions_next_cursor } : {}),
       inventoryVersion: event.inventory_version,
       structuralVersion: event.structural_version,
       activityRevision: event.activity_revision,

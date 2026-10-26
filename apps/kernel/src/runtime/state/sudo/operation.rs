@@ -60,11 +60,21 @@ impl KernelRuntimeState {
     /// Only provider permission-only gates can consume this authorization.
     /// Questions, secret input, identity choice and arbitrary critical decisions
     /// still use their ordinary interactions. Never persist a provider-wide grant.
+    /// A worker-forwarded interaction names the raw worker run; the home task is
+    /// bound to its projected leased run.
     pub(crate) fn sudo_native_permission_resolution(
         &self,
         session_id: &str,
         interaction: &RuntimeInteraction,
+        forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
     ) -> Option<ProviderNativeInteractionResolution> {
+        let origin_run = |origin: &NativeInteractionOrigin| match forwarding {
+            Some(context) => crate::provider::projected_leased_provider_run_id(
+                &context.leased_agent_id,
+                &context.worker_provider_run_id,
+            ),
+            None => origin.provider_run_id().to_string(),
+        };
         if interaction.id().starts_with("claude-workspace-trust-")
             && interaction.kind() == RuntimeInteractionKind::Permission
             && interaction
@@ -75,7 +85,9 @@ impl KernelRuntimeState {
                 interaction.native_origin(),
                 Some(NativeInteractionOrigin::ProviderStartup { .. })
             )
-            && self.sudo_authorized_workspace_startup(session_id, interaction)
+            && interaction.native_origin().is_some_and(|origin| {
+                self.sudo_authorized_workspace_startup(session_id, interaction, &origin_run(origin))
+            })
         {
             return Some(ProviderNativeInteractionResolution {
                 status: "answered".into(),
@@ -100,14 +112,12 @@ impl KernelRuntimeState {
         {
             return None;
         }
-        let NativeInteractionOrigin::Prompt {
-            provider_run_id,
-            prompt_id,
-        } = interaction.native_origin()?
-        else {
+        let origin = interaction.native_origin()?;
+        let NativeInteractionOrigin::Prompt { prompt_id, .. } = origin else {
             return None;
         };
-        let turn = self.sudo_for_run(provider_run_id).ok()?;
+        let provider_run_id = origin_run(origin);
+        let turn = self.sudo_for_run(&provider_run_id).ok()?;
         if turn.session_id != session_id
             || interaction.agent_id() != Some(turn.agent_id.as_str())
             || turn.prompt_id.as_deref() != Some(prompt_id.as_str())
@@ -135,10 +145,8 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         interaction: &RuntimeInteraction,
+        provider_run_id: &str,
     ) -> bool {
-        let Some(origin) = interaction.native_origin() else {
-            return false;
-        };
         let Some(agent_id) = interaction.agent_id() else {
             return false;
         };
@@ -151,12 +159,12 @@ impl KernelRuntimeState {
         if agent.session_id() != session_id {
             return false;
         }
-        if let Some(projected) = self.leased_agent_for_projected_run(origin.provider_run_id()) {
+        if let Some(projected) = self.leased_agent_for_projected_run(provider_run_id) {
             if projected.id() != agent_id || projected.session_id() != session_id {
                 return false;
             }
         } else {
-            let Ok(run) = self.owned.provider_store.get_run(origin.provider_run_id()) else {
+            let Ok(run) = self.owned.provider_store.get_run(provider_run_id) else {
                 return false;
             };
             if run.session_id() != session_id

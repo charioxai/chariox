@@ -32,10 +32,31 @@ impl CommandRouter {
             );
         // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
         let response_command = command.clone();
-        crate::runtime::external_response::finish_response(
-            &response_command,
-            Box::pin(router.dispatch_authorized(command, request)).await,
-        )
+        let follow_request = request.clone();
+        let mut response = Box::pin(router.dispatch_authorized(command, request)).await;
+        if let (Some(grant_id), Ok(response)) =
+            (response_command.external_grant_id(), &mut response)
+        {
+            if let Some(grant) = router.runtime_state.access_grant_summary(&grant_id) {
+                let origin = crate::runtime::kernel_gateway::Origin {
+                    grant_id,
+                    harness: crate::runtime::kernel_gateway::harness_name(&grant),
+                };
+                if router
+                    .kernel_gateway
+                    .follow_created(
+                        &origin,
+                        &router.config_projection.snapshot().daemon_id,
+                        &follow_request,
+                        response,
+                    )
+                    .is_err()
+                {
+                    response.record_event_subscription_failure();
+                }
+            }
+        }
+        crate::runtime::external_response::finish_response(&response_command, response)
     }
 
     async fn dispatch_authorized(
@@ -61,6 +82,37 @@ impl CommandRouter {
                     .request_kernel_sudo(&command.caller.caller_id, sudo_request.clone()),
             )
             .await;
+        }
+        if crate::runtime::state::is_outside_event_request(&request) {
+            crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+                &self.config_projection.snapshot(),
+                &request,
+            )?;
+            if command.caller.connection_class
+                != Some(crate::local::KernelConnectionClass::ExternalAgent)
+            {
+                return Err(crate::runtime::kernel_access::error(
+                    "outside event subscriptions require a local external access grant",
+                ));
+            }
+            let grant = self
+                .runtime_state
+                .access_grant_summary(&command.caller.caller_id)
+                .ok_or_else(|| crate::runtime::kernel_access::error("grant revoked or expired"))?;
+            let origin = crate::runtime::kernel_gateway::Origin {
+                grant_id: grant.grant_id.clone(),
+                harness: crate::runtime::kernel_gateway::harness_name(&grant),
+            };
+            return self
+                .kernel_gateway
+                .event_request(&origin, &request, command.terminal_lifetime.as_ref())
+                .await;
+        }
+        if let LocalDaemonRequest::ListGatewayKernels(_) = &request {
+            return self.list_gateway_machines(&command).await;
+        }
+        if let Some(response) = self.dispatch_machine_request(&command, &request).await {
+            return response;
         }
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {
             return Ok(response);
@@ -147,6 +199,11 @@ impl CommandRouter {
         {
             return Err(crate::runtime::kernel_access::error(
                 "agents cannot answer approvals; the user answers in a Chariox terminal",
+            ));
+        }
+        if matches!(&request, LocalDaemonRequest::RenewKernelSudoRequester(_)) {
+            return Err(crate::runtime::kernel_access::error(
+                "only another kernel's gateway renews a sudo requester, and it names its origin",
             ));
         }
         if let LocalDaemonRequest::ExtendKernelSudo(extend) = &request {

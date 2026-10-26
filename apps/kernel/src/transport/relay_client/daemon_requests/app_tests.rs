@@ -1083,6 +1083,7 @@ async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
             "browser-retry".into(),
             fingerprint,
             &KernelOutgoingFrame::Response {
+                kernel: None,
                 request_id: "browser-retry".into(),
                 response: Box::new(Some(response.clone())),
                 error: None,

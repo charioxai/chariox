@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod agent_deadline;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
@@ -27,10 +28,13 @@ mod history;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
+mod kernel_files;
+mod kernel_gateway;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
 mod notes;
+mod outside_events;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -42,6 +46,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_terminal;
 mod screenshot;
 mod session_control;
 mod slice;
@@ -55,6 +60,7 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use agent_deadline::*;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
@@ -72,10 +78,13 @@ pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
 pub use kernel_computer::*;
+pub use kernel_files::*;
+pub use kernel_gateway::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use outside_events::*;
 pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
@@ -87,6 +96,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_terminal::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
@@ -347,4 +357,16 @@ pub use workspace::*;
 /// Allocated 594 adds `Dictation`: kernel speech-to-text with an on-demand model download.
 /// Allocated 603 adds speech-service selection, owner Vault metadata, setup state and recording context.
 /// Allocated 610 unions the staging features 588-603 with the new-UI contracts; 599 and 567 stay reciprocal predecessors.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 610;
+/// Agent-model line (537, relay peer 145) contracts were integrated in 570/178:
+/// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
+/// and owner-managed contexts.
+/// Room terminal service (`RoomTerminal`, formerly provisional 569) is retained.
+/// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
+/// `agent_task_updated` delta event.
+/// Allocated 573/181 binds leased assessment wire identities to the home check.
+/// Allocated 585 adds outside event subscriptions and executor-local agent deadlines.
+/// Allocated 591 adds the outside `steer` event.
+/// Allocated 609 adds explicit same-owner Vault-backed provider account copy.
+/// Allocated 614 unions the staging 610 line with the external agents 609 line; 610 and 609 are not admitted as separate kernels
+/// (609 never shipped), and 528 leaves the predecessor list to keep it within the 32-entry policy.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 614;

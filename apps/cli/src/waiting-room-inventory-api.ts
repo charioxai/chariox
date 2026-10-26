@@ -36,6 +36,9 @@ export type WaitingRoomInventory = {
     worktreeId: string
   } | null
   sessions: WaitingRoomPublicSessionSummary[]
+  recentSessionIds?: string[]
+  sessionsTotal?: number
+  sessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   relayStatus: RelayStatusView
   remoteMachines: RemoteMachineView[]
@@ -87,6 +90,9 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
       machine_id: payload.relay_status.machine_id,
       machine_alias: payload.relay_status.machine_alias ?? null,
     })).sort((left, right) => right.created_at_ms - left.created_at_ms),
+    recentSessionIds: (payload.sessions ?? []).map(row => row.id),
+    sessionsTotal: payload.sessions_total ?? payload.sessions?.length ?? 0,
+    sessionsNextCursor: payload.sessions_next_cursor ?? null,
     projects: payload.projects ?? [],
     relayStatus: payload.relay_status,
     remoteMachines: payload.remote_machines ?? [],

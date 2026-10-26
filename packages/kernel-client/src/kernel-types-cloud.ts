@@ -126,6 +126,19 @@ export type RemoteMachineRecord = {
   provider_accounts?: ProviderAccountSummary[]
 }
 
+/** A kernel this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it. */
+export type GatewayKernelRecord = {
+  name: string
+  kernel_id: string
+  machine_id: string
+  machine_alias: string | null
+  label: string
+  status: "online" | "offline" | "unpaired"
+  last_seen_ms: number | null
+  gateway_ready: boolean
+  via: "hosted" | "self_hosted"
+}
+
 export type SliceRecord = {
   source_slice_ref?: string | null
   id: string
@@ -356,11 +369,19 @@ export type WaitingRoomGitCredentialSummary = {
   label: string
 }
 
+export type WaitingRoomSessionPage = {
+  sessions: WaitingRoomPublicSessionSummary[]
+  total: number
+  next_cursor: string | null
+}
+
 export type WaitingRoomInventorySnapshot = {
   inventory_version: string
   structural_version: string
   activity_revision: string
   sessions: WaitingRoomPublicSessionSummary[]
+  sessions_total?: number
+  sessions_next_cursor?: string | null
   projects: WaitingRoomPublicProjectSummary[]
   relay_status: RelayStatus
   remote_machines?: RemoteMachineRecord[]

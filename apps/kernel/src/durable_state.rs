@@ -1400,10 +1400,13 @@ impl DurableStateWriter {
         let (sender, receiver) = mpsc::sync_channel(DURABLE_WRITE_QUEUE_CAPACITY);
         let health = Arc::new(DurableWriterHealth::default());
         let worker_health = Arc::clone(&health);
+        let agent_faults = agent_lifecycle::faults::AgentFaults::from_env();
         let worker = std::thread::Builder::new()
             .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
-            .spawn(move || run_durable_writer(connection, receiver, worker_health))
+            .spawn(move || {
+                run_durable_writer_with(connection, receiver, worker_health, agent_faults)
+            })
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.spawn_writer",
                 message: error.to_string(),
@@ -1502,10 +1505,25 @@ impl Drop for DurableStateWriter {
     }
 }
 
+#[cfg(test)]
 fn run_durable_writer(
+    connection: Connection,
+    receiver: Receiver<DurableWriterRequest>,
+    health: Arc<DurableWriterHealth>,
+) {
+    run_durable_writer_with(
+        connection,
+        receiver,
+        health,
+        agent_lifecycle::faults::AgentFaults::default(),
+    )
+}
+
+fn run_durable_writer_with(
     mut connection: Connection,
     receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
+    agent_faults: agent_lifecycle::faults::AgentFaults,
 ) {
     struct MarkStopped(Arc<DurableWriterHealth>);
     impl Drop for MarkStopped {
@@ -1600,7 +1618,7 @@ fn run_durable_writer(
                 continue;
             }
             DurableWriterRequest::AgentLifecycle(request) => {
-                if agent_lifecycle::execute(&mut connection, *request) {
+                if agent_lifecycle::execute(&mut connection, *request, &agent_faults) {
                     health.fatal.store(true, Ordering::Release);
                     health.stopped_uncertain.store(true, Ordering::Release);
                     break;

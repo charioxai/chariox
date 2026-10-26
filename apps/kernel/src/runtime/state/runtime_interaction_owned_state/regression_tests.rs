@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     config::DaemonConfig,
+    local::{EventTarget, LocalDaemonRequest, SubscribeEventsRequest},
     session::{
         RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession, DEFAULT_LOCAL_USER_ID,
     },
@@ -14,6 +15,23 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         Self::with_session_id(format!("decision-cleanup-{:016x}", rand::random::<u64>()))
+    }
+    /// An outside follower makes every interaction change a durable event write.
+    fn follow(&self) {
+        self.state
+            .outside_part_request(
+                "follower",
+                true,
+                Some(DEFAULT_LOCAL_USER_ID),
+                &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+                    targets: vec![EventTarget {
+                        kernel: self.state.owned.config_projection.snapshot().daemon_id,
+                        session_id: self.session.clone(),
+                        agent_id: None,
+                    }],
+                }),
+            )
+            .unwrap();
     }
     fn with_session_id(session_id: String) -> Self {
         Self::with_session_config(session_id, false)
@@ -1024,4 +1042,133 @@ async fn computer_task_decision_leaves_release_accessible_until_human_releases()
         1,
         "genuine decisions remain available after Release"
     );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 R1080-2: a failed event commit cannot consume a decision.
+#[tokio::test]
+async fn rejected_outside_event_write_keeps_an_answer_retriable() {
+    let root = std::env::temp_dir().join(format!(
+        "interaction-write-answer-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&root);
+    let f = Fixture::new();
+    f.follow();
+    let mut receiver = f.register("write-retry").unwrap();
+    let id = f.id("write-retry");
+    std::fs::write(root.join("writer-fail"), "").unwrap();
+    assert!(f
+        .state
+        .owned
+        .resolve_runtime_interaction(
+            &f.session,
+            &id,
+            "allow",
+            None,
+            Some(DEFAULT_LOCAL_USER_ID),
+            false
+        )
+        .is_err());
+    assert!(f.active_ids().contains(&id));
+    assert!(f.state.owned.pending_interactions.write().contains_key(&id));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    std::fs::remove_file(root.join("writer-fail")).unwrap();
+    f.state
+        .owned
+        .resolve_runtime_interaction(
+            &f.session,
+            &id,
+            "allow",
+            None,
+            Some(DEFAULT_LOCAL_USER_ID),
+            false,
+        )
+        .unwrap();
+    let resolution = receiver.await.unwrap();
+    assert_eq!(resolution.status, "answered");
+    assert_eq!(resolution.reply.as_deref(), Some("allow"));
+    assert!(!f.active_ids().contains(&id));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn rejected_outside_event_write_keeps_a_timeout_retriable() {
+    let root = std::env::temp_dir().join(format!(
+        "interaction-write-timeout-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&root);
+    let f = Fixture::new();
+    f.follow();
+    let mut receiver = f.register("timeout-retry").unwrap();
+    let id = f.id("timeout-retry");
+    std::fs::write(root.join("writer-fail"), "").unwrap();
+    assert!(f
+        .state
+        .owned
+        .timeout_runtime_interaction(&f.session, &id)
+        .is_err());
+    assert!(f.active_ids().contains(&id));
+    assert!(f.state.owned.pending_interactions.write().contains_key(&id));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    std::fs::remove_file(root.join("writer-fail")).unwrap();
+    f.state
+        .owned
+        .timeout_runtime_interaction(&f.session, &id)
+        .unwrap();
+    assert_ne!(receiver.await.unwrap().status, "answered");
+    assert!(!f.active_ids().contains(&id));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn rejected_outside_event_write_keeps_a_withdrawal_retriable() {
+    let root = std::env::temp_dir().join(format!(
+        "interaction-write-withdraw-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&root);
+    let f = Fixture::new();
+    f.follow();
+    let mut receiver = f.register("withdraw-retry").unwrap();
+    let id = f.id("withdraw-retry");
+    let pending = f
+        .state
+        .owned
+        .pending_interactions
+        .write()
+        .get(&id)
+        .cloned()
+        .unwrap();
+    let mutation = f.state.owned.pending_interactions.mutation.lock().unwrap();
+    std::fs::write(root.join("writer-fail"), "").unwrap();
+    assert!(f
+        .state
+        .owned
+        .withdraw_agent_interaction_locked(&id, &pending)
+        .is_err());
+    assert!(f.active_ids().contains(&id));
+    assert!(f.state.owned.pending_interactions.write().contains_key(&id));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    std::fs::remove_file(root.join("writer-fail")).unwrap();
+    f.state
+        .owned
+        .withdraw_agent_interaction_locked(&id, &pending)
+        .unwrap();
+    drop(mutation);
+    assert_eq!(receiver.await.unwrap().status, "timed_out");
+    assert!(!f.active_ids().contains(&id));
+    std::fs::remove_dir_all(root).unwrap();
 }

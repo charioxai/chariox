@@ -711,6 +711,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     };
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("shopper".to_string()),
@@ -727,7 +728,7 @@ fn local_request_api_exports_agent_app_publication_package() {
         }))
         .expect("workflow agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     let workflow = match harness

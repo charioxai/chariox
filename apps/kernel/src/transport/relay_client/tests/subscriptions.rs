@@ -1369,6 +1369,182 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
     server_task.await.expect("server task should join");
 }
 
+// MP-08/MP-10/MP-11: encrypted relay must carry both halves of the same poll.
+#[tokio::test]
+async fn task_delta_encrypted_relay_subscription_preserves_prompt_completion_and_provider_change() {
+    let worktree = crate::test_support::TestWorktree::new("task-delta-relay");
+    let _relay_test_guard = relay_client_test_guard().await;
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    }));
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config.relay_token = Some("secret".to_string());
+    config.relay_heartbeat_ms = 50;
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+    ));
+    let created_session_id = {
+        let mut app = app.lock().await;
+        create_test_session(
+            &mut app,
+            worktree.path().to_str().unwrap(),
+            worktree.path().to_str().unwrap(),
+        )
+    };
+    let attachment_id = {
+        let mut app = app.lock().await;
+        attach_test_client(
+            &mut app,
+            &created_session_id,
+            "relay-client",
+            ClientCapabilityLevel::MessageTransport,
+        )
+    };
+    let prompt = {
+        let mut app = app.lock().await;
+        crate::test_support::task_delta::TaskDeltaPrompt::start(
+            &mut app,
+            &created_session_id,
+            &attachment_id,
+        )
+    };
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let connector_task = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app),
+        Arc::clone(&state),
+        shutdown_rx,
+    ));
+
+    wait_for_daemon_registration(registry.clone(), &config.daemon_id).await;
+
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut client_socket, _) = connect_async(&url)
+        .await
+        .expect("client should connect to relay");
+    send_client_envelope(
+        &mut client_socket,
+        &RelayEnvelope::ClientConnect {
+            auth_token: "secret".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+        },
+    )
+    .await;
+    let _daemon_public_key = expect_client_connected(&mut client_socket).await;
+
+    let subscription_private_key = relay_crypto::generate_private_key_base64();
+    let subscription_public_key =
+        relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
+            .expect("subscription public key should derive");
+    approve_test_terminal(&config, &subscription_public_key);
+    send_client_envelope(
+        &mut client_socket,
+        &RelayEnvelope::ClientSubscribe {
+            request_id: "sub-1".to_string(),
+            subscription_id: "subscription-1".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            session_id: created_session_id.clone(),
+            attachment_id: attachment_id.clone(),
+            client_public_key: subscription_public_key.clone(),
+            subscription_scope: None,
+            resume_from_event_id: None,
+        },
+    )
+    .await;
+    let _ =
+        expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
+    // Protocol 403: the passkey prompts come first and are never replayed.
+    let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+    let mut prompts_event = prompts.1.clone();
+    assert!(prompts_event
+        .as_object_mut()
+        .unwrap()
+        .remove("kernel_now_ms")
+        .is_some_and(|now| now.is_u64()));
+    assert_eq!(
+        prompts_event,
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": [], "closed": []})
+    );
+    let first_event = expect_named_client_event(
+        &mut client_socket,
+        &subscription_private_key,
+        "session_snapshot",
+    )
+    .await;
+    assert_eq!(
+        first_event.1["event"],
+        serde_json::json!("session_snapshot")
+    );
+
+    assert_eq!(
+        first_event.1["room_workflows"]["workflow_count"],
+        serde_json::json!(0)
+    );
+    prompt.finish(&mut *app.lock().await, &created_session_id);
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let task_event = expect_named_client_event(
+            &mut client_socket,
+            &subscription_private_key,
+            "agent_task_updated",
+        )
+        .await;
+        assert_eq!(task_event.1["task"]["state"], "done");
+        let snapshot = expect_named_client_event(
+            &mut client_socket,
+            &subscription_private_key,
+            "session_snapshot",
+        )
+        .await;
+        assert!(
+            snapshot.1["session"]["prompt_runtime"]["prompt_states"][&prompt.agent]
+                ["active_prompt"]
+                .is_null()
+        );
+        assert_eq!(snapshot.1["agent_activity"][&prompt.agent]["busy"], false);
+        assert_eq!(snapshot.1["provider_run"]["model"], "updated-model");
+    })
+    .await;
+    let _ = shutdown_tx.send(true);
+    connector_task.await.expect("connector task should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+    result.expect("task delta must not swallow prompt completion or provider changes");
+}
+
 fn assert_empty_passkey_event(event: &serde_json::Value) {
     assert!(event["kernel_now_ms"].as_u64().is_some_and(|now| now > 0));
     assert_eq!(

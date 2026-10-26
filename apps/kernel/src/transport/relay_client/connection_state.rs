@@ -71,6 +71,10 @@ pub(super) enum TestPeerResponseKind {
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) enum TestPeerRequestObservation {
+    InstallProviderAccountCopy {
+        operation_id: String,
+        release: oneshot::Sender<()>,
+    },
     StartProjectEnvironmentSetup {
         operation_id: String,
     },
@@ -547,6 +551,16 @@ impl RelayClientState {
     ) -> Option<oneshot::Receiver<()>> {
         let observer = self.test_authenticated_peer_request_observer.as_ref()?;
         let (observation, release) = match request {
+            RelayPeerRequest::InstallProviderAccountCopy { binding, .. } => {
+                let (release_tx, release_rx) = oneshot::channel();
+                (
+                    TestPeerRequestObservation::InstallProviderAccountCopy {
+                        operation_id: binding.operation_id.clone(),
+                        release: release_tx,
+                    },
+                    Some(release_rx),
+                )
+            }
             RelayPeerRequest::StartLeasedProjectEnvironmentSetup { operation_id, .. } => (
                 TestPeerRequestObservation::StartProjectEnvironmentSetup {
                     operation_id: operation_id.clone(),

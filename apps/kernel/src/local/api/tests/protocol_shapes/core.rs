@@ -65,6 +65,8 @@ fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
             structural_version: "structural-1".to_string(),
             activity_revision: "activity-1".to_string(),
             sessions: Vec::new(),
+            sessions_total: 0,
+            sessions_next_cursor: None,
             projects: Vec::new(),
             external_provider_sessions: Vec::new(),
             external_provider_sessions_has_more: false,
@@ -1189,4 +1191,45 @@ fn mp08_exact_prompt_cancellation_shape_requires_a_new_protocol() {
         .remove("expected_prompt_id");
     let decoded: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
     assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+}
+
+// MP-08 / MP-10 / MP-11: paged inventories share provisional local 569 / peer 177.
+#[test]
+fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
+    use crate::local::{ListWaitingRoomSessionsRequest, WaitingRoomSessionPage};
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request = LocalDaemonRequest::ListWaitingRoomSessions(ListWaitingRoomSessionsRequest {
+        cursor: Some("after-session".into()),
+        limit: Some(500),
+    });
+    let response = LocalDaemonResponse::WaitingRoomSessionsListed {
+        page: WaitingRoomSessionPage {
+            sessions: vec![],
+            total: 20_000,
+            next_cursor: Some("next-page".into()),
+        },
+    };
+    let snapshot = serde_json::json!({
+        "request": request, "response": response,
+        "inventory_fields": ["sessions_total", "sessions_next_cursor"],
+        "event_fields": ["sessions_total", "sessions_next_cursor"],
+    });
+    assert_eq!(
+        snapshot["request"],
+        serde_json::json!({"ListWaitingRoomSessions":{"cursor":"after-session","limit":500}})
+    );
+    assert_eq!(
+        snapshot["response"]["WaitingRoomSessionsListed"]["page"]["total"],
+        20_000
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "6e6c7820650983eb841ef1d97325bd16484a0a9e1d0692e6b56db81ef69ee842"
+    );
 }

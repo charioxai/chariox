@@ -38,6 +38,9 @@ struct CommandResultRetentionPolicy {
     max_memory_bytes: u64,
     max_total_bytes: Option<u64>,
     max_age_ms: Option<u64>,
+    /// How long a settled at-most-once receipt is kept before its payload may be evicted;
+    /// the identity stays fenced for good.
+    receipt_window_ms: u64,
     at_most_once: bool,
 }
 
@@ -48,6 +51,7 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: None,
             max_age_ms: None,
+            receipt_window_ms: APP_RECEIPT_RETENTION_MS,
             at_most_once: false,
         }
     }
@@ -58,6 +62,7 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: Some(COMMAND_RESULT_CACHE_MAX_BYTES),
             max_age_ms: Some(COMMAND_RESULT_CACHE_MAX_AGE_MS),
+            receipt_window_ms: APP_RECEIPT_RETENTION_MS,
             at_most_once: false,
         }
     }
@@ -150,6 +155,9 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    if crate::runtime::state::is_outside_event_request(request) {
+        return false;
+    }
     if matches!(request, LocalDaemonRequest::GetSliceDisplayEndpoint(request) if request.shared_display.is_some())
     {
         return false;
@@ -183,6 +191,14 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
             | LocalDaemonRequest::ExtendKernelSudo(_)
+            | LocalDaemonRequest::RenewKernelSudoRequester(_)
+            // File contents are never kept in the result cache, and a heartbeat is
+            // only ever fresh; a replay of either is safe to run again.
+            | LocalDaemonRequest::ReadKernelFile(_)
+            | LocalDaemonRequest::HeartbeatAttachments(_)
+            // The result carries a relay token that joins a terminal; it is
+            // never kept in this cache, on disk or in memory.
+            | LocalDaemonRequest::CreateTerminalPairingLink(_)
             // MP-11 A07: physical owner input carrying a value is never
             // fingerprinted, cached or replayed.
             | LocalDaemonRequest::RespondToHandoff(_)
@@ -347,6 +363,26 @@ impl CommandResultCache {
         )
     }
 
+    /// An at-most-once journal for callers whose retries come soon after the request: a
+    /// settled receipt can be evicted `receipt_window_ms` later (a replay of its command
+    /// id is still refused, never run again), and `max_entries` receipts fit before then.
+    pub(crate) fn new_at_most_once_expiring(
+        path: impl Into<PathBuf>,
+        receipt_window_ms: u64,
+        max_entries: usize,
+    ) -> io::Result<Self> {
+        Self::new_with_persistent_path_and_retention(
+            path,
+            CommandResultRetentionPolicy {
+                at_most_once: true,
+                max_age_ms: None,
+                receipt_window_ms,
+                max_entries,
+                ..CommandResultRetentionPolicy::persistent()
+            },
+        )
+    }
+
     fn new_with_persistent_path_and_retention(
         path: impl Into<PathBuf>,
         retention: CommandResultRetentionPolicy,
@@ -385,6 +421,7 @@ impl CommandResultCache {
             ReceiptRetention::default()
         };
         let mut retained = read_persistent_results(&path, retention)?;
+        restrict_to_owner(&path)?;
         let count = retained.entries.len();
         retained
             .entries
@@ -921,10 +958,10 @@ fn read_persistent_results_with_receipt_fence(
             compact_after_load = true;
             continue;
         };
-        if !should_persist_completed_result(&entry.result.fingerprint) {
-            if retention.at_most_once {
-                return Err(io::Error::other("unexpected at-most-once receipt type"));
-            }
+        // An at-most-once journal keeps a receipt for every request it reserved
+        // (the kernel gateway ledger also answers approvals); the exclusion
+        // list only trims ordinary result caches.
+        if !retention.at_most_once && !should_persist_completed_result(&entry.result.fingerprint) {
             compact_after_load = true;
             continue;
         }
@@ -1043,11 +1080,22 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     )
 }
 
+/// Results can carry secrets a client asked for, so only the kernel's user reads the file.
+fn restrict_to_owner(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     let mut file = BufWriter::new(
         fs::OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(0o600)
             .open(path)?,
     );
     serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
@@ -1059,11 +1107,19 @@ fn rewrite_persistent_results(
     path: &PathBuf,
     entries: &[PersistentCommandResult],
 ) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("jsonl.tmp");
-    let mut file = BufWriter::new(fs::File::create(&tmp_path)?);
+    let mut file = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)?,
+    );
     // A downgraded kernel must not treat a missing expired identity as new.
     // Preserve this fail-closed fence through every payload compaction.
     match fs::metadata(ReceiptRetention::marker_path(path)) {

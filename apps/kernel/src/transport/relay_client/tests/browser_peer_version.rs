@@ -157,6 +157,10 @@ async fn check() {
     let assertions = std::panic::AssertUnwindSafe(async {
         let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
         for advertised in [
+            102,
+            114,
+            121,
+            128,
             minimum - 1,
             minimum,
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,

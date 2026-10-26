@@ -1,3 +1,5 @@
+#[cfg(unix)]
+mod account_copy;
 mod browser_peer_version;
 mod client_requests;
 mod cloud_presence;

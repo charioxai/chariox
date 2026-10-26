@@ -1628,14 +1628,28 @@ async fn mp08_mp10_mp11_old_chunk_capability_is_rejected_before_registration() {
         )
         .await
     });
-    let error =
+    // Old clients surface a WebSocket close reason, but discard HTTP 426 bodies.
+    let (mut client, _) =
         tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v1"))
             .await
-            .unwrap_err();
-    assert!(
-        matches!(error,tokio_tungstenite::tungstenite::Error::Http(response) if response.status()==426)
+            .expect("old TUI must receive a readable upgrade reason");
+    let message = tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("upgrade refusal must be bounded")
+        .unwrap()
+        .unwrap();
+    let Message::Close(Some(close)) = message else {
+        panic!("old transport must receive only a close frame, got {message:?}");
+    };
+    assert_eq!(
+        close.code,
+        tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy
     );
-    assert!(task.await.unwrap().is_err());
+    assert_eq!(
+        close.reason,
+        "Update Chariox: relay requires chunks-v2 (protocol 532 / peer 140)"
+    );
+    assert!(task.await.unwrap().is_ok());
     assert!(registry.read().await.peers.is_empty());
 }
 

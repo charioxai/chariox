@@ -8,7 +8,7 @@ import type {
 } from "./cli-types.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
 import { clientInventoryEpoch } from "./client-inventory-cache.js"
-import type { SliceRecord } from "@chariox/kernel-client/kernel-types"
+import type { AgentTaskExecution, SliceRecord } from "@chariox/kernel-client/kernel-types"
 import type { ProviderCatalog } from "./provider-catalog.js"
 
 test("kernel event dispatch applies normalized session snapshots with agent activity", async () => {
@@ -247,6 +247,30 @@ test("kernel event dispatch applies workflow run updates without resyncing", asy
   assert.deepEqual(harness.calls, [
     "activity:kernel_workflow_run_updated",
     "apply-workflow-run:session-1:run-1",
+  ])
+})
+
+test("kernel event dispatch applies agent task updates and refuses malformed ones", async () => {
+  const harness = createHarness()
+  const task: AgentTaskExecution = {
+    task_id: "task-1", room_id: "session-1", owner_user_id: "owner", agent_id: "agent-1", prompt_id: "task-1",
+    provider_run_id: null, revision: 3, blocked_revision: 0, state: "waiting", reason: "build", obligations: [],
+    wait: null, last_progress_at_ms: 1, progress_sequence: 0, no_progress_wakes: 0, correction_used: false,
+    pending_prompt_id: null,
+  }
+
+  await harness.controller.handleKernelEvent({ event: "agent_task_updated", session_id: "session-1", task })
+  await harness.controller.handleKernelEvent({
+    event: "agent_task_updated",
+    session_id: "session-1",
+    task: { ...task, revision: 0.5 },
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_agent_task_updated",
+    "apply-agent-task:session-1:task-1:3",
+    "activity:kernel_agent_task_updated",
+    "notice:Kernel sent malformed task update.:warning",
   ])
 })
 
@@ -612,12 +636,14 @@ function createHarness(options: {
     applySessionMetadataChanged: (sessionId, metadata) => {
       calls.push(`apply-session-metadata:${sessionId}:${Object.keys(metadata).sort().join(",")}`)
     },
-    applyAgentTaskUpdated: (sessionId, task) => { calls.push(`task:${sessionId}:${task.task_id}:${task.revision}`) },
     applyRuntimeInteractionsChanged: (sessionId, activeInteractions) => {
       calls.push(`apply-runtime-interactions:${sessionId}:${activeInteractions.length}`)
     },
     applyWorkflowRunUpdated: (sessionId, workflowRun) => {
       calls.push(`apply-workflow-run:${sessionId}:${workflowRun.id}`)
+    },
+    applyAgentTaskUpdated: (sessionId, task) => {
+      calls.push(`apply-agent-task:${sessionId}:${task.task_id}:${task.revision}`)
     },
     applyWorkflowDesignOp: (event) => {
       calls.push(`apply-workflow-design-op:${event.session_id}:${event.op.kind}`)
@@ -728,7 +754,7 @@ function sliceRecord(id: string): SliceRecord {
 test("compact task event reaches the projection without history refresh", async () => {
   const harness=createHarness()
   await harness.controller.handleKernelEvent({event:"agent_task_updated",session_id:"session-1",task:{task_id:"task",revision:8} as never})
-  assert.deepEqual(harness.calls,["activity:kernel_agent_task_updated","task:session-1:task:8"])
+  assert.deepEqual(harness.calls,["activity:kernel_agent_task_updated","apply-agent-task:session-1:task:8"])
 })
 
 // MP-08 / MP-10 / MP-11: a pushed revision retires persisted catalog snapshots.

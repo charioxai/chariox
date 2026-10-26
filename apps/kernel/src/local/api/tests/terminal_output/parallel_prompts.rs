@@ -10,7 +10,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         ))
         .expect("session should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -28,6 +28,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
     };
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("parallel".to_string()),
@@ -44,7 +45,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         }))
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 

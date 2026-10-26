@@ -107,7 +107,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str, idl
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected response {other:?}"),
     };
     let attachment = match harness

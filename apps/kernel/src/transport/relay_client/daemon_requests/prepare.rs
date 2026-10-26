@@ -153,6 +153,7 @@ mod tests {
                 request: LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
                     command,
                 }),
+                on_behalf_of: None,
             }),
             client_public_key: "ephemeral-first".into(),
             daemon_private_key: String::new(),

@@ -421,6 +421,7 @@ struct ConnectionState {
     browser_terminal_contexts: std::collections::BTreeSet<(String, String)>,
     subscription: Option<KernelSubscription>,
     watch_task: Option<JoinHandle<()>>,
+    outside_wait_requests: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -761,7 +762,7 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
-                let _ = router.runtime_state().revoke_kernel_access(None, None, "kernel_shutdown");
+                let _ = router.runtime_state().end_kernel_access_for_shutdown();
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
             },
@@ -968,10 +969,15 @@ where
         browser_terminal_contexts: Default::default(),
         subscription: None,
         watch_task: None,
+        outside_wait_requests: Default::default(),
     }));
 
-    let outbound =
-        outbound::OutboundBoundary::new(router.runtime_state(), peer.clone(), bound_grant.clone());
+    let outbound = outbound::OutboundBoundary::new(
+        router.runtime_state(),
+        peer.clone(),
+        bound_grant.clone(),
+        connection_state.clone(),
+    );
     let writer_task = tokio::spawn(async move {
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
@@ -1066,7 +1072,8 @@ where
             message = reader.next() => match message { Some(message) => message, None => break },
             _ = access_tick.tick(), if peer.is_some() => {
                 router.runtime_state().pump_kernel_access();
-                if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant) { break; }
+                if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant)
+                    && connection_state.lock().await.outside_wait_requests.is_empty() { break; }
                 continue;
             }
         };
@@ -1236,7 +1243,10 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
         Some(request_id) => (
             request_id,
             "invalid_request",
-            crate::transport::request_decode_error::message("invalid request", error),
+            crate::transport::request_decode_error::message(
+                crate::transport::request_decode_error::DECODE_PREFIX,
+                error,
+            ),
         ),
         None => (
             "unknown".to_string(),
@@ -1248,6 +1258,7 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
         ),
     };
     KernelOutgoingFrame::Response {
+        kernel: None,
         request_id,
         response: Box::new(None),
         error: Some(KernelTransportError {
@@ -1343,9 +1354,55 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             command_id,
             causation_id,
             correlation_id,
+            kernel,
             request,
         } => {
             runtime.transport_health.record_incoming_request();
+            let route = match (kernel, &request) {
+                (Some(kernel), _) => Some(unix_access::GatewayRoute::Forward {
+                    kernel,
+                    request: Box::new(request.clone()),
+                }),
+                // A terminal's listing is answered by the router like any request.
+                (None, crate::local::LocalDaemonRequest::ListGatewayKernels(_))
+                    if external_caller.is_some() =>
+                {
+                    Some(unix_access::GatewayRoute::List)
+                }
+                (None, _) => None,
+            };
+            if let Some(route) = route {
+                match external_caller.as_ref() {
+                    Some(caller) => unix_access::serve_gateway(
+                        &connection,
+                        caller,
+                        request_id,
+                        command_id,
+                        route,
+                    ),
+                    None => {
+                        let _ = try_send_outgoing_frame(
+                            outgoing_tx,
+                            close_tx,
+                            close_requested,
+                            &runtime.transport_health,
+                            KernelOutgoingFrame::Response {
+                                kernel: None,
+                                request_id,
+                                response: Box::new(None),
+                                error: Some(KernelTransportError {
+                                    code: "kernel_not_available".into(),
+                                    message: "kernel routing is only available to a local access grant holder".into(),
+                                    retryable: false,
+                                }),
+                            },
+                            None,
+                            None,
+                        );
+                    }
+                }
+                return;
+            }
             let caller = match external_caller {
                 Some(caller) => caller,
                 None if connection_class == KernelConnectionClass::Terminal => {
@@ -1374,6 +1431,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             );
             command.terminal_lifetime =
                 Some(connection_state.lock().await.terminal_lifetime.clone());
+            if peer.is_some() && matches!(&request, crate::local::LocalDaemonRequest::WaitEvents(_))
+            {
+                connection_state
+                    .lock()
+                    .await
+                    .outside_wait_requests
+                    .insert(request_id.clone());
+            }
             if let Ok(context) = router
                 .runtime_state()
                 .kernel_browser_terminal_context(&command)
@@ -1403,6 +1468,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         close_requested,
                         &runtime.transport_health,
                         KernelOutgoingFrame::Response {
+                            kernel: None,
                             request_id,
                             response: Box::new(None),
                             error: Some(map_kernel_error(&error)),
@@ -1450,6 +1516,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                     &close_requested,
                                     &transport_health,
                                     KernelOutgoingFrame::Response {
+                                        kernel: None,
                                         request_id,
                                         response: Box::new(None),
                                         error: Some(KernelTransportError {
@@ -1482,6 +1549,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_requested,
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
+                                    kernel: None,
                                     request_id,
                                     response,
                                     error,
@@ -1500,6 +1568,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             close_requested,
                             &runtime.transport_health,
                             KernelOutgoingFrame::Response {
+                                kernel: None,
                                 request_id,
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
@@ -1537,6 +1606,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         close_requested,
                         &runtime.transport_health,
                         KernelOutgoingFrame::Response {
+                            kernel: None,
                             request_id,
                             response: Box::new(None),
                             error: Some(KernelTransportError {
@@ -1596,6 +1666,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_requested,
                                 &runtime.transport_health,
                                 KernelOutgoingFrame::Event {
+                                    kernel: None,
                                     // MD-DISPLAY-04: no durable replay cursor.
                                     // Per-display sequence lives inside frame.
                                     event_id: 0,
@@ -1608,12 +1679,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             }
                         }
                         KernelOutgoingFrame::Response {
+                            kernel: None,
                             request_id,
                             response: Box::new(Some(response)),
                             error: None,
                         }
                     }
                     Err(error) => KernelOutgoingFrame::Response {
+                        kernel: None,
                         request_id,
                         response: Box::new(None),
                         error: Some(map_kernel_error(&error)),
@@ -1643,26 +1716,63 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             subscription_scope,
             resume_from_event_id,
             heartbeat_interval_ms,
+            kernel,
         } => {
+            let refuse = |error: KernelTransportError| {
+                let _ = try_send_outgoing_frame(
+                    outgoing_tx,
+                    close_tx,
+                    close_requested,
+                    &runtime.transport_health,
+                    KernelOutgoingFrame::Response {
+                        kernel: None,
+                        request_id: request_id.clone(),
+                        response: Box::new(None),
+                        error: Some(error),
+                    },
+                    None,
+                    None,
+                );
+            };
+            if let Some(kernel) = kernel {
+                let Some(caller) = external_caller.as_ref() else {
+                    refuse(KernelTransportError {
+                        code: "kernel_not_available".into(),
+                        message: "kernel routing is only available to a local access grant holder".into(),
+                        retryable: false,
+                    });
+                    return;
+                };
+                if heartbeat_interval_ms.is_some() {
+                    refuse(KernelTransportError {
+                        code: "heartbeat_interval_not_routable".into(),
+                        message: "a subscription routed to another kernel uses that kernel's heartbeat interval; leave heartbeat_interval_ms out".into(),
+                        retryable: false,
+                    });
+                    return;
+                }
+                unix_access::serve_gateway_subscription(
+                    &connection,
+                    request_id,
+                    kernel,
+                    crate::runtime::kernel_gateway::SubscribeRequest {
+                        grant_id: caller.caller_id.clone(),
+                        session_id,
+                        attachment_id,
+                        scope: subscription_scope,
+                        resume_from_event_id,
+                    },
+                )
+                .await;
+                return;
+            }
             let heartbeat_interval = match requested_heartbeat_interval(
                 heartbeat_interval_ms,
                 subscriptions::subscription_heartbeat_interval(),
             ) {
                 Ok(interval) => interval,
                 Err(error) => {
-                    let _ = try_send_outgoing_frame(
-                        outgoing_tx,
-                        close_tx,
-                        close_requested,
-                        &runtime.transport_health,
-                        KernelOutgoingFrame::Response {
-                            request_id,
-                            response: Box::new(None),
-                            error: Some(error),
-                        },
-                        None,
-                        None,
-                    );
+                    refuse(error);
                     return;
                 }
             };
@@ -1730,6 +1840,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
+                    kernel: None,
                     request_id,
                     response: Box::new(Some(serde_json::json!({
                         "ok": true,
@@ -1810,6 +1921,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
+                    kernel: None,
                     request_id,
                     response: Box::new(Some(serde_json::json!({ "ok": true }))),
                     error: None,

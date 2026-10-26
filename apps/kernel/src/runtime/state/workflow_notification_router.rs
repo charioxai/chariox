@@ -822,7 +822,7 @@ mod tests {
                     let mut access = kernel.owned.kernel_access.lock().unwrap();
                     let live = access.grants.get_mut(&grant).unwrap();
                     if end == "expiry" {
-                        live.deadline =
+                        live.clock.as_mut().unwrap().deadline =
                             std::time::Instant::now() - std::time::Duration::from_millis(1);
                     } else {
                         live.holder.start = live.holder.start.wrapping_add(1);
@@ -1036,6 +1036,102 @@ mod tests {
             drop(runtime);
             cleanup(f);
         }
+    }
+    /// A01-S01: an agent starts a run while its workflow is busy, so the run is
+    /// admitted as a queued prompt and the obligation names the queue item. The
+    /// sweep keeps it open while queued and settles it from the promoted run.
+    #[tokio::test]
+    async fn a01_workflow_run_obligation_follows_its_queued_prompt() {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let mut f = Fixture::new();
+        let (workflow, endpoint, _) = f.workflow("a01-queued");
+        let queued = f
+            .sessions
+            .enqueue_workflow_prompt(
+                &f.session,
+                &workflow,
+                &endpoint,
+                Some("build and review".into()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .unwrap()
+            .id()
+            .to_string();
+        f.persist();
+        let runtime = runtime(&mut f);
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        let now = crate::session::unix_epoch_ms();
+        f.store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: f.session.clone(),
+                agent: "agent".into(),
+                prompt: "a01-starter".into(),
+                run: Some("fixture-provider".into()),
+                now,
+            })
+            .unwrap();
+        f.store
+            .agent_lifecycle(Operation::RegisterObligation {
+                owner: "local".into(),
+                room: f.session.clone(),
+                agent: "agent".into(),
+                prompt: "a01-starter".into(),
+                run: Some("fixture-provider".into()),
+                id: "a01-workflow".into(),
+                kind: "workflow_run".into(),
+                resource: Some("workflow".into()),
+                now,
+            })
+            .unwrap();
+        f.store
+            .agent_lifecycle(Operation::DispatchReceipt {
+                id: "a01-workflow".into(),
+                accepted: true,
+                resource: Some(queued.clone()),
+            })
+            .unwrap();
+        let obligation = |f: &Fixture| {
+            f.store
+                .agent_tasks(Some(&f.session), Some("agent"))
+                .unwrap()
+                .into_iter()
+                .find(|t| t.task_id == "a01-starter")
+                .unwrap()
+                .obligations[0]
+                .status
+                .clone()
+        };
+        runtime.sweep_agent_lifecycle().await.unwrap();
+        assert_eq!(obligation(&f), "open", "a queued run is not a failed run");
+
+        let mut session = f.sessions.get_session(&f.session).unwrap();
+        session.remove_queued_workflow_prompt(&queued).unwrap();
+        f.sessions.restore_session(session);
+        f.complete(
+            &workflow,
+            "promoted-run",
+            Some(&queued),
+            crate::session::WorkflowRunStatus::Completed,
+            "built and reviewed",
+        );
+        runtime
+            .owned
+            .session_store
+            .write()
+            .restore_session(f.sessions.get_session(&f.session).unwrap());
+        runtime.sweep_agent_lifecycle().await.unwrap();
+        let status = obligation(&f);
+        assert!(
+            !matches!(status.as_str(), "open" | "failed"),
+            "the promoted run's success settles the obligation: {status}"
+        );
+        drop(runtime);
+        cleanup(f);
     }
     #[test]
     fn a02_security_g11_workflow_child_binds_only_the_invoking_task() {

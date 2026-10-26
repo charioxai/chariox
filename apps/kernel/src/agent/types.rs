@@ -6,6 +6,9 @@ use crate::provider::{
 };
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
+/// The shortest step between two event-driven liveness stamps of one agent.
+const ACTIVITY_COALESCE_MS: u64 = 3_000;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteAgentBinding {
     pub worker_kernel_id: String,
@@ -548,6 +551,21 @@ impl AgentInstance {
     pub fn set_state(&mut self, state: AgentState) {
         self.state = state;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    /// An event the kernel recorded for this agent proves it is alive. A busy
+    /// stream moves the stamp at most once per `ACTIVITY_COALESCE_MS`, so
+    /// liveness never becomes a write on every event.
+    pub fn note_event_activity(&mut self, at_ms: u64) -> bool {
+        if at_ms
+            < self
+                .last_activity_at_ms
+                .saturating_add(ACTIVITY_COALESCE_MS)
+        {
+            return false;
+        }
+        self.last_activity_at_ms = at_ms;
+        true
     }
 
     pub fn set_processing(&mut self, is_processing: bool) {

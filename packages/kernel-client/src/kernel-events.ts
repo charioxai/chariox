@@ -122,6 +122,8 @@ export type KernelEvent =
   }
   | {
     event: "waiting_room_rows_changed"
+    sessions_total?: number
+    sessions_next_cursor?: string | null
     inventory_version: string
     structural_version: string
     activity_revision: string

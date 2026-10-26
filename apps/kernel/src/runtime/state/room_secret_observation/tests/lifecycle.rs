@@ -375,9 +375,13 @@ async fn public_history_protected_room_withholds_fragmented_answers() {
         )
         .await
         .unwrap();
-    assert!(turn.ok);
-    let events = turn.payload["events"].as_array().unwrap();
-    assert!(events.is_empty());
+    // A withheld turn answers exactly like a missing one.
+    assert!(!turn.ok);
+    assert!(turn.payload.get("events").is_none());
+    assert!(turn.payload["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("Public history turn is unavailable"));
 }
 
 // MP-08 / MP-10 / MP-11: the runtime credential tools stamp the caller's Room

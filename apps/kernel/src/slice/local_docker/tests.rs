@@ -1718,8 +1718,12 @@ elif args and args[0] == 'inspect' and not any(flag in args for flag in ['-f','-
 elif args and args[0] == 'exec' and any('profileProcessCount' in arg for arg in args):
     print(json.dumps({'disposition':'clear','profileProcessCount':0}))
 elif args == ['system','dial-stdio']:
-    sys.stdin.buffer.read()
-    sys.stdout.buffer.write(b'HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+    # Docker keeps its HTTP input open while waiting for the reply.
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line or line in (b'\r\n', b'\n'):
+            break
+    sys.stdout.buffer.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
 else:
     sys.exit(1)
 "#,
@@ -3382,5 +3386,43 @@ fn screen_start_tells_the_desktop_about_a_bound_room() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn browser_admission_http_fixture_replies_before_input_eof() {
+    use std::io::{Read, Write};
+    let root = test_root("browser-http-before-eof");
+    let fixture = browser_admission_docker_fixture(&root);
+    let mut child = Command::new(fixture)
+        .args(["system", "dial-stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"GET /_ping HTTP/1.1\r\nHost: docker\r\n\r\n")
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut response = String::new();
+        let result = stdout.read_to_string(&mut response).map(|_| response);
+        let _ = send.send(result);
+    });
+    let reply = receive.recv_timeout(std::time::Duration::from_secs(2));
+    drop(child.stdin.take());
+    if child.try_wait().unwrap().is_none() && child.id() > 1 {
+        let _ = child.kill();
+    }
+    child.wait().unwrap();
+    reader.join().unwrap();
+    let response = reply
+        .expect("HTTP fixture must answer without waiting for stdin EOF")
+        .unwrap();
+    assert!(response.starts_with("HTTP/1.1 404"));
     let _ = std::fs::remove_dir_all(root);
 }

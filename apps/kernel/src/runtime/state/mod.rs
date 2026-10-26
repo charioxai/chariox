@@ -83,6 +83,8 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+mod outside_events;
+pub(crate) use outside_events::is_outside_event_request;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -139,6 +141,7 @@ pub(crate) use managed_kernel_quiescence_state::{
     ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
     ManagedKernelQuiescenceOutcome,
 };
+mod claude_permission_rules;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
@@ -159,6 +162,7 @@ mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
 mod room_shared_display;
+mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
 mod usage_snapshot;
 mod visible_region_capture;
@@ -183,6 +187,19 @@ pub(crate) struct KernelRuntimeState {
     provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
+    /// behind it any more, so restart recovery may supersede it instead of waiting for it.
+    restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// What the person granted with "Allow for this session" on Claude permission prompts, per
+    /// agent, so a restarted Claude process starts with it again.
+    claude_session_grants: claude_permission_rules::StandingGrants,
+    /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
+    /// before this field was set, and the Room terminal service and wake registry hold it weakly,
+    /// so dropping the runtime frees the kernel instead of leaving a cycle.
+    terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
+    /// MP-08/MP-09/MP-11: terminals retain this callback weakly so it cannot
+    /// own the runtime state that owns the terminal service.
+    managed_terminal_activity: Option<Arc<dyn Fn() + Send + Sync>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -233,10 +250,12 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    uncertain_leased_tasks: Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
+    room_terminals: crate::room_terminal::RoomTerminalService,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -420,6 +439,7 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod wake_driver;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
@@ -459,6 +479,7 @@ mod prompt_transcript_owned_state;
 mod provider;
 mod provider_account_admission;
 mod provider_account_authority;
+mod provider_account_copy;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
@@ -734,6 +755,7 @@ impl KernelRuntimeState {
             room_computer_revoked,
             sudo_windows,
             pending_agent_context_handoffs,
+            room_terminals,
         ) = {
             let started = Instant::now();
             loop {
@@ -754,6 +776,7 @@ impl KernelRuntimeState {
                         app.room_computer_revoked.clone(),
                         app.sudo_window_projection(),
                         app.pending_agent_context_handoff_store(),
+                        app.room_terminals(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -762,6 +785,27 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
+        let event_config = config_projection.snapshot();
+        durable_state_store
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Identity {
+                    kernel: event_config.daemon_id.clone(),
+                    machine: event_config.host_machine_id.clone(),
+                },
+            )
+            .expect("outside event identity must be durable before runtime admission");
+        durable_state_store
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Restart {
+                    keep: kernel_access::grant_inboxes_to_keep(&durable_state_store)
+                        .expect("access grants must be readable before runtime admission"),
+                },
+            )
+            .expect("outside subscriptions must end when their home kernel restarts");
+        agent_store
+            .write()
+            .bind_outside_events(durable_state_store.clone());
+        room_terminals.bind_outside_events(durable_state_store.clone());
         let workspace_live_sync_journal =
             match crate::git_observer::WorkspaceLiveSyncJournal::restore_from_durable_state(
                 &durable_state_store,
@@ -905,7 +949,7 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
-        let runtime = Self {
+        let mut runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
             room_request_origin: None,
@@ -921,6 +965,10 @@ impl KernelRuntimeState {
             provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            claude_session_grants: claude_permission_rules::StandingGrants::default(),
+            terminal_wake_driver: None,
+            managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
                 critical_approval_passkeys:
@@ -965,6 +1013,7 @@ impl KernelRuntimeState {
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
                 human_control_task_waits: Default::default(),
+                uncertain_leased_tasks: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
@@ -972,6 +1021,7 @@ impl KernelRuntimeState {
                     config.private_runtime_state_root().join("kernel-browser/observations"),
                     BTreeSet::new(),
                 ).with_identity(&config.relay_private_key),
+                room_terminals,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -1067,6 +1117,8 @@ impl KernelRuntimeState {
                 project_environment_setups,
             },
         };
+        runtime.link_room_terminals_to_managed_kernel();
+        runtime.register_terminal_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
@@ -1362,10 +1414,12 @@ mod room_agent_admission;
 mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
+mod agent_deadline_runtime;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
+mod agent_inbox_leased_steer;
 mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;
@@ -1373,7 +1427,10 @@ mod agent_lifecycle_runtime;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
+#[cfg(test)]
+mod agent_reply_tests;
 mod agent_task_cancellation;
+mod agent_task_failure;
 mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
@@ -1381,6 +1438,9 @@ mod agent_task_projection;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
+mod leased_task_connectivity;
 mod room_dispatch_obligation;
+mod terminal_wake;
+mod terminal_wake_worker;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

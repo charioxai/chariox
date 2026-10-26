@@ -367,3 +367,43 @@ async fn enrolled_kernel_rejects_foreign_and_malformed_subjects_without_network(
     );
     assert_eq!(profile.client_id, None);
 }
+
+#[tokio::test]
+async fn gateway_registration_names_the_gateway_subject_and_uses_only_the_kernel_credential() {
+    let (url, fixture) = server(&["/kernels/gateway-client"]);
+    let mut enrolled = profile(url);
+    enrolled.kernel_id = Some("kernel-fixture".into());
+    enrolled.kernel_credential = Some("synthetic-kernel-credential".into());
+    crate::runtime::cloud_api_client::register_cloud_gateway_client(
+        &enrolled,
+        "agent-gateway",
+        &"c".repeat(64),
+        "Agent gateway of Studio",
+    )
+    .await
+    .unwrap();
+    let request = fixture.join().unwrap().remove(0);
+    assert_eq!(request.authorization, None);
+    assert_eq!(
+        request.body["kernelCredential"],
+        "synthetic-kernel-credential"
+    );
+    assert_eq!(request.body["kernelId"], "kernel-fixture");
+    assert_eq!(
+        request.body["clientId"],
+        kernel_client_subject("kernel-fixture", "agent-gateway").unwrap()
+    );
+    assert_eq!(request.body["publicKeyThumbprint"], "c".repeat(64));
+    assert_eq!(request.body["alias"], "Agent gateway of Studio");
+    assert!(request.body.get("machineCredential").is_none());
+
+    let machine_only = crate::runtime::cloud_api_client::register_cloud_gateway_client(
+        &profile("http://127.0.0.1:9".into()),
+        "agent-gateway",
+        &"c".repeat(64),
+        "Agent gateway of Studio",
+    )
+    .await
+    .unwrap_err();
+    assert!(machine_only.to_string().contains("own Cloud enrollment"));
+}

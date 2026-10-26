@@ -1,5 +1,6 @@
 //! Inbound browser/client relay request dispatch to the kernel command router.
 
+use super::request_errors::map_relay_error;
 #[cfg(test)]
 mod app_tests;
 mod prepare;
@@ -48,6 +49,7 @@ pub(super) struct RelayRequestOutcome {
     pub(super) error: Option<RelayError>,
 }
 
+#[cfg(test)]
 pub(super) async fn handle_daemon_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
@@ -169,17 +171,82 @@ pub(super) async fn handle_prepared_daemon_request(
                 }) => Some(subscription_id.clone()),
                 _ => None,
             };
+            // A gateway of another kernel is listed with the paired clients; once the owner
+            // revoked it here, its key gets nothing, whether or not it names its origin.
+            let origin = request.on_behalf_of.as_ref().map(|c| {
+                crate::runtime::kernel_gateway::origins::Named {
+                    kernel: c.origin_kernel.as_str(),
+                    name: c.origin_name.as_deref(),
+                }
+            });
+            match router
+                .kernel_gateway()
+                .admit_origin(&client_public_key, origin)
+            {
+                Ok(true) => {}
+                // The one request a revoked gateway may still make: to be paired again with a
+                // link the owner made for it (the executor lifts the revocation).
+                Ok(false)
+                    if matches!(
+                        request.request,
+                        LocalDaemonRequest::JoinTerminalPairingLink(_)
+                    ) => {}
+                Ok(false) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "authorization_denied",
+                            "this machine's owner revoked that gateway (unpaired or revoked)",
+                            false,
+                        )),
+                    }
+                }
+                // An unreadable list must not lock the owner out of their own kernel: only a
+                // gateway, which names its origin, is refused until the list can be read.
+                Err(error) if origin.is_none() => {
+                    tracing::warn!(%error, "gateway origins unreadable; admitting a request that names no origin");
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "gateway_origins_unavailable",
+                            &error.to_string(),
+                            true,
+                        )),
+                    }
+                }
+            }
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
-            let mut result = dispatch_relay_client_request(
-                router,
-                command_sequence,
-                caller,
-                request.request,
-                request.command_id.clone(),
-                command_result_cache,
-            )
-            .await;
+            let mut result = match request.on_behalf_of {
+                Some(on_behalf_of) => {
+                    dispatch_on_behalf_of(
+                        router,
+                        command_sequence,
+                        caller,
+                        request.request,
+                        request.command_id.clone(),
+                        command_result_cache,
+                        &on_behalf_of,
+                        &client_public_key,
+                    )
+                    .await
+                }
+                None => {
+                    dispatch_relay_client_request(
+                        router,
+                        command_sequence,
+                        caller,
+                        request.request,
+                        request.command_id.clone(),
+                        command_result_cache,
+                    )
+                    .await
+                }
+            };
             if let Some(id) = poll {
                 if matches!(&result, RelayDispatchOutcome::Response(_))
                     && !super::browser_display::refresh_admitted_display_poll(
@@ -710,6 +777,8 @@ struct LocalBrowserConnectEnvelope {
 struct ParsedRelayClientRequest {
     command_id: Option<String>,
     request: LocalDaemonRequest,
+    /// Protocol 568: set by a kernel gateway forwarding for an external agent.
+    on_behalf_of: Option<crate::local::OnBehalfOf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -718,6 +787,8 @@ struct RelayClientRequestEnvelope {
     #[serde(default)]
     command_id: Option<String>,
     request: LocalDaemonRequest,
+    #[serde(default)]
+    on_behalf_of: Option<crate::local::OnBehalfOf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -759,6 +830,7 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
                     .command_id
                     .filter(|command_id| !command_id.trim().is_empty()),
                 request: envelope.request,
+                on_behalf_of: envelope.on_behalf_of,
             },
         ));
     }
@@ -766,6 +838,7 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
         ParsedRelayClientRequest {
             command_id: None,
             request: serde_json::from_slice(bytes)?,
+            on_behalf_of: None,
         },
     ))
 }
@@ -773,6 +846,194 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
 enum RelayDispatchOutcome {
     Response(Value),
     RelayError(RelayError),
+}
+
+/// A request a kernel gateway forwarded for an external agent. This kernel
+/// decides for itself from `on_behalf_of`: the human-only set is refused here,
+/// and a state-changing request is reserved durably before it runs so a retry
+/// of an interrupted one is answered "outcome unknown" instead of run again.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "One dispatch seam shared with ordinary requests"
+)]
+async fn dispatch_on_behalf_of(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    caller: KernelCaller,
+    request: LocalDaemonRequest,
+    command_id: Option<String>,
+    command_result_cache: &CommandResultCache,
+    on_behalf_of: &crate::local::OnBehalfOf,
+    gateway_public_key: &str,
+) -> RelayDispatchOutcome {
+    use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
+    if let Err(error) = router
+        .runtime_state()
+        .authorize_on_behalf_of_request(on_behalf_of, &request)
+    {
+        let refusal = crate::runtime::kernel_access::Refusal::of(&error);
+        return RelayDispatchOutcome::RelayError(relay_error(
+            refusal.code(),
+            refusal.message(),
+            false,
+        ));
+    }
+    if crate::runtime::state::is_outside_event_request(&request) {
+        let id = format!(
+            "outside:{}:{}",
+            on_behalf_of.origin_kernel, on_behalf_of.grant_id
+        );
+        let result = match &request {
+            LocalDaemonRequest::WaitEvents(wait) => {
+                router
+                    .runtime_state()
+                    .outside_wait(&id, wait, None, None)
+                    .await
+            }
+            _ => router.runtime_state().outside_part_request(
+                &id,
+                false,
+                caller.user_id.as_deref(),
+                &request,
+            ),
+        };
+        return match result {
+            Ok(response) => RelayDispatchOutcome::Response(
+                serde_json::to_value(response).expect("typed event response serializes"),
+            ),
+            Err(error) => RelayDispatchOutcome::RelayError(map_relay_error(&error)),
+        };
+    }
+    // The origin telling this kernel its grant ended or still lives is idempotent and
+    // only removes or keeps authority this kernel already gave, so it needs neither a
+    // command id nor a ledger entry.
+    if ends_remote_sudo(on_behalf_of, &request)
+        || matches!(request, LocalDaemonRequest::RenewKernelSudoRequester(_))
+    {
+        let command = KernelCommand::from_local_request_with_caller(
+            command_id.unwrap_or_else(|| format!("gw-end-{}", crate::session::unix_epoch_ms())),
+            KernelCommandSource::RelayClient,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        return remote_sudo_outcome(router, &command, on_behalf_of, &request).await;
+    }
+    if !is_repeatable(&request) {
+        router.runtime_state().audit_gateway_request(
+            on_behalf_of,
+            &crate::runtime::kernel_gateway::ledger::variant_name(&request),
+        );
+    }
+    if is_repeatable(&request) {
+        return dispatch_relay_client_request(
+            router,
+            command_sequence,
+            caller,
+            request,
+            command_id,
+            command_result_cache,
+        )
+        .await;
+    }
+    let Some(command_id) = command_id else {
+        return RelayDispatchOutcome::RelayError(relay_error(
+            "command_id_required",
+            "a state-changing request through the gateway needs a command id",
+            false,
+        ));
+    };
+    let command = KernelCommand::from_local_request_with_caller(
+        command_id.clone(),
+        KernelCommandSource::RelayClient,
+        caller.clone(),
+        None,
+        None,
+        &request,
+    );
+    let fingerprint = CommandFingerprint::for_app_control(&command, &request);
+    let key = serde_json::json!([gateway_public_key, &command_id]).to_string();
+    let settled = router
+        .kernel_gateway()
+        .ledger()
+        .run(&key, fingerprint, async {
+            let outcome = if matches!(request, LocalDaemonRequest::RequestKernelSudo(_)) {
+                remote_sudo_outcome(router, &command, on_behalf_of, &request).await
+            } else {
+                dispatch_relay_client_request(
+                    router,
+                    command_sequence,
+                    caller,
+                    request,
+                    Some(command_id.clone()),
+                    command_result_cache,
+                )
+                .await
+            };
+            match outcome {
+                RelayDispatchOutcome::Response(value) => Ok(value),
+                RelayDispatchOutcome::RelayError(error) => Err(Failure {
+                    code: error.code,
+                    message: error.message,
+                    retryable: error.retryable,
+                }),
+            }
+        })
+        .await;
+    match settled {
+        Settled::Done(Ok(value)) => RelayDispatchOutcome::Response(value),
+        Settled::Done(Err(failure)) => RelayDispatchOutcome::RelayError(relay_error(
+            &failure.code,
+            &failure.message,
+            failure.retryable,
+        )),
+        Settled::OutcomeUnknown => RelayDispatchOutcome::RelayError(relay_error(
+            "kernel_outcome_unknown",
+            "This request may or may not have run on that kernel. Check its state (for example list the sessions there) before asking again; it is not run a second time.",
+            false,
+        )),
+        Settled::Conflict => RelayDispatchOutcome::RelayError(relay_error(
+            "duplicate_command_conflict",
+            &format!("command_id `{command_id}` was already used for a different request"),
+            false,
+        )),
+        Settled::Unavailable(reason) => {
+            RelayDispatchOutcome::RelayError(relay_error("ledger_unavailable", &reason, true))
+        }
+    }
+}
+
+/// The origin's grant id as the grant to revoke: the one revoke a forwarded request may make.
+fn ends_remote_sudo(on_behalf_of: &crate::local::OnBehalfOf, request: &LocalDaemonRequest) -> bool {
+    matches!(request, LocalDaemonRequest::RevokeKernelAccessGrant(revoke)
+        if revoke.grant_id.as_deref() == Some(on_behalf_of.grant_id.as_str()))
+}
+
+async fn remote_sudo_outcome(
+    router: &CommandRouter,
+    command: &KernelCommand,
+    on_behalf_of: &crate::local::OnBehalfOf,
+    request: &LocalDaemonRequest,
+) -> RelayDispatchOutcome {
+    match router
+        .dispatch_remote_sudo(command, on_behalf_of, request)
+        .await
+    {
+        Ok(response) => {
+            let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
+            crate::local::redact_client_response_value(&mut response);
+            RelayDispatchOutcome::Response(response)
+        }
+        Err(error) => {
+            let error = map_kernel_error(&error);
+            RelayDispatchOutcome::RelayError(relay_error(
+                &error.code,
+                &error.message,
+                error.retryable,
+            ))
+        }
+    }
 }
 
 async fn dispatch_relay_client_request(
@@ -879,12 +1140,14 @@ async fn dispatch_relay_client_request(
             let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
             crate::local::redact_client_response_value(&mut response);
             KernelOutgoingFrame::Response {
+                kernel: None,
                 request_id: command_id.clone(),
                 response: Box::new(Some(response)),
                 error: None,
             }
         }
         Err(error) => KernelOutgoingFrame::Response {
+            kernel: None,
             request_id: command_id.clone(),
             response: Box::new(None),
             error: Some(map_kernel_error(&error)),
@@ -931,6 +1194,27 @@ mod tests {
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::LocalDaemonResponse;
     use base64::Engine;
+
+    #[test]
+    fn the_largest_machine_file_chunk_fits_one_relayed_request() {
+        let request = crate::local::LocalDaemonRequest::WriteKernelFile(
+            crate::local::WriteKernelFileRequest {
+                path: "p".repeat(4096),
+                offset: u64::MAX,
+                data_base64: base64::engine::general_purpose::STANDARD.encode(vec![
+                    0u8;
+                    crate::local::KERNEL_FILE_MAX_CHUNK_BYTES
+                        as usize
+                ]),
+                total_size: u64::MAX,
+                sha256: Some("a".repeat(64)),
+                overwrite: true,
+            },
+        );
+        let plaintext =
+            serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
+        assert!(plaintext.len() + 16 <= super::MAX_BROWSER_IMPORT_ENCRYPTED_BYTES);
+    }
 
     #[test]
     fn the_largest_app_file_answer_fits_one_relayed_request() {

@@ -535,3 +535,97 @@ async fn room_workflows_local_drill_initial_inventory_other_client_creation_and_
     let _ = task.await;
     result.expect("one subscription delivers authoritative inventory changes");
 }
+
+// MP-08/MP-10/MP-11: exercise the actual local subscription, not just selectors.
+#[tokio::test]
+async fn task_delta_local_subscription_preserves_prompt_completion_and_provider_change() {
+    let worktree = crate::test_support::TestWorktree::new("task-delta-local");
+    let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "room-workflows",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let prompt = crate::test_support::task_delta::TaskDeltaPrompt::start(
+        &mut app,
+        session.id(),
+        attachment.id(),
+    );
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        app.clone(),
+        1,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::default());
+    let (priority_tx, _priority_rx) = mpsc::channel(1);
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run_subscription_loop(
+        router,
+        runtime,
+        KernelOutgoingSender::new(priority_tx, event_tx),
+        close_tx,
+        Arc::new(AtomicBool::new(false)),
+        KernelSubscription {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            subscription_scope: KernelSubscriptionScope::Session,
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                if let KernelEvent::SessionSnapshot { session, .. } = *event {
+                    assert_eq!(
+                        session.agent_tasks()[0].state,
+                        crate::durable_state::agent_lifecycle::ExecutionState::Working
+                    );
+                    break;
+                }
+            }
+        }
+        prompt.finish(&mut *app.lock().await, session.id());
+        let mut saw_task = false;
+        loop {
+            if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                match *event {
+                    KernelEvent::AgentTaskUpdated { task, .. } => {
+                        assert_eq!(
+                            task.state,
+                            crate::durable_state::agent_lifecycle::ExecutionState::Done
+                        );
+                        saw_task = true;
+                    }
+                    KernelEvent::SessionSnapshot {
+                        session,
+                        provider_run,
+                        agent_activity,
+                        ..
+                    } => {
+                        if !saw_task {
+                            continue;
+                        }
+                        assert!(session.active_prompt_for_agent(&prompt.agent).is_none());
+                        assert!(!agent_activity[&prompt.agent].busy);
+                        assert_eq!(
+                            provider_run.as_ref().as_ref().unwrap().model(),
+                            "updated-model"
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    result.expect("task delta must not swallow prompt completion or provider changes");
+}

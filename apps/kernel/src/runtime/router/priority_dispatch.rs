@@ -103,6 +103,12 @@ impl CommandRouter {
                     .await?;
                 Ok(LocalDaemonResponse::Dictation { result })
             }),
+            LocalDaemonRequest::SetAgentDeadline(request) => {
+                boxed_handler(|| async move { self.runtime_state.set_agent_deadline(request) })
+            }
+            LocalDaemonRequest::GetAgentDeadline(request) => {
+                boxed_handler(|| async move { self.runtime_state.get_agent_deadline(request) })
+            }
             LocalDaemonRequest::Notes(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state
@@ -171,6 +177,11 @@ impl CommandRouter {
             }),
             LocalDaemonRequest::LaunchProviderRuns(request) => boxed_handler(|| async move {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
+            }),
+            LocalDaemonRequest::RoomTerminal(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .room_terminal_for_client(&command.caller, request)
+                    .await
             }),
             LocalDaemonRequest::RoomBrowserArtifact(request) => boxed_handler(|| async move {
                 let result = self
@@ -444,30 +455,29 @@ impl CommandRouter {
                 })
             }
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
-            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)) => {
-                boxed_handler(|| async move {
-                    let caller_user_id = command_caller_user_id(&command);
-                    let directory = if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
-                        &self.config_projection.snapshot(),
-                        &command,
-                    ) {
-                        self.remote_relay_inventory_projection.clone()
-                    } else {
-                        Default::default()
-                    };
-                    execute_waiting_room_request(
-                        &self.runtime_state,
-                        &self.session_projection,
-                        &self.waiting_room_session_summaries,
-                        Arc::clone(&self.relay_state),
-                        self.config_projection.clone(),
-                        directory,
-                        request,
-                        &caller_user_id,
-                    )
-                    .await
-                })
-            }
+            | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
+            | LocalDaemonRequest::ListWaitingRoomSessions(_)) => boxed_handler(|| async move {
+                let caller_user_id = command_caller_user_id(&command);
+                let directory = if crate::runtime::cloud_relay_authorization::kernel_cloud_owner(
+                    &self.config_projection.snapshot(),
+                    &command,
+                ) {
+                    self.remote_relay_inventory_projection.clone()
+                } else {
+                    Default::default()
+                };
+                execute_waiting_room_request(
+                    &self.runtime_state,
+                    &self.session_projection,
+                    &self.waiting_room_session_summaries,
+                    Arc::clone(&self.relay_state),
+                    self.config_projection.clone(),
+                    directory,
+                    request,
+                    &caller_user_id,
+                )
+                .await
+            }),
             request @ (LocalDaemonRequest::ListExternalProviderSessions(_)
             | LocalDaemonRequest::RefreshExternalProviderSessions(_)
             | LocalDaemonRequest::ImportExternalProviderSession(_)
@@ -603,6 +613,15 @@ impl CommandRouter {
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
+            LocalDaemonRequest::CopyProviderAccountToKernel(request) => {
+                boxed_handler(|| async move {
+                    let caller = command_caller_user_id(&command);
+                    self.runtime_state
+                        .copy_provider_account_to_kernel(&caller, request)
+                        .await
+                        .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
+                })
+            }
             request @ (LocalDaemonRequest::GetProviderUsageSnapshot(_)
             | LocalDaemonRequest::ListProviderAccountProfiles(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)

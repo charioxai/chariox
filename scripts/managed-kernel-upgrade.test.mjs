@@ -19,6 +19,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { test } from "node:test"
+import { admittedPredecessorProtocols } from "./lib/protocol-versions.mjs"
 import {
   rawPublicKey,
   makeRelease,

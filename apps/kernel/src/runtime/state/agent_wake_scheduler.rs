@@ -2,8 +2,9 @@
 //! The 1 s scheduler fires durable wakes; the 30 s lifecycle sweep is its
 //! dead-man switch and each watches the other's heartbeat. Neither can stall
 //! silently: every miss raises a notice on all clients and is retried.
+use super::wake_driver::{Liveness, Recovery};
 use super::*;
-use crate::durable_state::agent_lifecycle::{AgentWake, Operation, Outcome, SWEEP_MS};
+use crate::durable_state::agent_lifecycle::{AgentWake, Operation, Outcome, WakeEnd, SWEEP_MS};
 use std::sync::atomic::AtomicBool;
 
 const WAKE_TICK_MS: u64 = 1_000;
@@ -25,11 +26,13 @@ pub(crate) struct AgentWakeMonitor {
     stall_fault: Option<PathBuf>,
     pub(super) leased_polls: std::sync::Mutex<BTreeSet<String>>,
     pub(super) processes: super::agent_process_watch::WatchedProcesses,
+    /// Sources of every other kind; watched processes stay with `processes`.
+    pub(super) drivers: super::wake_driver::WakeDrivers,
 }
 
 impl AgentWakeMonitor {
     pub(super) fn new() -> Self {
-        Self {
+        let monitor = Self {
             started_at_ms: crate::session::unix_epoch_ms(),
             scheduler_tick_ms: AtomicU64::new(0),
             sweep_ms: AtomicU64::new(0),
@@ -39,7 +42,12 @@ impl AgentWakeMonitor {
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
             processes: Default::default(),
             leased_polls: Default::default(),
-        }
+            drivers: Default::default(),
+        };
+        monitor
+            .drivers
+            .register(Arc::new(super::wake_driver::TimerDriver));
+        monitor
     }
 }
 
@@ -87,6 +95,12 @@ impl KernelRuntimeState {
         let mut recovered = false;
         let mut worker_recovered = false;
         loop {
+            if let Err(error) = self
+                .tick_agent_deadlines(crate::session::unix_epoch_ms())
+                .await
+            {
+                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
+            }
             if !worker_recovered {
                 worker_recovered = self
                     .recover_worker_leased_processes(crate::session::unix_epoch_ms())
@@ -109,7 +123,10 @@ impl KernelRuntimeState {
                     });
                 }
                 if !recovered {
-                    recovered = self.recover_lost_agent_processes(now).is_ok();
+                    recovered = self
+                        .recover_lost_agent_processes(now)
+                        .and_then(|()| self.recover_driver_wakes(now))
+                        .is_ok();
                 }
                 match self.tick_agent_wakes(now, true).await {
                     Err(error) => {
@@ -199,6 +216,11 @@ impl KernelRuntimeState {
 
     /// Dead-man switch run by the 30 s lifecycle sweep.
     pub(super) async fn sweep_agent_wakes(&self, now: u64) -> Result<(), DaemonError> {
+        // A deadline whose sources are still stopping retries on its own; it
+        // must not hold back supervision of every other wake.
+        if let Err(error) = self.tick_agent_deadlines(now).await {
+            tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
+        }
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
@@ -222,6 +244,7 @@ impl KernelRuntimeState {
         }) {
             self.tick_agent_wakes(now, false).await?;
         }
+        self.sweep_driver_liveness(now)?;
         let wakes: BTreeMap<_, _> = store
             .agent_wakes(None, None)?
             .into_iter()
@@ -325,6 +348,74 @@ impl KernelRuntimeState {
             self.wake_notice(&wake, format!("Wake alert: watched process '{}' was lost when the kernel restarted; it is not relaunched{orphans}", wake.label));
             self.schedule_wake_delivery(&wake);
         }
+        Ok(())
+    }
+
+    /// After a restart a driver-held source from an earlier kernel is either
+    /// reattached by its driver or reported lost; it is never relaunched.
+    fn recover_driver_wakes(&self, now: u64) -> Result<(), DaemonError> {
+        let monitor = &self.owned.agent_wakes;
+        for wake in self.owned.durable_state_store.agent_wakes(None, None)? {
+            if wake.kind == "process"
+                || !matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
+                || wake.created_at_ms >= monitor.started_at_ms
+            {
+                continue;
+            }
+            let recovery = match monitor.drivers.get(&wake.kind) {
+                Ok(driver) => driver.recover(&wake),
+                Err(error) => Recovery::Lost(error.to_string()),
+            };
+            if let Recovery::Lost(reason) = recovery {
+                self.report_lost_wake(&wake, now, &format!("the kernel restarted: {reason}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Dead-man check for driver-held sources, run by the lifecycle sweep.
+    fn sweep_driver_liveness(&self, now: u64) -> Result<(), DaemonError> {
+        for wake in self.owned.durable_state_store.agent_wakes(None, None)? {
+            if wake.kind == "process" || wake.state != "running" {
+                continue;
+            }
+            let liveness = match self.owned.agent_wakes.drivers.get(&wake.kind) {
+                Ok(driver) => driver.liveness(&wake),
+                Err(error) => Liveness::Lost(error.to_string()),
+            };
+            if let Liveness::Lost(reason) = liveness {
+                self.report_lost_wake(&wake, now, &reason)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn report_lost_wake(
+        &self,
+        wake: &AgentWake,
+        now: u64,
+        reason: &str,
+    ) -> Result<(), DaemonError> {
+        let reason = crate::secret_redaction::redact_secrets(reason).into_owned();
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::WakeOccurred {
+                id: wake.id.clone(),
+                occurrence: format!("{}-lost", wake.id),
+                kind: "source_lost_reported".into(),
+                payload: serde_json::json!({"reason": reason}),
+                summary: Some(format!("lost: {reason}")),
+                end: Some(WakeEnd::Lost),
+                now,
+            })?;
+        self.wake_notice(
+            wake,
+            format!(
+                "Wake alert: '{}' was lost ({reason}); it is not relaunched",
+                wake.label
+            ),
+        );
+        self.schedule_wake_delivery(wake);
         Ok(())
     }
 

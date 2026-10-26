@@ -43,6 +43,9 @@ pub(crate) enum KernelIncomingFrame {
         causation_id: Option<String>,
         #[serde(default)]
         correlation_id: Option<String>,
+        /// Protocol 568: forward this request through the kernel gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
         request: LocalDaemonRequest,
     },
     Subscribe {
@@ -57,6 +60,9 @@ pub(crate) enum KernelIncomingFrame {
         /// `MIN_SUBSCRIPTION_HEARTBEAT_MS`. Left out, the default interval applies.
         #[serde(default)]
         heartbeat_interval_ms: Option<u64>,
+        /// Protocol 568: subscribe on this machine through the gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
     },
     Unsubscribe {
         request_id: String,
@@ -75,11 +81,19 @@ pub(crate) struct KernelTransportError {
 pub(crate) enum KernelOutgoingFrame {
     Response {
         request_id: String,
+        /// Protocol 568: the kernel that answered a forwarded request, so a
+        /// client can tell a forwarded answer from a local one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
         response: Box<Option<Value>>,
         error: Option<KernelTransportError>,
     },
     Event {
         event_id: u64,
+        /// Protocol 568: the kernel whose subscription produced this event; its
+        /// `event_id` counts on that machine's stream. Absent for this kernel's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
         event: Box<KernelEvent>,
     },
 }
@@ -180,6 +194,10 @@ pub(crate) enum KernelEvent {
         inventory_version: String,
     },
     WaitingRoomRowsChanged {
+        #[serde(default)]
+        sessions_total: usize,
+        #[serde(default)]
+        sessions_next_cursor: Option<String>,
         inventory_version: String,
         structural_version: String,
         activity_revision: String,
@@ -497,6 +515,8 @@ pub(crate) fn waiting_room_rows_changed_event(
             && previous.launch_target == snapshot.launch_target
             && previous.projects == snapshot.projects
             && previous.sessions == snapshot.sessions
+            && previous.sessions_total == snapshot.sessions_total
+            && previous.sessions_next_cursor == snapshot.sessions_next_cursor
     }) {
         return None;
     }
@@ -561,6 +581,8 @@ pub(crate) fn waiting_room_rows_changed_event(
         })
         .unwrap_or_default();
     Some(KernelEvent::WaitingRoomRowsChanged {
+        sessions_total: snapshot.sessions_total,
+        sessions_next_cursor: snapshot.sessions_next_cursor,
         inventory_version: snapshot.inventory_version,
         structural_version: snapshot.structural_version,
         activity_revision: snapshot.activity_revision,
@@ -726,6 +748,10 @@ pub(crate) fn can_skip_session_snapshot(
     emitted_projection_delta
         && previous_snapshot.is_some_and(|previous| {
             if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
+                return false;
+            }
+            // Wake changes have no event of their own.
+            if previous.session.agent_wakes() != snapshot.session.agent_wakes() {
                 return false;
             }
             if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
@@ -1019,17 +1045,44 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 }
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
+    if crate::runtime::kernel_access::Refusal::grant_ended(error) {
+        return crate::runtime::kernel_access::Refusal::Ended.transport_error();
+    }
     match error {
+        DaemonError::ProviderAccountCopy {
+            code, retryable, ..
+        } => kernel_error(code, error, *retryable),
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
         }
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
+        DaemonError::MachineRequest { code, .. } => kernel_error(code.as_str(), error, false),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();
             mapped
         }
+        DaemonError::ProviderProfileRefused { reason } => kernel_error(reason.code(), error, false),
+        DaemonError::AgentNotInSession { .. } => kernel_error("agent_not_in_session", error, false),
+        DaemonError::AgentNotFound { .. } => kernel_error("agent_not_found", error, false),
+        DaemonError::NoActivePrompt { .. } => kernel_error("no_active_prompt", error, false),
+        DaemonError::ProviderPromptSteerRejected { .. } => {
+            kernel_error("prompt_steer_rejected", error, false)
+        }
+        DaemonError::LocalTransport {
+            operation: "steer active prompt",
+            ..
+        } => kernel_error("prompt_steer_rejected", error, false),
+        DaemonError::SteerDeliveredEventUnrecorded { .. } => {
+            kernel_error("prompt_steer_event_unrecorded", error, false)
+        }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
+        DaemonError::SessionAliasConflict { .. } => {
+            kernel_error("session_alias_conflict", error, false)
+        }
+        DaemonError::InvalidSessionAlias { .. } => {
+            kernel_error("invalid_session_alias", error, false)
+        }
         DaemonError::AttachmentNotFound { .. } => {
             kernel_error("attachment_not_found", error, false)
         }
@@ -1062,6 +1115,25 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             retryable,
             ..
         } => kernel_error(code, error, *retryable),
+        // A terminal on another kernel refuses in the terminal service's own words; they
+        // are passed on as they came, so the caller that sent the id reads them.
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } if crate::room_terminal::is_public_code(code) => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
+        DaemonError::RelayTransport {
+            code, retryable, ..
+        } if crate::error::actionable_refusal_message(code).is_some() => KernelTransportError {
+            code: code.clone(),
+            message: crate::error::external_request_failure_message(code).into(),
+            retryable: *retryable,
+        },
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {
@@ -1075,7 +1147,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::LocalTransport { operation, .. }
             if *operation == "resolve account profile" =>
         {
-            kernel_error("local_transport_error", error, false)
+            kernel_error("provider_profile_unavailable", error, false)
         }
         // MP-08 / MP-10 / MP-11: absent Projects need setup, not transport retries.
         DaemonError::LocalTransport {

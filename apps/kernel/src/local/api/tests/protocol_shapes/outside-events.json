@@ -1,0 +1,199 @@
+{
+  "local_protocol": 614,
+  "peer_protocol": 220,
+  "requests": [
+    {
+      "SubscribeEvents": {
+        "targets": [
+          {
+            "kernel": "kernel-a",
+            "session_id": "room-a",
+            "agent_id": "agent-a"
+          }
+        ]
+      }
+    },
+    {
+      "UnsubscribeEvents": {
+        "all": true
+      }
+    },
+    {
+      "GetEventSubscription": {}
+    },
+    {
+      "ListEvents": {
+        "since": 1,
+        "limit": 100
+      }
+    },
+    {
+      "WaitEvents": {
+        "since": 1,
+        "limit": 100,
+        "timeout_ms": 540000
+      }
+    },
+    {
+      "AckEvents": {
+        "cursor": 6
+      }
+    }
+  ],
+  "responses": [
+    {
+      "EventSubscription": {
+        "subscription": {
+          "subscription_id": "subscription-a",
+          "targets": [
+            {
+              "kernel": "kernel-a",
+              "session_id": "room-a",
+              "agent_id": "agent-a"
+            }
+          ],
+          "kernels": [
+            {
+              "kernel": "kernel-a",
+              "online": true
+            }
+          ],
+          "acknowledged_cursor": 0,
+          "ended": null
+        }
+      }
+    },
+    {
+      "EventsListed": {
+        "events": [
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "at_ms": 1,
+            "summary": "state changed",
+            "refs": {},
+            "cursor": 1,
+            "type": "agent",
+            "value": {
+              "run_state": "idle",
+              "task_state": "blocked",
+              "reason": "needs owner"
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "at_ms": 1,
+            "summary": "state changed",
+            "refs": {},
+            "cursor": 2,
+            "type": "interaction",
+            "value": {
+              "state": "pending",
+              "pointer": {
+                "approval_id": "approval-a",
+                "kind": "critical_approval",
+                "kernel": "kernel-a",
+                "one_line": "Open Chariox on kernel-a and answer its approval popup.",
+                "expires_at": 600001
+              }
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "at_ms": 1,
+            "summary": "state changed",
+            "refs": {},
+            "cursor": 3,
+            "type": "terminal",
+            "value": {
+              "exit_code": 7
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "agent_id": "agent-a",
+            "at_ms": 1,
+            "summary": "steer delivered",
+            "refs": {},
+            "cursor": 4,
+            "type": "steer",
+            "value": {
+              "steer_id": "prompt-7"
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "at_ms": 1,
+            "summary": "state changed",
+            "refs": {},
+            "cursor": 5,
+            "type": "session",
+            "value": {
+              "state": "agent_added"
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "at_ms": 1,
+            "summary": "state changed",
+            "refs": {},
+            "cursor": 6,
+            "type": "gap",
+            "value": {
+              "kernel": "kernel-a",
+              "dropped": 2,
+              "from": 1,
+              "to": 2
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "at_ms": 1,
+            "summary": "state changed",
+            "refs": {},
+            "cursor": 7,
+            "type": "subscription_ended",
+            "value": {
+              "reason": "cancelled"
+            }
+          }
+        ],
+        "next_cursor": 7,
+        "oldest_cursor": 1,
+        "timed_out": false
+      }
+    },
+    {
+      "EventsAcknowledged": {
+        "cursor": 6
+      }
+    },
+    {
+      "EventsCursorExpired": {
+        "oldest_cursor": 3
+      }
+    }
+  ],
+  "no_subscribe_requests": {
+    "CreateSession": true,
+    "SpawnAgent": true,
+    "SpawnAgents": true
+  },
+  "creation_response_error": {
+    "code": "events_subscription_failed",
+    "message": "Work was created, but automatic event subscription failed. Keep the returned IDs. Run chariox events subscription; if it ended, request a new access grant, otherwise remove unneeded targets or restore the connection, then subscribe using those IDs."
+  }
+}

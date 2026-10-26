@@ -279,7 +279,7 @@ fn local_request_api_supports_session_attach_and_end() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
@@ -351,6 +351,7 @@ fn session_attach_clears_a_missing_active_provider_run() {
         .expect("initial attachment should succeed");
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("remote-worker".to_string()),
@@ -411,7 +412,7 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     harness
@@ -425,6 +426,7 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         .expect("initial attachment should succeed");
     let remote_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("remote-worker".to_string()),
@@ -441,7 +443,7 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         }))
         .expect("second agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     harness.with_app_mut(|app| {
@@ -530,7 +532,7 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let workspace_id = session.workspace_id().to_string();
@@ -589,7 +591,7 @@ fn deleting_session_removes_agents_but_keeps_saved_provider_conversations() {
             ))
             .unwrap()
         {
-            LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+            LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
             other => panic!("unexpected response {other:?}"),
         };
         let store = harness.with_app(|app| app.external_provider_session_index_store());
@@ -769,12 +771,13 @@ fn local_request_api_spawns_and_focuses_agents() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("  reviewer  ".to_string()),
@@ -791,7 +794,7 @@ fn local_request_api_spawns_and_focuses_agents() {
         }))
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     assert_eq!(spawned.alias(), Some("reviewer"));
@@ -1075,7 +1078,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     assert_eq!(agent.provider(), "codex");
@@ -1143,7 +1146,7 @@ fn detaching_one_attachment_keeps_the_session_open_for_others() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
@@ -1216,7 +1219,7 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
@@ -1355,4 +1358,30 @@ fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
             .join("project-environments")
             .exists());
     });
+}
+
+// MP-08 / MP-10 / MP-11: the real spawn admission seam returns a typed action.
+#[test]
+fn absent_spawn_profile_is_actionable_through_the_public_dispatcher() {
+    let worktree = crate::test_support::TestWorktree::new("absent-spawn-profile");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let request = serde_json::from_value(serde_json::json!({"SpawnAgent":{
+        "session_id": session.id(), "provider":"codex", "account_profile":"absent-profile-canary"
+    }}))
+    .unwrap();
+    let error = harness.dispatch(request).unwrap_err();
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(mapped.code, "provider_profile_unavailable");
+    assert!(!mapped.retryable);
+    assert!(mapped.message.contains("ListProviderAccountProfiles"));
+    assert!(!mapped.message.contains("absent-profile-canary"));
 }

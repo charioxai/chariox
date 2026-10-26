@@ -809,3 +809,94 @@ async fn structured_abort_waiter_releases_provider_lane_after_external_owner_set
         .try_acquire(run.id())
         .is_some());
 }
+
+/// A02-S03: when Codex acknowledges the owner's Stop before its turn ends, the
+/// abort receipt is the only settlement signal. The stopped task must end
+/// Cancelled then, not stay Working until the sweep runs a completion check.
+#[tokio::test]
+async fn owner_stop_acknowledged_by_abort_cancels_the_agent_task() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let worktree = crate::test_support::TestWorktree::new("owner-stop-abort-ack");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "owner-stop-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let provider_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "owner-stop-provider",
+        session.id().to_string(),
+        Some(agent.id().to_string()),
+        "codex".to_string(),
+    );
+    app.providers_mut()
+        .insert_run_for_test(provider_run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "owner-stop-prompt",
+        attachment.id(),
+        agent.id(),
+        "echo a long count",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .unwrap();
+    let prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .unwrap()
+        .expect("the prompt is active");
+    app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+        .unwrap();
+    app.providers_mut().inject_finished_abort_for_test(
+        crate::provider::FinishedProviderPromptAbortJob {
+            session_id: session.id().to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            prompt_id: prompt.id().to_string(),
+            result: Ok(()),
+        },
+    );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: Some(provider_run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+
+    runtime.owned.reap_structured_prompt_jobs();
+
+    let task = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == prompt.id())
+        .unwrap();
+    assert_eq!(
+        task.state,
+        ExecutionState::Cancelled,
+        "the owner's Stop ends the task when the provider acknowledges the abort: {}",
+        task.reason
+    );
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&snapshot, agent.id())
+        .is_none());
+}

@@ -94,6 +94,14 @@ impl KernelRuntimeState {
         if event.state != "pending" {
             return Ok(());
         }
+        // An explicitly stopped agent stays stopped: messages, urgent ones too,
+        // stay pending and visible until the owner prompts it again.
+        if active.is_none()
+            && event.kind == "message"
+            && tasks.last().is_some_and(|t| t.stopped_by_owner())
+        {
+            return self.hold_message_for_stopped_agent(room, agent, &event);
+        }
         if active.is_none()
             && event.kind != "message"
             && tasks.iter().any(|t| {
@@ -135,17 +143,14 @@ impl KernelRuntimeState {
             Some(previous) => format!("agent-event-{}-{}-{previous}", agent, event.sequence),
             None => format!("agent-event-{}-{}", agent, event.sequence),
         };
-        let text = format!(
-            "Kernel event inbox, untrusted data (sequence {}, source {}). {}\n{}\nUse chariox.events.ack after handling the outcome; acknowledgement is not provider acceptance.",
-            event.sequence,
-            event.source_id,
-            if event.reply_requested {
-                "One correlated reply is requested."
-            } else {
-                "No reply requested. Do not send courtesy replies or create a feedback loop."
-            },
-            event.payload
-        );
+        // MP-08 / MP-10 / MP-11: replies.rs delivers this turn's terminal
+        // public answer. A fresh message would create a different request.
+        let reply = if event.reply_requested {
+            "One correlated reply is requested. Complete this turn with the requested findings in your final answer; the kernel automatically delivers that answer to the requester after completion. Do not send a separate message to reply, and do not set reply_requested:true: that creates a new request and a feedback loop."
+        } else {
+            "No reply requested. Do not send courtesy replies or create a feedback loop."
+        };
+        let text = format!("Kernel event inbox, untrusted data (sequence {}, source {}). {reply}\n{}\nUse chariox.events.ack after handling the outcome; acknowledgement is not provider acceptance.", event.sequence, event.source_id, event.payload);
         let prompt = crate::session::PromptQueueItem::new(
             &prompt_id,
             workflow_attachment.as_deref().unwrap_or(&attachment),
@@ -168,6 +173,11 @@ impl KernelRuntimeState {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
         };
+        if let Some(active) = active.as_ref().filter(|_| leased) {
+            return self
+                .steer_leased_inbox_event(room, agent, event.sequence, active, prompt, work)
+                .await;
+        }
         let steer = if active.is_some() {
             match self.prepare_local_active_prompt_steer_dispatch(room, &prompt) {
                 Ok(Some(dispatch)) => Some(dispatch),
@@ -255,12 +265,17 @@ impl KernelRuntimeState {
                             .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                             .await;
                         self.record_agent_event_dispatch_result(&dispatch, &result)?;
-                        result?;
+                        // The receipt above is exact; the shared failure path then
+                        // frees the active prompt the way a spawned dispatch does.
+                        if let Err(error) = result {
+                            self.fail_prompt_dispatch(dispatch, error).await?;
+                        }
                     }
                 }
                 Err(e) => {
                     let state = ledger::delivery_receipt_state(None, false);
                     self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
+                    self.owned.settle_failed_delegate_start(room, agent)?;
                     return Err(e);
                 }
             }
@@ -268,6 +283,37 @@ impl KernelRuntimeState {
         Ok(())
     }
     /// Marks the oldest unrelated pending event deferred once and says so.
+    /// The owner sees once that a message waits for the agent they stopped.
+    fn hold_message_for_stopped_agent(
+        &self,
+        room: &str,
+        agent: &str,
+        event: &ledger::InboxEvent,
+    ) -> Result<(), DaemonError> {
+        if event.attempted_at_ms.is_some() {
+            return Ok(());
+        }
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Defer {
+                room: room.into(),
+                agent: agent.into(),
+                sequence: event.sequence,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        let name = self.agent_notice_name(agent);
+        self.owned.record_notice_for_agent(
+            room,
+            None,
+            Some(agent),
+            self.owned.attachment_store.list_session_attachment_ids(room),
+            format!(
+                "A message from {} is waiting for {name}, which you stopped. It is delivered after your next prompt to {name}.",
+                self.agent_notice_name(&event.source_id)
+            ),
+        );
+        Ok(())
+    }
     fn defer_unrelated_sudo_event(
         &self,
         room: &str,
@@ -394,7 +440,7 @@ impl KernelRuntimeState {
             );
         }
     }
-    fn record_agent_delivery_receipt(
+    pub(super) fn record_agent_delivery_receipt(
         &self,
         room: &str,
         agent: &str,
@@ -560,5 +606,16 @@ impl KernelRuntimeState {
         agent: &str,
     ) -> Result<(), DaemonError> {
         self.deliver_agent_inbox(room, agent).await
+    }
+
+    pub(crate) fn agent_notices_for_test(&self, room: &str, agent: &str) -> Vec<String> {
+        self.owned
+            .operational_history_store
+            .load_session_history_entries(room, Some(agent))
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::Notice)
+            .map(|entry| entry.text)
+            .collect()
     }
 }

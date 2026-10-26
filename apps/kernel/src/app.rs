@@ -48,6 +48,8 @@ mod remote_agent_binding;
 mod remote_kernel_selection;
 mod remote_lease;
 mod remote_workspace_live_sync_fanout;
+#[cfg(all(test, unix))]
+mod room_terminal_managed_tests;
 mod session_runtime;
 mod terminal_fanout;
 pub(crate) mod terminal_input;
@@ -137,7 +139,8 @@ pub(crate) use provider_liveness::{
     clear_active_provider_run_session_pointer, ProviderRunExitSessionSummary,
 };
 pub(crate) use provider_processes::{
-    ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
+    stop_processes_left_by_dead_kernels, ProviderLaunchProcessRuntime, ProviderProcessReapSummary,
+    ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
@@ -156,6 +159,9 @@ pub struct DaemonApp {
     pub(crate) agents: AgentServiceStore,
     pub(crate) attachments: AttachmentServiceStore,
     pty: PtyManager,
+    /// Shared with the runtime state; held here so lease teardown, which
+    /// runs on the app alone, can end a leased Room's terminals.
+    room_terminals: crate::room_terminal::RoomTerminalService,
     pub(crate) providers: ProviderProcessServiceStore,
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
@@ -374,6 +380,9 @@ impl DaemonApp {
             agents: AgentServiceStore::new(AgentService::new()),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
+            room_terminals: crate::room_terminal::RoomTerminalService::new(
+                config.private_runtime_state_root().join("room-terminals"),
+            ),
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
@@ -793,6 +802,10 @@ impl DaemonApp {
 
     pub fn pty(&self) -> &PtyManager {
         &self.pty
+    }
+
+    pub(crate) fn room_terminals(&self) -> crate::room_terminal::RoomTerminalService {
+        self.room_terminals.clone()
     }
 
     pub(crate) fn pty_output_signal(&self) -> PtyOutputSignal {

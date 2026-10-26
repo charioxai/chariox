@@ -443,12 +443,14 @@ export type ComposerInventory = {
   reconciliation?: Promise<ComposerInventory>
 }
 
+export type AttachLaunchIssue = "credential_vault_locked"
+
 export type AttachLaunch = {
   providerLaunch?: BootstrapDeferredState["providerLaunch"]
   sessionId: string
   session: RuntimeSession | null
   providerRun: RuntimeProviderRun | null
-  issue: "credential_vault_locked" | null
+  issue: AttachLaunchIssue | null
 }
 
 export type BootstrapDeferredState = {
@@ -464,7 +466,7 @@ export type BootstrapDeferredState = {
     sessionId: string
     agentId: string | null
     isPending: () => boolean
-    start: () => Promise<{ providerRun: RuntimeProviderRun | null }>
+    start: () => Promise<{ providerRun: RuntimeProviderRun | null; issue: AttachLaunchIssue | null }>
   }
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>

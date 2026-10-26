@@ -234,11 +234,19 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::ExtendKernelSudo(_)
+        | LocalDaemonRequest::RenewKernelSudoRequester(_)
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+            | LocalDaemonRequest::SubscribeEvents(_)
+            | LocalDaemonRequest::UnsubscribeEvents(_)
+            | LocalDaemonRequest::GetEventSubscription(_)
+            | LocalDaemonRequest::ListEvents(_)
+            | LocalDaemonRequest::WaitEvents(_)
+            | LocalDaemonRequest::AckEvents(_)
+            | LocalDaemonRequest::ListGatewayKernels(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
@@ -257,6 +265,8 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::JoinPairingInvite(_)
             | LocalDaemonRequest::CreateTerminalPairingLink(_)
             | LocalDaemonRequest::JoinTerminalPairingLink(_)
+            | LocalDaemonRequest::JoinKernelLink(_)
+            | LocalDaemonRequest::ForgetGatewayKernel(_)
             | LocalDaemonRequest::RecordPairedClient(_)
             | LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::CreateSessionInvite(_)
@@ -341,11 +351,14 @@ pub(super) fn requester_grant_live(
     access: &crate::runtime::kernel_access::AccessState,
 ) -> bool {
     turn.requester.as_ref().is_none_or(|requester| {
-        access.grants.get(&requester.grant_id).is_some_and(|grant| {
-            grant.summary.owner_user_id == turn.owner_user_id
-                && std::time::Instant::now() < grant.deadline
-                && grant.holder.alive()
-        })
+        access
+            .remote_requesters
+            .get(&requester.grant_id)
+            .is_some_and(|remote| remote.live(std::time::Instant::now()))
+            || access.grants.get(&requester.grant_id).is_some_and(|grant| {
+                grant.summary.owner_user_id == turn.owner_user_id
+                    && grant.ended_reason(std::time::Instant::now()).is_none()
+            })
     })
 }
 

@@ -16,12 +16,14 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct AgentService {
     store: AgentStore,
+    pub(super) outside_events: Option<crate::durable_state::DurableKernelStateStore>,
 }
 
 impl AgentService {
     pub fn new() -> Self {
         Self {
             store: AgentStore::new(),
+            outside_events: None,
         }
     }
 
@@ -155,6 +157,9 @@ impl AgentService {
         );
         sessions.set_focused_agent(session.id(), focused_agent_id)?;
 
+        for agent in &created_agents {
+            self.publish_outside_membership(agent, crate::local::EventSessionState::AgentAdded)?;
+        }
         Ok(created_agents)
     }
 
@@ -238,11 +243,13 @@ impl AgentService {
 
         self.store
             .apply_session_layout_and_focus(&session_id, Some(&agent_id));
-        Ok(self
+        let agent = self
             .store
             .get(&agent_id)
             .cloned()
-            .expect("new agent should be stored"))
+            .expect("new agent should be stored");
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentAdded)?;
+        Ok(agent)
     }
 
     pub(crate) fn restore_agent(&mut self, agent: AgentInstance) -> AgentInstance {
@@ -390,6 +397,7 @@ impl AgentService {
         let was_focused = agent.state() == AgentState::Focused
             || session_focused_agent_id.as_deref() == Some(agent_id);
 
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentRemoved)?;
         // Remove the agent
         self.store.remove(agent_id);
 
@@ -638,7 +646,8 @@ impl AgentService {
             })?;
 
         agent.set_state(state);
-        Ok(agent.clone())
+        let agent = agent.clone();
+        Ok(agent)
     }
 
     /// Set agent processing state
@@ -656,6 +665,14 @@ impl AgentService {
 
         agent.set_processing(is_processing);
         Ok(agent.clone())
+    }
+
+    /// An event the kernel recorded for the agent moves its liveness
+    /// (coalesced); false when it did not move or the agent is gone.
+    pub fn note_agent_event_activity(&mut self, agent_id: &str, at_ms: u64) -> bool {
+        self.store
+            .get_mut(agent_id)
+            .is_some_and(|agent| agent.note_event_activity(at_ms))
     }
 
     pub fn note_prompt_sent_at(
@@ -1247,6 +1264,11 @@ impl AgentService {
         }) {
             return true;
         }
+        self.is_reference_taken_by_other(session_id, agent_id, alias)
+    }
+
+    fn is_reference_taken_by_other(&self, session_id: &str, agent_id: &str, alias: &str) -> bool {
+        let normalized = normalized_agent_alias_key(alias);
         self.store.get_by_session(session_id).iter().any(|agent| {
             agent.id() != agent_id
                 && (normalized_agent_alias_key(agent.id()) == normalized

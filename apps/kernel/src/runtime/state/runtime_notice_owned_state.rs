@@ -61,6 +61,17 @@ impl KernelRuntimeOwnedState {
         message: impl Into<String>,
     ) {
         let message = message.into();
+        if self.config_projection.snapshot().room_agent_tools
+            && crate::terminal::is_internal_dispatch_diagnostic(&message)
+        {
+            crate::logging::debug_with_fields(
+                "daemon.prompt_delivery",
+                "internal dispatch notice",
+                serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id,
+                    "agent_id": agent_id, "diagnostic": crate::provider::sanitize_provider_diagnostic(&message)}),
+            );
+            return;
+        }
         let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
             session_id,
             agent_id,

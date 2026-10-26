@@ -172,6 +172,10 @@ export type KernelAccessRequester = {
   provider_harness?: "codex" | "claude" | "opencode" | null
 }
 
+/** Protocol 568: how long an access grant lasts. `until_holder_exits` has no deadline;
+ * it ends with the approved harness process, a revoke or a kernel restart. */
+export type KernelAccessTerm = { minutes: number } | "until_holder_exits"
+
 /** MP-08 / MP-11 protocol 538: kernel-authored presentation, never authority. */
 export type SudoRequestPresentation = {
   requester_name: string
@@ -194,6 +198,9 @@ export type PasskeyPrompt = {
   sudo_request?: SudoRequestPresentation | null
   requester?: KernelAccessRequester | null
   kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
+  /** Protocol 568: the term an access popup starts on; absent for sudo and critical approvals. */
+  term?: KernelAccessTerm | null
+  /** Sudo windows only since protocol 568. */
   lifetime_minutes?: number | null
   max_lifetime_minutes?: number | null
   /** Protocol 451: access decisions use the kernel-wide routing id `kernel-access`. */
@@ -484,8 +491,12 @@ export type KernelAccessGrant = {
   owner_user_id: string
   holder_pid: number
   holder_executable: string
-  lifetime_minutes: number
-  expires_at_ms: number
+  /** Which provider's harness the kernel recognised the holder as; display only. */
+  holder_harness?: "codex" | "claude" | "opencode"
+  /** Protocol 568: replaces `lifetime_minutes`. */
+  term: KernelAccessTerm
+  /** Absent for `until_holder_exits`. */
+  expires_at_ms?: number | null
 }
 export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }

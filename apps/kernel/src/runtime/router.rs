@@ -95,6 +95,7 @@ pub(crate) struct CommandRouter {
     terminal_output_executor: TerminalOutputExecutor,
     workspace_coordinator: WorkspaceCoordinator,
     provider_launch_pending: ProviderLaunchPendingTracker,
+    kernel_gateway: Arc<crate::runtime::kernel_gateway::KernelGateway>,
 }
 
 #[cfg(test)]
@@ -230,6 +231,7 @@ mod tests {
     #[cfg(unix)]
     mod provider_setup_token;
     mod relay_leased_prompt_steer;
+    mod relay_subscription_attachment;
     mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
@@ -238,9 +240,12 @@ mod tests {
     // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
     mod agent_workflow;
     mod dictation;
+    mod outside_events;
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
+    #[cfg(unix)]
+    mod room_terminal;
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_lifecycle_projection;
@@ -248,6 +253,7 @@ mod tests {
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;
+    mod terminal_tools;
     mod workflow_revision;
 
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {

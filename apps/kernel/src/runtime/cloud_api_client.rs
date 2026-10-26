@@ -1,5 +1,7 @@
 mod relay_metadata;
-pub(crate) use relay_metadata::{relay_metadata_discovery_config, scoped_metadata_config};
+pub(crate) use relay_metadata::{
+    relay_metadata_discovery_config, relay_metadata_discovery_config_for, scoped_metadata_config,
+};
 use serde::Deserialize;
 
 use crate::config::PersistedCloudRelayProfile;
@@ -23,7 +25,9 @@ pub(crate) use http::{
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;
+mod gateway_client;
 mod terminal_client;
+pub(crate) use gateway_client::register_cloud_gateway_client;
 pub(crate) use terminal_client::{issue_cloud_terminal_client_token, CloudTerminalClientOptions};
 mod session_collaboration;
 pub(crate) use session_collaboration::{

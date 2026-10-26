@@ -95,7 +95,7 @@ impl KernelRuntimeOwnedState {
             if state
                 .grants
                 .get(&id)
-                .is_some_and(|grant| Instant::now() < grant.deadline && grant.holder.alive())
+                .is_some_and(|grant| grant.ended_reason(Instant::now()).is_none())
             {
                 Ok(())
             } else {
