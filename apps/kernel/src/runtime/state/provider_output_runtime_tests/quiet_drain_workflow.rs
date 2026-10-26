@@ -879,10 +879,30 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
 }
 
 #[tokio::test]
-async fn workflow_prompt_without_structured_output_fails_without_automatic_retry() {
+async fn workflow_missing_output_gets_one_follow_up_before_failure() {
+    assert_workflow_output_follow_up(false, false, false).await;
+}
+
+#[tokio::test]
+async fn workflow_missing_output_follow_up_can_complete_run() {
+    assert_workflow_output_follow_up(false, true, false).await;
+}
+
+#[tokio::test]
+async fn workflow_valid_first_output_sends_no_follow_up() {
+    assert_workflow_output_follow_up(true, false, false).await;
+}
+
+#[tokio::test]
+async fn workflow_missing_output_with_helpers_still_fails_after_one_follow_up() {
+    assert_workflow_output_follow_up(false, false, true).await;
+}
+
+async fn assert_workflow_output_follow_up(valid_first: bool, valid_follow_up: bool, helpers: bool) {
     let worktree = crate::test_support::TestWorktree::new("quiet-drain-workflow-no-output");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = helpers;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
@@ -971,6 +991,45 @@ async fn workflow_prompt_without_structured_output_fails_without_automatic_retry
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    if helpers {
+        runtime
+            .owned
+            .ensure_agent_task(session.id(), agent.id(), &prompt, Some(run.id()))
+            .unwrap();
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::RegisterObligation {
+                    owner: session.owner_user_id().into(),
+                    room: session.id().into(),
+                    agent: agent.id().into(),
+                    prompt: prompt.id().into(),
+                    run: Some(run.id().into()),
+                    id: "helper".into(),
+                    kind: "delegate".into(),
+                    resource: Some("helper-agent".into()),
+                    now: crate::session::unix_epoch_ms(),
+                },
+            )
+            .unwrap();
+    }
+
+    if valid_first {
+        runtime
+            .owned
+            .session_store
+            .write()
+            .submit_workflow_run_final_output(
+                session.id(),
+                workflow_run.id(),
+                &first_node_run_id,
+                crate::session::WorkflowOutputPayload::new("{}", Vec::new()),
+                true,
+                None,
+            )
+            .unwrap();
+    }
     runtime
         .apply_owned_structured_output_batch(
             session.id(),
@@ -1006,6 +1065,100 @@ async fn workflow_prompt_without_structured_output_fails_without_automatic_retry
         .await
         .expect("quiet drain should settle into a visible failure");
 
+    if !valid_first {
+        let waiting = runtime.owned.session_snapshot(session.id()).unwrap();
+        let follow_up = waiting
+            .active_prompt_for_agent(agent.id())
+            .expect("first missing output must receive a follow-up");
+        assert_ne!(follow_up.id(), prompt.id());
+        assert_eq!(
+            follow_up.workflow_node_run_id(),
+            Some(first_node_run_id.as_str())
+        );
+        assert!(follow_up
+            .hidden_system_context()
+            .contains("Your turn ended without"));
+        assert!(
+            follow_up.prompt().is_empty(),
+            "reminder must be hidden context"
+        );
+        assert_eq!(
+            waiting.workflow_run(workflow_run.id()).unwrap().status(),
+            crate::session::WorkflowRunStatus::Running
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let state = runtime.owned.session_snapshot(session.id()).unwrap();
+                if state.active_prompt_for_agent(agent.id()).is_some_and(|p| {
+                    p.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                }) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("normal prompt path must deliver the follow-up");
+        if valid_follow_up {
+            runtime
+                .owned
+                .session_store
+                .write()
+                .submit_workflow_run_final_output(
+                    session.id(),
+                    workflow_run.id(),
+                    &first_node_run_id,
+                    crate::session::WorkflowOutputPayload::new("{}", Vec::new()),
+                    true,
+                    None,
+                )
+                .unwrap();
+        }
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                Vec::new(),
+                crate::provider::ProviderPromptSignalBatch {
+                    prompt_completed: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(
+            crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+        ))
+        .await;
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                Vec::new(),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+    }
+    let follow_ups = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .unwrap()
+        .iter()
+        .filter(|event| event.payload["reason"] == "workflow_output_follow_up")
+        .count();
+    assert_eq!(follow_ups, usize::from(!valid_first));
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
@@ -1029,18 +1182,34 @@ async fn workflow_prompt_without_structured_output_fails_without_automatic_retry
         .expect("workflow settlement should persist the run");
     assert_eq!(
         durable_run.status(),
-        crate::session::WorkflowRunStatus::Failed
+        if valid_first || valid_follow_up {
+            crate::session::WorkflowRunStatus::Completed
+        } else {
+            crate::session::WorkflowRunStatus::Failed
+        }
     );
     assert_eq!(durable_run.node_runs().len(), 1);
     assert_eq!(
         durable_run.node_runs()[0].status(),
-        crate::session::WorkflowNodeRunStatus::Failed
+        if valid_first || valid_follow_up {
+            crate::session::WorkflowNodeRunStatus::Completed
+        } else {
+            crate::session::WorkflowNodeRunStatus::Failed
+        }
     );
-    assert!(durable_run.final_output().is_none());
-    assert!(durable_run.failure_events().iter().any(|event| {
-        event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
-            && event.source_node_run_id() == first_node_run_id
-    }));
+    assert_eq!(
+        durable_run.final_output().is_some(),
+        valid_first || valid_follow_up
+    );
+    assert_eq!(
+        durable_run.failure_events().iter().any(|event| {
+            event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
+                && event.source_node_run_id() == first_node_run_id
+                && event.message()
+                    == "provider completed workflow turn without a validated workflow output"
+        }),
+        !valid_first && !valid_follow_up
+    );
 }
 
 #[tokio::test]

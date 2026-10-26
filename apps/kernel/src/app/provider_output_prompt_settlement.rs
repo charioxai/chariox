@@ -259,6 +259,12 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         if prompt.delivery_pending() {
             return Ok(());
         }
+        if self
+            .app
+            .follow_up_missing_workflow_output(session_id, provider_run_id, &prompt)?
+        {
+            return Ok(());
+        }
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
         if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())

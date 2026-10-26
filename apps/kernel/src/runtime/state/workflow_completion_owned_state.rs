@@ -223,7 +223,19 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         };
-        if self.config_projection.snapshot().room_agent_tools
+        let output_follow_up_exhausted = prompt
+            .id()
+            .starts_with(crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX)
+            && provider_run_id.is_some_and(|provider| {
+                !self.workflow_prompt_has_completion_output(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                    provider,
+                )
+            });
+        if !output_follow_up_exhausted
+            && self.config_projection.snapshot().room_agent_tools
             && self
                 .durable_state_store
                 .agent_tasks(Some(session_id), Some(prompt.target_agent_id()))?

@@ -273,6 +273,23 @@ impl KernelRuntimeOwnedState {
         run: &str,
         reason: &str,
     ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
+        self.end_failed_agent_task_with_reason(
+            room,
+            agent,
+            prompt,
+            run,
+            &format!("Provider run failed: {reason}. Owner must reconcile and resume or cancel"),
+        )
+    }
+
+    pub(super) fn end_failed_agent_task_with_reason(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &crate::session::PromptQueueItem,
+        run: &str,
+        reason: &str,
+    ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
         if !self.config_projection.snapshot().room_agent_tools {
             return Ok(None);
         }
@@ -286,12 +303,10 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         let reason = crate::secret_redaction::redact_secrets(reason);
-        Ok(ledger::end_failed_turn(
-            &self.durable_state_store,
-            &task,
-            format!("Provider run failed: {reason}. Owner must reconcile and resume or cancel"),
-        )?
-        .map(|ended| (ended, false)))
+        Ok(
+            ledger::end_failed_turn(&self.durable_state_store, &task, reason.into_owned())?
+                .map(|ended| (ended, false)),
+        )
     }
     pub(super) fn settle_agent_task_answered_by(
         &self,

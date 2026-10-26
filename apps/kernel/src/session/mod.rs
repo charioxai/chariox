@@ -3,6 +3,7 @@ mod agent_prompt_scheduling;
 mod internal_prompts;
 pub(crate) use internal_prompts::{
     is_agent_inbox_prompt_id, is_internal_prompt_echo_id, is_internal_prompt_turn,
+    WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX,
 };
 mod metaagent_task;
 mod owner;

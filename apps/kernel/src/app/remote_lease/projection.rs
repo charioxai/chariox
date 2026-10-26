@@ -1276,6 +1276,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         });
                     let provider_failed =
                         failed_provider.is_some() && provider_diagnostic.is_some();
+                    if provider_diagnostic.is_none()
+                        && self.app.follow_up_missing_workflow_output(
+                            session_id,
+                            &projected_provider_run_id,
+                            &active_prompt,
+                        )?
+                    {
+                        return Ok(outcome);
+                    }
+
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {

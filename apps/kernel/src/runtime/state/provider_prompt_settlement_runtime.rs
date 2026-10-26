@@ -485,24 +485,106 @@ impl KernelRuntimeState {
                 }
             }
         }
+        if !force
+            && provider_run.state() == crate::provider::ProviderRunState::Running
+            && owned
+                .provider_run_terminal_diagnostic(provider_run_id)
+                .is_none()
+        {
+            if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
+                active_prompt.workflow_run_id(),
+                active_prompt.workflow_node_run_id(),
+            ) {
+                if !owned.workflow_prompt_has_completion_output(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                    provider_run_id,
+                ) {
+                    if owned.config_projection.snapshot().room_agent_tools {
+                        owned.ensure_agent_task(
+                            session_id,
+                            &agent_id,
+                            &active_prompt,
+                            Some(provider_run_id),
+                        )?;
+                    }
+                    let activity = owned.begin_managed_activity_mutation();
+                    let follow_up = crate::app::workflow_output_follow_up::prepare_follow_up(
+                        &owned.session_store,
+                        &owned.prompt_state_owner,
+                        &owned.durable_state_store,
+                        session_id,
+                        &active_prompt,
+                    )?;
+                    if follow_up.is_some() {
+                        activity.record();
+                    } else {
+                        drop(activity);
+                    }
+                    if let Some(prompt) = follow_up {
+                        owned.clear_prompt_activity(provider_run_id);
+                        let _ = owned.session_snapshot(session_id)?;
+                        self.spawn_prompt_dispatch(
+                            crate::app::workflow_output_follow_up::local_dispatch(
+                                session_id,
+                                provider_run_id,
+                                &prompt,
+                            ),
+                            self.provider_runtime_lanes.clone(),
+                        );
+                        return Ok(crate::app::ProviderRunExitSessionSummary {
+                            had_active_prompt: true,
+                            cancelled_prompt: false,
+                            started_next_prompt: false,
+                        });
+                    }
+                }
+            }
+        }
         // A provider can terminate at the same time that it reports the active prompt as
         // complete (for example, when a managed provider socket is replaced during recovery).
         // Keep this fact so the common completion path can create a replacement run for queued
         // work instead of leaving the queue parked behind the ended run.
-        let task_settlement = owned.settle_agent_task(
-            session_id,
-            &agent_id,
-            &active_prompt,
-            provider_run_id,
-            false,
-        )?;
-        let workflow_task_pending = task_settlement.as_ref().is_some_and(|(task, _)| {
-            !matches!(
-                task.state,
-                crate::durable_state::agent_lifecycle::ExecutionState::Done
-                    | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
-            )
-        });
+        let output_follow_up_exhausted = active_prompt
+            .id()
+            .starts_with(crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX)
+            && active_prompt
+                .workflow_run_id()
+                .zip(active_prompt.workflow_node_run_id())
+                .is_some_and(|(run, node)| {
+                    !owned.workflow_prompt_has_completion_output(
+                        session_id,
+                        run,
+                        node,
+                        provider_run_id,
+                    )
+                });
+        let task_settlement = if output_follow_up_exhausted {
+            owned.end_failed_agent_task_with_reason(
+                session_id,
+                &agent_id,
+                &active_prompt,
+                provider_run_id,
+                crate::app::workflow_output_follow_up::EXHAUSTED_REASON,
+            )?
+        } else {
+            owned.settle_agent_task(
+                session_id,
+                &agent_id,
+                &active_prompt,
+                provider_run_id,
+                false,
+            )?
+        };
+        let workflow_task_pending = !output_follow_up_exhausted
+            && task_settlement.as_ref().is_some_and(|(task, _)| {
+                !matches!(
+                    task.state,
+                    crate::durable_state::agent_lifecycle::ExecutionState::Done
+                        | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+                )
+            });
         let provider_run_was_running =
             provider_run.state() == crate::provider::ProviderRunState::Running;
         let next_queued_prompt_candidate = if provider_run_was_running {

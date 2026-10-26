@@ -100,6 +100,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut task = if let Some(existing) = for_turn(tx, &room, &agent, &prompt)? {
                 existing
+            } else if let Some(source) =
+                prompt.strip_prefix(crate::session::WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX)
+            {
+                // The output reminder continues the admitted workflow task, including
+                // its helper obligations. Recovery uses the same durable identity.
+                let mut task = for_turn(tx, &room, &agent, source)?
+                    .ok_or_else(|| error("workflow output follow-up has no source task"))?;
+                if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
+                    return Err(error(
+                        "workflow output follow-up cannot resume a retained task",
+                    ));
+                }
+                task.prompt_id = prompt;
+                task.revision += 1;
+                task
             } else {
                 let resumed = tasks(tx)?.into_iter().find(|t| {
                     t.room_id == room
