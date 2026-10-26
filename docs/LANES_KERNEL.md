@@ -198,6 +198,19 @@ files the Mac's `lanes.sh` / `watch.sh` read. It runs beneath the holder from th
 `loopd install` refreshes the copy from the checkout's `HEAD` (only between rounds: it restarts loopd, which
 resumes from receipts). Process: `node run/tools/lanes/coordinator/round.mjs serve` (`LOOP-DOWN` checks look for that name).
 
+MP-08 / MP-09 / MP-10 / MP-11 restart recovery: `loopd.log` contains JSON events; warnings and stderr go to
+`loopd.stderr.log`. The swap's `verify-pickup.mjs` tolerates historical non-JSON lines and checks the latest service's
+pickups. Pickup confirms round identity and attachment; provider recovery still requires fresh provider activity.
+
+An errored worker gets a recovery note only when kernel evidence ties a known restart failure to its interrupted prompt:
+the prompt predates `kernelStartedAtMs`, and its failure occurs within the next six minutes. Recognized failures are a
+provider 429 or the kernel's ended-provider liveness failure. Manual cancellation, content refusals, credential errors,
+older failures and different prompts stay for the coordinator. Recovery uses the ordinary direct steer/prompt path,
+with a note to check detached jobs before rerunning. All workers share a durable one-minute spacing between attempts;
+a refused delivery keeps its command identity, and a 429 after admission permits a later new prompt. Every attempt's
+result is in `LOOP_RUN.json` and the service log (`restart_resumed` or `restart_resume_failed`). The lane's original
+hard stop still applies. This is coordinator policy over existing kernel primitives; no kernel protocol is added.
+
 **Queue.** `agents/_loop/queue/<lane>-<round>.json` (the file name must match the fields):
 
 ```json

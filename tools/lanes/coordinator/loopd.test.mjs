@@ -55,6 +55,131 @@ async function rig(t) {
 }
 const runFile = (r, lane) => readFile(join(r.layout.agents, lane, 'LOOP_RUN.json'), 'utf8').then(JSON.parse);
 
+async function interruptedRounds(t, failures = {}) {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1'); await r.drop('beta', 'r1');
+  r.script.push(async () => r.controller.abort());
+  await serve(r.options);
+  r.clock.ms += 120_000;
+  const restartedAt = r.clock.ms;
+  r.options.config.kernelStartedAtMs = restartedAt;
+  r.controller = new AbortController(); r.options.signal = r.controller.signal;
+  const adapter = r.options.adapter, cli = r.options.cli, resumed = new Map(), sends = [];
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') return {
+      state: resumed.has(input.taskId) ? 'working' : 'error', busy: resumed.has(input.taskId),
+      currentPrompt: resumed.get(input.taskId) ?? null,
+      completedTurn: { promptId: `prompt-${input.taskId}`, status: 'failed', completedAtMs: restartedAt + 1,
+        providerTermination: { category: 'runtime_failure', reason: 'Provider prompt dispatch failed: Codex error [response_too_many_failed_attempts]: last status: 429 Too Many Requests' }, ...failures[input.taskId] },
+    };
+    if (op === 'prompt') {
+      sends.push({ key: input.taskId, atMs: r.clock.ms, input });
+      const prompt = `resumed-${input.taskId}`; resumed.set(input.taskId, prompt);
+      return { PromptSubmitted: { outcome: { Started: { prompt: { id: prompt, status: 'running' } } } } };
+    }
+    return adapter(op, input);
+  };
+  const control = { maxSends: 2, durationMs: 240_000 };
+  r.options.cli = async (...args) => {
+    if (sends.length >= control.maxSends || r.clock.ms > restartedAt + control.durationMs) r.controller.abort();
+    return cli(...args);
+  };
+  return Object.assign(r, { sends, resumed, restartedAt, control });
+}
+
+test('picked-up restart failures resume through product prompts one minute apart', async t => {
+  const r = await interruptedRounds(t);
+  await serve(r.options);
+  assert.equal(r.sends.length, 2, 'both interrupted workers received a resume note');
+  assert.ok(r.sends[1].atMs - r.sends[0].atMs >= 60_000);
+  for (const send of r.sends) assert.match(send.input.prompt, /restart.*cut.*call.*detached jobs/is);
+  assert.equal(r.logs.filter(event => event.kind === 'restart_resumed').length, 2);
+  for (const lane of ['alpha', 'beta']) assert.equal((await runFile(r, lane)).finishReason, undefined);
+});
+
+test('restart pickup leaves unrelated, old, and different-prompt failures alone', async t => {
+  for (const failure of [
+    { providerTermination: { category: 'explicit_provider_error', reason: 'content policy refusal' } },
+    { providerTermination: { category: 'explicit_provider_error', reason: '401 Unauthorized' } },
+    { completedAtMs: 1 },
+    { promptId: 'a-different-prompt' },
+    { status: 'cancelled', providerTermination: undefined },
+  ]) {
+    const r = await interruptedRounds(t, { 'alpha-r1': failure, 'beta-r1': failure });
+    await serve(r.options);
+    assert.equal(r.sends.length, 0);
+  }
+});
+
+test('a refused resume waits, replays the same delivery, and does not starve the other worker', async t => {
+  const r = await interruptedRounds(t), adapter = r.options.adapter, attempts = [];
+  r.options.adapter = async (op, input) => {
+    if (op === 'prompt') {
+      attempts.push({ key: input.taskId, atMs: r.clock.ms, commandId: input.commandId, prompt: input.prompt });
+      if (attempts.length === 1) throw Object.assign(new Error('rate limited'), { code: 'rate_limit_exceeded' });
+    }
+    return adapter(op, input);
+  };
+  await serve(r.options);
+  assert.deepEqual(attempts.map(attempt => attempt.key), ['alpha-r1', 'beta-r1', 'alpha-r1']);
+  for (let i = 1; i < attempts.length; i++) assert.ok(attempts[i].atMs - attempts[i - 1].atMs >= 60_000);
+  assert.equal(attempts[0].commandId, attempts[2].commandId, 'pre-admission refusal retries the original operation');
+  assert.equal(attempts[0].prompt, attempts[2].prompt);
+  assert.equal(r.logs.filter(event => event.kind === 'restart_resume_failed').length, 1);
+});
+
+test('a provider 429 after admission gets a later new prompt; a content refusal does not', async t => {
+  for (const reason of ['Codex error [response_too_many_failed_attempts]: last status: 429 Too Many Requests', 'content policy refusal']) {
+    const r = await interruptedRounds(t), adapter = r.options.adapter;
+    r.control.maxSends = 3;
+    r.options.adapter = async (op, input) => {
+      const status = await adapter(op, input);
+      if (op === 'status' && input.taskId === 'alpha-r1' && r.sends.filter(send => send.key === input.taskId).length === 1) {
+        return { state: 'error', busy: false, currentPrompt: null, completedTurn: { promptId: r.resumed.get(input.taskId), status: 'failed', completedAtMs: r.clock.ms, providerTermination: { category: 'explicit_provider_error', reason } } };
+      }
+      return status;
+    };
+    await serve(r.options);
+    assert.equal(r.sends.filter(send => send.key === 'alpha-r1').length, reason.includes('429') ? 2 : 1);
+    for (let i = 1; i < r.sends.length; i++) assert.ok(r.sends[i].atMs - r.sends[i - 1].atMs >= 60_000);
+    if (reason.includes('429')) assert.notEqual(r.sends[0].input.commandId, r.sends[2].input.commandId);
+  }
+});
+
+test('recovery rechecks the failed worker under the direct-note lock before admitting a prompt', async t => {
+  const r = await interruptedRounds(t), adapter = r.options.adapter, reads = new Map();
+  r.options.adapter = async (op, input) => {
+    if (op === 'status') {
+      const count = (reads.get(input.taskId) ?? 0) + 1; reads.set(input.taskId, count);
+      if (count > 1) return { state: 'working', currentPrompt: 'new-owner-prompt', busy: true };
+    }
+    return adapter(op, input);
+  };
+  await serve(r.options);
+  assert.equal(r.sends.length, 0);
+  assert.ok(r.logs.some(event => event.kind === 'restart_resume_failed' && event.code === 'restart_resume_changed'));
+});
+
+test('a service restart retains uncertain delivery identity and the global resume spacing', async t => {
+  const r = await interruptedRounds(t), adapter = r.options.adapter, attempts = [];
+  let fail = true;
+  r.options.adapter = async (op, input) => {
+    if (op === 'prompt') {
+      attempts.push({ key: input.taskId, commandId: input.commandId, atMs: r.clock.ms });
+      if (fail) { fail = false; r.controller.abort(); throw Object.assign(new Error('connection lost'), { code: 'kernel_connection_lost' }); }
+    }
+    return adapter(op, input);
+  };
+  await serve(r.options);
+  assert.equal(r.sends.length, 0);
+  r.clock.ms += 15_000;
+  r.controller = new AbortController(); r.options.signal = r.controller.signal;
+  await serve(r.options);
+  assert.equal(r.sends.length, 2);
+  assert.ok(attempts[1].atMs - attempts[0].atMs >= 60_000);
+  assert.equal(attempts.filter(attempt => attempt.key === 'alpha-r1').at(-1).commandId, attempts[0].commandId);
+});
+
 test('parseEntry accepts a complete entry and normalizes worktrees', () => {
   const entry = parseEntry('integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { worktrees: ['/a', { path: '/b', base: sha }], notes: '/n.md' })));
   assert.equal(entry.key, 'integ2-r35');

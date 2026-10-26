@@ -9,6 +9,7 @@ import { execute, acceptanceIssues, LaneError } from '../lanes.mjs';
 import { newSections } from './sections.mjs';
 import { stopRequestPath, matchesStop } from './round-stop.mjs';
 import { tryLaneLock, releaseLaneLock } from './lane-lock.mjs';
+import { resumeAfterRestart } from './restart-resume.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 const sha256 = text => createHash('sha256').update(text).digest('hex');
@@ -18,7 +19,7 @@ const ACCEPTANCE_NUDGES = 3;
 const sameCommit = /^[0-9a-f]{40}$/;
 
 const target = event => `${event.kernel}/${event.session_id}/${event.agent_id}`;
-const compact = e => ({ cursor: e.cursor, at_ms: e.at_ms, type: e.type, state: e.value?.state, summary: e.summary, agent_id: e.agent_id });
+const compact = e => ({ cursor: e.cursor, at_ms: e.at_ms, type: e.type, state: e.value?.state, summary: e.summary, agent_id: e.agent_id, ...(e.refs?.task_id && { taskId: e.refs.task_id }) });
 
 // Notes the coordinator appended to REVIEW_INBOX.md after launch, one per `## ` section.
 export { newSections };
@@ -380,6 +381,10 @@ export function createRound(options) {
       }
       // A decision raised while no inbox followed the worker (a restart) has no event; it is read here and answered.
       for (const interaction of status.interactions || []) await answer(lane, interaction.id, interaction.title, interaction);
+      const resuming = await resumeAfterRestart({ lane, lanes, status, kernelStartedAtMs: options.config?.kernelStartedAtMs, now, home,
+        send: (key, file, promptId) => coordinate('steer', [key, file], { ...options, restartPromptId: promptId }), persist,
+        log: (lane, kind, detail) => { log(lane, kind, detail); options.log?.(kind, { key: lane.entry.lane, ...detail }); } });
+      if (resuming) { lane.needsRead = true; continue; }
       lane.run.currentPromptId = status.currentPrompt || status.admittedPromptId || lane.run.currentPromptId || lane.receipt.promptId;
       if (status.completedTurn) lane.run.completedTurn = status.completedTurn;
       if (status.state === 'idle' && !status.currentPrompt) {
@@ -406,4 +411,3 @@ export function createRound(options) {
   const rebrief = async () => { for (const lane of pending()) await launch(lane); rereadAll = true; };
   return { lanes, add, step, pending, failed, rebrief, touchAll: () => { rereadAll = true; }, cli };
 }
-

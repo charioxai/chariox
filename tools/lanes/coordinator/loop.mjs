@@ -212,6 +212,10 @@ export async function coordinate(operation, args, options = {}) {
       for (let attempt = 1; !mode; attempt++) {
         if (!pending) {
           status ??= await adapter('status', { ...common, stateFile: record.input.stateFile });
+          if (options.restartPromptId && (status.state !== 'error' || status.currentPrompt || status.busy
+            || (record.latestPromptId ?? record.launch.promptId) !== options.restartPromptId)) {
+            throw new LaneError('restart_resume_changed', 'The interrupted worker changed before resume; read its current status.');
+          }
           const operationFor = status.currentPrompt
             ? { operation: 'steer', id: `review-${createHash('sha256').update(status.currentPrompt).update(prompt).digest('hex')}`, expectedPromptId: status.currentPrompt }
             : { operation: 'prompt', id: `direct-${section}` };
@@ -245,6 +249,7 @@ export async function coordinate(operation, args, options = {}) {
       if (mode === 'prompt-started' || mode === 'prompt-queued') {
         const current = await load();
         current.latestPromptId = summary.promptId;
+        current.latestPromptAtMs = now();
         await save(path, current);
       }
       ledger.sections.push({ sha256: section, parts: pending.parts, mode, at_ms: now(), ...summary });
@@ -270,7 +275,7 @@ export async function coordinate(operation, args, options = {}) {
     if (now() >= record.input.deadlineMs) flags.push('LONG-ROUND');
     if (status.state === 'working' && Number.isFinite(status.lastActivityMs) && now() - status.lastActivityMs > 15 * 60_000) flags.push('SILENT');
     if (status.state === 'error') flags.push('ERROR');
-    return { lane, ...status, admittedPromptId: record.latestPromptId ?? record.launch.promptId, flags, limitation: 'Activity/deadline flags are signals; working state alone does not prove progress.' };
+    return { lane, ...status, admittedPromptId: record.latestPromptId ?? record.launch.promptId, admittedPromptAtMs: record.latestPromptAtMs, flags, limitation: 'Activity/deadline flags are signals; working state alone does not prove progress.' };
   }
   if (operation === 'lanefin') {
     // A stopped worker is gone from its Room; its worktree and bundle are still collectable.

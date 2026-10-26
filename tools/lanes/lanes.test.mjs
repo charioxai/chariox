@@ -96,6 +96,18 @@ test('status selects the target agent and never borrows another agents prompt', 
   assert.deepEqual(result.capabilities, []);
 });
 
+test('status retains kernel failure evidence for restart recovery', async () => {
+  const termination = { category: 'runtime_failure', reason: 'Codex error [response_too_many_failed_attempts]: last status: 429 Too Many Requests', timestamp_ms: 2000 };
+  const result = await run('status', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a' }, {
+    execute: async (_, body) => JSON.parse(body).GetSessionState ? { SessionState: {
+      agents: [{ id: 'a' }], session: { active_prompt: null }, agent_activity: { a: { status: 'error', busy: false,
+        last_completed_turn: { prompt_id: 'interrupted', settlement_status: 'failed', completed_at_ms: 2000, provider_termination: termination } } },
+    } } : { RelayStatus: { status: { capabilities: [] } } },
+  });
+  assert.deepEqual(result.completedTurn.providerTermination, termination);
+  assert.equal(result.busy, false);
+});
+
 test('stop destroys an idle agent after typed no-active-prompt refusal', async () => {
   const calls = [];
   const result = await run('stop', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a', attachmentId: 't' }, { execute: async (_, body) => { const name = Object.keys(JSON.parse(body))[0]; calls.push(name); if (name === 'CancelActivePrompt') throw new LaneError('no_active_prompt'); return { AgentsListed: { agents: [] } }; } });
