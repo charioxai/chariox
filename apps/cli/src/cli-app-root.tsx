@@ -417,6 +417,13 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getActivePrompt: () => sessionActivePromptForAgent(sessionState(), focusedAgentId() ?? sessionState().focused_agent_id ?? ""),
     getSessionId: () => sessionState().id,
     getFallbackStreamingAgentId: () => focusedAgentId() ?? streamingAgentId(),
+    getCancellableTaskAgentId: () => {
+      const agent = focusedAgentId() ?? sessionState().focused_agent_id
+      return sessionState().agent_tasks?.some((task) => task.agent_id === agent
+        && (!["done", "cancelled"].includes(task.state)
+          || task.obligations.some((obligation) => obligation.status === "open"))) ? agent ?? null : null
+    },
+    onNothingToCancel: () => setStatusLine("No active prompt or unfinished task on the focused agent."),
     cancelActivePrompt: (sessionId, attachmentId, targetAgentId) => cancelActivePrompt(client, sessionId, attachmentId, targetAgentId),
     onCancellationRequested: (targetAgentId) => {
       appLogger?.info("requested active prompt cancellation")
