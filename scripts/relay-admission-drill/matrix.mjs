@@ -6,7 +6,7 @@
 //   g09       : needs an active leased run on agent A (started here)
 //   g10run    : stale run deliveries while a successor run is active
 //   g10lease  : stale lease deliveries after the agent is moved off and back onto the worker
-//   g10done   : stale/duplicate completion on agent B
+//   g10done   : stale/duplicate completion on agent B (a live run mismatch is refused as leased_prompt_run_changed, an earlier prompt as leased_prompt_not_current)
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -220,9 +220,12 @@ try {
     const rBefore = await peer.send('home', ids.worker.kernel, receiptReq)
     console.log('receipt before', JSON.stringify(rBefore.outcome.response ?? rBefore.outcome).slice(0, 500))
     const completion = (home_prompt_id, worker_provider_run_id) => ({ kind: 'complete_leased_prompt', leased_agent_id: B.remote.leased_agent_id, home_prompt_id, worker_provider_run_id })
-    await sendCase('G10', 'stale-completion-wrong-run', 'home', 'worker', completion(p, firstRun === run ? 'provider-run-other' : firstRun), 'refused', 'completion naming the successor prompt with another worker run')
-    await sendCase('G10', 'stale-completion-wrong-prompt', 'home', 'worker', completion(firstPrompt, run), 'refused', 'completion naming the earlier prompt with the successor run')
+    const wrongRun = await sendCase('G10', 'stale-completion-wrong-run', 'home', 'worker', completion(p, firstRun === run ? 'provider-run-other' : firstRun), 'refused', 'completion naming the successor prompt with another worker run')
+    assert.equal(wrongRun.code, 'leased_prompt_run_changed', 'the live prompt on another run is a run change, not a settled prompt')
+    const wrongPrompt = await sendCase('G10', 'stale-completion-wrong-prompt', 'home', 'worker', completion(firstPrompt, run), 'refused', 'completion naming the earlier prompt with the successor run')
+    assert.equal(wrongPrompt.code, 'leased_prompt_not_current')
     const rec = await sendCase('G10', 'stale-completion', 'home', 'worker', completion(firstPrompt, firstRun), 'refused', 'completion of the earlier prompt delivered while the successor run is active')
+    assert.equal(rec.code, 'leased_prompt_not_current')
     console.log('complete response', JSON.stringify(rec.response_kind), JSON.stringify((await peer.send('home', ids.worker.kernel, receiptReq)).outcome.response ?? '').slice(0, 500))
     await sleep(5000)
     const s = (await listSessions()).find(x => x.id === S2)
