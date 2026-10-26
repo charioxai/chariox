@@ -40,6 +40,7 @@ mod agent_move_launch_tests;
 mod agent_move_peer;
 mod agent_move_preflight;
 mod agent_move_runtime;
+mod agent_move_slices;
 mod agent_move_source;
 mod agent_move_target;
 mod agent_move_transport;

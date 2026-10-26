@@ -1321,6 +1321,80 @@ async fn mk03_abort_retires_empty_move_lease_and_rejects_delayed_creation() {
     );
 }
 
+async fn slice_membership_survives_completion_crash(forward: bool) {
+    let fixture = Fixture::with_relay_fixture(false, false, false, true).await;
+    let session = {
+        let home = fixture.home.lock().await;
+        home.agents()
+            .clear_remote_execution(&fixture.agent_id)
+            .unwrap()
+            .session_id()
+            .to_string()
+    };
+    fixture
+        .home
+        .lock()
+        .await
+        .save_durable_state_snapshot()
+        .unwrap();
+    let forward_request = serde_json::json!({"MoveAgentToRemote":{"session_id":session,"agent_ref":fixture.agent_id,"machine_ref":format!("slice:{}", fixture.slices[0].name)}});
+    if !forward {
+        dispatch_move_value(&fixture, forward_request.clone())
+            .await
+            .unwrap();
+    }
+    let journal = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(journal.join("crash-after-phase-for-test"), "complete").unwrap();
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(if forward {
+        forward_request
+    } else {
+        serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id}})
+    })
+    .unwrap();
+    let home = fixture.home.clone();
+    let crashed = tokio::spawn(async move {
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk03-slice-completion-crash",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err_and(|error| error.is_panic()));
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "complete"
+    );
+    reboot_app(&fixture.home).await;
+    let home = fixture.home.lock().await;
+    let slice = home.slices().resolve(&fixture.slices[0].id).unwrap();
+    assert_eq!(
+        slice.agent_ids.contains(&fixture.agent_id),
+        forward,
+        "slice membership must be durable at Complete, before the request handler returns"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_slice_attach_survives_completion_crash() {
+    slice_membership_survives_completion_crash(true).await;
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_slice_detach_survives_completion_crash() {
+    slice_membership_survives_completion_crash(false).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn mk03_abort_captured_move_when_target_disappears() {
     let (mut fixture, session, _) = crash_fixture().await;

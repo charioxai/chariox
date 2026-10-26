@@ -125,6 +125,28 @@ impl AgentMoveStore {
             .collect()
     }
 
+    pub(crate) fn settled(&self) -> Vec<HomeMoveOperation> {
+        let records = self.lock();
+        let mut latest: BTreeMap<(&str, &str), &HomeMoveOperation> = BTreeMap::new();
+        for operation in records.homes.values() {
+            let key = (
+                operation.identity.home_session_id.as_str(),
+                operation.identity.home_agent_id.as_str(),
+            );
+            if latest
+                .get(&key)
+                .is_none_or(|previous| previous.identity.generation < operation.identity.generation)
+            {
+                latest.insert(key, operation);
+            }
+        }
+        latest
+            .into_values()
+            .filter(|operation| !operation.phase.is_pending())
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn for_agent(&self, session: &str, agent: &str) -> Option<HomeMoveOperation> {
         self.lock()
             .homes

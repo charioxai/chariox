@@ -28,6 +28,17 @@ impl KernelRuntimeState {
                 );
             }
         }
+        for operation in self.owned.agent_moves.settled() {
+            if matches!(operation.phase, HomeMovePhase::Complete { .. }) {
+                if let Err(error) = self.finish_agent_move_slice_membership(&operation).await {
+                    crate::logging::warn_with_fields(
+                        "agent_move.slice",
+                        "Committed Move slice recovery failed; retry after restoring its slice",
+                        serde_json::json!({"operation_id":operation.identity.operation_id,"error":error.to_string()}),
+                    );
+                }
+            }
+        }
         self.owned.agent_moves.pending().len()
     }
 
@@ -55,6 +66,7 @@ impl KernelRuntimeState {
                     _ => false,
                 };
                 if same_target {
+                    self.finish_agent_move_slice_membership(&previous).await?;
                     return Ok(agent);
                 }
             }
@@ -435,6 +447,7 @@ impl KernelRuntimeState {
                         })
                         .await?;
                     }
+                    self.finish_agent_move_slice_membership(&operation).await?;
                     let agent_id = operation.identity.home_agent_id.clone();
                     operation.phase = HomeMovePhase::Complete { receipt };
                     self.owned.agent_moves.save_home(operation)?;

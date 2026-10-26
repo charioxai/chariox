@@ -745,15 +745,8 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
-        let agent = self
-            .move_agent_transaction(session_id, local_agent, Some(worker_ref))
-            .await?;
-        if let Some(slice_ref) = target_slice_id {
-            self.with_external_command_authority(None)
-                .attach_slice_agent(&slice_ref, session_id, agent.id())
-                .await?;
-        }
-        Ok(agent)
+        self.move_agent_transaction(session_id, local_agent, Some(worker_ref))
+            .await
     }
 
     pub(crate) async fn move_agent_to_local(
@@ -766,37 +759,8 @@ impl KernelRuntimeState {
         let remote_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to local")?;
-        let slice_ref = remote_agent
-            .remote_execution()
-            .and_then(|remote| {
-                self.owned
-                    .slice_store
-                    .resolve_by_worker_kernel_ref(&remote.worker_kernel_id)
-                    .or_else(|| {
-                        self.owned
-                            .slice_store
-                            .resolve_by_worker_kernel_ref(&remote.worker_machine_id)
-                    })
-            })
-            .map(|slice| slice.id);
-        let agent = self
-            .move_agent_transaction(session_id, remote_agent, None)
-            .await?;
-        // The move committed; finish its slice bookkeeping under kernel authority.
-        if let Some(slice_ref) = slice_ref {
-            let slice = self.owned.slice_store.detach_agent(
-                &slice_ref,
-                agent.id(),
-                crate::session::unix_epoch_ms(),
-            )?;
-            self.owned.durable_state_store.append_event(
-                "slice.updated",
-                Some(slice.id.clone()),
-                serde_json::json!({ "slice": &slice }),
-            )?;
-        }
-        let _ = self.owned.session_snapshot(session_id)?;
-        Ok(agent)
+        self.move_agent_transaction(session_id, remote_agent, None)
+            .await
     }
 
     pub(crate) async fn destroy_agent_in_session(
