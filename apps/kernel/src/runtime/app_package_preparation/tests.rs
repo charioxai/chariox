@@ -15,8 +15,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-mod wasm;
-use wasm::archive;
+use super::test_package::archive;
 
 struct Scratch(PathBuf);
 impl Scratch {
@@ -245,11 +244,13 @@ fn new_node_package_requires_rebuild_without_activating_or_deleting_data() {
     fs::write(&data, b"retained user data").unwrap();
     let (uploads, service) = service(&store);
     let handle = upload(&uploads, "alice", &node_archive(27), true);
-    let prepared = prepare(&service, "alice", &handle).unwrap();
-    assert_eq!(
-        prepared.require_supported_runtime(),
-        Err(PreparationError::LegacyNodePackage)
-    );
+    let result = runtime().block_on(service.prepare_portable(
+        "alice".into(),
+        handle,
+        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+    ));
+    assert_eq!(result.err(), Some(PreparationError::LegacyNodePackage));
+    assert!(root.releases().is_empty());
     assert!(store
         .list_app_installations("alice", None, 10)
         .unwrap()
@@ -303,13 +304,19 @@ fn interrupted_publication_retry_and_revocation_before_writer_stage_are_safe() {
     let handle = upload(&uploads, "alice", &archive(27), true);
     assert_eq!(
         service
-            .prepare_at("alice", &handle, crate::session::unix_epoch_ms(), |point| {
-                if point == PreparationCheckpoint::Published {
-                    Err(PreparationError::PublicationInterrupted)
-                } else {
-                    Ok(())
+            .prepare_at(
+                "alice",
+                &handle,
+                crate::session::unix_epoch_ms(),
+                false,
+                |point| {
+                    if point == PreparationCheckpoint::Published {
+                        Err(PreparationError::PublicationInterrupted)
+                    } else {
+                        Ok(())
+                    }
                 }
-            })
+            )
             .err(),
         Some(PreparationError::PublicationInterrupted)
     );
@@ -404,4 +411,34 @@ fn cancellation_retains_both_admission_permits_until_blocking_work_finishes() {
     drop(runtime);
     assert_eq!(admission.available_permits(), 1);
     assert_eq!(preparation.available_permits(), 1);
+}
+
+#[test]
+fn retained_node_release_keeps_existing_deployment_preparation() {
+    let root = Scratch::new();
+    let store = root.store();
+    enroll(&store, "alice");
+    let (uploads, service) = service(&store);
+    let bytes = node_archive(27);
+    let handle = upload(&uploads, "alice", &bytes, true);
+    let retained = prepare(&service, "alice", &handle).unwrap();
+    let copy = runtime()
+        .block_on(service.prepare_release(
+            "alice".into(),
+            digest(&bytes),
+            Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        ))
+        .unwrap();
+    assert!(copy.reused());
+    assert_eq!(
+        copy.candidate("alice")
+            .unwrap()
+            .release_metadata()
+            .package_digest,
+        retained
+            .candidate("alice")
+            .unwrap()
+            .release_metadata()
+            .package_digest
+    );
 }

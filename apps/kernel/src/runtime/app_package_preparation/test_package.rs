@@ -1,8 +1,15 @@
-use super::*;
+use chariox_app_package::{Limits, TrustedPublisher};
+use ed25519_dalek::SigningKey;
+use serde_json::json;
+use std::{collections::BTreeMap, fs, path::Path};
 use wit_component::{dummy_module, embed_component_metadata, ComponentEncoder, StringEncoding};
 use wit_parser::{LiftLowerAbi, ManglingAndAbi, Resolve};
 
-pub(super) fn archive(signing_byte: u8) -> Vec<u8> {
+pub(crate) fn archive(signing_byte: u8) -> Vec<u8> {
+    archive_as(signing_byte, "com.example.prepared", "1.0.0", "developer-1")
+}
+
+pub(crate) fn archive_as(signing_byte: u8, app_id: &str, version: &str, key_id: &str) -> Vec<u8> {
     static COMPONENT: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     let component = COMPONENT.get_or_init(|| {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/app-wit");
@@ -26,8 +33,8 @@ pub(super) fn archive(signing_byte: u8) -> Vec<u8> {
             .unwrap()
     });
     let manifest = serde_json::from_value(json!({
-        "schema":"chariox.app.v2", "appId":"com.example.prepared", "version":"1.0.0",
-        "publisher":{"id":"com.example","keyId":"developer-1","name":"Developer"},
+        "schema":"chariox.app.v2", "appId":app_id, "version":version,
+        "publisher":{"id":"com.example","keyId":key_id,"name":"Developer"},
         "appContractVersion":2, "resourcePolicy":"chariox.app.resources.v1", "world":chariox_app_package::v2::APP_WORLD,
         "requiredFeatures":["wasm-component"], "runtime":{"engine":"wasm","component":"runtime/app.wasm"},
         "build":{"language":"fixture","toolchain":"wit-component 0.262.0","sdkVersion":"1.0.0"},
@@ -47,4 +54,15 @@ pub(super) fn archive(signing_byte: u8) -> Vec<u8> {
         &Limits::default(),
     )
     .unwrap()
+}
+
+pub(crate) fn package() -> (Vec<u8>, TrustedPublisher) {
+    (
+        archive(27),
+        TrustedPublisher {
+            publisher_id: "com.example".into(),
+            key_id: "developer-1".into(),
+            public_key: SigningKey::from_bytes(&[27; 32]).verifying_key(),
+        },
+    )
 }

@@ -78,14 +78,37 @@ impl AppLifecycleService {
             );
         }
         if matches!(verified, chariox_app_package::VerifiedAppPackage::Wasm(_)) {
-            use chariox_app_runtime::{release_store::ReleaseStore, worker_process::{PreparedWorker, wasm::WasmRuntime}};
-            snapshot_restore::require_recovery_generation(&self.0.store, owner, &request.installation_id, generation)?;
+            use chariox_app_runtime::{
+                release_store::ReleaseStore,
+                worker_process::{wasm::WasmRuntime, PreparedWorker},
+            };
+            snapshot_restore::require_recovery_generation(
+                &self.0.store,
+                owner,
+                &request.installation_id,
+                generation,
+            )?;
             let release = ReleaseStore::open_or_create(self.0.store.path())
-                .and_then(|store| store.lease_verified(&verified, active.bytes())).map_err(|_| Error::StorageUnavailable)?;
-            let prepared = PreparedWorker::prepare_wasm(WasmRuntime::beside_kernel().map_err(|_| Error::StorageUnavailable)?,
-                release, active.binding(), self.0.store.path()).map_err(|_| Error::StorageUnavailable)?;
-            let (_, outcome) = prepared.visit_private_data(|data| snapshot_restore::restore(
-                &self.0.store, owner, catalog, data, &request.snapshot_id)).map_err(|_| Error::StorageUnavailable)?;
+                .and_then(|store| store.lease_verified(&verified, active.bytes()))
+                .map_err(|_| Error::StorageUnavailable)?;
+            let prepared = PreparedWorker::prepare_wasm(
+                WasmRuntime::beside_kernel().map_err(|_| Error::StorageUnavailable)?,
+                release,
+                active.binding(),
+                self.0.store.path(),
+            )
+            .map_err(|_| Error::StorageUnavailable)?;
+            let (_, outcome) = prepared
+                .visit_private_data(|data| {
+                    snapshot_restore::restore(
+                        &self.0.store,
+                        owner,
+                        catalog,
+                        data,
+                        &request.snapshot_id,
+                    )
+                })
+                .map_err(|_| Error::StorageUnavailable)?;
             return outcome;
         }
         #[cfg(target_os = "linux")]

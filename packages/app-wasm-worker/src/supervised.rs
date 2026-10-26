@@ -27,6 +27,10 @@ fn read(number: i32, maximum: usize) -> wasmtime::Result<Vec<u8>> {
     Ok(bytes)
 }
 pub(crate) fn serve() -> wasmtime::Result<()> {
+    // The executable descriptor pins the kernel-selected inode through exec.
+    unsafe {
+        libc::close(8);
+    }
     let launch: WasmLaunch = serde_json::from_slice(&read(5, 256 * 1024)?)?;
     launch
         .manifest
@@ -47,7 +51,11 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
         identity.key(&launch.cache_key.component_digest) == launch.cache_key,
         "stale worker/engine AOT key"
     );
-    let artifact = VerifiedAot::from_supervisor_descriptor(descriptor(7)?, &launch.cache_key)?;
+    let artifact = VerifiedAot::from_supervisor_descriptor(
+        descriptor(7)?,
+        &launch.cache_key,
+        &launch.cache_public_key,
+    )?;
     cli::ready(
         &launch.generation,
         &launch.installation_id,

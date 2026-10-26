@@ -441,6 +441,7 @@ dependencies = [
  "ed25519-dalek",
  "jsonschema",
  "libc",
+ "rand 0.8.6",
  "rusqlite",
  "serde",
  "serde_json",

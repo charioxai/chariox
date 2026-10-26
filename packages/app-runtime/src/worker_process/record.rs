@@ -181,8 +181,6 @@ impl LaunchRecord {
         frame.extend_from_slice(&payload);
         Ok(frame)
     }
-
-
 }
 
 fn string(output: &mut Vec<u8>, value: &str) {

@@ -62,6 +62,8 @@ pub(crate) enum LifecycleError {
     Storage,
     #[error("app_lifecycle_preparation")]
     Preparation,
+    #[error("{0}")]
+    Wasm(&'static str),
     /// App storage would leave less than the host's reserve free. The App's
     /// log says how much is free and how much to free (`disk_space`).
     #[error("app_lifecycle_disk_space")]

@@ -1,7 +1,7 @@
 //! Signed UI files for an App view, taken from the active release after it is
 //! re-verified against the owner's current publisher trust.
-use chariox_app_package::VerifiedApp;
 use super::{app_active_release::ActiveReleaseError, DurableKernelStateStore};
+use chariox_app_package::VerifiedApp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppViewAssetsError {

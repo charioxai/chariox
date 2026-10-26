@@ -9,5 +9,9 @@ pub struct WasmLaunch {
     pub installation_id: String,
     pub release_digest: String,
     pub manifest: chariox_app_package::v2::ManifestV2,
+    /// Supervisor-owned installation directory; R6 opens existing data/tmp only.
+    #[serde(default)]
+    pub installation_root: Option<String>,
     pub cache_key: AotCacheKey,
+    pub cache_public_key: [u8; 32],
 }

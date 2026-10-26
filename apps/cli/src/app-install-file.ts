@@ -322,6 +322,11 @@ function operation(reply: Record<string, unknown>, request: string): AppInstallO
 }
 
 const installFailures: Record<string, string> = {
+  app_aot_integrity: "The App cache failed verification and was removed. Start the App again to compile its retained component; your App data is retained.",
+  app_aot_incompatible: "The App cache does not match this runtime. Start the App again to compile its retained component.",
+  app_aot_compile: "The App could not be compiled with the current runtime. Retry after updating the runtime; your App data is retained.",
+  app_wasm_migration_unavailable: "This App needs migration support from a newer runtime. Your App data is retained.",
+  app_wasm_containment_pending: "Install the native App worker runtime with containment support before starting this App.",
   app_lifecycle_notification: "The App did not complete preparation for the update; the installed version is unchanged (app_lifecycle_notification).",
   app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
   app_install_publisher_revoked: "This publisher has been revoked in the kernel.",

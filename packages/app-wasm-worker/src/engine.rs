@@ -42,6 +42,9 @@ pub fn runtime_identity(
     engine
         .precompile_compatibility_hash()
         .hash(&mut compatibility);
+    #[cfg(target_os = "linux")]
+    let mut executable = std::fs::File::open("/proc/self/exe")?;
+    #[cfg(not(target_os = "linux"))]
     let mut executable = std::fs::File::open(std::env::current_exe()?)?;
     let mut build = Sha256::new();
     let mut buffer = [0; 64 * 1024];

@@ -190,24 +190,16 @@ pub fn verify_app<'a>(
         let mut v2_policy = v2::PolicyV2::new(
             [
                 v2::RequiredFeature::WasmComponent,
-                v2::RequiredFeature::UiActions,
                 v2::RequiredFeature::AgentPanel,
                 v2::RequiredFeature::Connections,
                 v2::RequiredFeature::DirectedEvents,
             ]
             .into(),
-            vec![
-                v2::SupportedWorld {
-                    name: "chariox:app/app".into(),
-                    major: 1,
-                    minor: 0,
-                },
-                v2::SupportedWorld {
-                    name: "chariox:app/migration".into(),
-                    major: 1,
-                    minor: 0,
-                },
-            ],
+            vec![v2::SupportedWorld {
+                name: "chariox:app/app".into(),
+                major: 1,
+                minor: 0,
+            }],
             policy.trusted_publishers.clone(),
         );
         v2_policy.limits = policy.limits.clone();

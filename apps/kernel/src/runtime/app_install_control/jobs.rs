@@ -163,11 +163,10 @@ pub(super) async fn run(
                 } else {
                     shared
                         .preparation
-                        .prepare(key.0.clone(), upload_handle.clone(), preparing)
+                        .prepare_portable(key.0.clone(), upload_handle.clone(), preparing)
                         .await
                 }
                 .map_err(preparation)?;
-                prepared.require_supported_runtime().map_err(preparation)?;
                 let admitted = shared
                     .admission
                     .clone()
@@ -295,6 +294,7 @@ pub(super) async fn run(
                 Err(LifecycleError::Busy) => Err(Error::Busy),
                 Err(LifecycleError::CommitUnknown) => Err(Error::Unknown),
                 Err(LifecycleError::Storage) => Err(Error::Storage),
+                Err(LifecycleError::Wasm(code)) => Err(Error::Failed(code)),
                 Err(_) => Err(Error::Failed("app_install_start_rejected")),
             }
         }

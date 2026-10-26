@@ -28,7 +28,7 @@ pub fn package(core: &[u8]) -> (Vec<u8>, TrustedPublisher) {
         "ui":{"entry":"ui/index.html"},"tools":"schemas/tools.json","capabilities":{}
     }))
     .unwrap();
-    let tools: Vec<_> = ["echo","shared","wait","ignore","trap","spin","oom","stream","slow_stream","subscribe","upload"]
+    let tools: Vec<_> = ["echo","shared","wait","ignore","trap","spin","oom","stream","slow_stream","subscribe","upload","early_response"]
         .map(|name| json!({"name":name,"description":format!("Source App drill: {name}"),"inputSchema":{"type":"object","properties":{"portable":{"type":"string"}},"required":["portable"],"additionalProperties":false}})).into();
     let files = BTreeMap::from([
         ("runtime/app.wasm".into(), bytes),

@@ -5,7 +5,7 @@ use super::*;
 use crate::worker_process::ResourceDomain;
 
 pub(super) struct WasmDomain {
-    descriptors: [File; 3],
+    descriptors: [File; 4],
     data: Dir,
     _runtime: WasmRuntime,
     _release: VerifiedReleaseLease,
@@ -13,7 +13,7 @@ pub(super) struct WasmDomain {
 }
 impl WasmDomain {
     pub(super) fn new(
-        descriptors: [File; 3],
+        descriptors: [File; 4],
         data: Dir,
         runtime: WasmRuntime,
         release: VerifiedReleaseLease,

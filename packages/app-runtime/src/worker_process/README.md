@@ -104,3 +104,25 @@ baseline-plus-2MiB threshold, measuring detection and reap timing without a larg
 local allocation. It does not load Node or establish native sandbox, hostile
 App, signed runtime, production memory/quota overshoot, Linux namespace, or
 production activation acceptance.
+
+## Portable App launch
+
+`wasm::WasmRuntime` pins the kernel-selected worker executable for identity,
+compilation and launch. `PreparedWorker::prepare_wasm` leases the verified
+release and separately authenticated native cache. The common ready/continue
+monitor retains process and broker ownership. FD5 is private launch JSON, FD6
+the verified portable component, FD7 the read-only signed cache entry and FD8
+the executable inode through exec. Launch inputs are sealed memfds on Linux.
+
+`WasmLaunch.installation_root` is an optional supervisor-owned path. The
+launcher creates private existing `data` and `tmp` children first. Only `data`
+is the broker/snapshot directory. R6 connects this field in `supervised::serve`
+to `InstallationDirectories::open` and `AppWorker::with_directories`; R4 itself
+exposes no WASI preopens. It is an internal kernel/worker ABI.
+
+R5 replaces `wasm/domain.rs::WasmDomain::verify_before_continue` with OS
+containment, contains `wasm/compile.rs::run`, and connects native runtime
+enrollment/packaging at `WasmRuntime::beside_kernel`. Release builds refuse
+that provisional runtime until this integration; debug source drills exercise
+the launch path. The cache root and provenance key must remain outside the
+worker's filesystem authority.

@@ -65,17 +65,22 @@ fn cold_compile_restart_hit_and_cross_release_reuse_keep_original_provenance() {
     let source = component(b"first release");
     let first = scratch
         .cache()
-        .prepare(&source, &identity(), compiled)
+        .prepare_with(&source, &identity(), compiled)
         .unwrap();
     assert!(!first.cache_hit);
     let second = scratch
         .cache()
-        .prepare(&component(b"second release"), &identity(), |_| {
+        .prepare_with(&component(b"second release"), &identity(), |_| {
             panic!("cache hit must not compile")
         })
         .unwrap();
     assert!(second.cache_hit);
-    let verified = VerifiedAot::from_supervisor_descriptor(second.file, &first.key).unwrap();
+    let verified = VerifiedAot::from_supervisor_descriptor(
+        second.file,
+        &first.key,
+        &scratch.cache().public_key(),
+    )
+    .unwrap();
     assert_eq!(
         verified.provenance().source_release_digest,
         digest(b"first release")
@@ -88,13 +93,15 @@ fn corrupt_artifact_is_refused_before_use_and_eviction_allows_recompile() {
     let scratch = Scratch::new();
     let cache = scratch.cache();
     let source = component(b"release");
-    let first = cache.prepare(&source, &identity(), compiled).unwrap();
+    let first = cache.prepare_with(&source, &identity(), compiled).unwrap();
     let path = scratch.entry(&first.key);
     let mut bytes = fs::read(&path).unwrap();
     *bytes.last_mut().unwrap() ^= 1;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     fs::write(&path, bytes).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
     assert!(matches!(
-        cache.prepare(&source, &identity(), |_| panic!(
+        cache.prepare_with(&source, &identity(), |_| panic!(
             "a corrupt entry is refused"
         )),
         Err(AotError::Integrity)
@@ -102,7 +109,7 @@ fn corrupt_artifact_is_refused_before_use_and_eviction_allows_recompile() {
     cache.evict(&first.key).unwrap();
     assert!(
         !cache
-            .prepare(&source, &identity(), compiled)
+            .prepare_with(&source, &identity(), compiled)
             .unwrap()
             .cache_hit
     );
@@ -114,7 +121,7 @@ fn every_build_engine_target_cpu_and_component_key_is_fenced_before_deserializin
     let source = component(b"release");
     let first = scratch
         .cache()
-        .prepare(&source, &identity(), compiled)
+        .prepare_with(&source, &identity(), compiled)
         .unwrap();
     for field in 0..6 {
         let mut wrong = first.key.clone();
@@ -129,7 +136,8 @@ fn every_build_engine_target_cpu_and_component_key_is_fenced_before_deserializin
         assert!(matches!(
             VerifiedAot::from_supervisor_descriptor(
                 File::open(scratch.entry(&first.key)).unwrap(),
-                &wrong
+                &wrong,
+                &scratch.cache().public_key()
             ),
             Err(AotError::Incompatible)
         ));
@@ -138,9 +146,9 @@ fn every_build_engine_target_cpu_and_component_key_is_fenced_before_deserializin
     patched.worker_build = digest(b"security update");
     let stale_under_new_name = scratch.entry(&patched.key(source.digest()));
     fs::copy(scratch.entry(&first.key), &stale_under_new_name).unwrap();
-    fs::set_permissions(&stale_under_new_name, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(&stale_under_new_name, fs::Permissions::from_mode(0o400)).unwrap();
     assert!(matches!(
-        scratch.cache().prepare(&source, &patched, |_| panic!(
+        scratch.cache().prepare_with(&source, &patched, |_| panic!(
             "stale bytes cannot be loaded"
         )),
         Err(AotError::Incompatible)
@@ -153,28 +161,33 @@ fn offline_engine_update_recompiles_retained_component_without_old_native_fallba
     let source = component(b"retained release");
     let first = scratch
         .cache()
-        .prepare(&source, &identity(), compiled)
+        .prepare_with(&source, &identity(), compiled)
         .unwrap();
     let mut patched = identity();
     patched.engine_config_digest = digest(b"updated engine configuration");
     assert!(matches!(
         scratch
             .cache()
-            .prepare(&source, &patched, |_| Err(AotError::Compile(
+            .prepare_with(&source, &patched, |_| Err(AotError::Compile(
                 "incompatible build".into()
             ))),
         Err(AotError::Compile(_))
     ));
     let second = scratch
         .cache()
-        .prepare(&source, &patched, |source| {
+        .prepare_with(&source, &patched, |source| {
             assert_eq!(source.bytes(), b"verified portable component");
             compiled(source)
         })
         .unwrap();
     assert!(!second.cache_hit);
     assert_ne!(first.key.id(), second.key.id());
-    assert!(VerifiedAot::from_supervisor_descriptor(second.file, &second.key).is_ok());
+    assert!(VerifiedAot::from_supervisor_descriptor(
+        second.file,
+        &second.key,
+        &scratch.cache().public_key()
+    )
+    .is_ok());
 }
 
 #[test]
@@ -182,17 +195,26 @@ fn cache_rejects_symlinks_shared_files_and_bad_permissions() {
     let scratch = Scratch::new();
     let source = component(b"release");
     let cache = scratch.cache();
-    let first = cache.prepare(&source, &identity(), compiled).unwrap();
+    let first = cache.prepare_with(&source, &identity(), compiled).unwrap();
     let path = scratch.entry(&first.key);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(cache.prepare(&source, &identity(), compiled).is_err());
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(cache.prepare_with(&source, &identity(), compiled).is_err());
+    assert!(!path.exists());
+    cache.prepare_with(&source, &identity(), compiled).unwrap();
     let outside = scratch.0.join("outside");
     fs::hard_link(&path, &outside).unwrap();
-    assert!(cache.prepare(&source, &identity(), compiled).is_err());
-    fs::remove_file(&path).unwrap();
+    assert!(cache.prepare_with(&source, &identity(), compiled).is_err());
+    assert!(!path.exists());
     symlink(&outside, &path).unwrap();
-    assert!(cache.prepare(&source, &identity(), compiled).is_err());
+    assert!(cache.prepare_with(&source, &identity(), compiled).is_err());
+    assert!(outside.is_file());
+    assert!(!path.exists());
+    assert!(
+        !cache
+            .prepare_with(&source, &identity(), compiled)
+            .unwrap()
+            .cache_hit
+    );
 }
 
 #[test]
@@ -201,9 +223,9 @@ fn cache_compilers_are_serialized_and_failed_compilation_publishes_nothing() {
     let cache = scratch.cache();
     let source = component(b"release");
     assert!(matches!(
-        cache.prepare(&source, &identity(), |_| {
+        cache.prepare_with(&source, &identity(), |_| {
             assert!(matches!(
-                cache.prepare(&source, &identity(), compiled),
+                cache.prepare_with(&source, &identity(), compiled),
                 Err(AotError::Busy)
             ));
             Err(AotError::Compile("recoverable".into()))
@@ -213,7 +235,73 @@ fn cache_compilers_are_serialized_and_failed_compilation_publishes_nothing() {
     assert!(!scratch.entry(&identity().key(source.digest())).exists());
     assert!(
         !cache
-            .prepare(&source, &identity(), compiled)
+            .prepare_with(&source, &identity(), compiled)
+            .unwrap()
+            .cache_hit
+    );
+}
+
+#[test]
+fn recomputed_digest_cannot_forge_locally_compiled_cache_provenance() {
+    let scratch = Scratch::new();
+    let cache = scratch.cache();
+    let source = component(b"release");
+    let prepared = cache.prepare_with(&source, &identity(), compiled).unwrap();
+    let path = scratch.entry(&prepared.key);
+    let original = fs::read(&path).unwrap();
+    let length = u32::from_be_bytes(original[8..12].try_into().unwrap()) as usize;
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&original[12..12 + length]).unwrap();
+    let mut artifact = original[12 + length..].to_vec();
+    *artifact.last_mut().unwrap() ^= 1;
+    let provenance = if metadata.get("provenance").is_some() {
+        &mut metadata["provenance"]
+    } else {
+        &mut metadata
+    };
+    provenance["artifactDigest"] = digest(&artifact).into();
+    let metadata = serde_json::to_vec(&metadata).unwrap();
+    let mut forged = original[..8].to_vec();
+    forged.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
+    forged.extend_from_slice(&metadata);
+    forged.extend_from_slice(&artifact);
+    let mode = fs::metadata(&path).unwrap().permissions();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&path, forged).unwrap();
+    fs::set_permissions(&path, mode).unwrap();
+    assert!(matches!(
+        cache.prepare_with(&source, &identity(), |_| panic!(
+            "forged native code must be refused"
+        )),
+        Err(AotError::Integrity)
+    ));
+}
+
+#[test]
+fn damaged_cache_identity_rotates_without_accepting_previous_native_entries() {
+    let scratch = Scratch::new();
+    let source = component(b"release");
+    let cache = scratch.cache();
+    let prepared = cache.prepare_with(&source, &identity(), compiled).unwrap();
+    let old_key = cache.public_key();
+    let key = scratch
+        .entry(&prepared.key)
+        .parent()
+        .unwrap()
+        .join(".provenance-key");
+    fs::write(key, [0]).unwrap();
+    drop(cache);
+    let recovered = scratch.cache();
+    assert_ne!(recovered.public_key(), old_key);
+    assert!(matches!(
+        recovered.prepare_with(&source, &identity(), |_| panic!(
+            "old native entry must be refused first"
+        )),
+        Err(AotError::Integrity)
+    ));
+    assert!(
+        !recovered
+            .prepare_with(&source, &identity(), compiled)
             .unwrap()
             .cache_hit
     );

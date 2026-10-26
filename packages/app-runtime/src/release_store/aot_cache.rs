@@ -14,7 +14,8 @@ use std::{
     path::Path,
 };
 
-const MAGIC: &[u8; 8] = b"CXAOT001";
+mod auth;
+const MAGIC: &[u8; 8] = b"CXAOT002";
 const MAX_PROVENANCE: usize = 16 * 1024;
 pub const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
 type Result<T> = std::result::Result<T, AotError>;
@@ -25,7 +26,7 @@ pub enum AotError {
     Store(#[from] ReleaseStoreError),
     #[error("app_aot_io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("app_aot_integrity: evict the damaged cache entry and retry")]
+    #[error("app_aot_integrity: retry activation to compile the retained component")]
     Integrity,
     #[error("app_aot_incompatible: rebuild from the retained component")]
     Incompatible,
@@ -35,6 +36,8 @@ pub enum AotError {
     Busy,
     #[error("app_aot_compile: {0}")]
     Compile(String),
+    #[error("app_wasm_containment_pending: install the R5 native worker runtime")]
+    ContainmentPending,
 }
 impl From<FsError> for AotError {
     fn from(error: FsError) -> Self {
@@ -110,7 +113,11 @@ impl VerifiedAot {
 
     /// The worker calls this only on the supervisor's inherited cache descriptor,
     /// never on an uploaded path. Rechecks bytes in memory before deserialization.
-    pub fn from_supervisor_descriptor(mut file: File, expected: &AotCacheKey) -> Result<Self> {
+    pub fn from_supervisor_descriptor(
+        mut file: File,
+        expected: &AotCacheKey,
+        signer: &[u8; 32],
+    ) -> Result<Self> {
         file.seek(SeekFrom::Start(0))?;
         let size = file.metadata()?.len();
         if size > (MAX_ARTIFACT_BYTES + MAX_PROVENANCE + 12) as u64 {
@@ -127,8 +134,7 @@ impl VerifiedAot {
         }
         let mut encoded = vec![0; length];
         file.read_exact(&mut encoded)?;
-        let provenance: AotProvenance =
-            serde_json::from_slice(&encoded).map_err(|_| AotError::Integrity)?;
+        let provenance = auth::verify(&encoded, signer)?;
         if !provenance.usable_by(expected) {
             return Err(AotError::Incompatible);
         }
@@ -156,12 +162,13 @@ pub struct PreparedAot {
 
 pub struct AotCache {
     root: Dir,
+    auth: auth::Auth,
 }
 impl AotCache {
     fn read_entry(&self, name: &OsStr) -> std::result::Result<File, FsError> {
         use std::os::unix::fs::MetadataExt;
         let file = self.root.read_file(name, false)?;
-        if file.metadata()?.mode() & 0o7777 != 0o600 {
+        if file.metadata()?.mode() & 0o7777 != 0o400 {
             return Err(FsError::UnsafeEntry);
         }
         Ok(file)
@@ -176,9 +183,32 @@ impl AotCache {
             release_root.parent().ok_or(AotError::Integrity)?,
             OsStr::new(&name.replace("app-releases-", "app-aot-")),
         )?;
-        Ok(Self { root })
+        let auth = auth::Auth::open(&root)?;
+        Ok(Self { root, auth })
     }
+    pub fn public_key(&self) -> [u8; 32] {
+        self.auth.public_key()
+    }
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     pub fn prepare(
+        &self,
+        component: &VerifiedComponent,
+        runtime: &crate::worker_process::wasm::WasmRuntime,
+    ) -> Result<PreparedAot> {
+        self.prepare_compilation(component, runtime.identity(), |component| {
+            runtime.compile(component)
+        })
+    }
+    #[cfg(test)]
+    fn prepare_with(
+        &self,
+        component: &VerifiedComponent,
+        identity: &AotRuntimeIdentity,
+        compile: impl FnOnce(&VerifiedComponent) -> Result<Vec<u8>>,
+    ) -> Result<PreparedAot> {
+        self.prepare_compilation(component, identity, compile)
+    }
+    fn prepare_compilation(
         &self,
         component: &VerifiedComponent,
         identity: &AotRuntimeIdentity,
@@ -187,16 +217,7 @@ impl AotCache {
         if digest(component.bytes()) != component.digest {
             return Err(AotError::Integrity);
         }
-        let lock = match self.root.create_private_file(OsStr::new(".lock")) {
-            Ok(file) => file,
-            Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                self.root.open_private_file(OsStr::new(".lock"))?
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if !crate::private_fs::try_lock_file(&lock)? {
-            return Err(AotError::Busy);
-        }
+        let _lock = lock(&self.root)?;
         self.prepare_locked(component, identity, compile)
     }
     fn prepare_locked(
@@ -210,7 +231,18 @@ impl AotCache {
         let name = OsStr::new(&id[7..]);
         match self.read_entry(name) {
             Ok(file) => {
-                VerifiedAot::from_supervisor_descriptor(file.try_clone()?, &key)?;
+                if let Err(error) = VerifiedAot::from_supervisor_descriptor(
+                    file.try_clone()?,
+                    &key,
+                    &self.public_key(),
+                ) {
+                    // Refuse this activation, remove only the unusable derived
+                    // entry, and let the next explicit retry compile retained
+                    // trusted bytes. Never run the damaged/stale native code.
+                    self.root.remove_file(name)?;
+                    self.root.sync()?;
+                    return Err(error);
+                }
                 self.root.sync()?;
                 return Ok(PreparedAot {
                     file,
@@ -219,6 +251,16 @@ impl AotCache {
                 });
             }
             Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(FsError::UnsafeEntry) => {
+                self.root.remove_file(name)?;
+                self.root.sync()?;
+                return Err(AotError::Integrity);
+            }
+            Err(FsError::Io(error)) if error.raw_os_error() == Some(libc::ELOOP) => {
+                self.root.remove_file(name)?;
+                self.root.sync()?;
+                return Err(AotError::Integrity);
+            }
             Err(error) => return Err(error.into()),
         }
         let bytes = compile(component)?;
@@ -230,8 +272,7 @@ impl AotCache {
             source_release_digest: component.release.clone(),
             artifact_digest: digest(&bytes),
         };
-        let metadata =
-            serde_json_canonicalizer::to_vec(&provenance).map_err(|_| AotError::Integrity)?;
+        let metadata = self.auth.sign(provenance)?;
         if metadata.len() > MAX_PROVENANCE {
             return Err(AotError::Limit);
         }
@@ -241,8 +282,14 @@ impl AotCache {
         entry.extend_from_slice(&metadata);
         entry.extend_from_slice(&bytes);
         self.root.atomic_replace(name, &entry)?;
+        let sealed = self.root.open_private_file(name)?;
+        crate::private_fs::check(unsafe {
+            libc::fchmod(std::os::fd::AsRawFd::as_raw_fd(&sealed), 0o400)
+        })?;
+        sealed.sync_all()?;
+        self.root.sync()?;
         let file = self.read_entry(name)?;
-        VerifiedAot::from_supervisor_descriptor(file.try_clone()?, &key)?;
+        VerifiedAot::from_supervisor_descriptor(file.try_clone()?, &key, &self.public_key())?;
         Ok(PreparedAot {
             file,
             key,
@@ -251,10 +298,24 @@ impl AotCache {
     }
     /// Removing derived code cannot remove the separately leased release or data.
     pub fn evict(&self, key: &AotCacheKey) -> Result<()> {
+        let _lock = lock(&self.root)?;
         self.root.remove_file(OsStr::new(&key.id()[7..]))?;
         self.root.sync()?;
         Ok(())
     }
+}
+fn lock(root: &Dir) -> Result<File> {
+    let lock = match root.create_private_file(OsStr::new(".lock")) {
+        Ok(file) => file,
+        Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            root.open_private_file(OsStr::new(".lock"))?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !crate::private_fs::try_lock_file(&lock)? {
+        return Err(AotError::Busy);
+    }
+    Ok(lock)
 }
 fn valid_digest(value: &str) -> bool {
     value.len() == 71

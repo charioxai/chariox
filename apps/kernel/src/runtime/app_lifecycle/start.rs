@@ -107,6 +107,9 @@ pub(super) fn register(
         binding.token().generation,
         "verify_release",
     ))?;
+    // R6 hook: replace this refusal with the state-only MigrationWorker
+    // orchestrator, before MigrationRewind or any worker touches private files.
+    require_wasm_migration_orchestrator(&verified)?;
     let events = active
         .event_catalog(&verified)
         .map_err(|error| match error {
@@ -134,6 +137,9 @@ pub(super) fn register(
             binding.token().generation,
             "migration_state",
         ))?;
+    if migrate_from.is_some() && matches!(verified, VerifiedAppPackage::Wasm(_)) {
+        return Err(LifecycleError::Wasm("app_wasm_migration_unavailable"));
+    }
     if migrate_from.is_some() {
         let crate::durable_state::app_state::AppStateOutcome::Rewound(from) = context
             .store
@@ -239,31 +245,42 @@ fn spawn(
             return Err(LifecycleError::Preparation);
         }
         crate::runtime::app_snapshot_restore::require_recovery_generation(
-            &context.store, binding.owner_id(), &binding.token().installation_id, binding.token().generation)
-            .map_err(|_| LifecycleError::Preparation)?;
+            &context.store,
+            binding.owner_id(),
+            &binding.token().installation_id,
+            binding.token().generation,
+        )
+        .map_err(|_| LifecycleError::Preparation)?;
         let runtime = chariox_app_runtime::worker_process::wasm::WasmRuntime::beside_kernel()
-            .map_err(preparation_failed(
-                &binding.token().installation_id,
-                binding.token().generation,
-                "wasm_runtime",
-            ))?;
+            .map_err(|error| {
+                LifecycleError::Wasm(chariox_app_runtime::worker_process::wasm::aot_error_code(
+                    &error,
+                ))
+            })?;
         let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_wasm(
             runtime,
             release,
             binding,
             context.store.path(),
         )
-        .map_err(preparation_failed(
-            &binding.token().installation_id,
-            binding.token().generation,
-            "wasm_prepare",
-        ))?;
+        .map_err(|error| match error {
+            chariox_app_runtime::worker_process::WorkerError::Storage(code) => {
+                LifecycleError::Wasm(code)
+            }
+            _ => LifecycleError::Preparation,
+        })?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
-        let (prepared, recovered) = prepared.visit_private_data(|data| {
-            crate::runtime::app_snapshot_restore::recover(&context.store, binding.owner_id(), data)
-        }).map_err(|_| LifecycleError::Preparation)?;
+        let (prepared, recovered) = prepared
+            .visit_private_data(|data| {
+                crate::runtime::app_snapshot_restore::recover(
+                    &context.store,
+                    binding.owner_id(),
+                    data,
+                )
+            })
+            .map_err(|_| LifecycleError::Preparation)?;
         recovered.map_err(|_| LifecycleError::Preparation)?;
         let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).map_err(
             preparation_failed(
@@ -567,4 +584,14 @@ mod registration_failure_tests {
             "app_lifecycle_registration"
         );
     }
+}
+
+/// R6 migration orchestration hook. Signed entries are connected here to the
+/// staged broker, journal and private-file snapshots once MigrationWorker lands.
+fn require_wasm_migration_orchestrator(verified: &VerifiedAppPackage<'_>) -> Result<()> {
+    if matches!(verified, VerifiedAppPackage::Wasm(package) if package.manifest().migrations.is_some())
+    {
+        return Err(LifecycleError::Wasm("app_wasm_migration_unavailable"));
+    }
+    Ok(())
 }

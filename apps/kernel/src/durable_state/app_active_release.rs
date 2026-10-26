@@ -2,7 +2,9 @@
 //! re-verified against the owner's current publisher trust. A revoked
 //! publisher or inactive installation yields nothing. No worker is needed.
 use super::DurableKernelStateStore;
-use chariox_app_package::{verify_app as verify, VerificationPolicy, VerifiedApp, VerifiedAppPackage};
+use chariox_app_package::{
+    verify_app as verify, VerificationPolicy, VerifiedApp, VerifiedAppPackage,
+};
 use chariox_app_runtime::{
     app_catalog::AppCatalog,
     app_inbox::IncomingCatalog,

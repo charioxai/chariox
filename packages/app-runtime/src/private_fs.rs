@@ -82,7 +82,7 @@ impl Dir {
         Ok(Some(child))
     }
 
-    fn open_owned_parent(path: &Path) -> Result<Self> {
+    pub(crate) fn open_owned_parent(path: &Path) -> Result<Self> {
         let parent = Self::open_real(path)?;
         let metadata = parent.0.metadata()?;
         if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {

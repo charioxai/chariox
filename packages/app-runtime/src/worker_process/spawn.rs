@@ -38,7 +38,14 @@ pub(super) fn launch(
     arguments: &[CString],
     files: &[&File],
 ) -> io::Result<libc::pid_t> {
-    if !(5..=8).contains(&files.len()) {
+    if !(5..=9).contains(&files.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "worker descriptor count",
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if !matches!(files.len(), 5 | 9) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "worker descriptor count",
