@@ -29,6 +29,16 @@ impl CommandRouter {
         request: &LocalDaemonRequest,
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .dev_push()
+            .execute(&self.runtime_state, command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
         if let Some(response) = self
             .runtime_state
             .app_control()

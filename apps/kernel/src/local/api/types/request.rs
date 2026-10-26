@@ -36,6 +36,8 @@ pub enum LocalDaemonRequest {
     GetAppPublisherEnrollment(AppPublisherEnrollmentRequest),
     CancelAppPublisherEnrollment(AppPublisherEnrollmentRequest),
     BeginAppInstall(BeginAppInstallRequest),
+    BeginAppDevPush(BeginAppDevPushRequest),
+    GetAppDevPush(AppDevPushRequest),
     BeginAppUpdate(BeginAppUpdateRequest),
     GetAppInstallOperation(AppInstallOperationRequest),
     CancelAppInstallOperation(AppInstallOperationRequest),

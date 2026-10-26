@@ -154,3 +154,12 @@ test("App dev and register reject old kernels before sending their source field"
     assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 567))
   }
 })
+
+// MP-08 / MP-10 / MP-11: the watch adapter needs the kernel build operation.
+test("kernel App dev push requires protocol 647 before either begin or poll",()=>{
+  for(const name of ["BeginAppDevPush","GetAppDevPush"]){
+    const request={[name]:{session_id:"room",request_id:"save"}}
+    assert.throws(()=>requireKernelFeatureProtocol(request,644),/Kernel App dev push.*647/)
+    assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,647))
+  }
+})

@@ -273,9 +273,10 @@ pub use api::{
     UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
-    AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
-    AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest, AppPublisherEnrollmentSummary,
-    BeginAppInstallRequest, BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
+    AppDevPushFailureCode, AppDevPushRequest, AppInstallOperationPhase, AppInstallOperationRequest,
+    AppInstallOperationSummary, AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest,
+    AppPublisherEnrollmentSummary, BeginAppDevPushRequest, BeginAppInstallRequest,
+    BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
 };
 pub use api::{
     ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,

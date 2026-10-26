@@ -376,4 +376,5 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
 /// MP-08/MP-10/MP-11: allocated 644 adds App acquisition sources and dev-channel/Room projections.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 644;
+/// MP-08/MP-10/MP-11: allocated 647 adds kernel-owned App dev push and status.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 647;

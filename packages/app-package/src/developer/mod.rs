@@ -216,7 +216,7 @@ pub fn pack_dev_directory(
     let bundle = fs::Directory::open(bundle)?;
     let destination = fs::Destination::open(output, false)?;
     fs::outside_bundle(&bundle, &destination.directory)?;
-    let mut manifest: serde_json::Value = json::read_json(
+    let manifest: serde_json::Value = json::read_json(
         &fs::read(manifest_path, limits.max_metadata_bytes, false)?,
         limits.max_metadata_bytes,
         limits,
@@ -224,16 +224,27 @@ pub fn pack_dev_directory(
         false,
     )?;
     let files = read_bundle_open(&bundle, limits, None)?;
-    if manifest["schema"] != crate::v2::APP_SCHEMA_V2 {
-        let parsed: Manifest = serde_json::from_value(manifest)
-            .map_err(|_| PackageError::new(ErrorCode::InvalidManifest, "invalid dev manifest"))?;
-        manifest = serde_json::to_value(with_migrations(&parsed, &files, limits)?)
-            .map_err(|_| PackageError::new(ErrorCode::InvalidManifest, "invalid dev manifest"))?;
-    }
-    let bytes = crate::dev_bundle::pack_dev_bundle(&manifest, &files, limits)?;
+    let (manifest, bytes) = pack_dev_files(manifest, &files, limits)?;
     let report = serde_json::json!({"status":"packed-dev-unsigned", "manifest":manifest, "packageDigest":crate::digest(&bytes)});
     destination.prepare(&bytes)?.publish()?;
     Ok(report)
+}
+
+/// Shared by `chariox app dev-pack` and the kernel's source build. Preserve
+/// migration discovery and the same bounded package verifier on both routes.
+pub fn pack_dev_files(
+    mut manifest: serde_json::Value,
+    files: &BTreeMap<String, Vec<u8>>,
+    limits: &Limits,
+) -> Result<(serde_json::Value, Vec<u8>)> {
+    if manifest["schema"] != crate::v2::APP_SCHEMA_V2 {
+        let parsed: Manifest = serde_json::from_value(manifest)
+            .map_err(|_| PackageError::new(ErrorCode::InvalidManifest, "invalid dev manifest"))?;
+        manifest = serde_json::to_value(with_migrations(&parsed, files, limits)?)
+            .map_err(|_| PackageError::new(ErrorCode::InvalidManifest, "invalid dev manifest"))?;
+    }
+    let bytes = crate::dev_bundle::pack_dev_bundle(&manifest, files, limits)?;
+    Ok((manifest, bytes))
 }
 
 pub fn pack_directory(

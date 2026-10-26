@@ -8,6 +8,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+mod dev_push;
 mod invocation;
 
 impl KernelRuntimeState {
@@ -27,7 +28,7 @@ impl KernelRuntimeState {
         let Ok(agent) = self.app_agent_for_provider_run(run) else {
             return Ok(Vec::new());
         };
-        Ok(self
+        let mut specs = self
             .app_tools_for_agent(&agent, occupied, permit)?
             .into_iter()
             .map(|tool| RuntimeToolSpec {
@@ -35,7 +36,13 @@ impl KernelRuntimeState {
                 description: tool.description,
                 input_schema: tool.input_schema,
             })
-            .collect())
+            .collect::<Vec<_>>();
+        if self.app_dev_push_available(&agent)?
+            && !occupied.iter().any(|tool| tool.name == "app_dev_push")
+        {
+            specs.push(dev_push::spec());
+        }
+        Ok(specs)
     }
 
     /// A listing served without the agent's Apps (App admission was busy):
@@ -117,10 +124,13 @@ impl KernelRuntimeState {
             return false;
         };
         self.app_agent_for_provider_run(run).is_ok_and(|agent| {
-            agent
-                .extension_grants()
-                .iter()
-                .any(|grant| grant.kind == ExtensionKind::App)
+            self.app_control()
+                .dev_push()
+                .room_available(agent.owner_user_id(), agent.session_id())
+                || agent
+                    .extension_grants()
+                    .iter()
+                    .any(|grant| grant.kind == ExtensionKind::App)
         })
     }
 
@@ -193,6 +203,12 @@ impl KernelRuntimeState {
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        if tool_name == "app_dev_push" {
+            return self
+                .dispatch_app_dev_push(provider_run, input)
+                .await
+                .map(Some);
+        }
         let permit = self
             .app_control()
             .try_admit()

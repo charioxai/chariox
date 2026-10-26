@@ -84,6 +84,8 @@ pub(crate) struct AppControlService {
     lifecycle: super::app_lifecycle::AppLifecycleService,
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     installs: super::app_install_control::AppInstallControl,
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    dev_push: super::app_dev_push::AppDevPushControl,
     /// Tests only: the App storage uninstall deletes from, once a test gave
     /// this kernel one; until then, the platform's.
     #[cfg(test)]
@@ -142,6 +144,13 @@ impl AppControlService {
             store.path().with_extension("app-command-results.jsonl"),
         );
         Self {
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            dev_push: super::app_dev_push::AppDevPushControl::new(
+                store.clone(),
+                uploads.clone(),
+                installs.clone(),
+                admission.clone(),
+            ),
             request_receipts,
             preparation,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -189,6 +198,11 @@ impl AppControlService {
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     pub(crate) fn installs(&self) -> &super::app_install_control::AppInstallControl {
         &self.installs
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    pub(crate) fn dev_push(&self) -> &super::app_dev_push::AppDevPushControl {
+        &self.dev_push
     }
 
     /// Protocol 367: verifies deployment releases from the local release store.

@@ -1,5 +1,29 @@
 use super::*;
 
+/// Builds source on this kernel; filesystem watching belongs to the client.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginAppDevPushRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub directory: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppDevPushRequest {
+    pub session_id: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppDevPushFailureCode {
+    SourceUnavailable,
+    BuildFailed,
+    InstallFailed,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginAppPublisherEnrollmentRequest {

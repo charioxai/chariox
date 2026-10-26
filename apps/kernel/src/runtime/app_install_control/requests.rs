@@ -8,7 +8,7 @@ use crate::{local::*, runtime::command::KernelCommand};
 fn failed(code: AppRequestErrorCode) -> LocalDaemonResponse {
     LocalDaemonResponse::AppRequestFailed { code }
 }
-fn code(error: InstallOperationError) -> AppRequestErrorCode {
+pub(super) fn code(error: InstallOperationError) -> AppRequestErrorCode {
     match error {
         InstallOperationError::Invalid => AppRequestErrorCode::InvalidRequest,
         InstallOperationError::NotFound => AppRequestErrorCode::NotFound,

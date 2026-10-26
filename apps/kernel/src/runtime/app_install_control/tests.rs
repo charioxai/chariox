@@ -111,6 +111,15 @@ impl Fixture {
     async fn request(&self, owner: &str, request: LocalDaemonRequest) -> LocalDaemonResponse {
         let mut command = KernelCommand::from_local_request("install-test", None, None, &request);
         command.caller.user_id = Some(owner.into());
+        if let Some(response) = self
+            .state
+            .app_control()
+            .dev_push()
+            .execute(&self.state, &command, &request)
+            .await
+        {
+            return response;
+        }
         self.control()
             .execute(&self.state, &command, &request)
             .await
@@ -188,10 +197,14 @@ impl Fixture {
     }
     async fn shutdown(&self) {
         let control = self.control().clone();
+        let dev_push = self.state.app_control().dev_push().clone();
         let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || control.shutdown_blocking(handle))
-            .await
-            .unwrap();
+        tokio::task::spawn_blocking(move || {
+            dev_push.shutdown_blocking(handle.clone());
+            control.shutdown_blocking(handle)
+        })
+        .await
+        .unwrap();
     }
 }
 impl Drop for Fixture {
@@ -672,5 +685,149 @@ async fn dev_upload_rejects_a_claimed_digest_that_does_not_name_the_upload() {
         .store
         .trusted_app_publisher("alice", "local_dev", "kernel-dev")
         .is_err());
+    f.shutdown().await;
+}
+
+// MP-08 / MP-10 / MP-11: user requests enter the real build/upload/installer path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_dev_push_build_failure_is_typed_and_the_next_save_reaches_one_shared_approval() {
+    let f = Fixture::new();
+    let source = f.path.join("source");
+    let push = |id: &str| {
+        LocalDaemonRequest::BeginAppDevPush(BeginAppDevPushRequest {
+            session_id: f.session.clone(),
+            request_id: id.into(),
+            directory: source.display().to_string(),
+        })
+    };
+    assert!(matches!(
+        f.request("bob", push("foreign")).await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::Unauthorized
+        }
+    ));
+    assert!(matches!(
+        f.request("alice", push("missing")).await,
+        LocalDaemonResponse::AppDevPushBuilding { .. }
+    ));
+    let poll = |id: &str| {
+        LocalDaemonRequest::GetAppDevPush(AppDevPushRequest {
+            session_id: f.session.clone(),
+            request_id: id.into(),
+        })
+    };
+    let missing = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let result = f.request("alice", poll("missing")).await;
+            if !matches!(result, LocalDaemonResponse::AppDevPushBuilding { .. }) {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(missing, LocalDaemonResponse::AppDevPushFailed { code: AppDevPushFailureCode::SourceUnavailable, ref message, .. } if message.contains("files put"))
+    );
+    assert!(f
+        .control()
+        .0
+        .shared
+        .store
+        .list_app_installations("alice", None, 100)
+        .unwrap()
+        .installations
+        .is_empty());
+    assert!(matches!(
+        f.request("bob", poll("missing")).await,
+        LocalDaemonResponse::AppRequestFailed {
+            code: AppRequestErrorCode::Unauthorized
+        }
+    ));
+
+    let (bytes, publisher) = fixture_event_package();
+    let verified = chariox_app_package::verify(
+        &bytes,
+        &chariox_app_package::VerificationPolicy::new(
+            LOCAL_DAEMON_PROTOCOL_VERSION,
+            vec![publisher],
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(
+        source.join("app.json"),
+        serde_json::to_vec(verified.manifest()).unwrap(),
+    )
+    .unwrap();
+    for (name, bytes) in verified.files() {
+        let file = source.join("bundle").join(name);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, bytes).unwrap();
+    }
+    assert!(matches!(
+        f.request("alice", push("good")).await,
+        LocalDaemonResponse::AppDevPushBuilding { .. }
+    ));
+    let operation = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            f.control().pump(&f.state).await;
+            match f.request("alice", poll("good")).await {
+                LocalDaemonResponse::AppDevPushBuilding { .. } => {}
+                LocalDaemonResponse::AppInstallOperationStatus { operation }
+                    if operation.phase == AppInstallOperationPhase::AwaitingApproval
+                        && operation.interaction_id.is_some() =>
+                {
+                    break operation
+                }
+                LocalDaemonResponse::AppInstallOperationStatus { operation } => assert_ne!(
+                    operation.phase,
+                    AppInstallOperationPhase::Failed,
+                    "{:?}",
+                    operation.failure
+                ),
+                other => panic!("build should reach the normal installer: {other:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let replay = status(f.request("alice", push("good")).await);
+    assert_eq!(replay.interaction_id, operation.interaction_id);
+    assert_eq!(replay.package_digest, operation.package_digest);
+    f.state
+        .resolve_terminal_runtime_interaction(
+            &f.session,
+            operation.interaction_id.as_deref().unwrap(),
+            "decline",
+            None,
+            Some("alice"),
+        )
+        .await
+        .unwrap();
+    f.until(|| {
+        f.control()
+            .0
+            .shared
+            .store
+            .first_app_install_status("alice", "good")
+            .is_ok_and(|op| op.phase == InstallPhase::Cancelled)
+    })
+    .await;
+    assert_eq!(
+        status(f.request("alice", poll("good")).await).phase,
+        AppInstallOperationPhase::Cancelled
+    );
+    assert!(f
+        .control()
+        .0
+        .shared
+        .store
+        .get_app_installation("alice", operation.installation_id.as_deref().unwrap())
+        .unwrap()
+        .active
+        .is_none());
     f.shutdown().await;
 }
