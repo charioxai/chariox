@@ -657,3 +657,47 @@ async fn async_popup_review_finished_recovery_cleans_the_remaining_card_once() {
         .unwrap();
     assert_eq!(f.store().agent_wake(id).unwrap().unwrap().fire_count, 1);
 }
+
+#[tokio::test]
+async fn async_popup_review_bad_question_does_not_stall_other_questions_or_timers() {
+    let f = fixture("async-review-isolation", true).await;
+    let task = f.begin(&f.prompt_id);
+    let bad = ask(&f, serde_json::json!({"timeout_sec":1})).await;
+    let good = ask(&f, serde_json::json!({"timeout_sec":1})).await;
+    let bad_id = bad["interaction_id"].as_str().unwrap();
+    let good_id = good["interaction_id"].as_str().unwrap();
+    let mut session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    session.remove_active_interaction(bad_id);
+    f.runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(session);
+    let now = crate::session::unix_epoch_ms();
+    let mut timer = f.wake(&task, "review-independent-timer");
+    timer.kind = "timer".into();
+    timer.state = "scheduled".into();
+    timer.next_due_ms = Some(now + 1_000);
+    f.store()
+        .agent_lifecycle(Operation::ArmWake {
+            task: task.task_id,
+            prompt: task.prompt_id,
+            wake: Box::new(timer),
+        })
+        .unwrap();
+    f.runtime.tick_interaction_wakes(now + 20_000).unwrap();
+    assert_eq!(
+        answers(&f, good_id).len(),
+        1,
+        "one bad question must not block another timeout"
+    );
+    f.runtime.sweep_agent_wakes(now + 20_000).await.unwrap();
+    assert_eq!(
+        f.store()
+            .agent_wake("review-independent-timer")
+            .unwrap()
+            .unwrap()
+            .fire_count,
+        1
+    );
+}

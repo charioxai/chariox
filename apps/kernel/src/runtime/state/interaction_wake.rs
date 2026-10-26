@@ -190,7 +190,10 @@ impl KernelRuntimeState {
             if wake.kind != KIND {
                 continue;
             }
-            self.tick_interaction_wake(&wake, now)?;
+            if let Err(error) = self.tick_interaction_wake(&wake, now) {
+                tracing::warn!(wake_id=%wake.id, error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                    "MP-08/MP-09/MP-10/MP-11: question reconciliation failed; other wakes continue");
+            }
         }
         Ok(())
     }
