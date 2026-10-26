@@ -21,8 +21,10 @@ measurement receipts stay outside the repository.
 The optional Linux `native-display` kernel feature links X11, Xext, Xdamage,
 Xcomposite and Xtst. x264 and libavcodec/libavutil are loaded at runtime;
 libyuv and libwebp are static (SharpYUV only where WebP ships that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and
-`CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. Builds without it keep
-the CDP capture and portable encoder path.
+`CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. Linux release and slice
+kernels are built with it: on Linux the Room browser's resize and window inventory
+run through its worker, so the kernel needs these X11 libraries at runtime. Builds
+without it keep the CDP capture and portable encoder path but refuse every resize.
 
 MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
 1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
