@@ -27,3 +27,7 @@ drill checks the supporting directory, latest target files, and preservation
 of divergent original home work. It uses the public Move requests while the
 route action UI remains a separate work item. Journal observation selects the
 restart moment; it never changes a record, artifact, receipt, or provider state.
+Cleanup retains only static native-probe stage metadata from kernel logs, then
+removes the disposable state. Hosted Web captures prove existing Room visibility
+at DPR 1 and 2; they do not prove the separately scoped Move route picker or
+`via <target>` label.

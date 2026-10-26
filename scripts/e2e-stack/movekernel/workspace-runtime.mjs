@@ -9,6 +9,7 @@ import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js';
 import { openTui } from '../context-switch/tui.mjs';
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedPid, descendants, processSnapshot } from '../context-switch/owned.mjs';
 import { registerTerminationCleanup } from '../context-switch/termination.mjs';
+import { checkpointDiagnostics } from './workspace-diagnostics.mjs';
 const required = name => {
     const value = process.env[name];
     if (!value?.startsWith('/'))
@@ -71,6 +72,9 @@ async function close() {
     }
     await browser?.close();
     await sleep(500);
+    await record('checkpoint-diagnostics', {kernels: await Promise.all(runtimes.map(async r => ({
+        name: r.name, probes: await checkpointDiagnostics(r.path + '/home'),
+    })))});
     const remaining = processSnapshot().filter(p => p.state !== 'Z' && owned.some(x => p.pid === x.pid && p.start === x.start));
     await record('cleanup', { remaining: remaining.map(p => ({ pid: p.pid, start: p.start })), kernels: runtimes.map(r => ({ pid: r.child.pid, exitCode: r.child.exitCode, signal: r.child.signalCode })) });
     assert.equal(remaining.length, 0);

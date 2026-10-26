@@ -163,9 +163,14 @@ try {
     await writeFile(notes + '/nested/document', 'latest target notes\n');
     await writeFile(paths.primary + '/input', 'divergent original home\n');
     const remoteTurn = await turn(source, 'Run a shell command to print your working directory, then repeat the marker from our previous task. Do not use any other tools or create agents.', 'target-turn');
+    const targetRun = await currentRun(source, sessionId, agentId);
+    assert.equal(targetRun.provider_session_id, nativeId, 'Forward Move must resume the original native thread');
+    assert.equal(targetRun.working_directory, primary, 'Leased provider must use the receipt primary');
+    assert.equal(targetRun.model, sourceRun.model, 'Move must preserve the provider model');
+    assert.equal(targetRun.variant, sourceRun.variant, 'Move must preserve the provider effort');
     assert.ok(entries(remoteTurn.snapshot).some(row => row.role === 'assistant' && row.text?.includes(marker)), 'Native target must recall previous context');
     assert.ok(completedWorkspaceTool(entries(remoteTurn.snapshot), remoteTurn.promptId, primary), 'Target tool must execute in the receipt primary');
-    await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true});
+    await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true, nativeSessionId: targetRun.provider_session_id, providerWorkingDirectory: targetRun.working_directory, model: targetRun.model, effort: targetRun.variant});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'target'));
     const returned = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 2, false);
     const home = returned.repositories.find(r => r.role === 'primary').destinationPath;
