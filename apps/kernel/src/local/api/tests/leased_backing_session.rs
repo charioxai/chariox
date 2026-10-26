@@ -34,28 +34,35 @@ fn a_client_cannot_prompt_a_leased_agents_backing_session_on_the_worker() {
             .expect("leased agent should be created")
     });
 
-    let Ok(LocalDaemonResponse::SessionAttached { attachment }) = harness.dispatch_as_user(
-        "user-home",
-        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
-            session_id: leased.backing_session_id.clone(),
-            client_id: "direct-client".to_string(),
-            capability_level: ClientCapabilityLevel::FullTerminal,
-        }),
-    ) else {
-        return; // refused at the first step: the lease binding holds
+    let attach = |client_id: &str| {
+        harness.dispatch_as_user(
+            "user-home",
+            LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+                session_id: leased.backing_session_id.clone(),
+                client_id: client_id.to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            }),
+        )
     };
-    let submitted = harness.dispatch_as_user(
+    let refused = |result: Result<LocalDaemonResponse, DaemonError>| match result {
+        Err(DaemonError::LeasedBackingSessionRefused {
+            session_id,
+            home_session_id,
+        }) => {
+            assert_eq!(session_id, leased.backing_session_id);
+            assert_eq!(home_session_id, "session-home");
+        }
+        other => panic!("a client reached the leased agent's backing session: {other:?}"),
+    };
+    refused(attach("direct-client"));
+    refused(harness.dispatch_as_user(
         "user-home",
         LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: leased.backing_session_id.clone(),
-            attachment_id: attachment.id().to_string(),
+            attachment_id: "attachment-forged".to_string(),
             target_agent_id: Some(leased.backing_agent_id.clone()),
             prompt: "prompt that bypasses the home kernel\n".to_string(),
             attachments: Vec::new(),
         }),
-    );
-    assert!(
-        submitted.is_err(),
-        "a client prompted the leased agent on the worker without its lease: {submitted:?}"
-    );
+    ));
 }

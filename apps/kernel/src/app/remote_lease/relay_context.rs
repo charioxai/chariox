@@ -50,6 +50,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
         ))
     }
 
+    /// The home session of the lease whose leased agent runs in this backing session.
+    pub(crate) fn leased_backing_home_session(&self, session_id: &str) -> Option<String> {
+        let leased = self
+            .app
+            .leased_agents
+            .values()
+            .find(|leased| leased.backing_session_id == session_id)?;
+        self.app
+            .execution_leases
+            .get(&leased.lease_id)
+            .map(|lease| lease.home_session_id.clone())
+    }
+
     /// A10: the worker-local backing (session, agent) of one leased agent.
     pub(crate) fn leased_agent_backing(&self, leased_agent_id: &str) -> Option<(String, String)> {
         self.app.leased_agents.get(leased_agent_id).map(|leased| {

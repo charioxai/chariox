@@ -270,6 +270,13 @@ pub enum DaemonError {
     #[error("user `{user_id}` is not a member of session `{session_id}`")]
     SessionAccessDenied { session_id: String, user_id: String },
     #[error(
+        "session `{session_id}` backs a leased agent; use its home session `{home_session_id}` on the kernel that holds the lease"
+    )]
+    LeasedBackingSessionRefused {
+        session_id: String,
+        home_session_id: String,
+    },
+    #[error(
         "user `{user_id}` cannot perform `{operation}` on `{resource}` owned by `{owner_user_id}`"
     )]
     OwnershipAccessDenied {
@@ -464,7 +471,6 @@ impl DaemonError {
             _ => false,
         }
     }
-}
 
     /// The worker answered that the prompt a completion names is not its current
     /// one, so the home's prompt already settled there.
@@ -477,3 +483,4 @@ impl DaemonError {
             _ => false,
         }
     }
+}

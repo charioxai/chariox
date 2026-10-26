@@ -103,6 +103,7 @@ pub(crate) async fn authorize_session_membership(
                 workspace_id.as_deref(),
             )
             .await?;
+            ensure_not_leased_backing(runtime_state, &session).await?;
             if !is_member(runtime_state, command, &session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id: session.id().to_string(),
@@ -119,6 +120,7 @@ pub(crate) async fn authorize_session_membership(
                 .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
                 .await?;
             let session = runtime_state.session_snapshot(&session_id).await?;
+            ensure_not_leased_backing(runtime_state, &session).await?;
             if !is_member(runtime_state, command, &session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id,
@@ -220,6 +222,31 @@ fn is_member(
     }
 }
 
+/// The home kernel is the session authority for a leased agent, so clients never reach its
+/// backing session on the worker. The same hidden flag that keeps the session out of lists marks it.
+async fn ensure_not_leased_backing(
+    runtime_state: &KernelRuntimeState,
+    session: &crate::session::RuntimeSession,
+) -> Result<(), DaemonError> {
+    if !session.is_hidden() {
+        return Ok(());
+    }
+    let session_id = session.id().to_string();
+    let backing_session_id = session_id.clone();
+    let home_session_id = runtime_state
+        .with_app_side_effect(move |app| {
+            crate::app::RemoteLeaseRuntime::new(app).leased_backing_home_session(&backing_session_id)
+        })
+        .await;
+    match home_session_id {
+        Some(home_session_id) => Err(DaemonError::LeasedBackingSessionRefused {
+            session_id,
+            home_session_id,
+        }),
+        None => Ok(()),
+    }
+}
+
 async fn ensure_session_member(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
@@ -228,6 +255,7 @@ async fn ensure_session_member(
     user_id: &str,
 ) -> Result<(), DaemonError> {
     if let Some(session) = session_projection.get(session_id) {
+        ensure_not_leased_backing(runtime_state, &session).await?;
         if is_member(runtime_state, command, &session, user_id) {
             return Ok(());
         }
@@ -237,6 +265,7 @@ async fn ensure_session_member(
         });
     }
     let session = runtime_state.session_snapshot(session_id).await?;
+    ensure_not_leased_backing(runtime_state, &session).await?;
     if is_member(runtime_state, command, &session, user_id) {
         Ok(())
     } else {
