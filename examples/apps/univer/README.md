@@ -73,7 +73,9 @@ is a placeholder for that publisher's key ID, not a shipped signing identity.
 - Workbooks: at most 192 KiB of snapshot JSON, 16 sheets, 10,000 rows and 256
   columns per sheet. Range actions and a single CSV export cover at most 1,000
   cells. These limits fit the existing state and A2 result budgets; operations
-  above them fail explicitly. Use selected ranges or split a larger workbook.
+  above them fail explicitly. The CSV export menu asks for an optional A1 range;
+  use selected ranges or split a larger workbook. The CSV byte cap also applies
+  to input, but the expanded workbook must independently fit its snapshot cap.
 - XLSX: **NOT SHIPPED.** See [LICENSING.md](LICENSING.md). There is no XLSX menu,
   extension claim, paid import/export dependency or collaboration feature.
 

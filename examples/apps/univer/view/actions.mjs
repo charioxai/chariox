@@ -1,4 +1,4 @@
-import declarations from '../schemas/ui-actions.json';
+import declarations from '../schemas/ui-actions.json' with { type: 'json' };
 import { MAX_ROWS, MAX_COLUMNS, encodeCsv } from './csv.mjs';
 import { emptyWorkbook, validateWorkbook, workbookFromCsv, workbookFile, parseWorkbookFile, usedBounds } from './workbook.mjs';
 
@@ -16,17 +16,31 @@ export async function attachWorkbook(api, bridge) {
     return result;
   };
   const changed = delta => bridge.view.changed(delta);
-  function replace(data) {
-    validateWorkbook(data);
-    const previous = api.getActiveWorkbook();
-    subscription?.dispose();
-    if (previous) api.disposeUnit(previous.getId());
-    const current = api.createWorkbook(data);
-    latestRange = null;
+  function track(current) {
     subscription = current.onCommandExecuted(command => {
       // Mutations include human edits, undo/redo, sort and formula results.
       if (command.type === 2) { dirty = true; revision++; changed({ workbookChanged: command.id }); }
     });
+  }
+  function replace(data) {
+    validateWorkbook(data);
+    const previous = api.getActiveWorkbook();
+    const backup = previous ? { data: previous.save(), dirty, revision, latestRange } : null;
+    subscription?.dispose();
+    if (previous) api.disposeUnit(previous.getId());
+    try { track(api.createWorkbook(data)); }
+    catch (error) {
+      if (!backup) throw error;
+      try {
+        api.disposeUnit(data.id);
+        track(api.createWorkbook(backup.data));
+        dirty = backup.dirty; revision = backup.revision; latestRange = backup.latestRange;
+      } catch (restoreError) {
+        throw new Error(`Could not open or restore the workbook; reopen your saved or exported copy: ${restoreError.message}`);
+      }
+      throw new Error(`Could not open workbook; previous workbook restored: ${error.message}`);
+    }
+    latestRange = null;
     dirty = true; revision++;
     changed({ opened: data.name });
   }

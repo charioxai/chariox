@@ -27,7 +27,10 @@ async function start() {
   };
   const exportFile = async format => {
     const name = prompt('Export filename', format === 'csv' ? 'Workbook.csv' : 'Workbook.univer.json');
-    if (name) await actions[format === 'csv' ? 'export_csv' : 'export_workbook']({ name, offer: true });
+    if (!name) return;
+    const range = format === 'csv' ? prompt('CSV range (blank for used cells; at most 1,000 cells)', '') : '';
+    if (range === null) return;
+    await actions[format === 'csv' ? 'export_csv' : 'export_workbook']({ name, offer: true, ...(range ? { range: range.trim().toUpperCase() } : {}) });
   };
   const file = univerAPI.createSubmenu({ id: 'chariox.files', title: 'Files', order: -1 });
   file.appendTo('ribbon.start.history');
