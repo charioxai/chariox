@@ -388,6 +388,125 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     );
 }
 
+// A full one-character answer is the A12-S04 result, not a cut-off excerpt.
+async fn count_answer_assessment_context(answer: &str) -> String {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let prompt = "count-answer";
+    let run = "leased:lease:worker-run";
+    let mut request = SessionHistoryEntry::user_prompt(
+        &room,
+        "owner",
+        &agent,
+        "Call ListSessions once and report only the count; no other tools or edits.",
+    );
+    request.merge_key = Some(format!("prompt:{prompt}"));
+    let answer = SessionHistoryEntry::provider_output(
+        &room,
+        "worker-run",
+        Some(&agent),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        answer,
+    );
+    let private_tool = SessionHistoryEntry::provider_output(
+        &room,
+        "worker-run",
+        Some(&agent),
+        TerminalOutputKind::ProviderTool,
+        None,
+        r#"{"tool":"chariox_kernel_request","input":"PRIVATE_MCP_ARGUMENTS","output":"PRIVATE_MCP_OUTPUT"}"#,
+    );
+    for entry in [request, private_tool, answer] {
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    }
+    for op in [
+        Operation::Begin {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: Some(run.into()),
+            now: 1,
+        },
+        Operation::StartGoal {
+            task: prompt.into(),
+            owner: "owner".into(),
+            objective: "Call ListSessions once and report only the count".into(),
+            minutes: 10,
+            now: 1,
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: run.into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn assessment_marks_the_full_one_character_count_as_complete() {
+    let context = count_answer_assessment_context("2").await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["latest_public_answer_tail"], "2");
+    assert_eq!(data["answer_coverage"]["shown_chars"], 1);
+    assert_eq!(data["answer_coverage"]["total_chars"], 1);
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["answer_coverage"]["truncated"], false);
+    assert!(context.contains("even one character"));
+    assert!(context.contains("never treat it as truncated"));
+    assert!(context.contains("that complete result is the answer, not a plan or a missing report"));
+    assert!(context.contains(
+        "Do not require a narrative of prerequisite authority, blocking or resume steps"
+    ));
+}
+
+#[tokio::test]
+async fn assessment_empty_public_output_is_uncut_but_not_evidence_of_success() {
+    let context = count_answer_assessment_context("").await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["latest_public_answer_tail"], "");
+    assert_eq!(data["answer_coverage"]["shown_chars"], 0);
+    assert_eq!(data["answer_coverage"]["total_chars"], 0);
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["answer_coverage"]["truncated"], false);
+    assert!(context.contains("an empty result is not evidence of success"));
+}
+
+#[tokio::test]
+async fn assessment_keeps_a_genuinely_truncated_answer_incomplete() {
+    let context = count_answer_assessment_context(&"2".repeat(4097)).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["answer_coverage"]["shown_chars"], 4096);
+    assert_eq!(data["answer_coverage"]["total_chars"], 4097);
+    assert_eq!(data["answer_coverage"]["complete"], false);
+    assert_eq!(data["answer_coverage"]["truncated"], true);
+    assert!(context.contains("Truncated objective/evidence coverage or missing original public context cannot mean achieved"));
+}
+
 // MP-08/MP-10/MP-11: a privacy projection is never evidence for a native check.
 #[tokio::test]
 async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
@@ -474,6 +593,8 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
     assert!(data["latest_public_answer_tail"].is_null());
     assert_eq!(data["answer_coverage"]["visibility"], "protected");
+    assert_eq!(data["answer_coverage"]["complete"], false);
+    assert!(data["answer_coverage"]["truncated"].is_null());
     let mut leased = task.clone();
     leased
         .goal
