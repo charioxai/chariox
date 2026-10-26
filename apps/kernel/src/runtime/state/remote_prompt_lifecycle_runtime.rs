@@ -775,6 +775,25 @@ impl KernelRuntimeState {
                         provider_termination,
                     )
                 }
+                Err(error) if error.is_leased_prompt_run_changed() => {
+                    // The same prompt still runs on the worker; the home settles nothing until it
+                    // follows the successor run and the completion names it.
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt completion names a provider run the worker left",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": target_agent_id,
+                            "worker_kernel_id": remote_execution.worker_kernel_id,
+                            "leased_agent_id": remote_execution.leased_agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return Err(DaemonError::LocalTransport {
+                        operation: "complete remote prompt",
+                        message: "the worker prompt moved to another provider run; retry the completion once the home follows it".to_string(),
+                    });
+                }
                 Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
                     crate::logging::warn_with_fields(
                         "daemon.remote_prompt_dispatch",
