@@ -28,6 +28,23 @@ test("slice images copy and fingerprint every kernel package path dependency", a
   }
 })
 
+test("slice images copy and fingerprint workspace path patches", async () => {
+  const [manifest, dockerfile, runtimeSourceRoots] = await Promise.all([
+    readFile(new URL("../../../Cargo.toml", import.meta.url), "utf8"),
+    readFile(dockerfilePath, "utf8"),
+    readFile(runtimeSourceRootsPath, "utf8"),
+  ])
+  const roots = runtimeSourceRoots.split("\n").filter(Boolean)
+  const patches = [...manifest.split("[patch.crates-io]")[1].split(/\n\[/)[0]
+    .matchAll(/path\s*=\s*"([^"]+)"/g)].map((match) => match[1])
+  assert.ok(patches.length > 0, "fixture should discover workspace path patches")
+  for (const path of patches) {
+    assert.ok(dockerfile.split("\n").includes(`COPY ${path} ${path}`),
+      `Rust build stage omits workspace patch ${path}`)
+    assert.ok(roots.includes(path), `runtime source roots omit workspace patch ${path}`)
+  }
+})
+
 test("slice image build runs the discoverable Selkies lifecycle tests", async () => {
   const [dockerfile, lifecycleTest] = await Promise.all([
     readFile(dockerfilePath, "utf8"),

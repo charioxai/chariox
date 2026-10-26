@@ -341,6 +341,11 @@ impl DaemonApp {
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
         self.sessions.write().restore_room_environments()?;
+        if default_named_agents > 0 {
+            // Later renames are saved per agent, so the names given above must
+            // be saved now or a restart would number the unnamed agents again.
+            self.save_durable_state_snapshot()?;
+        }
         crate::logging::info_with_fields(
             "durable_state.restore",
             "restored durable kernel state",

@@ -19,6 +19,7 @@ exclude = [
     "opencode-dev",
     "paseo",
     "host-worktree",
+    "patches/ureq",
 ]
 
 # A [workspace.lints] section warning on unwrap_used/expect_used is a natural
@@ -31,3 +32,6 @@ exclude = [
 # to every debug-kernel App cold start (0.24 s optimized). Optimize just sha2.
 [profile.dev.package.sha2]
 opt-level = 3
+
+[patch.crates-io]
+ureq = { path = "patches/ureq" }

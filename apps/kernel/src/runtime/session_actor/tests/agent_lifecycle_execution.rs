@@ -2,6 +2,7 @@ use super::*;
 
 mod config_invalidation;
 mod destroy_cleanup;
+mod spawn_account_profiles;
 mod spawn_owned_runtime;
 mod spawn_validation_and_placement;
 

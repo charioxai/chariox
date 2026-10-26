@@ -128,6 +128,7 @@ struct Shared {
     answered: Condvar,
 }
 
+#[derive(Clone)]
 pub(crate) struct Resolver {
     shared: Arc<Shared>,
 }
@@ -192,6 +193,47 @@ impl Resolver {
                     .wait(hosts)
                     .unwrap_or_else(|error| error.into_inner());
             }
+        }
+    }
+
+    pub(super) fn has_pending(&self, netloc: &str, known: &[SocketAddr]) -> bool {
+        self.lock_hosts().get(netloc).is_some_and(|state| {
+            state.lookups_in_flight()
+                || state
+                    .addresses()
+                    .iter()
+                    .any(|address| !known.contains(address))
+        })
+    }
+
+    /// A failed dial may still use the other family's answer. Do not start
+    /// another lookup or give an existing one a new deadline.
+    pub(super) fn resolve_next(
+        &self,
+        netloc: &str,
+        tried: &[SocketAddr],
+        deadline: Instant,
+    ) -> io::Result<Vec<SocketAddr>> {
+        let mut hosts = self.lock_hosts();
+        loop {
+            let Some(state) = hosts.get(netloc) else {
+                return Ok(Vec::new());
+            };
+            let addresses: Vec<_> = state
+                .addresses()
+                .into_iter()
+                .filter(|address| !tried.contains(address))
+                .collect();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if !addresses.is_empty() || !state.lookups_in_flight() || remaining.is_zero() {
+                return Ok(addresses);
+            }
+            hosts = self
+                .shared
+                .answered
+                .wait_timeout(hosts, remaining)
+                .unwrap_or_else(|error| error.into_inner())
+                .0;
         }
     }
 

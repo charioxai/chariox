@@ -1056,7 +1056,6 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
     isAttached, sessionHydrating, anyTurnWork, sessionState, attachmentState, providerRunState,
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
-    currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },

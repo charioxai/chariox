@@ -227,7 +227,6 @@ export type CliCommandActionCompositionDeps = {
   providerRunState: AnyFn
   currentModelId: AnyFn
   currentVariantId: AnyFn
-  currentAccountProfileId?: AnyFn
   focusedAgentId: AnyFn
   multiAgentResponseLayout: AnyFn
   maxAgentsPerScreen: AnyFn
@@ -348,7 +347,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
-    currentAccountProfileId,
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -482,7 +480,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentModelId,
     currentVariantId,
     currentProviderId: () => options.provider ?? "opencode",
-    currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
     submitGoalPrompt: async (text, targetAgentId) => {
@@ -893,7 +890,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         client,
         sessionState().id,
         provider,
-        accountProfile || options.accountProfile || "default",
+        accountProfile || "default",
         model,
         variant,
         agentId,
@@ -952,7 +949,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         agentIds.map((agentId) => ({
           sessionId: sessionState().id,
           provider,
-          accountProfile: accountProfile || options.accountProfile || "default",
+          accountProfile: accountProfile || "default",
           model,
           effort: variant,
           agentId,

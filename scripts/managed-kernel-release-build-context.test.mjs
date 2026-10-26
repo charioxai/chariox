@@ -55,6 +55,11 @@ test("managed release stages every local Dockerfile COPY source", async (context
     join(stagedContext, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "utf8",
   )
+  // Cargo must load workspace patches even when building an unrelated package.
+  for (const path of ["patches/ureq/Cargo.toml", "patches/ureq/src/lib.rs"]) {
+    assert.deepEqual(await readFile(join(stagedContext, path)),
+      await readFile(join(repositoryRoot, path)), `exported workspace patch differs: ${path}`)
+  }
   const sources = dockerfileCopySources(dockerfile)
   assert.ok(sources.length > 0, "fixture should discover local Dockerfile COPY sources")
   const missing = []

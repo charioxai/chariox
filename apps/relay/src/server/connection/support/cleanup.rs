@@ -198,7 +198,7 @@ pub(in crate::server::connection) fn release_daemon(
 
 /// Tells everyone waiting on a released daemon that it is gone, so clients
 /// retry on its next registration instead of waiting for their timeouts.
-pub(in crate::server::connection) async fn announce_released_daemon(released: ReleasedDaemon) {
+pub(in crate::server::connection) fn announce_released_daemon(released: ReleasedDaemon) {
     for (sender, request_id) in released.client_errors {
         let _ = send_envelope(
             &sender,
@@ -233,14 +233,14 @@ pub(in crate::server::connection) async fn announce_released_daemon(released: Re
         let _ = sender.try_send(Message::Close(None));
     }
     for sender in released.display_stream_senders {
-        let _ = sender
-            .send(DisplayStreamEvent::Close {
-                error: Some(relay_error(
-                    "target_disconnected",
-                    "target daemon disconnected from relay",
-                    true,
-                )),
-            })
-            .await;
+        // Removing the registry sender and dropping this clone also closes a full
+        // queue after it drains. Never wait on an old viewer in a new daemon's reader.
+        let _ = sender.try_send(DisplayStreamEvent::Close {
+            error: Some(relay_error(
+                "target_disconnected",
+                "target daemon disconnected from relay",
+                true,
+            )),
+        });
     }
 }
