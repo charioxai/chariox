@@ -55,6 +55,9 @@ An instance loss reports the culprit's stop reason and
 manifest's optional `idempotentTools` list can replay, once, before its original
 deadline. The culprit, cancelled calls and non-idempotent operations never
 replay. The kernel broker must not add a second automatic replay layer.
+Its shared `WorkerPeer` admits 64 executing calls and 16 FIFO waiters, then
+returns `app_peer_busy`; the worker's own 64-call cap remains a defensive bound.
+Cancelled calls retain kernel execution admission until their terminal reply.
 Native process death and OS quotas remain the kernel supervisor/R5 boundary.
 
 ## Engine compatibility and checks

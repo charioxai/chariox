@@ -37,6 +37,7 @@ impl Guest for App {
         for name in [
             "echo",
             "shared",
+            "increment",
             "wait",
             "ignore",
             "trap",
@@ -117,6 +118,30 @@ async fn run(name: String, input: String) -> Result<String, AppError> {
             state::get("hold".into()).await?;
             Ok("null".into())
         }
+        "increment" => loop {
+            let previous = state::get("counter".into()).await?;
+            let count = previous
+                .as_ref()
+                .map(|record| serde_json::from_str::<u64>(&record.value).unwrap())
+                .unwrap_or(0)
+                + 1;
+            let result = state::transact(state::Transaction {
+                schema_version: 1,
+                checks: vec![state::Check {
+                    key: "counter".into(),
+                    version: previous.map(|record| record.version),
+                }],
+                writes: vec![state::Write::Put(("counter".into(), count.to_string()))],
+                occurrences: vec![],
+                wakes: vec![],
+            })
+            .await;
+            match result {
+                Ok(_) => return Ok(count.to_string()),
+                Err(error) if error.code == "CONFLICT" => continue,
+                Err(error) => return Err(error),
+            }
+        },
         "trap" => core::arch::wasm32::unreachable(),
         "spin" => loop {
             std::hint::spin_loop();

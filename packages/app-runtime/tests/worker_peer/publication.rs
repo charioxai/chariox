@@ -153,6 +153,7 @@ async fn queued_reply_cancel_or_deadline_keeps_capacity_and_poisons_only_its_str
             let handler = probe(false);
             let limits = PeerLimits {
                 broker_handlers: 1,
+                queued_broker_requests: 0,
                 ..PeerLimits::default()
             };
             let (peer, _, task) = WorkerPeer::start(
@@ -287,6 +288,7 @@ async fn unrelated_request_before_unpublished_ack_cannot_reap_its_only_failure()
             handler.clone(),
             PeerLimits {
                 broker_handlers: 1,
+                queued_broker_requests: 0,
                 ..PeerLimits::default()
             },
         )

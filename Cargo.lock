@@ -460,6 +460,7 @@ dependencies = [
  "chariox-app-wit",
  "futures",
  "libc",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
