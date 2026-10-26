@@ -392,16 +392,14 @@ impl KernelRuntimeState {
             } => self.is_room_display(subscription_id),
             _ => false,
         };
-        if !room_control
-            && !features::display_enabled()
-            && !(features::mirror_enabled()
-                && matches!(
-                    &request,
-                    KernelBrowserDisplayRequest::Takeover { .. }
-                        | KernelBrowserDisplayRequest::Release { .. }
-                        | KernelBrowserDisplayRequest::Actors
-                ))
-        {
+        let mirror_control = features::mirror_enabled()
+            && matches!(
+                &request,
+                KernelBrowserDisplayRequest::Takeover { .. }
+                    | KernelBrowserDisplayRequest::Release { .. }
+                    | KernelBrowserDisplayRequest::Actors
+            );
+        if !(room_control || features::display_enabled() || mirror_control) {
             return Err(host_error("MD-DISPLAY: display disabled".into()));
         }
         Box::pin(self.kernel_browser_display_request(caller, request)).await
