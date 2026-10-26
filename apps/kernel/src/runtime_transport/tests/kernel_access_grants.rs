@@ -1354,6 +1354,28 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
     assert_eq!(subscribed["kernel"], "b3", "{subscribed}");
 }
 
+// A subscription routed to another kernel keeps that kernel's own heartbeat interval, so
+// asking for one is refused instead of being dropped without a word.
+#[tokio::test]
+async fn a_routed_subscription_refuses_a_heartbeat_interval_it_cannot_apply() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let attachment = holder.attach();
+    writeln!(
+        holder.input,
+        "{}",
+        serde_json::json!({"type":"subscribe", "request_id":"subscribe", "session_id":SESSION,
+            "attachment_id":attachment, "kernel":"b3", "heartbeat_interval_ms":1000})
+    )
+    .unwrap();
+    let refused = holder.result();
+    assert_eq!(
+        refused["error"]["code"], "heartbeat_interval_not_routable",
+        "{refused}"
+    );
+}
+
 // EA2-07 (target half): a grant holder moves a file in chunks through the kernel,
 // reads it back, and a wrong request is told what to do next.
 #[tokio::test]
