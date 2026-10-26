@@ -41,12 +41,12 @@ async function record(name, data) {
 }
 const runtimes = [];
 let browser, closed = false;
-async function stop(child) {
+async function stop(child, signal = 'SIGINT') {
     if (!child)
         return;
     const owned = descendants(child.pid);
     if (child.exitCode === null && child.signalCode === null)
-        signalOwnedProcessGroup(child, 'SIGINT');
+        signalOwnedProcessGroup(child, signal);
     for (let n = 0; n < 60; n++) {
         if (!processSnapshot().some(p => p.state !== 'Z' && owned.some(x => p.pid === x.pid && p.start === x.start)))
             return;
@@ -110,9 +110,13 @@ async function runtime(name) {
 }
 // Restart only this harness's kernel and reconnect the same real TUI Room.
 async function restart(r, workspace, sessionId) {
+    // Interrupt the captured transaction before closing its client or TUI.
+    const exited = new Promise(resolve => r.child.once('exit', resolve));
+    await stop(r.child, 'SIGKILL');
+    if (r.child.exitCode === null && r.child.signalCode === null) await exited;
+    assert.equal(r.child.signalCode, 'SIGKILL', `Own kernel must be interrupted mid-Move (exit=${r.child.exitCode}, signal=${r.child.signalCode})`);
     await r.tui?.close();
     await r.client?.close();
-    await stop(r.child);
     r.child = spawnOwned(kernel, [], { cwd: r.path, env: r.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     const stream = createWriteStream(r.path + '/kernel-restart.private.log', { mode: 0o600 });
     r.child.stdout.pipe(stream); r.child.stderr.pipe(stream);
@@ -125,7 +129,7 @@ async function restart(r, workspace, sessionId) {
     assert.ok(ready, 'Restarted kernel readiness');
     r.tui = await openTui({ tree: workspace, env: r.env, url: r.url, profile: r.accountProfile.profile_id, root: r.path, binary, provider: 'codex', model: 'gpt-6-luna', session: sessionId, clientId: 'movekernel-restarted-' + r.name });
     await unlock(r);
-    await record(r.name + '-restart', { pid: r.child.pid, sameRoom: sessionId });
+    await record(r.name + '-restart', { pid: r.child.pid, sameRoom: sessionId, previousKernelSignal: 'SIGKILL' });
 }
 async function enroll(r) {
     const context = await browser.newContext(), page = await context.newPage();
@@ -206,7 +210,7 @@ async function project(r, paths, projectId) {
     r.accountProfile ??= variant(await r.client.send({ LinkProviderAccountProfile: { provider: 'codex', label: 'Workspace drill', path: required('CHARIOX_WORKSPACE_PROFILE') } }), 'ProviderAccountProfile').profile;
     const profile = r.accountProfile;
     await r.client.send({ RefreshProviderAccountProfile: { provider: 'codex', account_profile: profile.profile_id } });
-    const created = variant(await r.client.send({ CreateSession: { workspace_id: paths.primary, worktree_id: paths.primary, alias: 'Workspace ' + r.name, project_selection: projectId ? { kind: 'existing', project_id: projectId } : { kind: 'new', name: 'Move workspace ' + r.name }, agent_defaults: { provider: 'codex', account_profile: profile.profile_id, model: 'gpt-6-luna', effort: 'low', permission_level: 'required' } } }), 'SessionCreated');
+    const created = variant(await r.client.send({ CreateSession: { workspace_id: paths.workspace ?? paths.primary, worktree_id: paths.primary, alias: 'Workspace ' + r.name, project_selection: projectId ? { kind: 'existing', project_id: projectId } : { kind: 'new', name: 'Move workspace ' + r.name }, agent_defaults: { provider: 'codex', account_profile: profile.profile_id, model: 'gpt-6-luna', effort: 'low', permission_level: 'required' } } }), 'SessionCreated');
     await r.tui?.close();
     r.tui = await openTui({ tree: paths.primary, env: r.env, url: r.url, profile: profile.profile_id, root: r.path, binary, provider: 'codex', model: 'gpt-6-luna', session: created.session.id, clientId: 'movekernel-r6-' + r.name });
     let snap;
@@ -221,7 +225,7 @@ async function project(r, paths, projectId) {
     const state = variant(await r.client.send({ GetSessionState: { session_id: snap.session.id } }), 'SessionState');
     const id = state.session.project_id;
     assert.ok(id);
-    await r.client.send({ UpdateProjectWorkspaces: { project_id: id, workspace_ids: [paths.primary, paths.notes] } });
+    await r.client.send({ UpdateProjectWorkspaces: { project_id: id, workspace_ids: [paths.workspace ?? paths.primary, paths.notes] } });
     return id;
 }
 async function selection(source, target, id, paths) {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { dirname } from 'node:path';
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js';
 import { root, out, kernel, binary, sha, record, runtime, enroll, project, selection, launchBrowser, close, release, restart } from './workspace-runtime.mjs';
 import { fixture } from './workspace-fixture.mjs';
@@ -17,12 +18,32 @@ async function currentRun(r, id, agentId) {
     assert.ok(runId, 'Real provider run identity');
     return variant(await r.client.send({GetProviderRun: {provider_run_id: runId}}), 'ProviderRun').provider_run;
 }
+async function turnProgress(r, label, snapshot) {
+    const agentId = snapshot.session.focusedAgentId;
+    const agent = snapshot.session.agents.find(a => a.id === agentId);
+    const core = await state(r, snapshot.session.id);
+    const actual = core.session.agents.find(a => a.id === agentId);
+    const activity = core.agent_activity?.[agentId];
+    const runId = actual?.active_provider_run_id ?? activity?.last_completed_turn?.provider_run_id;
+    const response = runId ? await r.client.send({GetProviderRun: {provider_run_id: runId}}) : undefined;
+    const run = response?.ProviderRun?.provider_run;
+    await record(label + '-progress', {
+        agentState: agent?.state, isProcessing: agent?.isProcessing,
+        activeProviderRunId: actual?.active_provider_run_id,
+        remoteKernelId: actual?.remote_execution?.worker_kernel_id,
+        leasedAgentId: actual?.remote_execution?.leased_agent_id,
+        rowRoles: entries(snapshot).reduce((counts, row) => { counts[row.role] = (counts[row.role] ?? 0) + 1; return counts; }, {}),
+        interactions: (snapshot.interactions ?? []).map(i => ({kind: i.kind, title: i.title, choices: i.choices?.map(c => c.id)})),
+        providerRun: run && {id: run.id, state: run.state, phase: run.phase, workingDirectory: run.working_directory},
+    });
+}
 async function turn(r, text, label) {
     const before = new Set(entries(await r.tui.send('snapshot')).map(row => row.id));
     await r.tui.send('submit_prompt', {prompt: text});
     let settled;
     for (let n = 0; n < 720; n++) {
         let snapshot = await r.tui.send('snapshot');
+        if (n % 40 === 0) await turnProgress(r, label, snapshot);
         const agent = snapshot.session.agents.find(a => a.id === snapshot.session.focusedAgentId);
         const permission = snapshot.interactions?.find(i => i.kind === 'permission' && i.title === 'Command approval required');
         if (permission) {
@@ -49,6 +70,7 @@ async function turn(r, text, label) {
         } else settled = undefined;
         await sleep(250);
     }
+    await turnProgress(r, label, await r.tui.send('snapshot'));
     throw Error('Real provider turn deadline: ' + label);
 }
 async function journal(r, generation) {
@@ -63,17 +85,24 @@ async function moveWithRestart(source, target, sessionId, agentId, workspace, ge
     const client = new LocalIpcClient(source.url, {timeoutMs: 1800000, localAuthEnvironment: source.env});
     let response;
     const request = forward ? {MoveAgentToRemote: {session_id: sessionId, agent_ref: agentId, machine_ref: target.status.daemon_id}} : {MoveAgentToLocal: {session_id: sessionId, agent_ref: agentId}};
-    const pending = client.send(request).then(value => { response = value; }, error => { response = {disconnected: true}; });
+    const pending = client.send(request).then(value => { response = value; }, error => { response = {error: String(error.message ?? error).slice(0, 700)}; });
     try {
         let captured;
-        for (let n = 0; n < 6000; n++) {
+        for (let n = 0; n < 60000; n++) {
             const value = await journal(source, generation);
+            if (n % 400 === 0) {
+                const snapshot = await source.tui.send('snapshot');
+                await writeFile(out + '/move-progress-' + generation + '.json', JSON.stringify({phase: value?.phase.phase, interactions: (snapshot.interactions ?? []).map(i => ({kind: i.kind, title: i.title, choices: i.choices?.map(c => c.id)})), responseError: response?.error}) + '\n', {mode: 0o600});
+            }
             if (value?.phase.phase === 'captured') { captured = value; break; }
-            if (value && ['materialized', 'bound', 'committed', 'complete', 'rolled_back'].includes(value.phase.phase)) throw Error('Missed mid-Move restart boundary: ' + value.phase.phase);
-            if (response && !response.disconnected) throw Error('Move ended before the captured boundary: ' + Object.keys(response));
+            if (value?.phase.phase === 'rolled_back') throw Error('Move rolled back before capture: ' + value.phase.reason);
+            if (value && ['materialized', 'bound', 'committed', 'complete'].includes(value.phase.phase)) throw Error('Missed mid-Move restart boundary: ' + value.phase.phase);
+            if (response?.error) throw Error('Move rejected before capture: ' + response.error);
+            if (response) throw Error('Move ended before the captured boundary: ' + Object.keys(response));
             await sleep(5);
         }
         assert.ok(captured, 'Move must durably capture its stopped source');
+        assert.equal(captured.identity.target_kernel_id, forward ? target.status.daemon_id : source.status.daemon_id, 'Selected target identity');
         await record(forward ? 'forward-before-restart' : 'return-before-restart', {generation, operationId: captured.identity.operation_id, phase: captured.phase.phase});
         await restart(source, workspace, sessionId);
         await pending;
@@ -93,11 +122,12 @@ await mkdir(out, {recursive: true, mode: 0o700});
 let failed;
 try {
     assert.equal(Number(execFileSync(kernel, ['--print-local-daemon-protocol-version'], {encoding: 'utf8'}).trim()), 608);
-    await record('identity', {head: process.env.CHARIOX_WORKSPACE_KERNEL_HEAD, kernelSha256: sha(await readFile(kernel)), tuiSha256: sha(await readFile(binary)), provider: 'codex', model: 'gpt-6-luna', effort: 'low'});
+    await record('identity', {head: process.env.CHARIOX_WORKSPACE_KERNEL_HEAD, kernelSha256: sha(await readFile(kernel)), tuiSha256: sha(await readFile(binary)), driverSha256: sha(await readFile(new URL(import.meta.url))), runtimeDriverSha256: sha(await readFile(new URL('./workspace-runtime.mjs', import.meta.url))), provider: 'codex', model: 'gpt-6-luna', effort: 'low'});
     await launchBrowser();
     const source = await runtime('source'), target = await runtime('target');
     await enroll(source); await enroll(target);
     const paths = await fixture();
+    paths.workspace = dirname(execFileSync('git', ['-C', paths.primary, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {encoding: 'utf8'}).trim());
     // A bounded real file keeps the public transfer in progress long enough to restart.
     await writeFile(paths.primary + '/restart-transfer-a.bin', randomBytes(12 * 1024 * 1024));
     await writeFile(paths.primary + '/restart-transfer-b.bin', randomBytes(12 * 1024 * 1024));
@@ -108,9 +138,17 @@ try {
     const snapshot = await source.tui.send('snapshot'), sessionId = snapshot.session.id, agentId = snapshot.session.focusedAgentId;
     const marker = 'move-' + randomBytes(10).toString('hex');
     await turn(source, 'Remember this marker for our next task: ' + marker + '. Reply only ACK. Do not use tools or create agents.', 'source-turn');
-    const nativeId = (await currentRun(source, sessionId, agentId)).provider_session_id;
+    const sourceRun = await currentRun(source, sessionId, agentId);
+    const nativeId = sourceRun.provider_session_id;
+    const sourceState = await state(source, sessionId), sourceAgent = sourceState.session.agents.find(a => a.id === agentId);
+    await record('source-layout', {roomWorkspace: sourceState.session.workspace_id, roomWorktree: sourceState.session.worktree_id, agentWorkspace: sourceAgent.workspace_id, agentWorktree: sourceAgent.worktree_id, providerWorkingDirectory: sourceRun.working_directory, projectMembers: [paths.workspace, paths.notes]});
     assert.ok(nativeId);
     const forward = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 1, true);
+    const movedState = await state(source, sessionId);
+    const movedAgent = movedState.session.agents.find(a => a.id === agentId);
+    assert.equal(movedAgent.remote_execution?.worker_kernel_id, target.status.daemon_id);
+    assert.ok(movedAgent.remote_execution?.leased_agent_id, 'Move must continue through a leased agent');
+    await record('leased-agent', {homeRoom: sessionId, homeAgent: agentId, targetKernel: target.status.daemon_id, leasedAgent: movedAgent.remote_execution.leased_agent_id});
     const primary = forward.repositories.find(r => r.role === 'primary').destinationPath;
     const notes = forward.repositories.find(r => r.role === 'supporting').destinationPath;
     assert.notEqual(primary, paths.primary);
