@@ -731,6 +731,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some(caller) = caller.as_ref() {
             self.retain_leased_agent_caller(&agent.id, caller)?;
         }
+        // The hidden backing session stays out of lists but is a real session: health checks
+        // the backing agent against the session projection.
+        let backing_session = self.app.sessions.get_session(session.id())?;
+        self.app.update_session_projection(backing_session);
         Ok(agent)
     }
 
