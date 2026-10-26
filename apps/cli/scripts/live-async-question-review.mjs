@@ -60,7 +60,7 @@ export async function reviewQuestions({owner,root,until,sleep,capture,record,que
   const task=taskEvidence(owner,questions[0].asking_task_id)
   await record('review-03-retained-deadlines',{questions,task})
   assert.equal(task.reason,'Waiting for the answer to a non-blocking question','This drill requires normal settlement, not an explicit provider yield')
-  results.push({finding:'question deadline',pass:task.wait.deadline_ms===8_639_999_999_999_999,deadline_ms:task.wait.deadline_ms})
+  results.push({finding:'question deadline',pass:task.wait.deadline_ms===253_402_300_799_999,deadline_ms:task.wait.deadline_ms})
   await capture(owner.tui,'review-03-long-questions')
   assert(!JSON.stringify(await owner.tui.send('snapshot')).includes('Invalid wait deadline'),'The retained deadline must render in the real TUI')
   for(const question of questions) {

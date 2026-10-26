@@ -731,7 +731,7 @@ async fn async_popup_review_wait_deadline_follows_the_latest_question() {
         };
         assert_eq!(
             task.wait.unwrap().deadline_ms,
-            wake.next_due_ms.unwrap_or(8_639_999_999_999_999)
+            wake.next_due_ms.unwrap_or(253_402_300_799_999)
         );
     }
 }

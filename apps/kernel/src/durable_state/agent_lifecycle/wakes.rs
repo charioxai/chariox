@@ -147,8 +147,8 @@ pub(super) fn source_deadline(
     Ok(deadline)
 }
 
-/// Largest finite timestamp shared clients can render as a valid Date.
-const MAX_QUESTION_WAIT_DEADLINE_MS: u64 = 8_639_999_999_999_999;
+/// Last four-digit ISO year: existing client clocks slice that date format.
+const MAX_QUESTION_WAIT_DEADLINE_MS: u64 = 253_402_300_799_999;
 
 /// Retain every unanswered question until the latest source deadline. A question
 /// without a timeout uses the client date bound, rather than spending provider
