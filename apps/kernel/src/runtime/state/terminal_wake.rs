@@ -164,23 +164,15 @@ fn report(sink: &WakeSink, event: RoomTerminalEvent) {
 /// copy of the completion: it is offered again, under the same occurrence id,
 /// until the ledger commits it or the wake no longer awaits it.
 fn retry_until_committed(sink: WakeSink, occurrence: WakeOccurrence) {
-    let spawned = std::thread::Builder::new()
-        .name("terminal-wake-retry".into())
-        .spawn(move || {
-            while sink.awaits_occurrence(&occurrence.wake_id) {
-                std::thread::sleep(COMMIT_RETRY_AFTER);
-                if sink.occurred(occurrence.clone()).is_ok() {
-                    return;
-                }
+    // A committed occurrence schedules agent delivery on this runtime too.
+    tokio::spawn(async move {
+        while sink.awaits_occurrence(&occurrence.wake_id) {
+            tokio::time::sleep(COMMIT_RETRY_AFTER).await;
+            if sink.occurred(occurrence.clone()).is_ok() {
+                return;
             }
-        });
-    if let Err(error) = spawned {
-        crate::logging::error_with_fields(
-            "room_terminal.event",
-            "a terminal event could not be retried",
-            serde_json::json!({ "error": error.to_string() }),
-        );
-    }
+        }
+    });
 }
 
 impl TerminalWakeDriver {
