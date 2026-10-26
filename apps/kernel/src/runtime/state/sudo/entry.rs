@@ -28,6 +28,11 @@ fn catalog_not_ready() -> DaemonError {
     sudo_ended("provider catalog refresh failed", &not_ready())
 }
 
+// MP-08 / MP-10 / MP-11: inject a provider settling after a busy snapshot.
+#[cfg(test)]
+pub(super) static SETTLE_AFTER_BUSY_FOR_TEST: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 impl KernelRuntimeState {
     /// Called only after terminal identity and session ownership are checked by
     /// the router. The waiting future, including the full prompt, is ephemeral.
@@ -448,10 +453,13 @@ impl KernelRuntimeState {
                 }
                 relaunch_deadline = None;
             }
-            if !reload
-                && !self.sudo_agent_busy(entry)?
-                && request.prompt.starts_with("/goal resume ")
-            {
+            if request.prompt.starts_with("/goal resume ") {
+                // Resume must never fall through to admitting an ordinary task,
+                // even if the previous turn settles after the busy snapshot.
+                if reload || self.sudo_agent_busy(entry)? {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
                 return self
                     .control_goal_prompt_with_sudo(request, &entry.owner_user_id, Some(entry))
                     .await?
@@ -527,12 +535,27 @@ impl KernelRuntimeState {
     }
     fn sudo_agent_busy(&self, entry: &KernelSudoTurn) -> Result<bool, DaemonError> {
         let session = self.owned.session_store.get_session(&entry.session_id)?;
-        Ok(self
+        let busy = self
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, &entry.agent_id)
-            .is_some())
+            .is_some();
+        #[cfg(test)]
+        if busy
+            && SETTLE_AFTER_BUSY_FOR_TEST
+                .lock()
+                .unwrap()
+                .remove(&entry.session_id)
+        {
+            assert!(self
+                .owned
+                .prompt_state_owner
+                .complete_active_prompt_only(&session, &entry.agent_id)
+                .is_some());
+        }
+        Ok(busy)
     }
+
     fn try_start_sudo(
         &self,
         entry: &KernelSudoTurn,
