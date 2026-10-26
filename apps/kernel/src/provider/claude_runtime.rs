@@ -1326,6 +1326,91 @@ done
         );
     }
 
+    /// EA2-75: a Claude `result` error and a `StopFailure` hook keep the
+    /// harness text and give the typed cause. "Not logged in", the exit text,
+    /// 529, 429 and the connection-refused text are recorded output
+    /// (rootaudit/r1/matrix1.txt:14, agents/accam/agent.log:306014, the r39
+    /// drill); the credit-balance text is Claude's documented wording and was
+    /// not recorded.
+    #[test]
+    fn claude_errors_are_typed_from_their_result_and_hook() {
+        use crate::provider::{ProviderFailure, ProviderFailureCause::*};
+        let result_error = |text: &str| {
+            let (mut state, mut batch) = parser_state();
+            apply_claude_message(
+                "run-1",
+                &mut state,
+                json!({"type": "result", "subtype": "success", "is_error": true, "result": text}),
+                &mut batch,
+            );
+            assert!(batch.explicit_provider_error);
+            ProviderFailure::classify("claude", &batch.terminal_failure.expect("failure"))
+        };
+        let expected = |cause, retryable, message: &str| ProviderFailure {
+            cause,
+            retryable,
+            message: message.to_string(),
+        };
+        assert_eq!(
+            result_error("Not logged in · Please run /login"),
+            expected(SignInRequired, false, "Not logged in · Please run /login")
+        );
+        // Recorded official CLI output (r39 fixture drill, extagent/r39 evidence):
+        // a synthetic backend answering with Anthropic's HTTP 529
+        // `overloaded_error` body, and against an unreachable proxy.
+        let overloaded = "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:57990).";
+        assert_eq!(
+            result_error(overloaded),
+            expected(Overloaded, true, overloaded)
+        );
+        let refused =
+            "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)";
+        assert_eq!(result_error(refused), expected(Network, true, refused));
+        assert_eq!(
+            result_error("Credit balance is too low"),
+            expected(UsageLimit, false, "Credit balance is too low")
+        );
+        assert_eq!(
+            result_error("Claude Code exited before completing the active turn: exit status: 1"),
+            expected(
+                ProviderCrashed,
+                true,
+                "Claude Code exited before completing the active turn: exit status: 1"
+            )
+        );
+        // Recorded official CLI output (r39 fixture drill): a synthetic backend that
+        // answers HTTP 429 with Anthropic's `rate_limit_error` body.
+        let rate_limited = "API Error: Server is temporarily limiting requests (not your usage limit) · Number of request tokens has exceeded your per-minute rate limit";
+        assert_eq!(
+            result_error(rate_limited),
+            expected(UsageLimit, true, rate_limited)
+        );
+        let stop_failure = crate::provider::claude_native_stop_failure(&json!({
+            "hook_event_name": "StopFailure",
+            "error": "rate_limit",
+            "last_assistant_message": "You've hit your session limit · resets 8:30am"
+        }))
+        .expect("StopFailure frame");
+        assert_eq!(
+            ProviderFailure::classify("claude", &stop_failure),
+            expected(
+                UsageLimit,
+                false,
+                "You've hit your session limit · resets 8:30am"
+            )
+        );
+        let auth = crate::provider::claude_native_stop_failure(&json!({
+            "hook_event_name": "StopFailure",
+            "error": "authentication_failed",
+            "last_assistant_message": "Invalid API key · Please run /login"
+        }))
+        .expect("StopFailure frame");
+        assert_eq!(
+            ProviderFailure::classify("claude", &auth).cause,
+            SignInRequired
+        );
+    }
+
     #[test]
     fn captures_system_session_and_model() {
         let (mut state, mut batch) = parser_state();
