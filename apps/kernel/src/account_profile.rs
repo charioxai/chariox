@@ -1209,12 +1209,10 @@ impl ProviderAccountProfileRegistry {
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
-        // Peer admission and credential installation retain their operation and
-        // static remediation; local owners get the selected account's name.
+        // Leased prompt admission retains its existing generic code; other
+        // refusals keep their reason for the local and relay projections.
         let refused = |reason: crate::error::ProviderProfileRefusal| {
-            if operation == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION
-                || operation == "ensure remote provider account"
-            {
+            if operation == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION {
                 DaemonError::LocalTransport {
                     operation,
                     message: crate::error::external_request_failure_message(reason.code()).into(),
