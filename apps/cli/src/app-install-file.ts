@@ -4,10 +4,11 @@ import { isAbsolute, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import {
   beginAppPackageUploadRequest, putAppPackageUploadChunkRequest, abortAppPackageUploadRequest,
-  beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest, getAppInstallationRequest,
+  appDevRegisterMinimumProtocolVersion, beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest, getAppInstallationRequest,
   getAppInstallationJournalRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, AppInstallOperationSummary, AppPackageUploadSummary } from "@chariox/kernel-client/kernel-types"
+import { KernelProtocolMinimumError, withProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import { AppFileSource, checkCancelled, chunkBytes, InstallCancelled, InstallFileChanged } from "./app-install-file/source.js"
 
 type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -240,7 +241,7 @@ export class AppFileInstaller {
       return status
     } catch (error) {
       // A Begin the kernel refused (not one lost in transport) never took the upload.
-      const refused = error instanceof KernelFailure && begunHere && !attempt.status
+      const refused = (error instanceof KernelFailure || error instanceof KernelProtocolMinimumError) && begunHere && !attempt.status
       if (error instanceof InstallCancelled || error instanceof InstallFileChanged || refused) await this.cleanup(attempt).catch(() => {})
       throw error
     } finally { await source?.close() }
@@ -295,13 +296,18 @@ export class AppFileInstaller {
     for (let retry = 0; retry < 3; retry++) {
       checkCancelled(cancelled)
       try {
-        const response = await this.send(request)
+        const begin = request.BeginAppInstall ?? request.BeginAppUpdate
+        const hasSource = begin && typeof begin === "object" && "source" in begin
+        const response = await (hasSource ? withProtocolMinimum(() => this.send(request), {
+          capability: "App dev and register", requestVariant: request.BeginAppInstall ? "BeginAppInstall" : "BeginAppUpdate",
+          unknownField: "source", minimumProtocolVersion: appDevRegisterMinimumProtocolVersion,
+        }) : this.send(request))
         const failure = response.AppRequestFailed as { code?: unknown } | undefined
         if (!failure) return response
         const code = typeof failure.code === "string" ? failure.code : "invalid_response"
         if (code !== "busy" || retry === 2) throw new KernelFailure(code)
       } catch (error) {
-        if (error instanceof KernelFailure || error instanceof InstallCancelled) throw error
+        if (error instanceof KernelFailure || error instanceof InstallCancelled || error instanceof KernelProtocolMinimumError) throw error
         if (retry === 2) throw new ConnectionFailure()
       }
       await delay(200)

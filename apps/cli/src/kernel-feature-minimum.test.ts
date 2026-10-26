@@ -140,3 +140,17 @@ test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before t
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
   }
 })
+
+// MP-08 / MP-10 / MP-11: ordinary installs keep their earlier protocol floor.
+test("App dev and register reject old kernels before sending their source field", () => {
+  for (const kind of ["BeginAppInstall", "BeginAppUpdate"]) {
+    for (const source of ["dev_push", "register"]) {
+      const request = { [kind]: { source } }
+      for (const protocol of [567, 616]) {
+        assert.throws(() => requireKernelFeatureProtocol(request, protocol), /App dev and register.*644/)
+      }
+      assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 644))
+    }
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 567))
+  }
+})

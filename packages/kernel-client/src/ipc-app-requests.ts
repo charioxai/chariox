@@ -1,3 +1,4 @@
+export const appDevRegisterMinimumProtocolVersion = 644
 export const appHostActionMinimumProtocolVersion = 409
 export const appFileRevokeMinimumProtocolVersion = 394
 export const appDataSnapshotRestoreMinimumProtocolVersion = 410
