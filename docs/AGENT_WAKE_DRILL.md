@@ -175,10 +175,13 @@ that withdraws the card. Capture and inspect the real PTY screenshots and the
 allowlisted report. The harness removes only its own runtime and workspace.
 
 For web acceptance, set `AMASK_WEB_CAPTURE_HELPER` to a lane-owned executable.
-It receives the Room ID, interaction ID and evidence directory, plus the
-owner's loopback endpoint in `AMASK_OWNER_ENDPOINT`. It must enroll the
-**same** disposable owner through the normal device flow and drive the built
-production web entry at DPR 1 and 2. Use `AMASK_WEB_ORIGIN` when doing so; the
+First it receives `--enroll <evidence-directory>`, before the TUI creates its
+Room. Enroll the **same** disposable owner through the normal device flow so
+the Room and later access grant belong to the signed-in user. Then it receives
+the Room ID, interaction ID and evidence directory to drive the built
+production web entry at DPR 1 and 2. Both phases receive the owner's loopback
+endpoint in `AMASK_OWNER_ENDPOINT` and its state directory in
+`AMASK_OWNER_CHARIOX_HOME`. Use `AMASK_WEB_ORIGIN` when doing so; the
 owner TUI then stays on its local terminal connection while web uses hosted
 WSS. Do not replace the actual web entry with a fixture. Without that helper,
 the report explicitly leaves web NOT RUN and cannot close AM-ASK-01.
@@ -192,3 +195,9 @@ wrapper). The existing `popup_notice` tests guard the default blocking mode.
 turn; it is not acceptance. The harness refreshes linked profile status through
 the normal product request before the TUI starts. Reports distinguish runtime
 head, tooling head, binary hashes and resolved provider model/effort.
+
+Set `AMASK_LEGACY_BIN` to a separately built base-version CLI entry and
+`AMASK_LEGACY_HEAD` to its exact commit to include the legacy-client check.
+The drill attaches it to the same Room, shows an async question and answers
+through the older client's existing interaction control. Record that build's
+source and entry hash separately; the normal candidate TUI remains attached.

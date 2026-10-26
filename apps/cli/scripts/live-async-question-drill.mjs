@@ -72,7 +72,7 @@ async function record(name, data) { await writeFile(path.join(evidence,name+'.js
 function questionAnswers(kernel, sourceId) {
   // Read only this disposable question's public ledger payload, never config or
   // provider state. Keep the attribution and exact outcome in the evidence.
-  const script = 'import sqlite3,json,sys\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True)\nprint(json.dumps([json.loads(r[0])["public_answer"] for r in c.execute("SELECT payload FROM agent_inbox WHERE source_id=? ORDER BY sequence",(sys.argv[2],))]))'
+  const script = 'import sqlite3,json,sys\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True)\nprint(json.dumps([json.loads(r[0])["payload"]["public_answer"] for r in c.execute("SELECT payload FROM agent_inbox WHERE source_id=? ORDER BY sequence",(sys.argv[2],))]))'
   return JSON.parse(execFileSync('python3',['-c',script,path.join(kernel.env.CHARIOX_HOME,'state/kernel.db'),sourceId],{encoding:'utf8'}))
 }
 async function port() { return new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>resolve(p))})}) }
@@ -118,7 +118,7 @@ async function setup(name,relayUrl,relaySecret) {
   const passphrase=randomBytes(24).toString('base64url');secrets.push(passphrase)
   await writeFile(path.join(home,'home/config.toml'),`version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${home}/home/private-vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`,{mode:0o600})
   const ports=await Promise.all(Array.from({length:4},port))
-  const env={PATH:process.env.PATH,LANG:'C.UTF-8',HOME:home+'/os-home',CHARIOX_HOME:home+'/home',TMPDIR:home+'/tmp',XDG_CONFIG_HOME:home+'/config',XDG_STATE_HOME:home+'/state',XDG_DATA_HOME:home+'/data',XDG_CACHE_HOME:home+'/cache',CHARIOX_KERNEL_HOST:'127.0.0.1',CHARIOX_KERNEL_PORT:String(ports[0]),CHARIOX_MCP_PORT:String(ports[1]),CHARIOX_CODEX_PORT:String(ports[2]),CHARIOX_OPENCODE_PORT:String(ports[3]),CHARIOX_DAEMON_SOCKET:home+'/kernel.sock',CHARIOX_ROOM_AGENT_TOOLS:'1',CHARIOX_RELAY_URL:relayUrl,CHARIOX_RELAY_TOKEN:relaySecret,NODE_OPTIONS:'--max-old-space-size=4096',RUST_MIN_STACK:'16777216'}
+  const env={PATH:process.env.PATH,LANG:'C.UTF-8',HOME:home+'/os-home',CHARIOX_HOME:home+'/home',TMPDIR:home+'/tmp',XDG_CONFIG_HOME:home+'/config',XDG_STATE_HOME:home+'/state',XDG_DATA_HOME:home+'/data',XDG_CACHE_HOME:home+'/cache',CHARIOX_KERNEL_HOST:'127.0.0.1',CHARIOX_KERNEL_PORT:String(ports[0]),CHARIOX_MCP_PORT:String(ports[1]),CHARIOX_CODEX_PORT:String(ports[2]),CHARIOX_OPENCODE_PORT:String(ports[3]),CHARIOX_DAEMON_SOCKET:path.join(root,name+'.sock'),CHARIOX_ROOM_AGENT_TOOLS:'1',CHARIOX_RELAY_URL:relayUrl,CHARIOX_RELAY_TOKEN:relaySecret,NODE_OPTIONS:'--max-old-space-size=4096',RUST_MIN_STACK:'16777216'}
   const k={home,env,passphrase,url:`ws://127.0.0.1:${ports[0]}/kernel`,name}
   k.child=start(bin+'/chariox-kernel',env,name)
   k.client=new LocalIpcClient(k.url,{localAuthEnvironment:env});clients.push(k.client)
@@ -129,9 +129,15 @@ async function setup(name,relayUrl,relaySecret) {
   k.profile=linked.profile_id
   await k.client.send({RefreshProviderAccountProfile:{provider:"codex",account_profile:k.profile}})
   await until(name+' relay registered',()=>k.client.send({RelayStatus:null}),r=>r.RelayStatus?.status?.connected)
+  const hostedOwner=name==='owner'&&process.env.AMASK_WEB_ORIGIN
+  if(hostedOwner&&process.env.AMASK_WEB_CAPTURE_HELPER){
+    // Enroll before creating the Room so its owner and the later external
+    // grant use the same signed-in user identity.
+    execFileSync(process.env.AMASK_WEB_CAPTURE_HELPER,['--enroll',evidence],{env:{...process.env,AMASK_OWNER_ENDPOINT:k.url,AMASK_OWNER_CHARIOX_HOME:env.CHARIOX_HOME},stdio:'inherit',timeout:180_000})
+    delete env.CHARIOX_RELAY_URL;delete env.CHARIOX_RELAY_TOKEN
+  }
   const pairing=variant(await k.client.send({CreateTerminalPairingLink:{terminal_type:'cli',alias:'amask-'+name,expires_in_ms:60_000}}),'TerminalPairingLinkCreated').pairing
   secrets.push(pairing.pairing_link)
-  const hostedOwner=name==='owner'&&process.env.AMASK_WEB_ORIGIN
   const tui=await openTui({tree:workspace,env:{...env,AMASK_RELAY_TOKEN:relaySecret},url:k.url,profile:k.profile,root:home,provider:'codex',model:'gpt-6-luna',binary:bin+'/chariox-cli',clientId:hostedOwner?'amask-owner-tui':pairing.terminal_id,
     connectionArgs:hostedOwner?undefined:['--terminal-pairing-link',pairing.pairing_link,'--relay-token-env','AMASK_RELAY_TOKEN']})
   tuis.push(tui);k.tui=tui
@@ -194,7 +200,7 @@ try {
   const answered=await owner.session()
   const wake=answered.agent_wakes.find(w=>w.id===question.id)
   assert.equal(wake.fire_count,1)
-  assert(!answered.active_interactions.some(q=>q.id===question.id))
+  assert(!(answered.active_interactions??[]).some(q=>q.id===question.id))
   await until('primary answer handled',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===question.asking_task_id&&t.state==='done'))
   const answers=questionAnswers(owner,question.id)
   assert.equal(answers.length,1)
@@ -206,15 +212,34 @@ try {
   await capture(owner.tui,'04-answer-wake')
   report.cells.push({id:'AM-ASK-02',result:'CORE PASS',grant_id:result.grant_id,duplicate_refused:true,ungranted_refused:true})
   report.cells.push({id:'AM-ASK-03',result:'CORE PASS',fire_count:wake.fire_count,restarted:true})
+  if(process.env.AMASK_LEGACY_BIN){
+    await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup with wait:false, title "AMASK legacy client", message "An older client answers this question", choices [{id:"continue",label:"Continue",reply:"AMASK legacy answer"}], timeout_sec:120. Finish with AMASK_LEGACY_ARMED. When woken, read events.inbox, report the exact answer and acknowledge it as handled.'})
+    const s=await until('legacy question',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK legacy client'))
+    const q=s.active_interactions.find(q=>q.title==='AMASK legacy client')
+    const legacyRoot=path.join(root,'legacy');await mkdir(legacyRoot,{recursive:true})
+    const legacy=await openTui({tree:workspace,env:owner.env,url:owner.url,profile:owner.profile,session:owner.room,root:legacyRoot,provider:'codex',model:'gpt-6-luna',binary:process.env.AMASK_LEGACY_BIN,clientId:'amask-legacy-tui'})
+    tuis.push(legacy)
+    await legacy.send('switch_screen',{screen:'agents'})
+    await until('legacy client displays question',async()=>legacy.send('snapshot'),s=>s.interactions?.some(i=>i.id===q.id))
+    await capture(legacy,'08-legacy-client-pending')
+    await legacy.send('interaction_submit',{choiceIndex:0})
+    await until('legacy answer handled',owner.session,s=>s.agent_tasks?.some(t=>t.task_id===q.asking_task_id&&t.state==='done'))
+    const receipts=questionAnswers(owner,q.id)
+    assert.equal(receipts.length,1);assert.equal(receipts[0].reply,'AMASK legacy answer')
+    assert.equal(receipts[0].client_id,'amask-legacy-tui')
+    await capture(legacy,'09-legacy-client-answered')
+    await record('09-legacy-answer',receipts)
+    report.legacy_client={head:required('AMASK_LEGACY_HEAD'),answered:true}
+  }
   await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup twice, both wait:false and timeout_sec:10. First title "AMASK deadline default", message "Default deadline", choices [{id:"continue",label:"Continue",reply:"AMASK timeout default"}], default_on_timeout:"continue". Second title "AMASK deadline empty", message "No default deadline", same choices but omit default_on_timeout. Call events.inbox as another tool, then finish with AMASK_DEADLINES_ARMED. When woken, read events.inbox and handle both timed_out answers, report AMASK_DEADLINES_RECEIVED with their status/choice/reply, and acknowledge the handled events.'})
-  await until('deadline receipts',owner.session,s=>s.agent_wakes?.filter(w=>w.kind==='interaction'&&w.id!==question.id&&w.fire_count===1).length>=2,120_000)
+  await until('deadline receipts',owner.session,s=>s.agent_wakes?.filter(w=>w.kind==='interaction'&&w.detail.title?.startsWith('AMASK deadline ')&&w.fire_count===1).length===2,120_000)
   await until('deadline answer turn',async()=>owner.tui.send('snapshot'),s=>assistantText(s).includes('AMASK_DEADLINES_RECEIVED'),120_000)
   await until('both deadline outcomes handled',owner.session,s=>{
-    const tasks=new Set(s.agent_wakes.filter(w=>w.kind==='interaction'&&w.id!==question.id).map(w=>w.task_id))
+    const tasks=new Set(s.agent_wakes.filter(w=>w.kind==='interaction'&&w.detail.title?.startsWith('AMASK deadline ')).map(w=>w.task_id))
     return tasks.size>0&&s.agent_tasks.filter(t=>tasks.has(t.task_id)).every(t=>t.state==='done')
   },120_000)
   await capture(owner.tui,'05-deadline-wake')
-  const deadlines=(await owner.session()).agent_wakes.filter(w=>w.kind==='interaction'&&w.id!==question.id)
+  const deadlines=(await owner.session()).agent_wakes.filter(w=>w.kind==='interaction'&&w.detail.title?.startsWith('AMASK deadline '))
   assert.equal(deadlines.length,2)
   const outcomes=deadlines.map(w=>({title:w.detail.title,fire_count:w.fire_count,answers:questionAnswers(owner,w.id)}))
   for(const outcome of outcomes){
@@ -235,7 +260,8 @@ try {
   await capture(owner.tui,'07-after-stop')
   const withdrawn=questionAnswers(owner,stopQuestion.id)
   assert.equal(withdrawn.length,1);assert.equal(withdrawn[0].status,'withdrawn')
-  assert.equal(withdrawn[0].reply,null)
+  assert.equal(withdrawn[0].reply??null,null)
+  assert(withdrawn[0].reason)
   await record('07-stop-outcome',withdrawn)
   report.cells.push({id:'AM-ASK-05',result:'CORE PASS',stopped_via:'real TUI Ctrl+C'})
   report.web=report.web_failure?'FAIL (see web-report.json)':process.env.AMASK_WEB_CAPTURE_HELPER?'captured by hosted helper':'NOT RUN (run the hosted web helper at DPR1 and DPR2)'
