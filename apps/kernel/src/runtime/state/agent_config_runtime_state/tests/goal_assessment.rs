@@ -418,7 +418,7 @@ async fn count_answer_assessment_context(answer: &str) -> String {
         Some(&agent),
         TerminalOutputKind::ProviderTool,
         None,
-        r#"{"tool":"chariox_kernel_request","input":"PRIVATE_MCP_ARGUMENTS","output":"PRIVATE_MCP_OUTPUT"}"#,
+        r#"{"id":"count-call","tool":"chariox_kernel_request","status":"completed","input":{"request":{"ListSessions":null}},"output":"PRIVATE_MCP_OUTPUT"}"#,
     );
     for entry in [request, private_tool, answer] {
         runtime
@@ -474,6 +474,9 @@ async fn assessment_marks_the_full_one_character_count_as_complete() {
     assert_eq!(data["answer_coverage"]["total_chars"], 1);
     assert_eq!(data["answer_coverage"]["complete"], true);
     assert_eq!(data["answer_coverage"]["truncated"], false);
+    assert_eq!(data["completed_kernel_calls"][0]["request"], "ListSessions");
+    assert_eq!(data["completed_kernel_calls_omitted"], 0);
+    assert!(!context.contains("PRIVATE_MCP_OUTPUT"));
     assert!(context.contains("even one character"));
     assert!(context.contains("never treat it as truncated"));
     assert!(context.contains("that complete result is the answer, not a plan or a missing report"));
@@ -593,6 +596,10 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
     assert!(data["latest_public_answer_tail"].is_null());
     assert_eq!(data["answer_coverage"]["visibility"], "protected");
+    assert!(data["completed_kernel_calls"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert_eq!(data["answer_coverage"]["complete"], false);
     assert!(data["answer_coverage"]["truncated"].is_null());
     let mut leased = task.clone();
