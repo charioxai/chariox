@@ -688,12 +688,8 @@ fn projection_invariant_health_accepts_the_agents_of_hidden_sessions() {
     session_store.update_list(vec![session.clone()]);
     agent_store.update_session(&session);
 
-    let snapshot = session_store.invariant_snapshot(
-        &agent_store,
-        &[agent],
-        &BTreeMap::new(),
-        &Vec::new(),
-    );
+    let snapshot =
+        session_store.invariant_snapshot(&agent_store, &[agent], &BTreeMap::new(), &Vec::new());
 
     assert!(
         snapshot.mismatches.is_empty(),

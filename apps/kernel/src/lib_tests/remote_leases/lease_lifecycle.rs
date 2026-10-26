@@ -862,7 +862,13 @@ fn a_leased_agents_backing_session_passes_the_projection_invariants() {
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let lease = RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease("home-kernel", "session-home", "agent-home", false, "user-home")
+        .create_execution_lease(
+            "home-kernel",
+            "session-home",
+            "agent-home",
+            false,
+            "user-home",
+        )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
         .create_leased_agent(

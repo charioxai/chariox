@@ -235,7 +235,8 @@ async fn ensure_not_leased_backing(
     let backing_session_id = session_id.clone();
     let home_session_id = runtime_state
         .with_app_side_effect(move |app| {
-            crate::app::RemoteLeaseRuntime::new(app).leased_backing_home_session(&backing_session_id)
+            crate::app::RemoteLeaseRuntime::new(app)
+                .leased_backing_home_session(&backing_session_id)
         })
         .await;
     match home_session_id {

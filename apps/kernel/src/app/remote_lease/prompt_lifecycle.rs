@@ -1346,7 +1346,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .as_deref()
             != Some(expected_worker_provider_run_id)
         {
-            return Err(not_current("the worker prompt runs on another provider run"));
+            return Err(not_current(
+                "the worker prompt runs on another provider run",
+            ));
         }
         self.settle_leased_prompt(leased_agent_id)
     }

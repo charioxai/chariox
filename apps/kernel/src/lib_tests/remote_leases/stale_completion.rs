@@ -1,10 +1,6 @@
 use super::*;
 
-fn submit_home_prompt(
-    app: &mut DaemonApp,
-    leased_agent_id: &str,
-    home_prompt_id: &str,
-) -> String {
+fn submit_home_prompt(app: &mut DaemonApp, leased_agent_id: &str, home_prompt_id: &str) -> String {
     let context = crate::transport::relay_peer::RemoteGitTurnContext {
         home_session_id: "session-stale-completion".to_string(),
         home_agent_id: "agent-home-stale-completion".to_string(),
