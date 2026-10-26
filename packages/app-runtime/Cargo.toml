@@ -27,4 +27,7 @@ thiserror = "2.0.12"
 tokio = { version = "1.44.2", features = ["io-util", "time", "sync", "macros", "net", "rt"] }
 
 [dev-dependencies]
+chariox-app-wit = { path = "../app-wit" }
+wit-component = { version = "=0.262.0", features = ["dummy-module"] }
+wit-parser = "=0.262.0"
 tokio = { version = "1.44.2", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
