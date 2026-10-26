@@ -102,3 +102,25 @@ Flat org (dogfood r13): the coordinator gets worker events straight from the lan
 (beneath the `coordinator` holder seat, its own inbox), steers a worker with `steer.mjs` (`mac/deliver.sh`), and answers
 decisions loopd leaves pending with `answer.mjs` (`mac/laneanswer.sh`). `decisions.mjs` is the single routine/other
 split. See docs/LANES_KERNEL.md "The coordinator's seat".
+
+MP-08 / MP-09 / MP-10 / MP-11: lane questions use the existing `request_popup`
+runtime tool. It creates an agent-owned `RuntimeInteraction`; a Room owner sees
+the normal card, and an admitted outside follower sees its `interaction` event
+with `value.state:"pending"` and `refs.interaction_id`. `lanewait` reads that
+pending card, prints its message and labelled fixed choices, and retains their
+ids in its JSON line. Loopd retains the same details in `LOOP_RUN.json.unanswered`
+and leaves choice questions pending for the coordinator.
+
+Answer with `node tools/lanes/coordinator/answer.mjs LANE INTERACTION_ID CHOICE_ID`
+(or `mac/laneanswer.sh` with those arguments). It checks that the choice remains
+offered, then uses `RespondToInteraction`. The provider tool resumes with the
+choice's reply. This requires the normal grant and the target gateway capability;
+protected owner interactions retain their existing target checks. No lane-specific
+product request or event is needed. Use fixed choices with meaningful labels and
+exact replies; use `COORDINATION_REQUEST.md` as a fallback when the runtime tool
+is unavailable or a question times out. Do not put credentials in either channel.
+
+Source anchors: `runtime/state/tool_dispatch/credential.rs` (popup creation and
+awaited resolution), `runtime/state/runtime_interaction_owned_state.rs` (reply),
+`docs/PROTOCOL.md` (runtime interactions and gateway target authorization), and
+`runtime/kernel_access` (outside interaction events and grants).

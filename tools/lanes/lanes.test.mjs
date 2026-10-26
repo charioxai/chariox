@@ -535,3 +535,11 @@ test('message returns the summary of the latest finished turn, else its last inl
   assert.equal((await ask([{ turn_id: 't', lifecycle: 'completed', summary: page('cut', { fragment_end: 3, total_chars: 90 }) }])).truncated, true);
   assert.deepEqual(await ask([{ turn_id: 't', lifecycle: 'open', summary: page('not yet') }]), { text: null, reason: 'no_final_message' });
 });
+
+test('status retains a lane popup question and choice labels without reply values', async () => {
+  const popup = { id: 'ask-1', agent_id: 'a', kind: 'choice', title: 'MP-11 next step', message: 'Which drill?', choices: [{ id: 'run', label: 'Run it', reply: 'EXACT-AGENT-REPLY' }] };
+  const result = await run('status', {kernel:'b',taskId:'lane',sessionId:'s',agentId:'a'}, {execute:async (_, body) => JSON.parse(body).GetSessionState ? {SessionState:{agents:[{id:'a'}],session:{active_interactions:[popup]}}} : {RelayStatus:{status:{capabilities:[]}}}});
+  assert.equal(result.interactions[0].message, popup.message);
+  assert.deepEqual(result.interactions[0].choiceLabels, [{id:'run',label:'Run it'}]);
+  assert.ok(!JSON.stringify(result).includes('EXACT-AGENT-REPLY'));
+});

@@ -113,7 +113,9 @@ export async function lanewait(options) {
     const verdict = classifyDecision(interaction);
     if (verdict.routine) return;
     state.decisions[key].push(interaction.id);
-    await emit(key, 'decision', `${interaction.title ?? 'decision'} [${verdict.reason}] choices: ${(interaction.choices ?? []).join(', ') || 'none'}`, { interactionId: interaction.id, reason: verdict.reason, choices: interaction.choices ?? [] });
+    const question = interaction.kind === 'choice' ? { message: interaction.message, choiceLabels: interaction.choiceLabels ?? [] } : {};
+    const labels = question.choiceLabels?.map(choice => `${choice.id}: ${choice.label}`).join(', ');
+    await emit(key, 'decision', `${interaction.title ?? 'decision'} [${verdict.reason}]${question.message ? ` ${question.message}` : ''} choices: ${labels || (interaction.choices ?? []).join(', ') || 'none'}`, { interactionId: interaction.id, reason: verdict.reason, choices: interaction.choices ?? [], ...question });
   };
 
   const handle = async (events, map) => {

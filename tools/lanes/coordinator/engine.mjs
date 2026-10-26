@@ -94,7 +94,7 @@ export function createRound(options) {
     const interaction = known ?? await detailsFor(lane, id);
     const verdict = classifyDecision(interaction);
     if (!verdict.routine) {
-      if (!lane.run.unanswered.some(p => p.interactionId === id)) lane.run.unanswered.push({ interactionId: id, summary: interaction?.title ?? summary, reason: verdict.reason, at_ms: now() });
+      if (!lane.run.unanswered.some(p => p.interactionId === id)) lane.run.unanswered.push({ interactionId: id, summary: interaction?.title ?? summary, ...(interaction?.kind === 'choice' && { message: interaction.message, choices: interaction.choices, choiceLabels: interaction.choiceLabels }), reason: verdict.reason, at_ms: now() });
       if (verdict.reason === 'unclassified') lane.needsRead = true; // the status could not be read: look again at the next wake
       return;
     }

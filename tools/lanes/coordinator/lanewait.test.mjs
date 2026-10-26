@@ -186,3 +186,16 @@ test('a permission loopd answered before the read is not a decision; one that ca
   const lines = await lanewait({ ...r.options, minutes: 1 });
   assert.deepEqual(lines.map(l => [l.kind, l.reason, l.interactionId]), [['decision', 'unclassified', 'unreadable']]);
 });
+
+test('a lane popup carries its question and labelled choices to the coordinator', async t => {
+  const r = await rig(t);
+  const question = { id: 'ask-1', kind: 'choice', title: 'MP-11 next step', message: 'May I run the focused drill?', choices: ['run', 'skip'], choiceLabels: [{ id: 'run', label: 'Run the drill' }, { id: 'skip', label: 'Skip this cell' }] };
+  r.status['alpha-r1'] = { interactions: [question] };
+  r.kernel.batches.push({ events: [r.event('alpha-r1', { type: 'interaction', refs: { interaction_id: question.id }, summary: question.title, value: { state: 'pending' } })], next_cursor: 1, timed_out: false });
+  const [line] = await lanewait({ ...r.options, minutes: 1 });
+  assert.equal(line.reason, 'question');
+  assert.equal(line.message, question.message);
+  assert.deepEqual(line.choiceLabels, question.choiceLabels);
+  assert.match(formatLine(line), /May I run the focused drill/);
+  assert.match(formatLine(line), /run: Run the drill/);
+});
