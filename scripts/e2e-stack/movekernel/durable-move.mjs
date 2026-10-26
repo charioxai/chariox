@@ -107,11 +107,12 @@ async function moveWithRestart(source, target, sessionId, agentId, workspace, ge
         await record(forward ? 'forward-before-restart' : 'return-before-restart', {generation, operationId: captured.identity.operation_id, phase: captured.phase.phase});
         await restart(source, workspace, sessionId);
         // The old connection cannot acknowledge a request killed with its kernel.
-        await client.close();
+        client.destroy();
         await pending;
         let completed;
         for (let n = 0; n < 1200; n++) {
             const value = await journal(source, generation);
+            if (n % 40 === 0 || value?.phase.phase === 'rolled_back' || value?.phase.phase === 'complete') await record('move-after-restart-' + generation, {generation, phase: value?.phase.phase, reason: value?.phase.reason});
             if (value?.phase.phase === 'complete') { completed = value; break; }
             assert.notEqual(value?.phase.phase, 'rolled_back', 'Captured Move must recover its existing artifacts');
             await sleep(250);
