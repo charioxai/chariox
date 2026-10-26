@@ -839,8 +839,11 @@ retries cannot produce another occurrence. Session membership and existing
 grants govern who may answer. A deadline produces `status:"timed_out"` with
 the fixed default choice/reply when configured, or null choice/reply otherwise;
 its answerer fields are null. Stop, task cancellation or agent/session removal
-withdraws the question without applying its timeout default. Resolution commits
-before projection removal, so restart closes a leftover resolved card.
+withdraws the question without applying its timeout default. Withdrawal uses
+`source_lost`, including the existing `public_answer.cancelled:true` receipt
+when a task cancels its wake. An ended asking task receives no new provider
+turn. Resolution commits before projection removal, so restart closes a leftover
+resolved card.
 
 Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current

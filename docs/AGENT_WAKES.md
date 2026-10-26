@@ -24,7 +24,9 @@ answer wakes the idle agent through its event inbox. Read the exact choice,
 reply and answerer in `payload.public_answer`, handle it, then acknowledge the
 event. Deadline defaults keep `status:"timed_out"`; without a default there is
 no reply. Questions and deadlines survive kernel restart. Stop/cancel/delete
-withdraws pending questions, without choosing a default.
+withdraws pending questions, without choosing a default. Treat `source_lost`,
+including the existing `public_answer.cancelled:true` receipt, as withdrawal
+rather than an answer. An ended asking task does not start another provider turn.
 
 Use the default `wait:true` only when work cannot continue without the answer.
 That mode keeps the existing blocking result. `events.blocked` is for an owner
