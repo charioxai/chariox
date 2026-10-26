@@ -138,7 +138,7 @@ impl DaemonApp {
                         )
                     },
                 )?;
-                self.provider_account_profiles.require_authenticated(
+                self.provider_account_profiles.admit_launch(
                     &account_owner_user_id,
                     &request.provider,
                     &request.account_profile,

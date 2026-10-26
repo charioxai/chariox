@@ -2,6 +2,78 @@
 use super::*;
 
 #[test]
+fn opencode_launch_defers_authentication_to_the_native_harness() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("opencode-native-admission");
+    let registry = ProviderAccountProfileRegistry::open(root.path().join("profiles.json")).unwrap();
+    let profile = registry
+        .create_managed("owner", "opencode", "empty")
+        .unwrap();
+    for state in [
+        ProviderAccountAuthState::Unknown,
+        ProviderAccountAuthState::NotConfigured,
+        ProviderAccountAuthState::Expired,
+        ProviderAccountAuthState::Error,
+    ] {
+        registry
+            .update_observation(
+                "owner",
+                "opencode",
+                &profile.profile_id,
+                state,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        for model in [
+            "opencode/deepseek-v4.1-flash-free",
+            "opencode/glm-5.3-flash",
+        ] {
+            registry
+                .admit_launch(
+                    "owner",
+                    "opencode",
+                    &profile.profile_id,
+                    Some(model),
+                    "submit prompt",
+                )
+                .expect("the native harness decides whether the selected model needs sign-in");
+        }
+        assert!(
+            registry
+                .require_authenticated(
+                    "owner",
+                    "opencode",
+                    &profile.profile_id,
+                    None,
+                    "ensure remote provider account"
+                )
+                .is_err(),
+            "launch admission must not verify a copied credential"
+        );
+        assert_eq!(
+            registry
+                .get("owner", "opencode", &profile.profile_id)
+                .unwrap()
+                .auth_state,
+            state,
+            "launch admission must not invent an authenticated account"
+        );
+        assert!(registry
+            .admit_launch(
+                "other-owner",
+                "opencode",
+                &profile.profile_id,
+                None,
+                "submit prompt",
+            )
+            .is_err());
+    }
+}
+
+#[test]
 fn cloud_lease_account_owner_preserves_exact_profile_and_rejects_other_owners() {
     crate::test_support::isolated_env_test!();
     let root = crate::test_support::TestWorktree::new("cloud-lease-account-owner");
@@ -82,13 +154,13 @@ fn cloud_lease_account_owner_preserves_exact_profile_and_rejects_other_owners() 
             None,
         )
         .unwrap();
-    assert!(registry
+    registry
         .require_agent_authenticated(
             &owner(&config, &registry, &agent),
             &agent,
-            "MP-08/MP-10/MP-11 expired replica"
+            "MP-08/MP-10/MP-11 expired replica",
         )
-        .is_err());
+        .unwrap();
     let alias = agents
         .create_agent(
             crate::agent::CreateAgentRequest::new(session.id(), "opencode")

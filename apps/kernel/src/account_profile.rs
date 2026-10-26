@@ -1259,6 +1259,22 @@ impl ProviderAccountProfileRegistry {
         ))
     }
 
+    pub(crate) fn admit_launch(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        model: Option<&str>,
+        operation: &'static str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        // OpenCode chooses which models need sign-in. Credential materialization
+        // still requires native authentication before acknowledging a copied account.
+        if crate::provider::canonical_provider_family(provider) == Some("opencode") {
+            return self.get(owner_user_id, provider, profile_id);
+        }
+        self.require_authenticated(owner_user_id, provider, profile_id, model, operation)
+    }
+
     pub(crate) fn require_agent_authenticated(
         &self,
         owner_user_id: &str,
@@ -1268,7 +1284,7 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        self.require_authenticated(
+        self.admit_launch(
             owner_user_id,
             provider,
             agent.provider_account_profile(),
