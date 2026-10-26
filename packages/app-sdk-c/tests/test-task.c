@@ -46,13 +46,13 @@ int main(void) {
   test_reset();
   assert(test_call("pending", "{}", 2) != APP_CALLBACK_CODE_EXIT);
   void *task = test_context; state *s = active;
-  test_cancel_status = APP_SUBTASK_STARTED_CANCELLED;
+  test_cancel_status = APP_SUBTASK_STARTED;
   assert(test_event(APP_EVENT_FUTURE_READ, 2, APP_WAITABLE_COMPLETED) != APP_CALLBACK_CODE_EXIT);
   assert(test_destroys == 0 && test_returns == 0 && test_import_drops == 0 && test_context == task);
   assert(s->allocation[0] == 'x');
   /* A late import writes into task-owned storage even after cancellation. */
   s->imported = test_string("late result allocation");
-  assert(test_event(APP_EVENT_SUBTASK, 7, APP_SUBTASK_STARTED_CANCELLED) != APP_CALLBACK_CODE_EXIT);
+  assert(test_event(APP_EVENT_SUBTASK, 7, APP_SUBTASK_STARTED) != APP_CALLBACK_CODE_EXIT);
   assert(test_destroys == 0);
   app_event_t repeated = {APP_EVENT_CANCEL,0,0};
   assert(exports_chariox_app_handlers_call_tool_callback(&repeated) != APP_CALLBACK_CODE_EXIT);
@@ -101,7 +101,7 @@ int main(void) {
   assert(test_call("yield", "{}", 2) == APP_CALLBACK_CODE_YIELD);
   test_queue_event(APP_EVENT_FUTURE_READ,2,APP_WAITABLE_COMPLETED);
   assert(test_event(APP_EVENT_NONE,0,0) == APP_CALLBACK_CODE_EXIT && test_return_error);
-  test_reset(); test_cancel_status = APP_SUBTASK_STARTED_CANCELLED;
+  test_reset(); test_cancel_status = APP_SUBTASK_STARTED;
   assert(test_call("early-error", "{}", 2) != APP_CALLBACK_CODE_EXIT);
   assert(test_destroys == 0 && test_returns == 0);
   assert(test_event(APP_EVENT_SUBTASK,7,APP_SUBTASK_RETURNED_CANCELLED) == APP_CALLBACK_CODE_EXIT);

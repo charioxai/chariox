@@ -36,7 +36,7 @@ void *cx_task_alloc(cx_task *t, size_t size, void (*destroy)(void *)) {
   a->destroy = destroy; a->next = t->allocations; t->allocations = a; return a->data;
 }
 bool cx_subtask_terminal(app_subtask_status_t s) {
-  return APP_SUBTASK_STATE(s) == APP_SUBTASK_RETURNED || APP_SUBTASK_STATE(s) == APP_SUBTASK_RETURNED_CANCELLED;
+  return APP_SUBTASK_STATE(s) == APP_SUBTASK_RETURNED || APP_SUBTASK_STATE(s) == APP_SUBTASK_STARTED_CANCELLED || APP_SUBTASK_STATE(s) == APP_SUBTASK_RETURNED_CANCELLED;
 }
 cx_poll cx_task_await(cx_task *t, app_subtask_status_t status) {
   if (t->pending) return cx_task_fail(t, "SDK_STATE", "await one import at a time");

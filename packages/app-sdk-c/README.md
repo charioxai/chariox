@@ -87,7 +87,9 @@ owned handle in the state destructor or transfer it into an SDK reader.
 The SDK reads the cancellation future before calling application code.
 Cancellation detaches waitables before cancel/drop, cancels blocked stream
 reads, requests subtask cancellation once, and retains all task memory until a
-`RETURNED` or `RETURNED_CANCELLED` result. `STARTED_CANCELLED` is not terminal.
+`RETURNED`, `STARTED_CANCELLED` or `RETURNED_CANCELLED` result.
+`STARTED_CANCELLED` means cancellation before the import began; no later event
+or result write follows it.
 A late result must still be released by the state destructor. Closing the
 cancellation writer without a value allows normal completion. Cancellation
 never retries a transaction or promises that an already accepted effect was

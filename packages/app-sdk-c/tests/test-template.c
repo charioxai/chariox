@@ -79,14 +79,14 @@ int main(void) {
   test_reset(); pending_get = true;
   unsigned handle = next_handle;
   assert(test_call("counter","{}",2)!=APP_CALLBACK_CODE_EXIT);
-  test_cancel_status = APP_SUBTASK_STARTED_CANCELLED;
+  test_cancel_status = APP_SUBTASK_STARTED;
   assert(test_event(APP_EVENT_FUTURE_READ,2,APP_WAITABLE_COMPLETED)!=APP_CALLBACK_CODE_EXIT);
   unsigned before = transactions; fill_get(pending_results[handle]);
   assert(test_event(APP_EVENT_SUBTASK,handle,APP_SUBTASK_RETURNED)==APP_CALLBACK_CODE_EXIT);
   assert(test_return_error && !strcmp(test_error,"CANCELLED") && transactions==before);
   test_reset(); pending_get = false; pending_tx = true;
   assert(test_call("counter","{}",2)!=APP_CALLBACK_CODE_EXIT);
-  test_cancel_status = APP_SUBTASK_STARTED_CANCELLED;
+  test_cancel_status = APP_SUBTASK_STARTED;
   assert(test_event(APP_EVENT_FUTURE_READ,2,APP_WAITABLE_COMPLETED)!=APP_CALLBACK_CODE_EXIT);
   /* Arguments and result buffers still exist; cancellation never retries effects. */
   assert(cx_string_is(pending_transaction->writes.ptr[0].val.put.f1,"42"));

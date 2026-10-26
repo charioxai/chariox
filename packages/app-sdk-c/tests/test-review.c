@@ -47,7 +47,7 @@ static void check(const char *name) {
   } else if(!strcmp(name,"complete") || !strcmp(name,"yield")) {
     assert(test_call(name,"{}",2)==APP_CALLBACK_CODE_EXIT);
     assert(test_return_error && !strcmp(test_error,"SDK_STATE"));
-    test_reset();resumes=0;test_cancel_status=APP_SUBTASK_STARTED_CANCELLED;
+    test_reset();resumes=0;test_cancel_status=APP_SUBTASK_STARTED;
     assert(test_call(name,"{}",2)!=APP_CALLBACK_CODE_EXIT);
     assert(test_event(APP_EVENT_SUBTASK,7,APP_SUBTASK_RETURNED_CANCELLED)==APP_CALLBACK_CODE_EXIT);
     assert(test_return_error && !strcmp(test_error,"SDK_STATE"));

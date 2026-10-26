@@ -129,7 +129,7 @@ app_callback_code_t cx_task_callback(app_event_t *event) {
   if (event->event == APP_EVENT_SUBTASK && event->waitable == t->pending) {
     if (!cx_subtask_terminal(event->code)) return APP_CALLBACK_CODE_WAIT(t->set);
     app_waitable_join(t->pending, 0); app_subtask_drop(t->pending); t->pending = 0;
-    if (APP_SUBTASK_STATE(event->code) == APP_SUBTASK_RETURNED_CANCELLED) t->cancelled = true;
+    if (APP_SUBTASK_STATE(event->code) != APP_SUBTASK_RETURNED) t->cancelled = true;
     return drive(t);
   }
   if (event->event == APP_EVENT_STREAM_READ) for (cx_reader *r = t->readers; r; r = r->next) {
