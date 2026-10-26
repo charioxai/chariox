@@ -165,9 +165,8 @@ impl KernelRuntimeOwnedState {
     }
 
     /// Carries the authenticated answering connection into the locked resolver.
-    // Keep the shared terminal answer contract used across runtime interaction callers.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn resolve_terminal_runtime_interaction(
+    pub(super) fn resolve_attributed_terminal_runtime_interaction(
         &self,
         session_id: &str,
         interaction_id: &str,
@@ -176,16 +175,19 @@ impl KernelRuntimeOwnedState {
         caller_user_id: Option<&str>,
         passkey_verified: bool,
         connection_class: Option<crate::local::KernelConnectionClass>,
+        answerer: Option<&crate::runtime::command::KernelCaller>,
     ) -> Result<(), DaemonError> {
-        self.resolve_runtime_interaction_inner(
+        self.resolve_runtime_interaction_authorized(
             session_id,
             interaction_id,
             choice_id,
             custom_reply,
             caller_user_id,
             passkey_verified,
+            None,
             false,
             connection_class == Some(crate::local::KernelConnectionClass::Terminal),
+            answerer,
         )
     }
 
@@ -234,6 +236,7 @@ impl KernelRuntimeOwnedState {
             None,
             take_host,
             terminal_answer,
+            None,
         )
     }
 
@@ -250,6 +253,7 @@ impl KernelRuntimeOwnedState {
         authorizing_terminal: Option<&str>,
         take_host: bool,
         terminal_answer: bool,
+        answerer: Option<&crate::runtime::command::KernelCaller>,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -352,6 +356,20 @@ impl KernelRuntimeOwnedState {
                     .cloned()
             })
             .ok_or_else(|| interaction_error("interaction is not active"))?;
+        if interaction.asking_task_id().is_some()
+            && interaction.timeout_sec().is_some_and(|seconds| {
+                interaction
+                    .requested_at_ms()
+                    .saturating_add(seconds.saturating_mul(1000))
+                    <= crate::session::unix_epoch_ms()
+            })
+        {
+            drop(sessions);
+            drop(activity_mutation);
+            drop(_mutation);
+            self.timeout_runtime_interaction(session_id, interaction_id)?;
+            return Err(interaction_error("Question deadline elapsed"));
+        }
         let review = super::owner_context_review::is_owner_context_review(&interaction);
         if let Some(owner) = pending
             .kernel_operation_owner
@@ -500,6 +518,16 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        self.record_async_question_resolution(
+            &interaction,
+            &super::PendingInteractionResolution {
+                status: "answered",
+                choice_id: Some(choice_id.into()),
+                reply: Some(resolved_reply.clone()),
+            },
+            caller_user_id,
+            answerer,
+        )?;
         let consume = || {
             if let Some(terminal) = authorizing_terminal {
                 self.sudo_turns
@@ -621,6 +649,20 @@ impl KernelRuntimeOwnedState {
         if !self.agent_interaction_is_live(&pending) {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
+        if pending.async_task_id.is_some() {
+            let session = self.session_store.get_session(session_id)?;
+            let interaction = session
+                .active_interactions()
+                .iter()
+                .find(|i| i.id() == interaction_id)
+                .ok_or_else(|| interaction_error("question is not active"))?;
+            self.record_async_question_resolution(
+                interaction,
+                &timeout_runtime_interaction_resolution(interaction),
+                None,
+                None,
+            )?;
+        }
         self.pending_interactions.write().remove(interaction_id);
         if pending.passkey_prompt.is_some() {
             let reason = if pending
@@ -717,7 +759,11 @@ fn timeout_runtime_interaction_resolution(
         };
     };
     super::PendingInteractionResolution {
-        status: "answered",
+        status: if interaction.asking_task_id().is_some() {
+            "timed_out"
+        } else {
+            "answered"
+        },
         choice_id: Some(choice.id().to_string()),
         reply: Some(choice.reply().to_string()),
     }

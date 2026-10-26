@@ -478,7 +478,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             super::goals::clock(&mut t, crate::session::unix_epoch_ms());
             t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
-            if is_plain(tx, &t)? {
+            if retain_question_wait(tx, &mut t, crate::session::unix_epoch_ms())? {
+                t.pending_prompt_id = None;
+            } else if is_plain(tx, &t)? {
                 t.state = ExecutionState::Cancelled;
                 t.pending_prompt_id = None;
             } else {
@@ -563,6 +565,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     false
                 };
+                if retain_question_wait(tx, &mut t, now)? {
+                    t.provider_run_id = Some(run);
+                    t.revision += 1;
+                    save(tx, &t)?;
+                    return Ok(Outcome::Settled {
+                        task: t,
+                        correction: false,
+                    });
+                }
                 let plain = is_plain(tx, &t)?;
                 if has_answer && (plain || (!open && t.wait.is_none())) {
                     t.state = ExecutionState::Done;
@@ -713,4 +724,48 @@ fn yield_refusal(
         }
     }
     Ok("yield sources must cover every unresolved obligation".into())
+}
+
+/// Questions are the only source allowed to outlive a normal turn without an
+/// explicit yield. This never covers unrelated obligations or an active goal.
+fn retain_question_wait(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    now: u64,
+) -> Result<bool, DaemonError> {
+    let open = t
+        .obligations
+        .iter()
+        .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+    if t.wait.is_none()
+        && t.goal.is_none()
+        && t.no_progress_wakes < NO_PROGRESS_LIMIT
+        && open
+        && t.obligations
+            .iter()
+            .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            .all(|o| o.kind == "interaction")
+    {
+        let regs = registrations(tx, &t.task_id)?;
+        t.wait = Some(AgentWait {
+            registration_ids: regs
+                .iter()
+                .filter(|r| {
+                    t.obligations.iter().any(|o| {
+                        o.kind == "interaction" && r.obligation_id.as_deref() == Some(&o.id)
+                    })
+                })
+                .map(|r| r.id.clone())
+                .collect(),
+            deadline_ms: now.saturating_add(7 * 86_400_000),
+            started_at_ms: now,
+            inbox_cursor: 0,
+            long_wait_notified: false,
+            last_checked_at_ms: now,
+        });
+        t.state = ExecutionState::Waiting;
+        t.reason = "Waiting for the answer to a non-blocking question".into();
+        return Ok(true);
+    }
+    Ok(false)
 }

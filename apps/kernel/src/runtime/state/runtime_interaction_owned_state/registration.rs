@@ -55,6 +55,23 @@ impl KernelRuntimeOwnedState {
                 terminal_credential_owner,
             );
         }
+        if let Some(task_id) = interaction.asking_task_id() {
+            let wake = self
+                .durable_state_store
+                .agent_wake(interaction.id())?
+                .ok_or_else(|| interaction_error("Async question has no admitted wake"))?;
+            if wake.kind != super::super::interaction_wake::KIND
+                || wake.task_id != task_id
+                || wake.room_id != session_id
+                || interaction.agent_id() != Some(wake.agent_id.as_str())
+                || !matches!(wake.state.as_str(), "starting" | "running")
+                || serde_json::to_value(&interaction).ok().as_ref() != Some(&wake.detail)
+            {
+                return Err(interaction_error(
+                    "Async question does not match its admitted wake",
+                ));
+            }
+        }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
@@ -181,18 +198,28 @@ impl KernelRuntimeOwnedState {
             drop(pending);
             self.ensure_kernel_decision_capacity(owner)?;
         }
-        if session
-            .active_interactions()
-            .iter()
-            .any(|existing| existing.subject() == interaction.subject())
-            || self
-                .pending_interactions
-                .write()
-                .contains_key(interaction.id())
+        if session.active_interactions().iter().any(|existing| {
+            (existing.id() == interaction.id() && existing != &interaction)
+                || (existing.subject() == interaction.subject()
+                    && existing.asking_task_id().is_none()
+                    && interaction.asking_task_id().is_none())
+        }) || self
+            .pending_interactions
+            .write()
+            .contains_key(interaction.id())
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
         let agent_lifetime = interaction.agent_id().map(|agent_id| {
+            if interaction.asking_task_id().is_some() {
+                return super::super::PendingAgentInteractionLifetime {
+                    agent_id: agent_id.into(),
+                    prompt_id: None,
+                    native_turn_id: None,
+                    provider_run_id: None,
+                    worker: None,
+                };
+            }
             if let Some(origin) = interaction.native_origin() {
                 use crate::session::NativeInteractionOrigin;
                 let (mut prompt_id, native_turn_id) = match origin {
@@ -288,6 +315,7 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let pending = super::super::PendingInteraction {
+            async_task_id: interaction.asking_task_id().map(str::to_owned),
             kernel_wide_interaction: None,
             agent_lifetime,
             session_id: session_id.into(),

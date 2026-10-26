@@ -814,6 +814,34 @@ and shows wait reason/deadline and aggregate unresolved obligations. Web and
 native clients must consume the same projection; client integration is required
 before claiming visibility on those clients.
 
+MP-08 / MP-09 / MP-10 / MP-11, local protocol **616**, relay peer **221**:
+`chariox.request_popup` accepts optional `wait` (default `true`). Blocking
+questions keep their existing response and turn lifetime. With `wait:false`,
+the tool returns `{interaction_id, registration_id}` immediately. Its ordinary
+`RuntimeInteraction` adds optional `asking_task_id`; older clients can ignore
+that field and answer using the unchanged `RespondToInteraction` request.
+No additional card or client request is introduced.
+
+An async question is the `interaction` kind of the existing durable wake
+registry. The asking task owns its obligation and completion registration;
+`events.yield` may include that registration alongside other sources. A turn
+whose only unresolved obligations are questions may finish normally: settlement
+retains those registrations as a wait. Other unfinished work still requires
+normal completion or an explicit valid yield. The question survives native turn
+completion and kernel restart, including its original absolute deadline.
+
+The first admitted answer commits a `source_completed` inbox event with the
+resolution in `payload.public_answer`: `interaction_id`, `status`, `choice_id`,
+exact `reply`, authenticated `answered_by`, `user_id`, `agent_id`, `client_id`
+and `connection_class`, plus the usual wake/task attribution. The existing
+inbox delivery and provider acceptance machinery starts the next idle turn;
+retries cannot produce another occurrence. Session membership and existing
+grants govern who may answer. A deadline produces `status:"timed_out"` with
+the fixed default choice/reply when configured, or null choice/reply otherwise;
+its answerer fields are null. Stop, task cancellation or agent/session removal
+withdraws the question without applying its timeout default. Resolution commits
+before projection removal, so restart closes a leftover resolved card.
+
 Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
@@ -843,7 +871,8 @@ tasks, including physical resource settlement after cancellation. The canonical
 admission and settlement, so cancellation also releases the parent's wait.
 This lineage is private kernel storage and adds no serialized client fields.
 
-A final answer with unresolved obligations gets one persisted corrective turn,
+A final answer with unresolved obligations other than the async-question wait
+described above gets one persisted corrective turn,
 then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Three consecutive settled wake turns without real progress block

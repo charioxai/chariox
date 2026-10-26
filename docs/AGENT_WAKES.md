@@ -6,6 +6,37 @@ waiting on it with a finite deadline (`chariox.events.yield`), and the kernel
 starts a new turn when the source occurs. Nothing in this path is silent: every
 state is stored, shown to every client, and has a visible failure.
 
+## Asking without stopping work
+
+MP-08 / MP-09 / MP-10 / MP-11: use `chariox.request_popup` with `wait:false`
+for a question whose answer can arrive later. Keep working after its immediate
+`interaction_id` and `registration_id` response. The same question card appears
+on every attached terminal; authorized agents and granted external followers
+answer through the existing interaction response path.
+
+```json
+{"wait":false,"title":"Choose the next check","message":"Which check should run next?","choices":[{"id":"focused","label":"Focused checks","reply":"Run the focused checks."}],"timeout_sec":300}
+```
+
+Include `registration_id` when yielding on several sources. If questions are
+your only remaining obligations, finishing this turn retains their wait. The
+answer wakes the idle agent through its event inbox. Read the exact choice,
+reply and answerer in `payload.public_answer`, handle it, then acknowledge the
+event. Deadline defaults keep `status:"timed_out"`; without a default there is
+no reply. Questions and deadlines survive kernel restart. Stop/cancel/delete
+withdraws pending questions, without choosing a default.
+
+Use the default `wait:true` only when work cannot continue without the answer.
+That mode keeps the existing blocking result. `events.blocked` is for an owner
+action that actually prevents further work.
+
+| Tool | When to use it | Result |
+| --- | --- | --- |
+| `request_popup` with `wait:false` | Keep working while awaiting input | Interaction and wake registration IDs; attributed answer in inbox |
+| `request_popup` with `wait:true` or omitted | Work needs the answer before continuing | Blocking answer or timeout |
+| `events.yield` | Await admitted sources after useful work | End the provider turn; kernel wakes it for a source or deadline |
+| `events.blocked` | Work requires an owner action | Existing owner decision and supervised task |
+
 ## Parts
 
 | Part | Job | Where |

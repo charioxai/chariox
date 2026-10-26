@@ -49,6 +49,15 @@ impl SessionRuntimeCommandExecutor {
         executor
     }
 
+    pub(super) fn with_interaction_answerer(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_interaction_answerer(caller);
+        executor
+    }
+
     pub(super) fn with_room_request_origin(
         &self,
         actor: Option<&str>,

@@ -201,6 +201,28 @@ impl KernelRuntimeState {
         self.pause_forwarded_meta_request_before_dispatch_for_test();
         self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
             .await?;
+        if crate::transport::runtime_tools::canonical_credential_tool_name(&tool_name)
+            == Some(crate::transport::runtime_tools::REQUEST_POPUP_TOOL)
+        {
+            let args: crate::transport::runtime_tools::RequestPopupArgs =
+                serde_json::from_value(arguments).map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_request_popup",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+            if args.wait != Some(false) || context.home_prompt_id.is_none() {
+                return Err(crate::durable_state::agent_lifecycle::error(
+                    "forwarded question requires wait:false and a running home prompt",
+                ));
+            }
+            return self
+                .dispatch_popup_for_agent(
+                    &context.home_session_id,
+                    &context.home_agent_id,
+                    None,
+                    args,
+                )
+                .await;
+        }
         if let Some(name) =
             crate::transport::runtime_tools::canonical_agent_event_tool_name(&tool_name)
         {

@@ -908,11 +908,15 @@ impl RuntimeSession {
     }
 
     pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
-        self.active_interactions
-            .retain(|existing| existing.subject() != interaction.subject());
+        self.active_interactions.retain(|existing| {
+            existing.id() != interaction.id()
+                && (existing.subject() != interaction.subject()
+                    || existing.asking_task_id().is_some()
+                    || interaction.asking_task_id().is_some())
+        });
         self.active_interactions.push(interaction);
         self.active_interactions
-            .sort_by_key(|left| left.requested_at_ms());
+            .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
     }
 
     pub fn remove_active_interaction(

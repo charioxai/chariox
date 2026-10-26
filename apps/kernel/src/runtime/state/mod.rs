@@ -173,6 +173,7 @@ pub(crate) struct KernelRuntimeState {
     /// MP-08 / MP-11: the transport admitted this command from a terminal
     /// (local token or relay client), not from a granted or launched agent.
     terminal_caller: bool,
+    interaction_answerer: Option<crate::runtime::command::KernelCaller>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
@@ -188,6 +189,7 @@ pub(crate) struct KernelRuntimeState {
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
+    interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
     /// MP-08/MP-09/MP-11: terminals retain this callback weakly so it cannot
     /// own the runtime state that owns the terminal service.
     managed_terminal_activity: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -917,6 +919,7 @@ impl KernelRuntimeState {
             room_provider_origin: None,
             room_request_origin: None,
             terminal_caller: false,
+            interaction_answerer: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             #[cfg(test)]
@@ -929,6 +932,7 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             terminal_wake_driver: None,
+            interaction_wake_driver: None,
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
@@ -1079,6 +1083,7 @@ impl KernelRuntimeState {
         };
         runtime.link_room_terminals_to_managed_kernel();
         runtime.register_terminal_wake_driver();
+        runtime.register_interaction_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
@@ -1395,6 +1400,7 @@ mod agent_task_projection;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
+mod interaction_wake;
 mod leased_task_connectivity;
 mod room_dispatch_obligation;
 mod terminal_wake;

@@ -1,0 +1,83 @@
+{
+  "local": 616,
+  "relayPeer": 221,
+  "arguments": {
+    "wait": false,
+    "message": "Choose the next step",
+    "choices": [
+      {
+        "id": "continue",
+        "label": "Continue",
+        "reply": "Exact reply: continue."
+      }
+    ],
+    "timeout_sec": 300
+  },
+  "result": {
+    "interaction_id": "question",
+    "registration_id": "completion-question"
+  },
+  "interaction": {
+    "id": "question",
+    "agent_id": "agent",
+    "asking_task_id": "task",
+    "kind": "choice",
+    "level": "info",
+    "message": "Choose the next step",
+    "choices": [
+      {
+        "id": "continue",
+        "label": "Continue",
+        "reply": "Exact reply: continue."
+      }
+    ],
+    "timeout_sec": 300,
+    "requested_at_ms": 1
+  },
+  "answer": {
+    "RespondToInteraction": {
+      "session_id": "room",
+      "interaction_id": "question",
+      "choice_id": "continue"
+    }
+  },
+  "event": {
+    "sequence": 1,
+    "room_id": "room",
+    "agent_id": "agent",
+    "source_id": "question",
+    "occurrence_id": "question-resolved",
+    "kind": "source_completed",
+    "payload": {
+      "task_id": "task",
+      "source_id": "question",
+      "public_history_ref": "question",
+      "occurrence_id": "question-resolved",
+      "success": true,
+      "public_answer": {
+        "interaction_id": "question",
+        "status": "answered",
+        "choice_id": "continue",
+        "reply": "Exact reply: continue.",
+        "answered_by": "owner-client",
+        "user_id": "owner",
+        "agent_id": null,
+        "client_id": "owner-client",
+        "connection_class": "terminal",
+        "task_id": "task",
+        "wake_id": "question",
+        "kind": "interaction",
+        "label": "Question awaiting an answer",
+        "end": "succeeded"
+      }
+    },
+    "urgent": false,
+    "reply_requested": false,
+    "state": "pending",
+    "prompt_id": null,
+    "target_prompt_id": null,
+    "provider_run_id": null,
+    "attempted_at_ms": null,
+    "submit_epoch": null
+  }
+}

@@ -146,3 +146,43 @@ worker and cancel it; confirm physical source settlement, not just acceptance of
 the cancellation request. Preserve screenshots, timings, first-reply verdicts,
 source identities and cleanup outside the repository. These focused checks do not
 replace the complete ordinary/managed acceptance matrix.
+
+## Async questions (MP-08 / MP-09 / MP-10 / MP-11, AM-ASK)
+
+Build the kernel, relay, CLI launcher and TypeScript CLI from the same head.
+Keep the binaries, disposable state and evidence outside the repository. Link
+only an existing product-created Codex profile; this drill never copies or
+refreshes login files itself.
+
+```sh
+systemd-run --scope --quiet -p MemoryMax=4G -p MemorySwapMax=0 -- timeout 900 \
+  env AMASK_BIN=/absolute/path/to/binaries \
+      AMASK_STATE_ROOT=/absolute/path/to/disposable/state \
+      AMASK_EVIDENCE=/absolute/path/to/evidence \
+      AMASK_CODEX_PROFILE=/absolute/path/to/product/codex/profile \
+  node apps/cli/scripts/live-async-question-drill.mjs
+```
+
+The drill starts two real kernels, a real relay and built TUIs. A short real
+Codex `gpt-6-luna` low turn asks without waiting, runs another tool and finishes.
+It then restarts the owner kernel with that question pending. A real provider
+on the outside kernel runs the follower mode over the owner's private socket:
+its first ungranted request must fail, normal passkey approval grants access,
+and its first answer wins while a duplicate is refused. The owner wakes with
+the answer. Further short turns cover both deadline outcomes and a TUI stop
+that withdraws the card. Capture and inspect the real PTY screenshots and the
+allowlisted report. The harness removes only its own runtime and workspace.
+
+For web acceptance, set `AMASK_WEB_CAPTURE_HELPER` to a lane-owned executable.
+It receives the Room ID, interaction ID and evidence directory, plus the
+owner's loopback endpoint in `AMASK_OWNER_ENDPOINT`. It must enroll the
+**same** disposable owner through the normal device flow and drive the built
+production web entry at DPR 1 and 2. Use `AMASK_WEB_ORIGIN` when doing so; the
+owner TUI then stays on its local terminal connection while web uses hosted
+WSS. Do not replace the actual web entry with a fixture. Without that helper,
+the report explicitly leaves web NOT RUN and cannot close AM-ASK-01.
+
+Run against the base first: it must fail because a non-blocking question is
+not available, then run the matching candidate. Source regressions are selected
+with `cargo test -p chariox-kernel --lib async_popup` (through the build-slot
+wrapper). The existing `popup_notice` tests guard the default blocking mode.
