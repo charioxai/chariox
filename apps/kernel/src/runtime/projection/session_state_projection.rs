@@ -446,7 +446,7 @@ impl SessionStateProjectionStore {
         provider_runs: &[crate::provider::RuntimeProviderRun],
     ) -> ProjectionInvariantHealthSnapshot {
         invariant::snapshot(
-            self.projected_sessions(),
+            self.all_projected_sessions(),
             agent_runtime,
             canonical_agents,
             active_turns,
@@ -496,6 +496,17 @@ impl SessionStateProjectionStore {
     pub(crate) fn projected_sessions(&self) -> Vec<RuntimeSession> {
         self.projected_sessions_shared()
             .into_iter()
+            .map(|session| session.as_ref().clone())
+            .collect()
+    }
+
+    /// Every projected session, including the hidden ones the session list leaves out.
+    fn all_projected_sessions(&self) -> Vec<RuntimeSession> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session_states
+            .values()
             .map(|session| session.as_ref().clone())
             .collect()
     }
