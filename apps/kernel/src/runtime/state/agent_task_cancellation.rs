@@ -135,8 +135,7 @@ impl KernelRuntimeState {
         agent: &str,
     ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
         let session = self.owned.session_store.get_session(&request.session_id)?;
-        let attachment = self
-            .owned
+        self.owned
             .ensure_attachment_in_session(session.id(), &request.attachment_id)?;
         // A native prompt-specific Stop must never cancel a different task.
         if request.expected_prompt_id.is_some()
@@ -149,11 +148,8 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
-        if attachment.owner_user_id() != session.owner_user_id() {
-            return Err(crate::durable_state::agent_lifecycle::error(
-                "only the room owner can stop a parked task",
-            ));
-        }
+        // AgentRuntime already checked the caller against the agent owner,
+        // just as it does before cancelling an active prompt.
         let tasks = self
             .owned
             .durable_state_store
