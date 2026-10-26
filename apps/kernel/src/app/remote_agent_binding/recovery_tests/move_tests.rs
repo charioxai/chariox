@@ -529,6 +529,9 @@ async fn crash_role_boundary(phase: &'static str, forward: bool, worker: bool) {
     // The home request loses its peer reply when the other process crashes.
     task.abort();
     let crashed = task.await;
+    let before = move_journal(&fixture, &session).await;
+    let operation_id = before["identity"]["operation_id"].clone();
+    let generation = before["identity"]["generation"].clone();
     assert!(
         !marker.exists(),
         "public Move must reach role boundary {phase}"
@@ -548,6 +551,11 @@ async fn crash_role_boundary(phase: &'static str, forward: bool, worker: bool) {
     move_request(&fixture, &session, forward).await;
     let operation = move_journal(&fixture, &session).await;
     assert_eq!(operation["phase"]["phase"], "complete", "{phase}");
+    assert_eq!(
+        operation["identity"]["operation_id"], operation_id,
+        "{phase} must retain its capture"
+    );
+    assert_eq!(operation["identity"]["generation"], generation);
     let home = fixture.home.lock().await;
     assert!(home.providers().list_runs().is_empty());
     let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
@@ -805,4 +813,98 @@ async fn mk03_rollback_home_restart() {
 #[tokio::test(flavor = "multi_thread")]
 async fn mk03_rollback_source_release_restart() {
     rollback_crash_boundary("source:released").await;
+}
+
+async fn captured_peer_failure_keeps_operation(phase: &'static str) {
+    let (mut fixture, session, _) = crash_fixture().await;
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), phase).unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session.clone(),
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let home = fixture.home.clone();
+    let first = request.clone();
+    let crashed = tokio::spawn(async move {
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8);
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk03-captured-peer-crash",
+            None,
+            None,
+            &first,
+        );
+        router.dispatch(command, first).await
+    })
+    .await;
+    assert!(
+        crashed.is_err(),
+        "Move must reach its durable home boundary"
+    );
+    let before = move_journal(&fixture, &session).await;
+    assert_eq!(before["phase"]["phase"], phase);
+    reboot_app(&fixture.home).await;
+    let _ = fixture.shutdown[0].send(true);
+    fixture.tasks[1].abort();
+    let _ = (&mut fixture.tasks[1]).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk03-captured-peer-unavailable",
+        None,
+        None,
+        &request,
+    );
+    assert!(router.dispatch(command, request).await.is_err());
+    let pending = move_journal(&fixture, &session).await;
+    assert_eq!(
+        pending["phase"]["phase"], phase,
+        "a lost peer cannot discard a captured Move"
+    );
+    assert_eq!(
+        pending["identity"]["operation_id"],
+        before["identity"]["operation_id"]
+    );
+    assert!(fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+    reboot_worker(&mut fixture).await;
+    move_request(&fixture, &session, true).await;
+    let completed = move_journal(&fixture, &session).await;
+    assert_eq!(completed["phase"]["phase"], "complete");
+    assert_eq!(
+        completed["identity"]["operation_id"],
+        before["identity"]["operation_id"]
+    );
+    assert_eq!(
+        completed["identity"]["generation"],
+        before["identity"]["generation"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_captured_peer_disconnect_keeps_the_same_move() {
+    captured_peer_failure_keeps_operation("captured").await;
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_materialized_peer_disconnect_keeps_the_same_move() {
+    captured_peer_failure_keeps_operation("materialized").await;
 }

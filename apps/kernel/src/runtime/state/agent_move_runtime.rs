@@ -185,13 +185,16 @@ impl KernelRuntimeState {
             if let Some(mut operation) = self.owned.agent_moves.home(&operation_id) {
                 if matches!(
                     operation.phase,
-                    HomeMovePhase::Fenced
-                        | HomeMovePhase::SourceStopped
-                        | HomeMovePhase::Captured { .. }
-                        | HomeMovePhase::Materialized { .. }
-                ) {
-                    // A bind reply can be lost after its agent.updated event committed.
-                    // Never restore source dispatch until that possibility is excluded.
+                    HomeMovePhase::Fenced | HomeMovePhase::SourceStopped
+                ) && operation.source_remote.is_none()
+                    && !self
+                        .owned
+                        .agent_moves
+                        .source(&operation_id)
+                        .is_some_and(|source| source.capture.is_some())
+                {
+                    // Only a local source with no capture can be rolled back safely.
+                    // A peer may have captured or imported state before its reply was lost.
                     let current = self
                         .owned
                         .agent_store
