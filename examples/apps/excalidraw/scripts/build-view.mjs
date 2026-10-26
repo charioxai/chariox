@@ -15,24 +15,30 @@ try { await mkdir(output); } catch (error) {
   throw error;
 }
 await mkdir(join(output, 'ui'));
+let fontTransforms = 0;
 const result = await build({
   absWorkingDir: root, entryPoints: ['src/main.jsx'], outdir: join(output, 'ui'), entryNames: 'app',
   bundle: true, splitting: true, format: 'esm', target: 'es2022', minify: true,
   conditions: ['production'], define: { 'process.env.NODE_ENV': '"production"' },
   loader: { '.woff2': 'file' },
   legalComments: 'linked', metafile: true,
-  plugins: [{ name: 'diagram-only', setup(build) {
+  plugins: [{ name: 'excalidraw-app-assets', setup(build) {
     build.onResolve({ filter: /^@excalidraw\/mermaid-to-excalidraw$/ }, () => ({ path: join(root, 'src/mermaid.js') }));
     build.onLoad({ filter: /dist\/prod\/chunk-K2UTITRG\.js$/ }, async ({ path }) => {
       const bytes = await readFile(path);
       if (sha256(bytes) !== '72b54e8e9b3c17c69f1dd5e40203bfaed62313bc611b86ecb8a1625a12562e51') throw Error('Review the changed Excalidraw font registration before updating its pin.');
       const source = bytes.toString('utf8');
       if (source.split('n(Mn,...b1),').length !== 2) throw Error('Expected exactly one pinned Xiaolai registration.');
+      fontTransforms++;
       // Keep the fallback family and metrics, with zero downloadable faces.
       return { contents: source.replace('n(Mn,...b1),', 'n(Mn),'), loader: 'js', resolveDir: dirname(path) };
     });
   } }],
 });
+if (fontTransforms !== 1) throw Error('The pinned font transform did not run exactly once.');
+for (const file of await files(join(output, 'ui'))) {
+  if (file.endsWith('.js') && (await readFile(join(output, 'ui', file), 'utf8')).includes('./fonts/Xiaolai/')) throw Error('The UI retained an excluded downloadable font.');
+}
 const inputs = Object.fromEntries(Object.keys(result.metafile.inputs).map(file => [resolve(root, file), {}]));
 for (const pkg of await npmPackages(inputs)) {
   if (!inventory.packages[pkg.name + '@' + pkg.version]) throw Error(`unlisted dependency in bundle: ${pkg.name}@${pkg.version}`);
