@@ -1,6 +1,7 @@
 //! Open App view Tabs per session. The kernel, not the page or controller,
 //! decides which owner and installation a view call runs as.
 use crate::session::{AppPanelLayout, AppPanelPlacement};
+mod action_approvals;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -76,6 +77,8 @@ struct SessionViews {
     tabs: HashMap<String, (AppViewBinding, u64)>,
     /// Target → the queue its agent actions wait in, one at a time.
     agent_queues: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Existing permission answers, scoped to this session and exact grant.
+    action_approvals: action_approvals::ActionApprovals,
     registrations: u64,
     /// Physical browser identity from the existing authenticated inventory.
     /// CDP connection generations alone do not prove a document was lost.
@@ -580,8 +583,8 @@ impl AppViews {
     /// controller still shows (their calls are answered, as unbound); the last
     /// pass removes the session atomically so a concurrent open restarts it.
     /// The user's revocations outlive the views: a later focus change still
-    /// does not bind a revoked pair. Such an entry holds only the session's
-    /// revoked (agent, App) pairs and stays for the kernel's lifetime.
+    /// does not bind a revoked pair. Lasting action approval answers likewise
+    /// survive closing a view; retained authority still fences revocation.
     pub(crate) fn keep_pumping(&self, session: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(session) {
@@ -591,15 +594,16 @@ impl AppViews {
                 true
             }
             _ => {
-                let revoked = sessions
+                let (revoked, action_approvals) = sessions
                     .remove(session)
-                    .map(|views| views.revoked)
+                    .map(|views| (views.revoked, views.action_approvals))
                     .unwrap_or_default();
-                if !revoked.is_empty() {
+                if !revoked.is_empty() || !action_approvals.is_empty() {
                     sessions.insert(
                         session.to_owned(),
                         SessionViews {
                             revoked,
+                            action_approvals,
                             ..Default::default()
                         },
                     );

@@ -363,3 +363,157 @@ async fn known_secret_values_never_reach_the_model_in_a_state_a_result_or_an_err
         error.message
     );
 }
+
+// MP-08/MP-10/MP-11: reuse the existing kernel interaction's lasting choice.
+#[tokio::test]
+async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocation_fences_it() {
+    let mut rig = rig();
+    rig.grant().await;
+    let context = rig.context(declared());
+    let action = action("wipe", UiActionEffect::Approval);
+    let input = json!({});
+    let approve = rig
+        .runtime
+        .approve_view_action(&rig.run, &rig.agent, &context, &action, &input);
+    let (outcome, lasting) = tokio::join!(approve, async {
+        let asked = pending_approval(&rig)
+            .await
+            .expect("the user is asked once");
+        let lasting = asked.choices().iter().any(|c| c.id() == "allow_session");
+        rig.runtime
+            .resolve_runtime_interaction(
+                &rig.session,
+                asked.id(),
+                if lasting { "allow_session" } else { "deny" },
+                None,
+            )
+            .await
+            .unwrap();
+        lasting
+    });
+    assert!(
+        lasting,
+        "offer the existing Allow for session permission choice"
+    );
+    outcome.unwrap();
+    let repeated = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        rig.runtime
+            .approve_view_action(&rig.run, &rig.agent, &context, &action, &input),
+    )
+    .await;
+    assert!(
+        matches!(repeated, Ok(Ok(()))),
+        "an existing approval adds no prompt: {repeated:?}"
+    );
+    assert!(pending_approval_none(&rig).await);
+    // A lasting answer belongs to the Room, not to an open page or its pump.
+    rig.runtime
+        .app_control()
+        .views()
+        .forget_session(&rig.session);
+    assert!(!rig.runtime.app_control().views().keep_pumping(&rig.session));
+    let context = rig.context(declared());
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        rig.runtime
+            .approve_view_action(&rig.run, &rig.agent, &context, &action, &input)
+    )
+    .await
+    .unwrap()
+    .is_ok());
+
+    rig.runtime
+        .revoke_agent_extension(rig.agent.id(), ExtensionKind::App, APP, "alice")
+        .await
+        .unwrap();
+    rig.grant().await;
+    assert_eq!(
+        rig.runtime
+            .approve_view_action(&rig.run, &rig.agent, &context, &action, &input)
+            .await
+            .unwrap_err()
+            .code,
+        "AGENT_APP_NOT_GRANTED"
+    );
+    let context = rig.context(declared());
+    let approve = rig
+        .runtime
+        .approve_view_action(&rig.run, &rig.agent, &context, &action, &input);
+    let (outcome, ()) = tokio::join!(approve, async {
+        let asked = pending_approval(&rig)
+            .await
+            .expect("regrant must ask again");
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, asked.id(), "deny", None)
+            .await
+            .unwrap();
+    });
+    assert_eq!(outcome.unwrap_err().code, "approval_denied");
+}
+
+async fn decide_action_approval(
+    rig: &Rig,
+    context: &ViewContext,
+    action: &UiActionDeclaration,
+    choice: &str,
+) -> Result<(), ViewError> {
+    let input = json!({});
+    let approve = rig
+        .runtime
+        .approve_view_action(&rig.run, &rig.agent, context, action, &input);
+    let (outcome, ()) = tokio::join!(approve, async {
+        let asked = pending_approval(rig)
+            .await
+            .expect("this action needs its own approval");
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, asked.id(), choice, None)
+            .await
+            .unwrap();
+    });
+    outcome
+}
+
+// MP-08/MP-10/MP-11: allow once never becomes lasting authority, and an answer
+// for one signed action/generation cannot approve another.
+#[tokio::test]
+async fn action_approvals_keep_their_choice_action_and_generation_scope() {
+    let mut rig = rig();
+    rig.grant().await;
+    let mut context = rig.context(declared());
+    let wipe = action("wipe", UiActionEffect::Approval);
+    decide_action_approval(&rig, &context, &wipe, "allow_once")
+        .await
+        .unwrap();
+    assert_eq!(
+        decide_action_approval(&rig, &context, &wipe, "deny")
+            .await
+            .unwrap_err()
+            .code,
+        "approval_denied"
+    );
+    decide_action_approval(&rig, &context, &wipe, "allow_session")
+        .await
+        .unwrap();
+    assert_eq!(
+        decide_action_approval(
+            &rig,
+            &context,
+            &action("another_wipe", UiActionEffect::Approval),
+            "deny"
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "approval_denied"
+    );
+    context.binding.generation += 1;
+    rig.bind(&rig.session, context.binding.generation);
+    assert_eq!(
+        decide_action_approval(&rig, &context, &wipe, "deny")
+            .await
+            .unwrap_err()
+            .code,
+        "approval_denied"
+    );
+}

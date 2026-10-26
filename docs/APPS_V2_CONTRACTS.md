@@ -154,8 +154,11 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   queue → the page's registration against the declaration
   (`check_registered`) → the call. Nothing reaches the page before the last step.
 - **Approval.** An `approval` action asks through the kernel interaction
-  `app-view-action-*` (allow once / deny, shown on every client of the Room;
-  `/sudo` answers it like a provider permission). `batch` never decides one: it
+  `app-view-action-*` (allow once / allow for session / deny, shown on every
+  client of the Room; `/sudo` answers it like a provider permission). The
+  existing session answer covers only that App, agent, action and active
+  generation. Revocation invalidates it, including after a regrant. The App
+  grant alone does not approve an action. `batch` never decides one: it
   stops before the first approval step and reports it.
 - **Batch.** Every step is checked first (`plan_batch`), then run in order. It
   stops at the first error or approval and reports `completed` and `stopped`;

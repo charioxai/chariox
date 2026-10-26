@@ -112,7 +112,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: INVOKE.into(),
-            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or a grant covers it). Read the changed state with chariox.app_view_state.".into(),
+            description: "Run one declared action in an open App view, as you, through the same function the App's buttons use. Read and write actions run at once; an approval action asks the user first (unless /sudo or an existing approval covers it). Read the changed state with chariox.app_view_state.".into(),
             input_schema: json!({"type": "object", "properties": {"view": view, "action": {"type": "string"}, "input": input}, "required": ["view", "action"], "additionalProperties": false}),
         },
         RuntimeToolSpec {
@@ -538,6 +538,25 @@ impl KernelRuntimeState {
         action: &UiActionDeclaration,
         input: &Value,
     ) -> Result<(), ViewError> {
+        let current_turn = || {
+            self.authorize_room_provider_epoch(Some(agent.id()), Some(run.id()))
+                .map_err(|_| {
+                    failure(
+                        "approval_expired",
+                        "The approval belongs to a turn that has ended",
+                    )
+                })
+        };
+        current_turn()?;
+        self.view_still_bound(context)?;
+        if self.app_control().views().action_approved(
+            &context.session,
+            &context.agent_id,
+            &context.binding,
+            &action.name,
+        ) {
+            return Ok(());
+        }
         let shown = serde_json::to_string(input).unwrap_or_default();
         let shown: String = shown.chars().take(2000).collect();
         let interaction = RuntimeInteraction::new(
@@ -555,6 +574,7 @@ impl KernelRuntimeState {
             ),
             vec![
                 RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", Some(RuntimeInteractionChoiceStyle::Primary)),
+                RuntimeInteractionChoice::new("allow_session", "Allow for session", "allow_session", Some(RuntimeInteractionChoiceStyle::Secondary)),
                 RuntimeInteractionChoice::new("deny", "Deny", "deny", Some(RuntimeInteractionChoiceStyle::Danger)),
             ],
             None,
@@ -569,7 +589,12 @@ impl KernelRuntimeState {
             }
             () = context.authority.cancelled() => return Err(app_view_authority::not_granted()),
         };
-        if answer.status != "answered" || answer.choice_id.as_deref() != Some("allow_once") {
+        if answer.status != "answered"
+            || !matches!(
+                answer.choice_id.as_deref(),
+                Some("allow_once" | "allow_session")
+            )
+        {
             return Err(failure(
                 "approval_denied",
                 format!(
@@ -578,14 +603,18 @@ impl KernelRuntimeState {
                 ),
             ));
         }
-        self.authorize_room_provider_epoch(Some(agent.id()), Some(run.id()))
-            .map_err(|_| {
-                failure(
-                    "approval_expired",
-                    "The approval belongs to a turn that has ended",
-                )
-            })?;
-        self.view_still_bound(context)
+        current_turn()?;
+        self.view_still_bound(context)?;
+        if answer.choice_id.as_deref() == Some("allow_session") {
+            self.app_control().views().approve_action(
+                &context.session,
+                &context.agent_id,
+                &context.binding,
+                &action.name,
+                context.authority.clone(),
+            );
+        }
+        Ok(())
     }
 }
 
