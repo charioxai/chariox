@@ -414,6 +414,7 @@ test("agent spawn command reuses resolved slice id after validating scope", asyn
       calls,
       flash: (message) => { flashedMessage = message },
     }),
+    getSlice: async () => slice({ id: "slice-resolved", status: "stopped" }),
     startSlice: async (sliceRef) => {
       calls.push(`start:${sliceRef}`)
       return slice({
@@ -451,6 +452,45 @@ test("agent spawn command reuses resolved slice id after validating scope", asyn
   assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-resolved · worktree worktree-1 · worker machine-slice")
 })
 
+test("agent spawn command reuses a running slice without starting it again", async () => {
+  let currentSession = session()
+  const calls: string[] = []
+
+  await handleAgentSpawnCommand({
+    ...baseSpawnDeps({
+      currentSession: () => currentSession,
+      setSession: (nextSession) => { currentSession = nextSession },
+      calls,
+      flash: () => {},
+    }),
+    getSlice: async (sliceRef) => {
+      calls.push(`get:${sliceRef}`)
+      return slice({ id: "slice-running", name: "dev", workspace_id: "/workspace", worktree_id: "/workspace" })
+    },
+    startSlice: async () => {
+      throw new Error("starting a running slice re-provisions it under its agents")
+    },
+    spawnAgent: async (_provider, alias, _model, _effort, _worktreeId, _machineRef, _worktreePlacement, sliceRef) => {
+      calls.push(`spawn:${alias}:${sliceRef}`)
+      const nextAgent = agent({
+        id: "agent-slice",
+        agent_ref: "agent-slice",
+        alias: alias ?? null,
+        remote_execution: {
+          worker_kernel_id: "kernel-slice",
+          worker_machine_id: "machine-slice",
+          execution_lease_id: "lease-slice",
+          leased_agent_id: "worker-agent",
+        },
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+  }, ["builder", "codex/gpt-5.4", "--slice", "dev"])
+
+  assert.deepEqual(calls.filter((call) => call.startsWith("get:") || call.startsWith("spawn:")), ["get:dev", "spawn:builder:slice-running"])
+})
+
 test("agent spawn command rejects reusable slices from another worktree", async () => {
   const calls: string[] = []
   let flashedMessage = ""
@@ -465,6 +505,7 @@ test("agent spawn command rejects reusable slices from another worktree", async 
         flashedTone = tone
       },
     }),
+    getSlice: async () => slice({ id: "slice-other", status: "stopped" }),
     startSlice: async (sliceRef) => {
       calls.push(`start:${sliceRef}`)
       return slice({
@@ -494,6 +535,7 @@ test("agent spawn command rejects reusable slices that did not reach running", a
       calls,
       flash: (message) => { flashedMessage = message },
     }),
+    getSlice: async () => slice({ id: "slice-starting", status: "stopped" }),
     startSlice: async (sliceRef) => {
       calls.push(`start:${sliceRef}`)
       return slice({

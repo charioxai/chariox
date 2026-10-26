@@ -45,6 +45,7 @@ export type AgentSpawnCommandHandlerDeps = {
     workspaceMount: string
     workerKernelRef?: string | null
   }) => Promise<SliceRecord>
+  getSlice?: (sliceRef: string) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
@@ -280,10 +281,12 @@ async function prepareSliceForSpawn(
   }
   const createMode = sliceCreateMode(sliceSelection, sliceDisplayMode)
   if (!createMode) {
-    if (!deps.startSlice) {
+    if (!deps.getSlice || !deps.startSlice) {
       throw new Error("slice reuse is unavailable in this build")
     }
-    const slice = await deps.startSlice(sliceSelection)
+    // Starting a running slice re-provisions it under its agents.
+    const existing = await deps.getSlice(sliceSelection)
+    const slice = existing.status === "running" ? existing : await deps.startSlice(sliceSelection)
     validateReusableSliceForSpawn(slice, {
       requestedRef: sliceSelection,
       workspaceId: deps.currentWorkspaceTarget(),
