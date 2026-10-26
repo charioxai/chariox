@@ -9,6 +9,11 @@ use crate::runtime::state::{KernelBrowserDisplayRequest, KernelBrowserPushCredit
 use std::collections::VecDeque;
 mod window;
 use window::CaptureWindow;
+type CapturedFrame = (
+    u64,
+    chariox_relay::protocol::EncryptedRelayPayload,
+    Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+);
 
 /// Legacy clients have no receiver hold clock. Timed acknowledgements use
 /// an observed frame interval plus RTT jitter instead of this allowance.
@@ -337,7 +342,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
                 continue;
             }
         };
-        let Some((sequence, encrypted_event)) = captured else {
+        let Some((sequence, encrypted_event, _barrier)) = captured else {
             if started.elapsed() < Duration::from_millis(5) {
                 idle = (idle * 2).clamp(Duration::from_millis(8), Duration::from_millis(100));
                 let _ = timeout(idle, pump.wake.notified()).await;
@@ -375,7 +380,7 @@ async fn capture_room_window(
     generation: u64,
     after_sequence: u64,
     credit: KernelBrowserPushCredit,
-) -> Result<Option<(u64, chariox_relay::protocol::EncryptedRelayPayload)>, DaemonError> {
+) -> Result<Option<CapturedFrame>, DaemonError> {
     let state = route.router.runtime_state();
     let next = window
         .next(after_sequence, credit.reset, |after, reset| {
@@ -399,10 +404,14 @@ async fn capture_room_window(
     };
     // Buffered replies may have crossed a join, resume or revocation after
     // their peer wait completed. Admission belongs to dispatch as well.
-    state
+    let barrier = state
         .validate_room_display_frame(&route.caller.caller, &route.display_id, &next.value)
         .await?;
-    Ok(Some((next.sequence, next.value.frame.encrypted_event)))
+    Ok(Some((
+        next.sequence,
+        next.value.frame.encrypted_event,
+        Some(barrier),
+    )))
 }
 
 async fn capture_frame(
@@ -411,21 +420,8 @@ async fn capture_frame(
     generation: u64,
     after_sequence: u64,
     credit: KernelBrowserPushCredit,
-) -> Result<Option<(u64, chariox_relay::protocol::EncryptedRelayPayload)>, DaemonError> {
+) -> Result<Option<CapturedFrame>, DaemonError> {
     let state = route.router.runtime_state();
-    if state.is_room_display(&route.display_id) {
-        return Ok(state
-            .room_display_frame(
-                &route.caller.caller,
-                &route.display_id,
-                generation,
-                after_sequence,
-                credit.reset,
-                credit.congested,
-            )
-            .await?
-            .map(|captured| (captured.frame.sequence, captured.frame.encrypted_event)));
-    }
     let result = state
         .kernel_browser_display_request(
             &route.caller,
@@ -457,7 +453,7 @@ async fn capture_frame(
             message: "display encryption failed".into(),
         })?;
     crate::transport::kernel_browser_display::timing("event_serialize_encrypt", at);
-    Ok(Some((sequence, encrypted)))
+    Ok(Some((sequence, encrypted, None)))
 }
 
 #[cfg(test)]

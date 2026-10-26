@@ -3,7 +3,7 @@ use super::*;
 use crate::runtime::state::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
 use crate::slice::{CreateSliceInput, SliceBackendKind, SliceDisplayMode, SliceStatus};
 
-async fn fixture() -> (TestRoom, String, tokio::net::TcpListener) {
+pub(super) async fn fixture() -> (TestRoom, String, tokio::net::TcpListener) {
     let room = TestRoom::new("display-resume-admission");
     let store = &room.runtime.owned.slice_store;
     let slice = store

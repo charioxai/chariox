@@ -7,6 +7,116 @@ pub(crate) struct CapturedRoomDisplayFrame {
     lease: Arc<Mutex<RoomDisplayLease>>,
     binding: RoomDisplayBinding,
     audience_epoch: u64,
+    protection_revision: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn room_shared_display_dispatch_rechecks_binding_revision_audience_and_lease() {
+        let (room, slice, _sink) = super::super::admission_tests::fixture().await;
+        let runtime = &room.runtime;
+        let attachment = crate::app::KernelSessionService::new(&mut *runtime.app.lock().await)
+            .attach(crate::attachment::AttachRequest::new(
+                &room.session_id,
+                "capture-viewer",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap()
+            .id()
+            .to_owned();
+        let config = runtime.owned.config_projection.snapshot();
+        let binding: RoomDisplayBinding = serde_json::from_value(serde_json::json!({
+            "generation":1,"subscription_id":"capture-lease","codec":"avc1.420033",
+            "bitrate":8000000,"device_scale_factor":1,
+            "source":{"kind":"desktop","surface_id":"surface","generation":"1","width":1280,"height":800}
+        })).unwrap();
+        let snapshot = RoomDisplayLease {
+            caller: KernelCaller::default(),
+            session_id: room.session_id.clone(),
+            attachment_id: attachment,
+            slice_id: slice,
+            viewer_public_key: config.relay_public_key.clone(),
+            binding: binding.clone(),
+            worker_public_key: config.relay_public_key.clone(),
+            used: Instant::now(),
+        };
+        let lease = Arc::new(Mutex::new(snapshot.clone()));
+        runtime
+            .owned
+            .room_display_leases
+            .home
+            .lock()
+            .unwrap()
+            .insert(
+                "capture-lease".into(),
+                HomeLease {
+                    session_id: room.session_id.clone(),
+                    slice_id: snapshot.slice_id.clone(),
+                    state: lease.clone(),
+                },
+            );
+        let revision = runtime
+            .owned
+            .room_secret_observations
+            .revision(&room.session_id)
+            .unwrap();
+        let mut captured = CapturedRoomDisplayFrame {
+            frame: SealedRoomDisplayFrame {
+                sequence: 1,
+                encrypted_event: crate::transport::relay_crypto::encrypt_payload_for_peer(
+                    &config.relay_private_key,
+                    &config.relay_public_key,
+                    b"supplementary-test",
+                )
+                .unwrap(),
+            },
+            lease: lease.clone(),
+            binding,
+            audience_epoch: runtime.room_display_audience_epoch(&room.session_id),
+            protection_revision: revision,
+        };
+        let caller = KernelCaller::default();
+        drop(
+            runtime
+                .validate_room_display_frame(&caller, "capture-lease", &captured)
+                .await
+                .unwrap(),
+        );
+        lease.lock().await.binding.generation += 1;
+        assert!(runtime
+            .validate_room_display_frame(&caller, "capture-lease", &captured)
+            .await
+            .is_err());
+        lease.lock().await.binding = captured.binding.clone();
+        captured.protection_revision = revision.wrapping_add(1);
+        assert!(runtime
+            .validate_room_display_frame(&caller, "capture-lease", &captured)
+            .await
+            .is_err());
+        captured.protection_revision = revision;
+        captured.audience_epoch = captured.audience_epoch.wrapping_add(1);
+        assert!(runtime
+            .validate_room_display_frame(&caller, "capture-lease", &captured)
+            .await
+            .is_err());
+        captured.audience_epoch = runtime.room_display_audience_epoch(&room.session_id);
+        runtime
+            .owned
+            .room_display_leases
+            .home
+            .lock()
+            .unwrap()
+            .get_mut("capture-lease")
+            .unwrap()
+            .state = Arc::new(Mutex::new(snapshot));
+        assert!(runtime
+            .validate_room_display_frame(&caller, "capture-lease", &captured)
+            .await
+            .is_err());
+    }
 }
 
 fn stale() -> DaemonError {
@@ -21,15 +131,26 @@ impl KernelRuntimeState {
         caller: &KernelCaller,
         id: &str,
         captured: &CapturedRoomDisplayFrame,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, DaemonError> {
         let current = self.home_display_lease(id)?;
         if !Arc::ptr_eq(&current, &captured.lease) {
             return Err(stale());
         }
-        let lease = current.lock().await;
+        let lease = current.lock().await.clone();
+        let barrier = self
+            .owned
+            .room_secret_observations
+            .barrier(&lease.session_id)?
+            .read_owned()
+            .await;
         if lease.binding != captured.binding
             || lease.used.elapsed() >= Duration::from_secs(60)
             || self.room_display_audience_epoch(&lease.session_id) != captured.audience_epoch
+            || self
+                .owned
+                .room_secret_observations
+                .revision(&lease.session_id)?
+                != captured.protection_revision
         {
             return Err(stale());
         }
@@ -44,7 +165,16 @@ impl KernelRuntimeState {
                 None,
             )
             .await?;
-        Ok(())
+        // Admission can yield to a resume or close. Recheck the identity after
+        // it completes; the observation barrier remains held through egress.
+        let latest = self.home_display_lease(id)?;
+        if !Arc::ptr_eq(&latest, &current)
+            || latest.lock().await.binding != captured.binding
+            || self.room_display_audience_epoch(&lease.session_id) != captured.audience_epoch
+        {
+            return Err(stale());
+        }
+        Ok(barrier)
     }
 
     pub(crate) async fn room_display_frame(
@@ -78,6 +208,10 @@ impl KernelRuntimeState {
             )
             .await?;
         let audience_epoch = self.room_display_audience_epoch(&snapshot.session_id);
+        let protection_revision = self
+            .owned
+            .room_secret_observations
+            .revision(&snapshot.session_id)?;
         let capture_started = Instant::now();
         let result = self
             .room_display_peer(
@@ -106,9 +240,11 @@ impl KernelRuntimeState {
             lease: lease.clone(),
             binding: snapshot.binding,
             audience_epoch,
+            protection_revision,
         };
         // A produced but discarded frame is a gap, requiring a new key.
-        self.validate_room_display_frame(caller, id, &captured)
+        let _barrier = self
+            .validate_room_display_frame(caller, id, &captured)
             .await?;
         lease.lock().await.used = Instant::now();
         Ok(Some(captured))

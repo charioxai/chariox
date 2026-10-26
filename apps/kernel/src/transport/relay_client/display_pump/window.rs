@@ -150,8 +150,8 @@ mod tests {
                     assert!(!reset);
                     let call = calls.fetch_add(1, Ordering::SeqCst);
                     async move {
-                        // The second request executes first at the worker, but
-                        // its later sequence reaches home first over the network.
+                        // Request order and worker sequence differ; sequence 3
+                        // reaches home first and must wait for sequence 2.
                         sleep(Duration::from_millis(if call == 0 { 1 } else { 10 })).await;
                         Ok(Some(frame(if call == 0 { 3 } else { 2 })))
                     }
@@ -246,5 +246,38 @@ mod tests {
             .await
             .is_err());
         assert!(window.reset);
+    }
+
+    #[tokio::test]
+    async fn room_window_stop_cancels_a_pending_drain() {
+        use tokio::sync::oneshot;
+        use tokio::time::timeout;
+        struct Dropped(Option<oneshot::Sender<()>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                let _ = self.0.take().unwrap().send(());
+            }
+        }
+        let delivery = crate::transport::relay_client::display_delivery::DisplayTask::default();
+        let (began, started) = oneshot::channel();
+        let (released, dropped) = oneshot::channel();
+        let mut window = CaptureWindow::<()>::default();
+        window.pending.push(
+            async move {
+                let _drop = Dropped(Some(released));
+                let _ = began.send(());
+                std::future::pending().await
+            }
+            .boxed(),
+        );
+        delivery.start(async move {
+            let _ = window.next(0, true, |_, _| async { Ok(None) }).await;
+        });
+        started.await.unwrap();
+        delivery.stop();
+        timeout(Duration::from_millis(100), dropped)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
