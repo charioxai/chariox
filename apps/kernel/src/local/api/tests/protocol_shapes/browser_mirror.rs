@@ -254,7 +254,7 @@ fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-failures-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "e77700b0f5774dc86fef4bff19baa2b692821bba42aeee185654029237f42882"
+        "3f0e91dc485cb44e801687a1bcb9276d1ceebd35cf6addfff4d4d1d834ec0e05"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -275,7 +275,7 @@ fn browser_mirror2_font_absent_567_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-absent-567.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "286837d1b5cb0f9ea43c3fdb94c61a5e3cc26c95dad7d40840f5014ff6301d45"
+        "054b4b753fbe22a16392ac874d3769a8767d6f5cdf85cde75734ecbcec7b094e"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -297,13 +297,13 @@ fn browser_mirror2_font_absent_567_shape_is_pinned() {
 }
 
 #[test]
-fn browser_mirror2_viewport_first_593_shape_is_pinned() {
-    // MP-08/MP-10: protocol 593 (relay peer unchanged) lets a subscription ask for the on-screen part first; off-screen
+fn browser_mirror2_viewport_first_629_shape_is_pinned() {
+    // MP-08/MP-10: protocol 629 (relay peer unchanged) lets a subscription ask for the on-screen part first; off-screen
     // elements arrive with the box they hold (`deferred`) and fill later without moving the page.
-    let bytes = include_bytes!("browser-mirror2-viewport-first-593.json");
+    let bytes = include_bytes!("browser-mirror2-viewport-first-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "f8af87516c9b790bc745906811d58acb8ddf8c7a11fd7e7d5c50d987b3be56ef"
+        "facea8dcf07c252ecddf83c41591168930a9618cfb88d71b9dfacc4343206ac2"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -325,13 +325,13 @@ fn browser_mirror2_viewport_first_593_shape_is_pinned() {
 }
 
 #[test]
-fn browser_mirror2_visited_links_593_shape_is_pinned() {
-    // MP-08/MP-10: protocol 593 (relay peer unchanged): a subscription that asks receives an empty `href` for a
+fn browser_mirror2_visited_links_629_shape_is_pinned() {
+    // MP-08/MP-10: protocol 629 (relay peer unchanged): a subscription that asks receives an empty `href` for a
     // link the kernel saw visited from the page's origin, at its snapshot or as a later `attr` op.
-    let bytes = include_bytes!("browser-mirror2-visited-links-593.json");
+    let bytes = include_bytes!("browser-mirror2-visited-links-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "d38fcd89ab0ce719aac41efe7f1f7142e0d7b99432e36e676cb0625a80a34a8a"
+        "d6ea00b8e3ee92ffaef78ccd30234e3536f892cc81b44f9f1453baaa200cb6b3"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -358,7 +358,7 @@ fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "7e1667fa60db6f3aee01b1f5c59c68fafefa1dee61ec82749fd4bd8c32194d22"
+        "b1af4a9928aaae091409c5b3b83751c271e6ec068cff582da98cf63047f0ca0b"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

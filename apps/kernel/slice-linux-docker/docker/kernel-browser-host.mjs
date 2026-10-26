@@ -120,7 +120,7 @@ export class KernelBrowserHost {
     this.scales = new Map();
     this.layouts = new Map();
     this.layoutRevisions = new Map();
-    // The size the person's view gave the one Chrome window (protocol 578); null keeps the canonical page.
+    // The size the person's view gave the one Chrome window (protocol 629); null keeps the canonical page.
     this.windowLayout = null;
     // The windowLayout whose every step (all Tab layouts, stream geometry, window re-bind) completed.
     this.resizeSettled = null;

@@ -557,7 +557,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "aa966c8dff43e562c15e0d1cecff04a47a84db033763a09442b74e8b2364f493"
+        "6ce4900ee06f9b8f02e071bd50f34b6adaac3aaf1a42c3613fc78dc37e990f17"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -648,19 +648,19 @@ fn mp08_mp10_mp11_browser_window_display_560_snapshot() {
     assert!(serde_json::from_value::<LocalDaemonRequest>(extra).is_err());
 }
 
-// MP-08/MP-10/MP-11: coordinator allocated578/186 for the shared resize mutation.
+// MP-08/MP-10/MP-11: coordinator allocated 629/232 for the shared resize mutation.
 #[test]
-fn browser_resize_protocol578_snapshot() {
+fn browser_resize_protocol629_snapshot() {
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 578);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 629);
     }
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 186);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 232);
     }
-    let bytes = include_bytes!("browser-resize-578.json");
+    let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "c4afaa2ca93ce0ceff96203d8cbb937dbf2156b988f7000735524f76b2954191"
+        "bb264f7db52cfe8d6113fe117c3d641c03a2caded955d48847baaa79dfc12863"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();

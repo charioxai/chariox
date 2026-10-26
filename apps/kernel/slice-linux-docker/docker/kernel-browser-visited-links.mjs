@@ -1,4 +1,4 @@
-// MP-08/MP-10: protocol 593: the pages this browser profile visited, for the mirror's `:visited` links. Chrome hides
+// MP-08/MP-10: protocol 629: the pages this browser profile visited, for the mirror's `:visited` links. Chrome hides
 // `:visited` from page script, so only the kernel, which sees the profile's navigations, can tell a visited link.
 // Like Chrome's partitioned visited links, a visit counts on the origin that started it (the page whose link was
 // followed); a navigation no page started (a typed URL) counts on its own origin. Keys are `<origin> <exact URL>`,

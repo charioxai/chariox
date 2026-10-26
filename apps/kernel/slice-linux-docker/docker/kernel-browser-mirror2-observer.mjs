@@ -378,7 +378,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!html && href.startsWith('#') && /^#[\w-]*$/.test(href)) attrs.href = href;
         // An external sprite (protocol 501): the fragment travels; the file is a sanitized resource (`res`).
         else if (!html && node.localName === 'use' && spriteKey(node) && /^#[\w-]+$/.test(href.slice(href.indexOf('#')))) attrs.href = href.slice(href.indexOf('#'));
-        // `#` keeps :link and never navigates. Protocol 593: a link the kernel saw visited from this origin is sent as
+        // `#` keeps :link and never navigates. Protocol 629: a link the kernel saw visited from this origin is sent as
         // `""` instead, which the viewer draws :visited (its own document's URL).
         else if (html && ['a', 'area'].includes(node.localName)) attrs.href = visitedLinks?.has(node.href) ? '' : '#';
       }
@@ -580,11 +580,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       };
       return iterator;
     };
-    // MP-08/MP-10 protocol 593: the elements whose box meets the viewport (a quarter screen above and below), with
+    // MP-08/MP-10 protocol 629: the elements whose box meets the viewport (a quarter screen above and below), with
     // their ancestors across shadow roots; every element the scan saw that is not among them may be deferred.
     // Sheets and SVG definitions style or paint what is on screen from anywhere: they and their ancestors are walked.
     let viewportFirst = false, deferral = null, visitedLinks = null;
-    // Protocol 593: the kernel saw `url` visited from `origin` after the snapshot; this page's links to it re-mark as
+    // Protocol 629: the kernel saw `url` visited from `origin` after the snapshot; this page's links to it re-mark as
     // ordinary href changes.
     const visited = (origin, url) => {
       if (!visitedLinks || origin !== location.origin || visitedLinks.has(url)) return false;

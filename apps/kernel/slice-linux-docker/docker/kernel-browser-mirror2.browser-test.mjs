@@ -2016,7 +2016,7 @@ test('MP-08/MP-10: a large sheet the viewer retains reaches the next document wh
     '/big.css': { type: 'text/css', body: `.k{color:rgb(1, 2, 3)}${Array.from({ length: 2500 }, (_, i) => `.unused${i}{color:rgb(4, 5, 6)}`).join('')}` },
   }));
 
-// Protocol 593/199 viewport-first snapshot. Compact rows: [idDelta, parentBack, tag | kind, attrs | text | 0, extra].
+// Protocol 629/199 viewport-first snapshot. Compact rows: [idDelta, parentBack, tag | kind, attrs | text | 0, extra].
 const viewportRows = rows => { let id = 0; return rows.map(row => { id += row[0]; return { id: `n${id}`, element: typeof row[2] === "string", attrs: typeof row[3] === "object" && row[3] ? row[3] : {}, extra: row[4] ?? {} }; }); };
 const keyed = (count, body) => `<style>body{margin:8px;font:16px/20px sans-serif}p{margin:0 0 12px}</style>${body}`.replace(/<(\w+)(?=[\s>])/g, (tag, name) => `${tag} data-k="${name}${++count.n}"`);
 // The viewer's view of a viewport-first snapshot, emulated on the page itself: deferred children absent, each kept box
@@ -2032,7 +2032,7 @@ const placeholderExpression = deferred => `(() => {
 })()`;
 const article = keyed({ n: 0 }, `<h1>Title</h1>${Array.from({ length: 80 }, (_, i) => `<p>Paragraph ${i} <b>bold</b> text that wraps across the line a few times so the article is long enough to scroll far below the fold of the viewport.</p>`).join("")}<div id="dock"><div id="banner" style="position:fixed;bottom:0;left:0;right:0;height:30px;background:#ccc">cookie banner</div></div><div id="hidden" style="display:none"><p>hidden</p></div><div id="sheet"><style>b{color:#a00}</style><p>styled</p></div>`);
 
-test("MP-08/MP-10 protocol 593: a viewport-first snapshot defers off-screen blocks with their boxes and fills them later", () => mirrored(article, async ({ subscribe, evaluate }) => {
+test("MP-08/MP-10 protocol 629: a viewport-first snapshot defers off-screen blocks with their boxes and fills them later", () => mirrored(article, async ({ subscribe, evaluate }) => {
   const viewer = await subscribe({ viewport_first: true });
   const first = await viewer.next();
   assert.equal(first.reset, true);
@@ -2060,7 +2060,7 @@ test("MP-08/MP-10 protocol 593: a viewport-first snapshot defers off-screen bloc
   assert.deepEqual({ placed: placeholders.placed, same: placeholders.same }, { placed: true, same: true }, "kept boxes hold the article's layout");
 }));
 
-test("MP-08/MP-10 protocol 593: a kept box the viewer cannot place is caught before a handover (tables, grids, shrink-to-fit, scrollbar)", async () => {
+test("MP-08/MP-10 protocol 629: a kept box the viewer cannot place is caught before a handover (tables, grids, shrink-to-fit, scrollbar)", async () => {
   const cases = {
     table: `<table><tr><td>a</td><td>b</td></tr>${Array.from({ length: 60 }, (_, i) => `<tr><td><div>cell ${i}</div></td><td><div>${i % 7 ? "x" : "a much longer cell text that widens the auto column"}</div></td></tr>`).join("")}</table>`,
     grid: `<div style="display:grid;grid-template-columns:auto auto">${Array.from({ length: 60 }, (_, i) => `<div><p>${i % 9 ? "g" : "grid auto track content that is wide"}</p></div><div><p>right ${i}</p></div>`).join("")}</div>`,
@@ -2079,7 +2079,7 @@ test("MP-08/MP-10 protocol 593: a kept box the viewer cannot place is caught bef
   });
 });
 
-test("MP-08/MP-10 protocol 593: an on-screen image travels while the off-screen rest still streams", () => mirrored(`<img src="/top.svg" width="40" height="40">${Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} <b>bold</b></p>`).join("")}`, async ({ subscribe }) => {
+test("MP-08/MP-10 protocol 629: an on-screen image travels while the off-screen rest still streams", () => mirrored(`<img src="/top.svg" width="40" height="40">${Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} <b>bold</b></p>`).join("")}`, async ({ subscribe }) => {
   const viewer = await subscribe({ viewport_first: true }), wanted = r => Buffer.from(r.data_base64, "base64").toString().includes("#0a0b0c");
   let packet = await viewer.next(), early = false, guard = 0;
   assert.equal(packet.snapshot_complete, false, "the off-screen part follows");
@@ -2088,7 +2088,7 @@ test("MP-08/MP-10 protocol 593: an on-screen image travels while the off-screen 
   assert(early, "the image the viewer's handover waits for does not queue behind every off-screen chunk");
 }, { "/top.svg": { type: "image/svg+xml", body: svg("#0a0b0c") } }));
 
-test("MP-08/MP-10 protocol 593: a followed link's new page gets its on-screen image while its off-screen rest streams", () => mirrored('<a href="/next">Go</a>', async ({ subscribe }) => {
+test("MP-08/MP-10 protocol 629: a followed link's new page gets its on-screen image while its off-screen rest streams", () => mirrored('<a href="/next">Go</a>', async ({ subscribe }) => {
   const viewer = await subscribe({ viewport_first: true }), wanted = r => Buffer.from(r.data_base64, "base64").toString().includes("#0d0e0f");
   const first = await viewer.next(), go = texts(first).get("Go");
   await viewer.input(first.sequence, { kind: "click", node_id: `n${Number(go.slice(1)) - 1}`, x: 5, y: 5 });
@@ -2099,7 +2099,7 @@ test("MP-08/MP-10 protocol 593: a followed link's new page gets its on-screen im
   assert.equal(packet.snapshot_complete, true);
   assert(early, "the click on the previous page does not hold the new page's on-screen image behind every off-screen chunk");
 }, { "/next": { type: "text/html", body: `<!doctype html><img src="/top.svg" width="40" height="40">${Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} <b>bold</b></p>`).join("")}` }, "/top.svg": { type: "image/svg+xml", body: svg("#0d0e0f") } }));
-test("MP-08/MP-10 protocol 593: a subscription that did not ask gets a whole snapshot and no viewport flag", () => mirrored(article, async ({ next }) => {
+test("MP-08/MP-10 protocol 629: a subscription that did not ask gets a whole snapshot and no viewport flag", () => mirrored(article, async ({ next }) => {
   const first = await next();
   assert.equal(first.snapshot_complete, true);
   assert.equal("snapshot_viewport_complete" in first, false);
@@ -2114,7 +2114,7 @@ const visitB = async evaluate => {
   await evaluate("document.getElementById('b').click(), true"); await at("/b");
   await evaluate("history.back(), true"); await at("/");
 };
-test("MP-08/MP-10 protocol 593: a link the kernel saw visited from this origin is sent as an empty href to a subscription that asked", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
+test("MP-08/MP-10 protocol 629: a link the kernel saw visited from this origin is sent as an empty href to a subscription that asked", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
   await visitB(evaluate);
   const first = await (await subscribe({ visited_links: true })).next();
   const hrefs = linkHrefs(first);
@@ -2125,7 +2125,7 @@ test("MP-08/MP-10 protocol 593: a link the kernel saw visited from this origin i
   assert.equal(linkHrefs(old).b?.[1], "#", "a subscription that did not ask never receives an empty href");
 }, visitedRoutes));
 
-test("MP-08/MP-10 protocol 593: a link visited after the snapshot re-marks without a reset", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
+test("MP-08/MP-10 protocol 629: a link visited after the snapshot re-marks without a reset", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
   const viewer = await subscribe({ visited_links: true });
   const first = await viewer.next(), part = linkHrefs(first).part;
   assert.equal(part?.[1], "#");

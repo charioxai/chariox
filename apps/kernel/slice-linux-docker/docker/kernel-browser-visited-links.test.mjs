@@ -5,7 +5,7 @@ import { VisitedLinks } from "./kernel-browser-visited-links.mjs";
 const requested = (url, disposition = "currentTab") => ({ method: "Page.frameRequestedNavigation", params: { frameId: "T", url, disposition } });
 const committed = (url, urlFragment) => ({ method: "Page.frameNavigated", params: { frame: { id: "T", url, ...(urlFragment ? { urlFragment } : {}) } } });
 
-test("MP-08/MP-10 protocol 593: a visit counts on the origin that followed the link, a typed URL on its own", () => {
+test("MP-08/MP-10 protocol 629: a visit counts on the origin that followed the link, a typed URL on its own", () => {
   const visited = new VisitedLinks(), seen = [];
   visited.listeners.add((origin, url) => seen.push(`${origin} ${url}`));
   visited.observe("T", requested("https://b.test/b"), "https://a.test/");
@@ -24,7 +24,7 @@ test("MP-08/MP-10 protocol 593: a visit counts on the origin that followed the l
   assert.equal(seen.length, 5, "only a new visit is announced");
 });
 
-test("MP-08/MP-10 protocol 593: the visited set keeps the most recent visits", () => {
+test("MP-08/MP-10 protocol 629: the visited set keeps the most recent visits", () => {
   const visited = new VisitedLinks(2);
   for (const url of ["https://a.test/1", "https://a.test/2", "https://a.test/1", "https://a.test/3"]) visited.record("https://a.test", url);
   assert.deepEqual(visited.from("https://a.test"), ["https://a.test/1", "https://a.test/3"]);

@@ -191,13 +191,13 @@ export class Mirror2 {
   // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
-  // Protocol 593: what the subscription negotiated for its snapshots; `visited_links` lists the URLs visited from the page's origin.
+  // Protocol 629: what the subscription negotiated for its snapshots; `visited_links` lists the URLs visited from the page's origin.
   snapshotOptions(stream, world) {
     if (!stream.viewportFirst && !stream.visitedLinks) return null;
     let origin = null; try { origin = new URL(world.frame?.url).origin; } catch {}
     return { ...(stream.viewportFirst ? { viewport_first: true } : {}), ...(stream.visitedLinks ? { visited_links: this.host.visitedLinks?.from(origin) ?? [] } : {}) };
   }
-  // Protocol 593: a page visited after a snapshot re-marks the links to it in each subscription that asked (best effort: a gone world has no links).
+  // Protocol 629: a page visited after a snapshot re-marks the links to it in each subscription that asked (best effort: a gone world has no links).
   visited(origin, url) {
     const expression = stream => `${stream.world.ref}.visited(${JSON.stringify(origin)},${JSON.stringify(url)})`;
     for (const stream of this.service.streams.values()) if (stream.wire === 2 && stream.visitedLinks && stream.world) this.evaluate(stream.world, expression(stream)).catch(() => {});
@@ -687,7 +687,7 @@ export class Mirror2 {
   }
   // A document that keeps streaming never has an empty credit: its font bytes, which fence the viewer's handover, travel with the DOM chunks.
   fontsDue(stream) { if (stream.fontRequirements !== true) return false; for (const entry of stream.resources.values()) if (entry.kind === 'font' && !entry.sent) return true; return false; }
-  // Protocol 593: the off-screen rest of a viewport-first snapshot streams on every credit, and the viewer's handover waits
+  // Protocol 629: the off-screen rest of a viewport-first snapshot streams on every credit, and the viewer's handover waits
   // for the on-screen images: their bytes travel with the rest's chunks unless viewer input is recent.
   streamingRest(stream, source) { return stream.viewportFirst && source.snapshot_viewport_complete === true && source.snapshot_complete !== true && !this.recentInput(stream); }
   // A packet's resource budget; smaller within a second of viewer input.
