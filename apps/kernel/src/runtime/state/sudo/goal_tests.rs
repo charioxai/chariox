@@ -84,6 +84,7 @@ async fn sudo_goal_resume_reauthorizes_existing_goal() {
     assert_ne!(tasks[0].state, ExecutionState::Blocked);
     let turn = f.state.list_sudo_turns("local").pop().unwrap();
     assert_eq!(turn.task_id.as_deref(), Some(original.task_id.as_str()));
+    assert_eq!(turn.provider_run_id.as_deref(), Some(f.run.id()));
     assert!(f.state.sudo_for_provider_run(f.run.id()).is_ok());
     f.state
         .revoke_sudo(Some("local"), Some(&turn.entry_id), "test_cleanup")
