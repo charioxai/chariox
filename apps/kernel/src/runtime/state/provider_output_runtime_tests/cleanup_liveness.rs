@@ -1095,7 +1095,9 @@ async fn stale_structured_abort_ack_error_preserves_new_cancelling_prompt() {
 
 async fn assert_structured_abort_receipt_ownership(cancelling: bool, stale: bool, failed: bool) {
     let worktree = crate::test_support::TestWorktree::new("abort-receipt-generation");
-    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let mut config = crate::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -1173,7 +1175,53 @@ async fn assert_structured_abort_receipt_ownership(cancelling: bool, stale: bool
     );
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    runtime.owned.reap_structured_prompt_jobs();
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: Some(provider_run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    runtime.reap_structured_prompt_jobs_and_dispatch();
+    if !stale {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if runtime
+                    .owned
+                    .durable_state_store
+                    .agent_tasks(Some(session.id()), Some(agent.id()))
+                    .unwrap()[0]
+                    .state
+                    == ExecutionState::Cancelled
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the abort ACK must settle its task without the liveness fallback");
+    }
+    let tasks = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    assert_eq!(
+        tasks[0].state,
+        if stale {
+            ExecutionState::Working
+        } else {
+            ExecutionState::Cancelled
+        },
+        "MP-08/MP-10/MP-11: the current abort ACK must settle its durable task immediately"
+    );
     let snapshot = runtime
         .owned
         .session_store

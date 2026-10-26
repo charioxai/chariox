@@ -444,6 +444,7 @@ mod active_prompt_steering;
 mod external_command_authority;
 mod project_runtime_state;
 mod prompt;
+mod prompt_abort_settlement_runtime;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;

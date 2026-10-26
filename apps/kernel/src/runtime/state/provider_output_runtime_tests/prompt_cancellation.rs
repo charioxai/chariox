@@ -809,3 +809,96 @@ async fn structured_abort_waiter_releases_provider_lane_after_external_owner_set
         .try_acquire(run.id())
         .is_some());
 }
+
+// MP-08/MP-10/MP-11: a provider that never answers Stop cannot hold the next turn.
+#[tokio::test]
+async fn unresponsive_structured_abort_terminates_provider_and_settles_task() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let worktree = crate::test_support::TestWorktree::new("unresponsive-stop");
+    let mut config = crate::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stop-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "unresponsive-stop-provider",
+        session.id().into(),
+        Some(agent.id().into()),
+        "codex".into(),
+    );
+    run.mark_running();
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.providers_mut().insert_run_for_test(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "unresponsive-stop-prompt",
+        attachment.id(),
+        agent.id(),
+        "run a tool that never answers",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let _cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
+    let runtime = owned_runtime_state(&app).await;
+    let cancellation = runtime
+        .owned
+        .cancel_local_prompt(session.id(), agent.id(), attachment.id())
+        .unwrap()
+        .unwrap();
+    let dispatch = cancellation.dispatch.unwrap();
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: dispatch.prompt_id.clone(),
+            run: Some(run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    // A hung provider call can hold this lane before the abort is even enqueued.
+    let _held_lane = runtime.provider_runtime_lanes.acquire(run.id()).await;
+    runtime.spawn_prompt_abort(dispatch, runtime.provider_runtime_lanes.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_prompt_for_agent(agent.id())
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Stop must settle within seconds even while the provider lane is hung");
+    let snapshot = runtime.owned.session_snapshot(session.id()).unwrap();
+    assert!(snapshot.active_prompt_for_agent(agent.id()).is_none());
+    let tasks = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    assert_eq!(tasks[0].state, ExecutionState::Cancelled);
+    assert!(
+        app.lock().await.pty().process_id(run.id()).is_err(),
+        "Stop must terminate the owned provider process before releasing the turn"
+    );
+}
