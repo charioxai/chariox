@@ -576,6 +576,7 @@ async fn task_delta_local_subscription_preserves_prompt_completion_and_provider_
             attachment_id: attachment.id().into(),
             subscription_scope: KernelSubscriptionScope::Session,
             connection_class: crate::local::KernelConnectionClass::Terminal,
+            heartbeat_interval: Duration::from_secs(5),
         },
     ));
     let result = tokio::time::timeout(Duration::from_secs(10), async {

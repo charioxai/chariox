@@ -67,8 +67,8 @@ async fn local_spawn_agents_inherit_session_account_profile_in_response_and_snap
             .await
             .unwrap();
         let agents = match response {
-            LocalDaemonResponse::AgentSpawned { agent } => vec![agent],
-            LocalDaemonResponse::AgentsSpawned { agents } => agents,
+            LocalDaemonResponse::AgentSpawned { agent, .. } => vec![agent],
+            LocalDaemonResponse::AgentsSpawned { agents, .. } => agents,
             _ => panic!("expected spawned agents"),
         };
         assert_eq!(agents[0].account_profile(), Some(selected.as_str()));

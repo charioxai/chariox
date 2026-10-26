@@ -51,7 +51,7 @@ fn usage_snapshot_scopes_agent_context_and_route_to_the_requested_agent() {
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("expected session"),
     };
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
@@ -138,7 +138,7 @@ fn usage_snapshot_uses_agent_projection_and_never_serializes_remote_credentials(
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("expected session"),
     };
     harness.with_app_mut(|app| {
@@ -203,7 +203,7 @@ fn usage_snapshot_answers_from_the_projection_while_the_provider_service_is_busy
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("expected session"),
     };
     let providers = harness.with_app_mut(|app| {

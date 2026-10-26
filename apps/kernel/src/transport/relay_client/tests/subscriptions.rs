@@ -1482,6 +1482,7 @@ async fn task_delta_encrypted_relay_subscription_preserves_prompt_completion_and
             client_public_key: subscription_public_key.clone(),
             subscription_scope: None,
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;

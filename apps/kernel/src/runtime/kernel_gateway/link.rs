@@ -316,6 +316,7 @@ impl Link {
             client_public_key: self.client_public_key.clone(),
             subscription_scope: params.scope,
             resume_from_event_id: params.resume_from_event_id,
+            heartbeat_interval_ms: None,
         };
         let text = serde_json::to_string(&envelope).expect("envelope serializes");
         if self.outgoing.send(Message::Text(text.into())).is_err() {

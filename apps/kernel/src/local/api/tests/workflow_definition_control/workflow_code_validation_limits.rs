@@ -765,7 +765,7 @@ fn archive_agent_releases_workflow_code_capacity() {
     let mut config = crate::DaemonConfig::for_tests();
     config.user_config.workflow.session_default_max_agents = Some(2);
     let h = LocalRouterTestHarness::with_config(config);
-    let LocalDaemonResponse::SessionCreated { session, agent } = h
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = h
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree.session_request(),
         ))

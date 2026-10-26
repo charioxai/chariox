@@ -70,6 +70,7 @@ fn fixture_events() -> serde_json::Value {
         subscription_scope: Some("waiting_room_inventory".into()),
         resume_from_event_id: None,
         heartbeat_interval_ms: Some(1_000),
+        kernel: None,
     };
     serde_json::json!({
         "items": ["MP-08", "MP-10", "MP-11"],

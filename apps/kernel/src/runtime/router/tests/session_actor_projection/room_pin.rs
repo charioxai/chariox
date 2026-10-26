@@ -69,7 +69,7 @@ async fn mp11_room_pin_preserves_spawned_agents_in_response_and_projections() {
     .unwrap();
     let command = KernelCommand::from_local_request("room-pin-spawn", None, None, &request);
     let spawned = match router.dispatch(command, request).await.unwrap() {
-        LocalDaemonResponse::AgentSpawned { agent } => agent.id().to_string(),
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent.id().to_string(),
         _ => panic!("expected spawned agent"),
     };
     let expected = router.session_projection.get(&id).unwrap().agents().len();

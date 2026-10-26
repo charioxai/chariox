@@ -153,7 +153,7 @@ fn archive_agent_refuses_busy_work_and_preserves_history_and_provider_records() 
 fn archive_agent_checks_membership_and_ownership_without_mutation() {
     let worktree = crate::test_support::TestWorktree::new("agent-archive-owner");
     let h = LocalRouterTestHarness::new();
-    let LocalDaemonResponse::SessionCreated { session, agent } = h
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = h
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree.session_request(),
         ))
@@ -286,7 +286,7 @@ fn assert_archive_agent_capacity_reused(batch: bool) {
     let mut config = crate::DaemonConfig::for_tests();
     config.user_config.workflow.session_default_max_agents = Some(2);
     let h = LocalRouterTestHarness::with_config(config);
-    let LocalDaemonResponse::SessionCreated { session, agent } = h
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = h
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree.session_request(),
         ))
@@ -340,7 +340,7 @@ fn archive_agent_releases_batch_spawn_capacity() {
 fn assert_archive_agent_layout_after(operation: &str) {
     let worktree = crate::test_support::TestWorktree::new("archive-layout");
     let h = LocalRouterTestHarness::new();
-    let LocalDaemonResponse::SessionCreated { session, agent } = h
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = h
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree.session_request(),
         ))
@@ -409,7 +409,7 @@ fn archive_agent_layout_stays_compact_after_delete() {
 fn archive_agent_focus_cycle_skips_archived_agents() {
     let worktree = crate::test_support::TestWorktree::new("archive-cycle");
     let h = LocalRouterTestHarness::new();
-    let LocalDaemonResponse::SessionCreated { session, agent } = h
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = h
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree.session_request(),
         ))
