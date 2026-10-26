@@ -144,6 +144,11 @@ class DeviceScale(unittest.TestCase):
     def test_keyboard_denies_a_focused_restricted_document(self):
         self.two_windows(focus_second=True,restricted_focus=True)
         with self.assertRaises(destination.NativeExtensionDenied):self.check()
+    def test_identical_geometry_windows_are_all_checked(self):
+        other=At('frame',(0,0,1000,800),children=[At('document web',(0,100,1000,700),uri='chrome://extensions/',children=[At('entry',(600,500,100,30))])])
+        self.install(self.frame_a,other)
+        self.check()
+        with self.assertRaises(destination.NativeExtensionDenied):self.check((1250,1020))
     def test_keyboard_denies_unbound_window(self):
         self.install(At('frame',(1500,0,1000,800)))
         with self.assertRaises(destination.NativeExtensionDenied):self.check()

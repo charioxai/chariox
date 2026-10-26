@@ -70,11 +70,12 @@ def browser_control(node, pid):
     if not public: raise NativeExtensionDenied('browser control unavailable')
 
 
-def browser_frame(accessibility, connection, window, process):
-    """MP-08/MP-11: the one AT-SPI frame that is this exact X11 window.
+def browser_frames(accessibility, connection, window, process):
+    """MP-08/MP-11: the AT-SPI frames that are this exact X11 window.
 
     AT-SPI reports logical extents on a scaled desktop, X11 physical pixels:
-    the frame must match the window's geometry under an integer scale.
+    a frame must match the window's geometry under an integer scale. Windows
+    of identical geometry are indistinguishable here, so all are returned.
     """
     atspi = accessibility.pyatspi
     root = connection.screen().root
@@ -92,44 +93,47 @@ def browser_frame(accessibility, connection, window, process):
         box = frame.queryComponent().getExtents(atspi.DESKTOP_COORDS)
         scale = accessibility.native_frame_scale([box.x, box.y, box.width, box.height], outer, client)
         if scale: frames.append((frame, scale))
-    if len(frames) != 1: raise NativeExtensionDenied('browser window unavailable')
-    return frames[0]
+    if not frames: raise NativeExtensionDenied('browser window unavailable')
+    return frames
 
 
 def browser_destination(accessibility, process, point, connection, window):
     atspi = accessibility.pyatspi
-    frame, scale = browser_frame(accessibility, connection, window, process)
+    frames = browser_frames(accessibility, connection, window, process)
     if point is not None:
-        # The X11 point is physical; hit-test in AT-SPI's logical coordinates.
-        x, y = (int(value / scale) for value in point)
-        node = frame.queryComponent().getAccessibleAtPoint(x, y, atspi.DESKTOP_COORDS)
-        for _ in range(48):
-            if node is None: raise NativeExtensionDenied('browser point unavailable')
-            child = node.queryComponent().getAccessibleAtPoint(x, y, atspi.DESKTOP_COORDS)
-            if child is None or child == node: break
-            node = child
-        else: raise NativeExtensionDenied('browser point depth exceeded')
-    else:
-        # The recipient is the focused sink inside the focused X11 window;
-        # other windows and unfocused documents are not in its ancestry.
-        # No page values or full observation snapshot are read to admit keys.
-        pending = [frame]; focused = []; seen = 0
-        while pending and seen < 12000:
-            candidate = pending.pop(); seen += 1
-            state = candidate.getState()
-            if state.contains(atspi.STATE_FOCUSED) and state.contains(atspi.STATE_SHOWING):
-                focused.append(candidate)
-            if candidate.getRoleName() == 'document web': continue
-            if candidate.childCount > 12000: raise NativeExtensionDenied('browser focus depth exceeded')
-            for i in range(candidate.childCount):
-                child = candidate.getChildAtIndex(i)
-                if child: pending.append(child)
-        if pending or not focused: raise NativeExtensionDenied('browser focus unavailable')
-        # Chromium may mark both an iframe and its document focused. Every
-        # reported sink must be public; never select one and ignore another.
-        for candidate in focused: browser_control(candidate, process['pid'])
+        nodes = []
+        for frame, scale in frames:
+            # The X11 point is physical; hit-test in AT-SPI's logical coordinates.
+            x, y = (int(value / scale) for value in point)
+            node = frame.queryComponent().getAccessibleAtPoint(x, y, atspi.DESKTOP_COORDS)
+            if node is None: continue
+            for _ in range(48):
+                child = node.queryComponent().getAccessibleAtPoint(x, y, atspi.DESKTOP_COORDS)
+                if child is None or child == node: break
+                node = child
+            else: raise NativeExtensionDenied('browser point depth exceeded')
+            nodes.append(node)
+        if not nodes: raise NativeExtensionDenied('browser point unavailable')
+        for node in nodes: browser_control(node, process['pid'])
         return
-    browser_control(node, process['pid'])
+    # The recipient is the focused sink inside the focused X11 window; other
+    # windows and unfocused documents are not in its ancestry. No page values
+    # or full observation snapshot are read to admit keys.
+    pending = [frame for frame, _ in frames]; focused = []; seen = 0
+    while pending and seen < 12000:
+        candidate = pending.pop(); seen += 1
+        state = candidate.getState()
+        if state.contains(atspi.STATE_FOCUSED) and state.contains(atspi.STATE_SHOWING):
+            focused.append(candidate)
+        if candidate.getRoleName() == 'document web': continue
+        if candidate.childCount > 12000: raise NativeExtensionDenied('browser focus depth exceeded')
+        for i in range(candidate.childCount):
+            child = candidate.getChildAtIndex(i)
+            if child: pending.append(child)
+    if pending or not focused: raise NativeExtensionDenied('browser focus unavailable')
+    # Chromium may mark both an iframe and its document focused. Every
+    # reported sink must be public; never select one and ignore another.
+    for candidate in focused: browser_control(candidate, process['pid'])
 
 
 def input_destination(connection, processes, accessibility, point=None):
