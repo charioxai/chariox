@@ -186,6 +186,13 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         if expected_prompt_id.is_some_and(|expected_prompt_id| prompt.id() != expected_prompt_id) {
             return Ok(false);
         };
+        let run = self.provider_store.get_run(provider_run_id)?;
+        let failure = provider_termination
+            .as_ref()
+            .and_then(|termination| termination.failure.clone())
+            .unwrap_or_else(|| {
+                crate::provider::ProviderFailure::classify(run.adapter_key(), message)
+            });
         let diagnosed = self
             .provider_store
             .record_terminal_diagnostic(provider_run_id, message.to_string())?;
@@ -239,6 +246,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             &agent_id,
             Some(provider_run_id),
             provider_termination,
+            Some(failure),
         )?;
         self.clear_active_turn(provider_run_id);
         Ok(true)

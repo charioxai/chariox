@@ -57,6 +57,7 @@ impl<'a> KernelAgentService<'a> {
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
             None,
+            None,
         )
     }
 
@@ -73,6 +74,7 @@ impl<'a> KernelAgentService<'a> {
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Failed,
             None,
+            None,
         )
     }
 
@@ -82,6 +84,7 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         provider_run_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: Option<crate::provider::ProviderFailure>,
     ) -> Result<PromptCompletion, DaemonError> {
         self.complete_active_prompt_for_kernel(
             session_id,
@@ -90,9 +93,14 @@ impl<'a> KernelAgentService<'a> {
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Failed,
             provider_termination,
+            failure,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "completion carries separate turn failure and process termination evidence"
+    )]
     pub(crate) fn complete_active_prompt_for_kernel(
         &mut self,
         session_id: &str,
@@ -101,6 +109,7 @@ impl<'a> KernelAgentService<'a> {
         next_queued_prompt: Option<&PromptQueueItem>,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: Option<crate::provider::ProviderFailure>,
     ) -> Result<PromptCompletion, DaemonError> {
         let admission = self.prepare_prompt_completion_admission(
             session_id,
@@ -111,9 +120,12 @@ impl<'a> KernelAgentService<'a> {
         let failure = (settlement_status
             == crate::git_observer::CompletedTurnSettlementStatus::Failed)
             .then(|| {
-                provider_termination
-                    .as_ref()
-                    .and_then(|termination| termination.failure.clone())
+                failure
+                    .or_else(|| {
+                        provider_termination
+                            .as_ref()
+                            .and_then(|termination| termination.failure.clone())
+                    })
                     .or_else(|| {
                         provider_run_id
                             .and_then(|id| self.app.providers.get_run(id).ok())
