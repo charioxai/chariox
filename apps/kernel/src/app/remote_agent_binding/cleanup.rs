@@ -16,7 +16,10 @@ pub(crate) struct RemoteAgentCleanupResult {
 
 enum CleanupReceipt {
     Destroyed,
-    AlreadyAbsent { resource_id: String, code: String },
+    AlreadyAbsent {
+        resource_id: String,
+        code: &'static str,
+    },
 }
 
 impl RemoteAgentCleanupPlan {

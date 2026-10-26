@@ -1420,7 +1420,7 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         authorize()?;
         let plan = self.prepare_remote_execution_cleanup(remote_execution);
-        let result = self.block_on_relay_future(plan.execute(authorize));
+        let result = self.block_on_relay_future(async { Ok(plan.execute(authorize).await) })?;
         self.commit_remote_execution_cleanup(result)
     }
 
