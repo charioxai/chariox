@@ -97,6 +97,9 @@ independent of `APP_MEMORY_LIMIT`, `APP_CPU_SLICE` and `INVALID_OUTPUT` returned
 by the component/wire boundaries. A native process stop needs a fresh kernel
 generation; do not replay a non-idempotent call. R4 must retain its existing
 owned-process exit/reap supervision and distinguish native stop from guest trap.
+R4 must give every generation a fresh log file or a drained pipe. The file-size
+limit also applies to inherited stderr/stdout: reusing an append-only regular
+log already above 8 MiB would kill each new generation on its first write.
 macOS omits the native address-space cap: Darwin rejects `RLIMIT_AS` below
 the already-mapped dyld shared region with EINVAL. `RLIMIT_DATA` has the same
 VM-map-size check, and `RLIMIT_RSS` does not provide a hard allocation ceiling.
