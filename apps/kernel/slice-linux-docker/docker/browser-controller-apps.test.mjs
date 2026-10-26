@@ -937,9 +937,32 @@ test("MP-09/MP-10 A3: a concurrent open waits for retirement and failed closes r
   assert.equal((await adopting).target_id, "t2");
   browser.closePageTarget = async () => { throw new Error('CDP close unavailable'); };
   now = 4;
-  await assert.rejects(tabs.retireIdle(), /CDP close unavailable/);
+  await tabs.retireIdle();
   assert.equal(tabs.apps.size, 1);
   browser.closePageTarget = originalClose;
   await tabs.retireIdle();
   assert.equal(tabs.apps.size, 0);
+});
+
+test("MP-09/MP-11 A3: a failed idle close cannot starve another App's admitted backend call", async t => {
+  const { browser, connection } = fakeBrowser();
+  const warnings = t.mock.method(console, "error", () => {});
+  let now = 0;
+  const tabs = new AppTabs(browser, { idleMs: 1, now: () => now });
+  for (const name of ["idle", "working"]) {
+    await tabs.open({ origin_label: name, installation_id: name,
+      projection: { kind: "agent", agent: "agent-1" }, assets: [asset("index.html", "state")] });
+  }
+  await navigated(connection, "doc1");
+  await navigated(connection, "doc2", "s-t2");
+  browser.closePageTarget = async () => { throw new Error("CDP close unavailable"); };
+  now = 2;
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s-t2",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "admitted", method: "usage" }) } });
+  const batch = await tabs.takeCalls();
+  assert.equal(batch.calls[0].call_id, "admitted");
+  assert.equal(batch.calls[0].target_id, "t2");
+  assert.equal(warnings.mock.callCount(), 1);
+  await tabs.retireIdle();
+  assert.equal(warnings.mock.callCount(), 1, "a repeated close failure does not flood diagnostics");
 });

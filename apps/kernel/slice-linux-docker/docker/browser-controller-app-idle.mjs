@@ -33,6 +33,15 @@ export async function retireIdleAppTabs(tabs) {
       tabs.calls = tabs.calls.filter(call => call.target_id !== app.targetId);
       tabs.wakeCalls();
     });
-    try { await app.retiring; } finally { app.retiring = null; }
+    try {
+      await app.retiring;
+    } catch {
+      // One failing close must not prevent another Tab's admitted calls from
+      // reaching the kernel. Report once and retry on the next idle drain.
+      if (!app.idleCloseFailureReported) {
+        app.idleCloseFailureReported = true;
+        console.error("App idle cleanup could not close a Tab; retrying on the next drain");
+      }
+    } finally { app.retiring = null; }
   }
 }
