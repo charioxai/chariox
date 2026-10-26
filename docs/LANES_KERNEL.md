@@ -304,8 +304,10 @@ already inside the slice stays there. Both kernels, holders, provider children
 and loopd inherit that cgroup. This does not move existing processes.
 
 To enable boot startup, the coordinator runs this once from the reviewed
-checkout (it writes `/etc/systemd/system/chariox-lanes.service`, reloads systemd
-and enables the unit; it does **not** restart existing workers):
+checkout (it writes `/etc/systemd/system/chariox-lanes.service` with `OOMPolicy=continue` and
+`/etc/systemd/system/lanes.slice` with `MemoryHigh=88G` / `MemoryMax=96G` from `tools/lanes/kernel/`, reloads systemd
+and enables the unit; it does **not** restart existing workers; the drop-ins of 10-26 04:46Z in `lanes.slice.d/` and
+`chariox-lanes.service.d/` carry the same values and stay valid):
 
 ```sh
 LANES_KERNEL_STATE=/root/.chariox/dev/lanes-kernel \

@@ -28,11 +28,12 @@ if (process.platform === 'linux' && ['setup', 'start', 'restart-yolo'].includes(
 if (process.argv[2] === 'install-service') {
   const unit = serviceUnit({ node: process.execPath, script: new URL(import.meta.url).pathname, state: STATE });
   writeFileSync('/etc/systemd/system/chariox-lanes.service', unit, { mode: 0o644 });
+  writeFileSync('/etc/systemd/system/lanes.slice', readFileSync(new URL('./lanes.slice', import.meta.url), 'utf8'), { mode: 0o644 });
   for (const args of [['daemon-reload'], ['enable', 'chariox-lanes.service']]) {
     const result = spawnSync('systemctl', args, { stdio: 'inherit' });
     if (result.status !== 0) throw new Error(`systemctl ${args[0]} failed; inspect chariox-lanes.service`);
   }
-  console.log('Installed and enabled chariox-lanes.service for boot; existing workers were not restarted.');
+  console.log('Installed and enabled chariox-lanes.service and lanes.slice for boot; existing workers were not restarted.');
   process.exit(0);
 }
 const config = JSON.parse(readFileSync(join(STATE, 'config.json'), 'utf8'));

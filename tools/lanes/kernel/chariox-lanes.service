@@ -17,6 +17,8 @@ RestartSec=15
 TimeoutStartSec=600
 TimeoutStopSec=180
 KillMode=control-group
+# One OOM-killed process must not stop the service and with it every lane (10-26 04:38Z).
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target

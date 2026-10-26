@@ -21,3 +21,12 @@ test('the boot unit is shipped as an inspectable template in tools/lanes', async
   assert.match(template, /WantedBy=multi-user\.target/);
   assert.match(template, /ExecStart="@NODE@" "@SCRIPT@" start/);
 });
+
+test('the unit keeps the other lanes running when the kernel OOM-kills one process, and the slice caps the lanes below the host memory', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const unit = serviceUnit({ node: '/usr/bin/node', script: '/checkout/tools/lanes/kernel/lanes-kernel.mjs', state: '/own/state' });
+  assert.match(unit, /^OOMPolicy=continue$/m, 'systemd must not stop the whole service for one OOM kill (04:38Z 10-26: all nine lanes)');
+  const slice = await readFile(new URL('./lanes.slice', import.meta.url), 'utf8');
+  assert.match(slice, /^MemoryHigh=88G$/m);
+  assert.match(slice, /^MemoryMax=96G$/m);
+});
