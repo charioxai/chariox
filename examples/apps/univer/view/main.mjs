@@ -1,4 +1,5 @@
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
+import { CommandType, ICommandService } from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import coreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort';
@@ -9,7 +10,7 @@ import { attachWorkbook } from './actions.mjs';
 
 async function start() {
   if (!globalThis.chariox?.action || !globalThis.chariox?.call) throw new Error('Open Univer through its installed Chariox App view');
-  const { univerAPI } = createUniver({
+  const { univer, univerAPI } = createUniver({
     locale: LocaleType.EN_US,
     locales: { [LocaleType.EN_US]: mergeLocales(coreEnUS, sortEnUS) },
     presets: [UniverSheetsCorePreset({ container: 'app' }), UniverSheetsSortPreset()],
@@ -43,7 +44,11 @@ async function start() {
   ]) {
     // Toolbar dropdowns consume direct menu items; grouped submenu children
     // are currently omitted by Univer's desktop toolbar renderer.
-    univerAPI.createMenu({ id: `chariox.${id}`, title, action: run(task) }).appendTo('chariox.files');
+    // The toolbar dispatches the item's id, ignoring the facade's generated
+    // commandId. Register the same explicit id on both sides.
+    const command = `chariox.${id}`;
+    univer.__getInjector().get(ICommandService).registerCommand({ id: command, type: CommandType.COMMAND, handler: run(task) });
+    univerAPI.createMenu({ id: command, title, action: command }).appendTo('chariox.files');
   }
   window.addEventListener('beforeunload', event => {
     if (summary().dirty) { event.preventDefault(); event.returnValue = ''; }

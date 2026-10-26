@@ -128,6 +128,11 @@ try {
     await writeFile(path.join(evidence, `menu-text-dpr${dpr}.txt`), await evaluate('document.body.innerText.slice(0,12000)'));
     await writeFile(path.join(evidence, `menu-button-dpr${dpr}.json`), JSON.stringify(await evaluate(`({bounds:${JSON.stringify(bounds)},html:document.querySelector('[data-u-command="chariox.files"]')?.outerHTML})`), null, 2));
     assert.ok(await evaluate('document.body.textContent.includes("Export workbook")'), 'file menu opened');
+    const saves = calls.filter(call => call.method === 'save_workbook').length;
+    const saveButton = await evaluate(`(() => { const el=[...document.querySelectorAll('[role="menuitem"]')].find(e=>e.textContent.trim()==='Save workbook'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...saveButton, button: 'left', clickCount: 1 });
+    for (let attempt=0; attempt<100 && calls.filter(call=>call.method==='save_workbook').length===saves; attempt++) await delay(50);
+    assert.equal(calls.filter(call=>call.method==='save_workbook').length, saves+1, 'human Files > Save reaches the backend');
     await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   }
