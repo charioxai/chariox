@@ -140,6 +140,12 @@ test('a form is an action whose schema comes from its simple controls', async ()
   assert.equal(byName.pw.value, 'hunter2');
   assert.equal(byName.card.value, '4111');
   assert.deepEqual(byName.title.events, ['input', 'change']);
+  assert.deepEqual(byName.title.native, ['Groceries'], 'text goes through the prototype setter, which a framework value tracker does not intercept');
+  assert.deepEqual(byName.sort.native, ['b']);
+  // A checkbox and a radio change by a native click, the event a framework listens to.
+  assert.deepEqual(byName.pinned.events, ['click']);
+  assert.deepEqual(byName.colorblue.events, ['click']);
+  assert.deepEqual(byName.colorred.events, []);
   assert.equal(rename.submitted, 1);
 });
 

@@ -96,3 +96,38 @@ test('A1: the bridge object stays frozen and the agent handle cannot be replaced
   assert.equal(await app.evaluate(`(() => { try { __charioxViewAgent = null } catch {} ; return typeof __charioxViewAgent.invoke })()`), 'function');
 });
 
+// A controlled form the way React builds it: a value tracker on each control
+// swallows direct `.value =` and `.checked =` writes, and `onChange` runs (on
+// `input` for text, on `click` for checkbox and radio) only when the DOM value
+// differs from the tracked one. The submit handler reads component state only.
+const controlledHtml = `<form id="f" data-chariox-action="save_profile" data-chariox-effect="write" data-chariox-description="Save the profile">
+  <input name="nick" required><textarea name="bio"></textarea><select name="lang"><option value="en">en</option><option value="es">es</option></select>
+  <input type="checkbox" name="news"><input type="radio" name="tier" value="free" checked><input type="radio" name="tier" value="pro">
+  <input type="password" name="pin"><button>Save</button></form><p id="saved"></p><script src="app.js"></script>`;
+const controlledScript = `
+  const state = { nick: '', bio: '', lang: 'en', news: false, tier: 'free', pin: '' };
+  const tracked = new WeakMap();
+  const field = node => (node.type === 'checkbox' || node.type === 'radio' ? 'checked' : 'value');
+  for (const node of document.querySelectorAll('[name]')) {
+    const key = field(node);
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(node), key);
+    let last = '' + node[key];
+    tracked.set(node, { get: () => last, set: value => { last = value; } });
+    Object.defineProperty(node, key, { configurable: true, get() { return descriptor.get.call(this); },
+      set(value) { last = '' + value; descriptor.set.call(this, value); } });
+  }
+  const changed = node => { const t = tracked.get(node); const next = '' + node[field(node)]; if (next === t.get()) return false; t.set(next); return true; };
+  const onChange = node => { if (node.type === 'checkbox') state.news = node.checked; else if (node.type === 'radio') { if (node.checked) state.tier = node.value; } else state[node.name] = node.value; };
+  document.addEventListener('input', e => { if (changed(e.target)) onChange(e.target); });
+  document.addEventListener('change', e => { if (e.target.tagName === 'SELECT' && changed(e.target)) onChange(e.target); });
+  document.addEventListener('click', e => { if ((e.target.type === 'checkbox' || e.target.type === 'radio') && changed(e.target)) onChange(e.target); });
+  f.addEventListener('submit', e => { e.preventDefault(); document.getElementById('saved').textContent = JSON.stringify(state); });
+  window.addTodo = () => {};`;
+
+test('A1: a form action reaches a controlled component: its state updates before the submit handler reads it', async () => {
+  const app = await openApp('view-controlled', { 'index.html': controlledHtml, 'app.js': controlledScript });
+  const answer = await app.agent(`invoke('save_profile', { nick: 'Ada', bio: 'maths', lang: 'es', news: true, tier: 'pro', pin: '1234' })`);
+  assert.deepEqual(answer, { ok: true, value: { submitted: true } });
+  assert.deepEqual(JSON.parse(await app.evaluate('document.getElementById("saved").textContent')),
+    { nick: 'Ada', bio: 'maths', lang: 'es', news: true, tier: 'pro', pin: '1234' });
+});

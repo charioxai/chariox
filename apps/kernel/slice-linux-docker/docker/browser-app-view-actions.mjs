@@ -96,7 +96,19 @@ export function createViewActions() {
   const forms = name => (typeof document === 'undefined' ? [] : [...document.querySelectorAll('form[data-chariox-action]')])
     .filter(form => name === undefined || form.getAttribute('data-chariox-action') === name);
 
-  function submitForm(form, params) {
+  // Frameworks track a control's last known value and run `onChange` only when
+  // the DOM differs from it, so a plain `control.value = x` is swallowed. Text
+  // goes through the prototype setter and the events a user's typing fires;
+  // a checkbox or radio changes by the native click that fires its events.
+  const writeValue = (control, value) => {
+    const prototype = control.tagName === 'SELECT' ? HTMLSelectElement.prototype
+      : control.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(control, String(value));
+    control.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    control.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  async function submitForm(form, params) {
     const fields = fieldsOf(form);
     if (!params || typeof params !== 'object' || Array.isArray(params)) return fail('invalid_params', 'params must be an object');
     const changed = [];
@@ -111,11 +123,12 @@ export function createViewActions() {
     // Fields the agent leaves out keep what the user already entered.
     for (const [name, field, value] of changed) {
       const control = field.radio ? controlsOf(form).find(c => c.name === name && c.value === value) : field.control;
-      if (field.kind === 'checkbox' || field.radio) control.checked = field.radio ? true : value;
-      else control.value = String(value);
-      control.dispatchEvent(new Event('input', { bubbles: true }));
-      control.dispatchEvent(new Event('change', { bubbles: true }));
+      if (field.kind === 'checkbox') { if (control.checked !== value) control.click(); }
+      else if (field.radio) { if (!control.checked) control.click(); }
+      else writeValue(control, value);
     }
+    // Let the page's own handlers apply the writes before the form is read.
+    await new Promise(resolve => setTimeout(resolve, 0));
     if (!form.checkValidity()) return fail('invalid_form', `the form rejects these fields: ${controlsOf(form).filter(c => !c.checkValidity()).map(c => c.name).join(', ')}`);
     form.requestSubmit();
     // A form has no return value; the agent reads the state it changed.
