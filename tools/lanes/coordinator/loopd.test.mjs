@@ -179,6 +179,38 @@ test('a provider 429 after admission gets a later new prompt; a content refusal 
   }
 });
 
+test('repeated admitted recovery limits back off, give up after three prompts, and stay stopped on pickup', async t => {
+  const r = await interruptedRounds(t), adapter = r.options.adapter;
+  r.options.reconcileMs = 0;
+  r.control.maxSends = Infinity;
+  r.control.durationMs = 600_000;
+  r.options.adapter = async (op, input) => {
+    const result = await adapter(op, input);
+    if (op === 'status' && input.taskId === 'alpha-r1' && r.resumed.has(input.taskId)) {
+      return { state: 'error', busy: false, currentPrompt: null, completedTurn: { promptId: r.resumed.get(input.taskId), status: 'failed', completedAtMs: r.clock.ms,
+        providerTermination: { category: 'explicit_provider_error', reason: 'Codex error [response_too_many_failed_attempts]: last status: 429 Too Many Requests' } } };
+    }
+    return result;
+  };
+  await serve(r.options);
+  const sends = r.sends.filter(send => send.key === 'alpha-r1');
+  assert.equal(sends.length, 3, 'an exhausted worker gets at most three recovery prompts');
+  assert.equal(r.sends.filter(send => send.key === 'beta-r1').length, 1);
+  assert.ok(sends[1].atMs - sends[0].atMs >= 60_000);
+  assert.ok(sends[2].atMs - sends[1].atMs >= 120_000);
+  const recovery = (await runFile(r, 'alpha')).restartRecovery;
+  assert.ok(recovery.retryAtMs >= sends[2].atMs + 240_000);
+  assert.equal(recovery.pending, false);
+  assert.ok(recovery.gaveUpAtMs);
+  assert.equal(r.logs.filter(event => event.kind === 'restart_resume_gave_up').length, 1);
+  assert.equal((await readdir(join(r.layout.home, 'rounds'))).filter(name => name.startsWith('alpha-r1.restart-')).length, 3);
+  r.controller = new AbortController(); r.options.signal = r.controller.signal;
+  r.control.durationMs += 300_000;
+  await serve(r.options);
+  assert.equal(r.sends.filter(send => send.key === 'alpha-r1').length, 3, 'driver pickup preserves the cap');
+  assert.equal(r.logs.filter(event => event.kind === 'restart_resume_gave_up').length, 1, 'give-up is logged once');
+});
+
 test('recovery rechecks the failed worker under the direct-note lock before admitting a prompt', async t => {
   const r = await interruptedRounds(t), adapter = r.options.adapter, reads = new Map();
   r.options.adapter = async (op, input) => {

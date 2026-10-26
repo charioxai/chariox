@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { save } from '../lanes.mjs';
 
 const SPACING_MS = 60_000;
+const MAX_ATTEMPTS = 3;
 const RECOVERY_WINDOW_MS = 360_000;
 const rateLimited = reason => /response_too_many_failed_attempts|rate_limit_exceeded|429 Too Many Requests/i.test(reason ?? '');
 const interrupted = reason => reason === 'provider run was already ended during liveness reconciliation';
@@ -32,6 +33,7 @@ export async function resumeAfterRestart({ lane, lanes, status, kernelStartedAtM
   if (!Number.isSafeInteger(kernelStartedAtMs) || kernelStartedAtMs <= run.launchedAtMs) return false;
   let recovery = run.restartRecovery;
   if (recovery?.kernelStartedAtMs !== kernelStartedAtMs) recovery = undefined;
+  if (recovery?.gaveUpAtMs) return false;
   const promptId = recovery?.promptId ?? status.admittedPromptId ?? run.currentPromptId ?? lane.receipt.promptId;
   if (!recovery && status.admittedPromptAtMs >= kernelStartedAtMs) return false;
   // A provider can fail before the admission reply reaches loopd.
@@ -41,6 +43,12 @@ export async function resumeAfterRestart({ lane, lanes, status, kernelStartedAtM
   if (!recovery && failure.atMs > kernelStartedAtMs + RECOVERY_WINDOW_MS) return false;
   // Once a resume was admitted, only its 429 may cause another submission. Other errors need a person.
   if (recovery?.sentAtMs && failure.kind !== 'rate_limited') return false;
+  if (recovery?.sentAtMs && recovery.attempt >= MAX_ATTEMPTS) {
+    recovery.gaveUpAtMs = now();
+    log(lane, 'restart_resume_gave_up', { attempt: recovery.attempt, reason: 'attempt_limit' });
+    await persist(lane);
+    return false;
+  }
   recovery ??= run.restartRecovery = { kernelStartedAtMs, promptId, attempt: 1 };
   recovery.pending = true;
   const schedulePath = join(home, 'restart-resume.json');
@@ -59,7 +67,7 @@ export async function resumeAfterRestart({ lane, lanes, status, kernelStartedAtM
   const file = join(home, 'rounds', `${lane.entry.lane}.restart-${kernelStartedAtMs}-${recovery.attempt}.md`);
   await writeFile(file, `## Kernel restart ${kernelStartedAtMs}, recovery ${recovery.attempt}\nThe kernel restart cut your call. Check detached jobs before rerunning work, then continue your lane brief.\n`, { mode: 0o600 });
   recovery.attemptedAtMs = now();
-  recovery.retryAtMs = now() + SPACING_MS;
+  recovery.retryAtMs = now() + SPACING_MS * 2 ** (recovery.attempt - 1);
   // Save before sending: a lost answer replays the existing direct-steer receipt, never a new prompt.
   await persist(lane);
   await save(schedulePath, { attemptedAtMs: recovery.attemptedAtMs });
