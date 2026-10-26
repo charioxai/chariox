@@ -202,7 +202,11 @@ fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
 // MP-08 / MP-10 / MP-11: protocol643 Stop may cancel a task after its prompt ended.
 #[test]
 fn parked_stop_response_semantics_are_versioned() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 643);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert!(crate::test_support::expected_local_protocol_version() >= 643);
     let request = LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
         session_id: "room".into(),
         attachment_id: "terminal".into(),
