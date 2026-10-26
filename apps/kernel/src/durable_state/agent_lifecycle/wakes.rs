@@ -147,6 +147,40 @@ pub(super) fn source_deadline(
     Ok(deadline)
 }
 
+/// Last four-digit ISO year: existing client clocks slice that date format.
+const MAX_QUESTION_WAIT_DEADLINE_MS: u64 = 253_402_300_799_999;
+
+/// Retain every unanswered question until the latest source deadline. A question
+/// without a timeout uses the client date bound, rather than spending provider
+/// turns on an unrelated periodic retention deadline.
+pub(super) fn question_deadline(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    registrations: &[Registration],
+) -> Result<u64, DaemonError> {
+    if registrations.is_empty() {
+        return Err(error(
+            "pending question has no completion registration; restore its source binding",
+        ));
+    }
+    let mut deadline = 0;
+    for registration in registrations {
+        let wake = load_wake(tx, &registration.source_id)?;
+        if wake.kind != "interaction"
+            || wake.task_id != task.task_id
+            || wake.room_id != task.room_id
+            || wake.agent_id != task.agent_id
+            || wake.registration_id != registration.id
+        {
+            return Err(error(
+                "registered question binding corrupt; quarantine required",
+            ));
+        }
+        deadline = deadline.max(wake.next_due_ms.unwrap_or(MAX_QUESTION_WAIT_DEADLINE_MS));
+    }
+    Ok(deadline.min(MAX_QUESTION_WAIT_DEADLINE_MS))
+}
+
 fn save_wake(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_wakes VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![wake.id,wake.task_id,wake.room_id,wake.agent_id,encode(wake)?]).map_err(sql)?;
     Ok(())
@@ -584,6 +618,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if terminal(&wake) {
                 return Ok(Outcome::Wakes(vec![]));
             }
+            if wake.kind == "interaction" && kind == "interaction_resolved" {
+                let task = load(tx, &wake.task_id)?;
+                if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
+                    return Err(error("asking task ended; question withdrawn"));
+                }
+                if payload["status"] == "answered"
+                    && wake.next_due_ms.is_some_and(|deadline| deadline <= now)
+                {
+                    return Err(error("question deadline elapsed"));
+                }
+            }
             if let Some(summary) = summary {
                 if summary.len() > SUMMARY_LIMIT {
                     return Err(error("wake summary limit"));
@@ -629,6 +674,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 cancel_settle(tx, &mut wake, now)?;
                 return Ok(Outcome::Wakes(vec![wake]));
             }
+            wake.next_due_ms = None;
             wake.state = if end == WakeEnd::Lost {
                 "lost"
             } else {

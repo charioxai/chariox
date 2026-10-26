@@ -146,3 +146,65 @@ worker and cancel it; confirm physical source settlement, not just acceptance of
 the cancellation request. Preserve screenshots, timings, first-reply verdicts,
 source identities and cleanup outside the repository. These focused checks do not
 replace the complete ordinary/managed acceptance matrix.
+
+## Async questions (MP-08 / MP-09 / MP-10 / MP-11, AM-ASK)
+
+Build the kernel, relay, CLI launcher and TypeScript CLI from the same head.
+Keep the binaries, disposable state and evidence outside the repository. Link
+only an existing product-created Codex profile; this drill never copies or
+refreshes login files itself.
+
+```sh
+systemd-run --scope --quiet -p MemoryMax=4G -p MemorySwapMax=0 -- timeout 900 \
+  env AMASK_BIN=/absolute/path/to/binaries \
+      AMASK_STATE_ROOT=/absolute/path/to/disposable/state \
+      AMASK_EVIDENCE=/absolute/path/to/evidence \
+      AMASK_CODEX_PROFILE=/absolute/path/to/product/codex/profile \
+      AMASK_RUNTIME_HEAD=<exact-runtime-commit> \
+  node apps/cli/scripts/live-async-question-drill.mjs
+```
+
+The drill starts two real kernels, a real relay and built TUIs. A short real
+Codex `gpt-6-luna` low turn asks without waiting, runs another tool and finishes.
+It then restarts the owner kernel with that question pending. A real provider
+on the outside kernel runs the follower mode over the owner's private socket:
+its first ungranted request must fail, normal passkey approval grants access,
+and its first answer wins while a duplicate is refused. The owner wakes with
+the answer. Further short turns cover both deadline outcomes and a TUI stop
+that withdraws the card. Capture and inspect the real PTY screenshots and the
+allowlisted report. The harness removes only its own runtime and workspace.
+
+For web acceptance, set `AMASK_WEB_CAPTURE_HELPER` to a lane-owned executable.
+First it receives `--enroll <evidence-directory>`, before the TUI creates its
+Room. Enroll the **same** disposable owner through the normal device flow so
+the Room and later access grant belong to the signed-in user. Then it receives
+the Room ID, interaction ID and evidence directory to drive the built
+production web entry at DPR 1 and 2. Both phases receive the owner's loopback
+endpoint in `AMASK_OWNER_ENDPOINT` and its state directory in
+`AMASK_OWNER_CHARIOX_HOME`. Use `AMASK_WEB_ORIGIN` when doing so; the
+owner TUI then stays on its local terminal connection while web uses hosted
+WSS. Do not replace the actual web entry with a fixture. Without that helper,
+the report explicitly leaves web NOT RUN and cannot close AM-ASK-01.
+
+Run against the base first: it must fail because a non-blocking question is
+not available, then run the matching candidate. Source regressions are selected
+with `cargo test -p chariox-kernel --lib async_popup` (through the build-slot
+wrapper). The existing `popup_notice` tests guard the default blocking mode.
+
+`AMASK_SETUP_ONLY=1` checks disposable kernel/TUI/Vault setup without a provider
+turn; it is not acceptance. The harness refreshes linked profile status through
+the normal product request before the TUI starts. Reports distinguish runtime
+head, tooling head, binary hashes and resolved provider model/effort.
+
+Set `AMASK_LEGACY_BIN` to a separately built base-version CLI entry and
+`AMASK_LEGACY_HEAD` to its exact commit to include the legacy-client check.
+The drill attaches it to the same Room, shows an async question and answers
+through the older client's existing interaction control. Record that build's
+source and entry hash separately; the normal candidate TUI remains attached.
+
+`AMASK_DELETE_ONLY=1` runs a short supplement: a real provider asks and ends
+its turn, an ungranted outside provider is refused both viewing and answering,
+and new work completes while the same question remains pending. Then the TUI
+`/agent delete` command removes the asking agent. The question must disappear
+with a final cancellation record and without applying its default. Read that
+record from the disposable ledger because deleted agents leave the UI projection.

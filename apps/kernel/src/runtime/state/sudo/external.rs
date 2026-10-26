@@ -150,6 +150,7 @@ impl KernelRuntimeState {
                 Some(terminal),
                 false,
                 true,
+                self.interaction_answerer.as_ref(),
             )
             .map_err(|error| {
                 self.owned.closed_interaction_error(

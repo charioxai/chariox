@@ -1,6 +1,12 @@
 //! Agent decisions belong to their emitting turn or live provider run.
 use super::*;
 
+#[derive(Clone, Copy)]
+enum InteractionWithdrawal {
+    AgentStopped,
+    KernelShutdown,
+}
+
 impl KernelRuntimeOwnedState {
     pub(crate) fn capture_native_interaction_origin(
         &self,
@@ -27,7 +33,7 @@ impl KernelRuntimeOwnedState {
             })
     }
 
-    pub(super) fn agent_interaction_is_live(
+    pub(in crate::runtime::state) fn agent_interaction_is_live(
         &self,
         pending: &super::super::PendingInteraction,
     ) -> bool {
@@ -145,6 +151,12 @@ impl KernelRuntimeOwnedState {
         if session.status() == crate::session::SessionStatus::Ended {
             return false;
         }
+        if let Some(task_id) = &pending.async_task_id {
+            return self.durable_state_store.agent_tasks(Some(session.id()), Some(&lifetime.agent_id))
+                .is_ok_and(|tasks| tasks.iter().any(|task| task.task_id == *task_id
+                    && !matches!(task.state, crate::durable_state::agent_lifecycle::ExecutionState::Done
+                        | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled)));
+        }
         if let Some(prompt_id) = &lifetime.prompt_id {
             if !self
                 .prompt_state_owner
@@ -250,9 +262,10 @@ impl KernelRuntimeOwnedState {
             .map(|(id, pending)| (id.clone(), pending.clone()))
             .collect::<Vec<_>>();
         for (id, pending) in candidates {
-            let abandoned = pending.responder.lock().map_or(true, |sender| {
-                sender.as_ref().is_none_or(|sender| sender.is_closed())
-            });
+            let abandoned = pending.async_task_id.is_none()
+                && pending.responder.lock().map_or(true, |sender| {
+                    sender.as_ref().is_none_or(|sender| sender.is_closed())
+                });
             if abandoned || !self.agent_interaction_is_live(&pending) {
                 let _ = self.withdraw_agent_interaction_locked(&id, &pending);
             }
@@ -263,6 +276,32 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         agent_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.withdraw_agent_interactions_for(
+            session_id,
+            agent_id,
+            InteractionWithdrawal::AgentStopped,
+        )
+    }
+
+    /// A kernel exit retires turn-bound responders. Task-owned questions are
+    /// reattached by their durable wake driver when the kernel starts again.
+    pub(in crate::runtime::state) fn withdraw_agent_interactions_for_shutdown(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.withdraw_agent_interactions_for(
+            session_id,
+            None,
+            InteractionWithdrawal::KernelShutdown,
+        )
+    }
+
+    fn withdraw_agent_interactions_for(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        reason: InteractionWithdrawal,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -282,6 +321,10 @@ impl KernelRuntimeOwnedState {
                     .as_ref()
                     .is_some_and(|lifetime| agent_id.is_none_or(|id| id == lifetime.agent_id))
             })
+            .filter(|(_, pending)| {
+                !matches!(reason, InteractionWithdrawal::KernelShutdown)
+                    || pending.async_task_id.is_none()
+            })
             .map(|(id, pending)| (id.clone(), pending.clone()))
             .collect::<Vec<_>>();
         for (id, pending) in candidates {
@@ -296,6 +339,20 @@ impl KernelRuntimeOwnedState {
         id: &str,
         pending: &super::super::PendingInteraction,
     ) -> Result<(), DaemonError> {
+        if pending.async_task_id.is_some() {
+            self.durable_state_store.agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::WakeOccurred {
+                    id: id.into(),
+                    occurrence: format!("{id}-withdrawn"),
+                    kind: "interaction_withdrawn".into(),
+                    payload: serde_json::json!({"interaction_id":id,"status":"withdrawn",
+                    "reason":"Asking task or agent ended, or the question was cancelled"}),
+                    summary: Some("Question withdrawn because its task or agent ended".into()),
+                    end: Some(crate::durable_state::agent_lifecycle::WakeEnd::Lost),
+                    now: crate::session::unix_epoch_ms(),
+                },
+            )?;
+        }
         self.pending_interactions.write().remove(id);
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();

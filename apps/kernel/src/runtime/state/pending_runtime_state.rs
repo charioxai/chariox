@@ -61,6 +61,7 @@ impl PendingProviderReloadStore {
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
+    pub(super) async_task_id: Option<String>,
     /// Kernel-wide decisions live on the same interaction board without a session.
     pub(super) kernel_wide_interaction: Option<crate::session::RuntimeInteraction>,
     pub(super) session_id: String,
@@ -106,6 +107,9 @@ impl PendingInteraction {
     /// The component that asked is gone or the interaction was answered: no
     /// receiver waits for a resolution any more.
     pub(super) fn nobody_waits(&self) -> bool {
+        if self.async_task_id.is_some() {
+            return false;
+        }
         self.responder.lock().map_or(true, |responder| {
             responder.as_ref().is_none_or(|sender| sender.is_closed())
         })

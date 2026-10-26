@@ -1266,3 +1266,6 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
         "the kernel outlived its runtime"
     );
 }
+
+#[path = "async_popup.rs"]
+mod async_popup;

@@ -23,7 +23,12 @@ fn metadata(text: &str) -> String {
         .collect()
 }
 
-fn new_wake(task: &AgentTaskExecution, kind: &str, label: String, now: u64) -> AgentWake {
+pub(in crate::runtime::state) fn new_wake(
+    task: &AgentTaskExecution,
+    kind: &str,
+    label: String,
+    now: u64,
+) -> AgentWake {
     let id = format!("wake-{:032x}", rand::random::<u128>());
     AgentWake {
         registration_id: format!("completion-{id}"),

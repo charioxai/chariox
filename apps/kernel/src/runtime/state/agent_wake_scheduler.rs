@@ -151,6 +151,7 @@ impl KernelRuntimeState {
 
     /// Fires due wakes and (from the scheduler only) arms new ones.
     async fn tick_agent_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
+        self.tick_interaction_wakes(now)?;
         let store = &self.owned.durable_state_store;
         for wake in store.agent_wakes(None, None)? {
             if matches!(wake.state.as_str(), "starting" | "running" | "cancelling")

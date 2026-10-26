@@ -30,6 +30,7 @@ struct SessionCommandEnvelope {
     command_type: String,
     telemetry: LaneCommandTrace,
     caller_user_id: String,
+    answerer: crate::runtime::command::KernelCaller,
     caller_metaagent_id: Option<String>,
     provider_run_id: Option<String>,
     terminal_caller: bool,
@@ -120,6 +121,7 @@ impl SessionRuntime {
             command_id,
             command_type,
             caller_user_id,
+            answerer: command.caller.clone(),
             caller_metaagent_id,
             provider_run_id,
             terminal_caller,
@@ -262,6 +264,7 @@ impl SessionRuntime {
                 crate::runtime::command_latency::now_ms(),
             ),
             caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
+            answerer: crate::runtime::command::KernelCaller::default(),
             caller_metaagent_id: None,
             provider_run_id: None,
             terminal_caller: false,
@@ -349,6 +352,7 @@ async fn run_session_command_lane(
                         envelope.caller_metaagent_id.as_deref(),
                         &envelope.request,
                     )
+                    .with_interaction_answerer(&envelope.answerer)
                     .execute(
                         envelope.request,
                         envelope.caller_user_id,

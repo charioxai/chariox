@@ -86,6 +86,13 @@ impl SessionRuntimeStore {
         self.state.authorize_room_provider_epoch(actor, run)
     }
 
+    pub(super) fn with_interaction_answerer(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Self {
+        Self::new(self.state.with_interaction_answerer(caller))
+    }
+
     pub(super) fn with_room_request_origin(
         &self,
         actor: Option<&str>,

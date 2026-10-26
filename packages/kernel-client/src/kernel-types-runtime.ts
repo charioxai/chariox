@@ -129,6 +129,7 @@ export type NativeInteractionOrigin =
   | { scope: "provider_startup"; provider_run_id: string }
 
 export type RuntimeInteraction = RuntimeInteractionSubject & {
+  asking_task_id?: string | null
   requester?: KernelAccessRequester | null
   provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
   project_environment_review?: ProjectEnvironmentReview | null
