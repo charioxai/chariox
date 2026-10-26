@@ -133,3 +133,25 @@ test('opening a picked diagram keeps the previous canvas recoverable with Undo',
   assert.deepEqual((await invoke('scene_summary')).value.elements.map(element => element.id), previous);
   await page.screenshot({ path: join(evidence, 'open-undo-reload.png') });
 }));
+
+test('UI saves offer distinct copies that a person can reopen through Open', { timeout: 30_000 }, () => fixture(async ({ page, broker, invoke, draw }) => {
+  await draw();
+  await page.keyboard.press('Control+s'); await page.waitForTimeout(200);
+  await page.keyboard.press('Control+s'); await page.waitForTimeout(200);
+  assert.equal(broker.writes.length, 2);
+  const [first, second] = broker.writes;
+  assert.equal(first.offer, true, 'Ctrl+S must offer the copy through files.export');
+  assert.equal(second.offer, true);
+  assert.notEqual(first.name, second.name, 'each unnamed save needs a distinct filename');
+  assert.equal(broker.files.size, 2, 'saving another copy must retain the previous one');
+  const saved = (await invoke('scene_summary')).value.elements;
+  await draw(600);
+  broker.picked = first.name;
+  await page.keyboard.press('Control+o'); await page.waitForTimeout(500);
+  assert.deepEqual((await invoke('scene_summary')).value.elements.map(element => element.id), saved.map(element => element.id), 'the exported copy reopens through the human picker');
+  const named = await invoke('save_file', { name: 'explicit' });
+  assert.equal(named.ok, true);
+  assert.equal(named.value.name, 'explicit.excalidraw', 'agent-supplied private names retain their semantics');
+  assert.equal(broker.writes.at(-1).offer, false);
+  await page.screenshot({ path: join(evidence, 'save-copy-open.png') });
+}));

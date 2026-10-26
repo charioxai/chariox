@@ -63,8 +63,16 @@ state version check. Explicit private files use `files.atomic_replace`; imports
 use `host.pick_file` and `files.import`, and exports use `files.export`. Inputs
 are filenames, never host paths. Only WASI's installation-private `data` preopen
 is read directly. Named private saves survive worker/view restarts independently
-of the current scene. A concurrent-view conflict is shown as an error; saving
-or exporting a private copy remains available before reloading.
+of the current scene. Save a copy (also Ctrl+S and Ctrl+Shift+S) offers a new,
+uniquely named `.excalidraw` copy through the kernel's file-save interaction.
+In a text terminal, use its displayed `/app file save OPERATION "PATH"` command
+to keep the offered file, then choose that file with Open to restore it. The
+current Web interaction only offers Decline; use the text terminal to save it.
+An agent can still save/open an explicitly
+named private file; a repeated explicit name replaces that file.
+A concurrent-view conflict is shown once in a dismissible toast. Use Save a
+copy and keep the offered file before reloading, then Open it to recover edits.
+Reloading clears the automatic-save error and loads the latest durable scene.
 
 `scene_summary` reads actual canvas elements, with IDs, geometry, labels,
 selection, groups and arrow bindings. Follow `nextOffset` until null. The state

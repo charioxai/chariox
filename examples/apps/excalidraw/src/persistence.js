@@ -31,8 +31,8 @@ export function persistence(chariox, api, loaded) {
     async save_file({ name } = {}) {
       // A private copy must remain possible after a concurrent-view conflict.
       await queue;
-      const result = await chariox.call('write_file', { name: filename(name), text: sceneJSON(api) });
-      api.setToast({ message: `Saved private copy: ${result.name}${failure ? '; reload to recover automatic saving' : ''}` });
+      const result = await chariox.call('write_file', { name: filename(name ?? `diagram-${crypto.randomUUID()}`), text: sceneJSON(api), offer: name === undefined });
+      api.setToast({ message: `Saved ${name === undefined ? 'copy' : 'private copy'}: ${result.name}${failure ? '; reload to recover automatic saving' : ''}` });
       return { ...result, automaticSaveError: failure?.message ?? null };
     },
     async open_file({ name } = {}) {

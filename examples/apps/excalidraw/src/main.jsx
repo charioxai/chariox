@@ -81,7 +81,7 @@ createRoot(document.getElementById('root')).render(
     }}>
     <MainMenu>
       <MainMenu.Item onSelect={invoke('open_file')}>Open</MainMenu.Item>
-      <MainMenu.Item onSelect={invoke('save_file')}>Save private copy</MainMenu.Item>
+      <MainMenu.Item onSelect={invoke('save_file')}>Save a copy</MainMenu.Item>
       <MainMenu.Item onSelect={invoke('export_file')}>Export image</MainMenu.Item>
       <MainMenu.Item onSelect={() => actions.export_file({ format: 'svg' }).catch(report)}>Export SVG</MainMenu.Item>
       <MainMenu.Item onSelect={() => actions.export_file({ format: 'json' }).catch(report)}>Export JSON</MainMenu.Item>

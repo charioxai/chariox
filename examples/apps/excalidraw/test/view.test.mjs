@@ -124,7 +124,7 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
       assert.equal((await invoke('scene_summary')).total, moved.total);
       await page.keyboard.press('Control+s');
       await page.waitForTimeout(500);
-      assert(files.has('diagram.excalidraw'), 'Ctrl+S must use the broker');
+      assert([...files.keys()].some(name => /^diagram-[a-f0-9-]+\.excalidraw$/.test(name)), 'Ctrl+S must use the broker with a unique copy name');
       await page.keyboard.press('Control+o');
       await page.waitForTimeout(200);
       assert(calls.includes('pick_file'), 'Ctrl+O must use the broker');
