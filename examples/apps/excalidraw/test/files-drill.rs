@@ -36,6 +36,7 @@ struct Host {
     table: ResourceTable,
     data: PathBuf,
     offers: Vec<(String, Vec<u8>)>,
+    export_barrier: Option<Arc<tokio::sync::Barrier>>,
 }
 impl WasiView for Host {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -137,6 +138,10 @@ impl<T: Send> files::HostWithStore<T> for HasSelf<Host> {
         Ok(bytes.len() as u64)
     }
     async fn export(accessor: &Accessor<T, Self>, path: String) -> Result<String, AppError> {
+        let barrier = accessor.with(|mut access| access.get().export_barrier.clone());
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
         accessor.with(|mut access| {
             let host = access.get();
             let bytes = fs::read(host.data.join(&path)).unwrap();
@@ -168,38 +173,12 @@ impl Drop for Scratch {
 
 #[tokio::test(flavor = "current_thread")]
 async fn offered_copies_leave_no_private_files_and_named_writes_persist() -> wasmtime::Result<()> {
-    let component = std::env::var("CHARIOX_EXCALIDRAW_COMPONENT")?;
     let root = Scratch(
         PathBuf::from(std::env::var("TMPDIR")?)
             .join(format!("excalidraw-files-{}", std::process::id())),
     );
     fs::create_dir(&root.0)?;
-    let mut config = Config::new();
-    config.wasm_component_model_async(true);
-    let engine = Engine::new(&config)?;
-    let component = Component::from_file(&engine, component)?;
-    let mut linker = Linker::<Host>::new(&engine);
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
-    Drill::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
-
-    let mut wasi = WasiCtx::builder();
-    wasi.inherit_stderr()
-        .preopened_dir(&root.0, "data", FsPerms::ReadWrite)?;
-    let mut store = Store::new(
-        &engine,
-        Host {
-            wasi: wasi.build(),
-            table: ResourceTable::new(),
-            data: root.0.clone(),
-            offers: vec![],
-        },
-    );
-    let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
-    app.chariox_app_handlers()
-        .call_register(&mut store)
-        .await?
-        .unwrap();
+    let (mut store, app) = runtime(&root.0).await?;
     let scene = r#"{"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}}"#;
     for (name, offer) in [
         ("diagram-copy-1.excalidraw", true),
@@ -254,6 +233,161 @@ async fn offered_copies_leave_no_private_files_and_named_writes_persist() -> was
     assert_eq!(
         fs::read(root.0.join("explicit.excalidraw"))?,
         scene.as_bytes()
+    );
+    Ok(())
+}
+
+async fn runtime(root: &std::path::Path) -> wasmtime::Result<(Store<Host>, Drill)> {
+    let component = std::env::var("CHARIOX_EXCALIDRAW_COMPONENT")?;
+    let mut config = Config::new();
+    config.wasm_component_model_async(true);
+    let engine = Engine::new(&config)?;
+    let component = Component::from_file(&engine, component)?;
+    let mut linker = Linker::<Host>::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
+    Drill::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
+
+    let mut wasi = WasiCtx::builder();
+    wasi.inherit_stderr()
+        .preopened_dir(root, "data", FsPerms::ReadWrite)?;
+    let mut store = Store::new(
+        &engine,
+        Host {
+            wasi: wasi.build(),
+            table: ResourceTable::new(),
+            data: root.to_path_buf(),
+            offers: vec![],
+            export_barrier: None,
+        },
+    );
+    let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
+    app.chariox_app_handlers()
+        .call_register(&mut store)
+        .await?
+        .unwrap();
+    Ok((store, app))
+}
+
+async fn invoke(
+    store: &mut Store<Host>,
+    app: &Drill,
+    name: &str,
+    input: serde_json::Value,
+) -> wasmtime::Result<serde_json::Value> {
+    let result = store
+        .run_concurrent(async |accessor| {
+            let cancel = accessor.with(|mut access| {
+                FutureReader::new(
+                    &mut access,
+                    std::future::pending::<wasmtime::Result<String>>(),
+                )
+            })?;
+            let context = InvocationContext {
+                deadline_ms: u64::MAX,
+                installation_id: None,
+                room_id: None,
+                operation_id: None,
+                agent_id: None,
+                task_id: None,
+                turn_id: None,
+                actor: None,
+            };
+            app.chariox_app_handlers()
+                .call_call_tool(accessor, name.into(), input.to_string(), context, cancel)
+                .await
+        })
+        .await??;
+    Ok(serde_json::from_str(&result.unwrap()).unwrap())
+}
+
+fn scratch(label: &str) -> wasmtime::Result<Scratch> {
+    let root = Scratch(
+        PathBuf::from(std::env::var("TMPDIR")?)
+            .join(format!("excalidraw-{label}-{}", std::process::id())),
+    );
+    fs::create_dir(&root.0)?;
+    Ok(root)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn same_named_export_preserves_the_earlier_private_save() -> wasmtime::Result<()> {
+    let root = scratch("private-export")?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let earlier = serde_json::json!({"type":"excalidraw","version":2,"elements":[],"appState":{"name":"earlier"},"files":{}});
+    let mut current = earlier.clone();
+    current["appState"]["name"] = "current".into();
+    invoke(
+        &mut store,
+        &app,
+        "write_file",
+        serde_json::json!({"name":"diagram.excalidraw","text":earlier.to_string(),"offer":false}),
+    )
+    .await?;
+    invoke(
+        &mut store,
+        &app,
+        "write_file",
+        serde_json::json!({"name":"diagram.excalidraw","text":current.to_string(),"offer":true}),
+    )
+    .await?;
+    let opened = invoke(
+        &mut store,
+        &app,
+        "read_file",
+        serde_json::json!({"name":"diagram.excalidraw"}),
+    )
+    .await?;
+    assert_eq!(
+        opened["scene"], earlier,
+        "export must preserve the named save's earlier content"
+    );
+    assert_eq!(store.data().offers[0].1, current.to_string().as_bytes());
+    assert_eq!(
+        std::path::Path::new(&store.data().offers[0].0)
+            .file_name()
+            .unwrap(),
+        "diagram.excalidraw",
+        "the broker must still suggest the requested filename"
+    );
+    assert_eq!(
+        fs::read_dir(&root.0)?.count(),
+        1,
+        "only the private save remains"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_same_named_exports_have_independent_staging() -> wasmtime::Result<()> {
+    let root = scratch("concurrent-export")?;
+    let (mut first, first_app) = runtime(&root.0).await?;
+    let (mut second, second_app) = runtime(&root.0).await?;
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    first.data_mut().export_barrier = Some(barrier.clone());
+    second.data_mut().export_barrier = Some(barrier);
+    let scene = |label| {
+        serde_json::json!({"type":"excalidraw","version":2,"elements":[],"appState":{"name":label},"files":{}}).to_string()
+    };
+    let request =
+        |label| serde_json::json!({"name":"diagram.excalidraw","text":scene(label),"offer":true});
+    let (a, b) = tokio::join!(
+        invoke(&mut first, &first_app, "write_file", request("first")),
+        invoke(&mut second, &second_app, "write_file", request("second"))
+    );
+    a?;
+    b?;
+    assert_ne!(
+        first.data().offers[0].0,
+        second.data().offers[0].0,
+        "concurrent exports must reserve different paths"
+    );
+    assert_eq!(first.data().offers[0].1, scene("first").as_bytes());
+    assert_eq!(second.data().offers[0].1, scene("second").as_bytes());
+    assert_eq!(
+        fs::read_dir(&root.0)?.count(),
+        0,
+        "successful offers remove all staging files"
     );
     Ok(())
 }

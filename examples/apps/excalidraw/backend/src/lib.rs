@@ -38,6 +38,32 @@ impl Drop for ImportFile {
     }
 }
 
+fn reserve_export(name: &str) -> Result<String, AppError> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| error("EXPORT_FAILED", "cannot read the export staging clock"))?
+        .as_nanos();
+    for index in 0..1024 {
+        // Named saves cannot contain paths or start with a dot. Reserve a
+        // directory so the broker still offers the person's chosen filename.
+        let directory = format!(".export-{stamp:x}-{index}");
+        match std::fs::create_dir(format!("data/{directory}")) {
+            Ok(_) => return Ok(format!("{directory}/{name}")),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                return Err(error(
+                    "EXPORT_FAILED",
+                    "cannot reserve a private export file",
+                ))
+            }
+        }
+    }
+    Err(error(
+        "EXPORT_FAILED",
+        "too many concurrent exports; retry after they finish",
+    ))
+}
+
 async fn replace(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
     let (mut writer, reader) = chariox_app_sdk::bindings::wit_stream::new();
     let (result, remaining) = futures::join!(files::atomic_replace(name, reader), async move {
@@ -100,14 +126,27 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
                         .map_err(|_| error("INVALID_SCENE", "diagram must be UTF-8"))?,
                 )?;
             }
-            let length = replace(name.clone(), bytes).await?;
-            let grant = if input["offer"].as_bool().unwrap_or(false) {
-                let grant = files::export(name.clone()).await?;
+            let offer = input["offer"].as_bool().unwrap_or(false);
+            let destination = if offer {
+                reserve_export(&name)?
+            } else {
+                name.clone()
+            };
+            let length = replace(destination.clone(), bytes).await?;
+            let grant = if offer {
+                let grant = files::export(destination.clone()).await?;
                 // The broker owns the offered bytes after export succeeds.
-                std::fs::remove_file(format!("data/{name}")).map_err(|_| {
+                std::fs::remove_file(format!("data/{destination}")).map_err(|_| {
                     error(
                         "FILE_CLEANUP_FAILED",
                         "copy was offered but its private staging file could not be removed",
+                    )
+                })?;
+                let directory = destination.rsplit_once('/').unwrap().0;
+                std::fs::remove_dir(format!("data/{directory}")).map_err(|_| {
+                    error(
+                        "FILE_CLEANUP_FAILED",
+                        "copy was offered but its private staging directory could not be removed",
                     )
                 })?;
                 Some(grant)

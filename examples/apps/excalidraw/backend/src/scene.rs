@@ -75,7 +75,16 @@ mod tests {
     use serde_json::json;
     #[test]
     fn rejects_host_paths_and_invalid_exports() {
-        for name in ["", "../scene", "/tmp/scene", "a/b", "a\\b", ".", ".."] {
+        for name in [
+            "",
+            "../scene",
+            "/tmp/scene",
+            "a/b",
+            "a\\b",
+            ".",
+            "..",
+            ".export-0.excalidraw",
+        ] {
             assert!(filename(&json!(name)).is_err(), "{name}");
         }
         assert_eq!(

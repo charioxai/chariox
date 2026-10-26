@@ -66,7 +66,9 @@ is read directly. Named private saves survive worker/view restarts independently
 of the current scene. Save a copy (also Ctrl+S and Ctrl+Shift+S) offers a new,
 uniquely named `.excalidraw` copy through the kernel's file-save interaction.
 Once the broker owns the offered bytes, the App removes its private staging
-file; only explicitly named private saves remain in `data/`.
+file; only explicitly named private saves remain in `data/`. Every offered
+write uses an exclusively reserved staging name outside the named-save namespace,
+so exporting cannot overwrite a private save or another view’s pending export.
 In a text terminal, use its displayed `/app file save OPERATION "PATH"` command
 to keep the offered file, then choose that file with Open to restore it. The
 current Web interaction only offers Decline; use the text terminal to save it.
