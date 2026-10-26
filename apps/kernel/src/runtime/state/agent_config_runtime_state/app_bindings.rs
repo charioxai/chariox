@@ -2,6 +2,12 @@ use super::*;
 use crate::extension::{AppCapabilityGrant, ExtensionGrant, ExtensionKind};
 use crate::runtime::state::capability_grant_runtime::{AppBindingPermit, AppPromptDelivery};
 
+#[derive(PartialEq, Eq)]
+enum AppGrantOrigin {
+    Requested,
+    DevAutomatic,
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn grant_agent_app(
         &self,
@@ -31,7 +37,14 @@ impl KernelRuntimeState {
         permit: Option<AppBindingPermit>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         match self
-            .checked_app_grant(agent_ref, grant, caller_user_id, false, permit)
+            .checked_app_grant(
+                agent_ref,
+                grant,
+                caller_user_id,
+                false,
+                permit,
+                AppGrantOrigin::Requested,
+            )
             .await?
         {
             Ok(agent) => Ok(agent),
@@ -39,6 +52,60 @@ impl KernelRuntimeState {
             Err(NotBound::Refused) => Err(app_binding_error(
                 "App installation is unavailable or its publisher verification is no longer valid",
             )),
+        }
+    }
+
+    /// The durable dev installation authorizes automatic bindings in its own
+    /// Room. Reuse the normal revocation epoch so an owner revoke wins a race.
+    pub(in crate::runtime::state) async fn grant_room_dev_app(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        installation: &str,
+    ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
+        let record = self
+            .owned
+            .durable_state_store
+            .get_app_installation(agent.owner_user_id(), installation)
+            .map_err(|_| app_binding_error("Dev installation is unavailable"))?;
+        if record.channel != chariox_app_runtime::installation::channel::InstallationChannel::Dev
+            || !record.visible_in_room(Some(agent.session_id()))
+        {
+            return Err(app_binding_error(
+                "Dev installation belongs to another Room",
+            ));
+        }
+        let permit = AppBindingPermit {
+            actor: agent.clone(),
+            target_id: agent.id().into(),
+            target_binding: agent.remote_execution().cloned(),
+            installation: installation.into(),
+            target_revision: self.app_binding_revision(agent.id(), installation),
+            prompt_id: None,
+            parent: None,
+            provider_run_id: None,
+            prompt_delivery: None,
+        };
+        if !self
+            .owned
+            .durable_state_store
+            .dev_app_automatic_binding_enabled(agent.id(), installation)?
+        {
+            return Ok(None);
+        }
+        match self
+            .checked_app_grant(
+                agent.id(),
+                ExtensionGrant::app(installation),
+                agent.owner_user_id(),
+                false,
+                Some(permit),
+                AppGrantOrigin::DevAutomatic,
+            )
+            .await?
+        {
+            Ok(agent) => Ok(Some(agent)),
+            Err(NotBound::Busy) => Err(app_binding_error("App control is busy")),
+            Err(NotBound::Refused) => Err(app_binding_error("Dev App is no longer available")),
         }
     }
 
@@ -61,7 +128,14 @@ impl KernelRuntimeState {
         grant.app_grant = None; // An explicit owner fork is a new checked grant.
         Ok(
             match self
-                .checked_app_grant(agent_id, grant, caller_user_id, true, None)
+                .checked_app_grant(
+                    agent_id,
+                    grant,
+                    caller_user_id,
+                    true,
+                    None,
+                    AppGrantOrigin::Requested,
+                )
                 .await?
             {
                 Ok(agent) => Some(agent),
@@ -94,6 +168,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         wait_for_slot: bool,
         binding_permit: Option<AppBindingPermit>,
+        origin: AppGrantOrigin,
     ) -> Result<Result<crate::agent::AgentInstance, NotBound>, DaemonError> {
         if self.room_agent_tools_enabled() {
             self.require_app_grant_wake()?;
@@ -294,7 +369,19 @@ impl KernelRuntimeState {
                 // descendants by silently replacing their source generation.
                 return Ok(Ok(current));
             }
-            let mut commit = || agents.grant_extension(agent.id(), grant.clone());
+            let mut commit = || {
+                let granted = agents.grant_extension(agent.id(), grant.clone())?;
+                if origin == AppGrantOrigin::Requested {
+                    // Serialize the owner's choice with revoke. The later grant
+                    // audit may arrive after a revoke and cannot re-enable dev.
+                    self.owned.durable_state_store.append_event(
+                        "app.binding.owner_granted",
+                        Some(agent.id().into()),
+                        serde_json::json!({"installation_id":grant.name}),
+                    )?;
+                }
+                Ok::<_, DaemonError>(granted)
+            };
             let agent = if let Some(permit) = binding_permit
                 .as_ref()
                 .filter(|permit| permit.prompt_id.is_some())
@@ -493,6 +580,15 @@ impl KernelRuntimeState {
                     }
                 }
                 index += 1;
+            }
+            if expected.is_none() {
+                for id in &ids {
+                    self.owned.durable_state_store.append_event(
+                        "app.binding.owner_revoked",
+                        Some(id.clone()),
+                        serde_json::json!({"installation_id":name}),
+                    )?;
+                }
             }
             let mut revoked = Vec::new();
             for id in ids {

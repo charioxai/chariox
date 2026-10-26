@@ -1,13 +1,12 @@
 //! A committed dev install automatically binds only agents of its own Room.
 //! Normal grants retain their existing trust check, audit and tool refresh.
 use super::*;
-use crate::extension::{ExtensionGrant, ExtensionKind};
+use crate::extension::ExtensionKind;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
 pub(super) struct DevAppBindings {
     next_scan_ms: AtomicU64,
-    bound: std::sync::Mutex<std::collections::BTreeSet<(String, String)>>,
 }
 
 impl KernelRuntimeState {
@@ -37,36 +36,36 @@ impl KernelRuntimeState {
                     message: "Dev installation discovery did not complete".into(),
                 })??;
         let agents = self.list_agents();
+        let mut failure = None;
         for (owner, room, installation) in installations {
             for agent in &agents {
                 if agent.owner_user_id() != owner || agent.session_id() != room {
                     continue;
                 }
-                let key = (agent.id().to_owned(), installation.clone());
-                if state
-                    .bound
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .contains(&key)
-                {
-                    continue;
+                let result = async {
+                    let current = self.owned.agent_store.get_agent(agent.id())?;
+                    if current.has_extension_grant(ExtensionKind::App, &installation) {
+                        return Ok(());
+                    }
+                    if let Some(_bound) = self.grant_room_dev_app(&current, &installation).await? {
+                        #[cfg(any(
+                            target_os = "macos",
+                            all(target_os = "linux", target_env = "gnu")
+                        ))]
+                        self.refresh_agent_runtime_tool_catalog(_bound.session_id(), _bound.id())
+                            .await?;
+                    }
+                    Ok::<_, DaemonError>(())
                 }
-                if !agent.has_extension_grant(ExtensionKind::App, &installation) {
-                    self.grant_agent_app(
-                        agent.id(),
-                        ExtensionGrant::new(ExtensionKind::App, &installation),
-                        &owner,
-                        None,
-                    )
-                    .await?;
+                .await;
+                if let Err(error) = result {
+                    failure.get_or_insert(error);
                 }
-                state
-                    .bound
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(key);
             }
         }
-        Ok(())
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
