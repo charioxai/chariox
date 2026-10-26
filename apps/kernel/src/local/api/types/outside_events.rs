@@ -79,6 +79,9 @@ pub enum OutsideEventValue {
         task_state: Option<crate::durable_state::agent_lifecycle::ExecutionState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// Present on an `error` run state: the typed cause of the failed turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<crate::provider::ProviderFailure>,
     },
     Interaction {
         state: EventInteractionState,

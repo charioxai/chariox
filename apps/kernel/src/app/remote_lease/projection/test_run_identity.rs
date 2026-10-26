@@ -180,6 +180,7 @@ fn assert_home_run_identity(native: bool) {
                     vec![]
                 } else {
                     vec![RelayProjectedCompletion {
+                        failure: None,
                         message_id: "worker-completion".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: remote_prompt_id.clone(),

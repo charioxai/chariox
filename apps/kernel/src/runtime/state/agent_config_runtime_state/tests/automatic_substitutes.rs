@@ -13,12 +13,12 @@ const SERVER_OVERLOADED: &str =
     "Provider prompt dispatch failed: Codex error [server_overloaded]: \
      Selected model is at capacity. Please try a different model.";
 
-struct FailingTurn {
-    runtime: KernelRuntimeState,
-    session_id: String,
-    agent_id: String,
-    failed_run_id: String,
-    prompt_id: String,
+pub(super) struct FailingTurn {
+    pub(super) runtime: KernelRuntimeState,
+    pub(super) session_id: String,
+    pub(super) agent_id: String,
+    pub(super) failed_run_id: String,
+    pub(super) prompt_id: String,
     worktree: std::path::PathBuf,
 }
 
@@ -66,7 +66,7 @@ impl FailingTurn {
             .collect()
     }
 
-    async fn fail_run(&self, provider_run_id: &str, message: &str) {
+    pub(super) async fn fail_run(&self, provider_run_id: &str, message: &str) {
         self.runtime
             .fail_owned_provider_prompt(&self.session_id, provider_run_id, message, true)
             .await
@@ -168,7 +168,7 @@ impl FailingTurn {
             .collect()
     }
 
-    fn assert_turn_failed(&self) {
+    pub(super) fn assert_turn_failed(&self) {
         assert!(self.active_prompt().is_none(), "the turn must fail");
         let settlement = self
             .runtime
@@ -187,7 +187,7 @@ impl FailingTurn {
     }
 }
 
-async fn failing_turn(substitutes: &[(&str, &str, Option<&str>)]) -> FailingTurn {
+pub(super) async fn failing_turn(substitutes: &[(&str, &str, Option<&str>)]) -> FailingTurn {
     failing_turn_with(substitutes, false).await
 }
 

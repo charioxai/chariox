@@ -358,4 +358,6 @@ pub use workspace::*;
 /// Allocated 585 adds outside event subscriptions and executor-local agent deadlines.
 /// Allocated 591 adds the outside `steer` event.
 /// Version 609 adds explicit same-owner Vault-backed provider account copy.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 609;
+/// Version 613 types a failed turn's cause (overloaded, usage limit, sign-in,
+/// crash, network) with a retryable flag on its outside event and history.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 613;

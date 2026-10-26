@@ -130,6 +130,7 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    failure: None,
                     message_id: "queued-completion-ordering".to_string(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: Some(completed_prompt_id),
@@ -341,6 +342,7 @@ async fn ordinary_completion_dispatches_workflow_head_after_projection() {
                         output_chunks: Vec::new(),
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            failure: None,
                             message_id: "ordinary-completes-before-workflow".to_string(),
                             completed_at_ms: crate::session::unix_epoch_ms(),
                             home_prompt_id: Some(completed_prompt_id),
@@ -472,6 +474,7 @@ async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics()
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    failure: None,
                     message_id: "reject-queued-dispatch".to_string(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: Some(completed_prompt_id),
@@ -724,6 +727,7 @@ async fn project_ordinary_completion(fixture: &RoomManifestFixture, prompt_id: S
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    failure: None,
                     message_id: "ordinary-completion-for-workflow-successor".to_string(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: Some(prompt_id),

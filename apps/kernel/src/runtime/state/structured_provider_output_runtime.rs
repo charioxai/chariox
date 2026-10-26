@@ -599,6 +599,7 @@ impl KernelRuntimeState {
         let requires_authoritative_turn_completion =
             crate::provider::provider_run_requires_authoritative_turn_completion(&provider_run);
         let agent_id = provider_run.agent_instance_id().map(str::to_string);
+        let adapter_key = provider_run.adapter_key().to_string();
         if let Some(agent_id) = provider_run.agent_instance_id() {
             owned.external_provider_sessions.mark_provider_run_attached(
                 provider_run.adapter_key(),
@@ -623,6 +624,7 @@ impl KernelRuntimeState {
             .flatten()
             .map(|message| {
                 crate::provider::ProviderRunTermination::explicit_provider_error(
+                    &adapter_key,
                     message,
                     crate::session::unix_epoch_ms(),
                 )

@@ -22,6 +22,7 @@ pub(crate) use credential_environment::{
 mod executable_resolution;
 mod external_observation;
 pub(crate) use account_handoff::encode_account_handoff;
+mod failure;
 mod launch_contract;
 mod managed_isolation;
 mod mcp_proxy;
@@ -100,6 +101,7 @@ pub(crate) use external_observation::{
     ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
     ObservedExternalProviderTurnRole,
 };
+pub use failure::{ProviderFailure, ProviderFailureCause};
 pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,

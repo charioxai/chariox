@@ -44,6 +44,7 @@ pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
 pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
 pub(crate) const PROMPT_SETTLED_AT_MS_METADATA_KEY: &str = "prompt_settled_at_ms";
 pub(crate) const PROMPT_SETTLEMENT_STATUS_METADATA_KEY: &str = "prompt_settlement_status";
+pub(crate) const PROMPT_FAILURE_METADATA_KEY: &str = "prompt_failure";
 const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
 const OPERATIONAL_HISTORY_READ_CONNECTIONS: usize = 4;
 const OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT: usize = 4096;
@@ -976,8 +977,9 @@ impl OperationalHistoryStore {
         provider_run_id: Option<&str>,
         settled_at_ms: u64,
         status: &str,
+        failure: Option<&crate::provider::ProviderFailure>,
     ) {
-        let metadata = BTreeMap::from([
+        let mut metadata = BTreeMap::from([
             (
                 PROMPT_SETTLED_AT_MS_METADATA_KEY.to_string(),
                 serde_json::Value::Number(settled_at_ms.into()),
@@ -987,6 +989,12 @@ impl OperationalHistoryStore {
                 serde_json::Value::String(status.to_string()),
             ),
         ]);
+        if let Some(failure) = failure.filter(|_| status == "failed") {
+            metadata.insert(
+                PROMPT_FAILURE_METADATA_KEY.to_string(),
+                serde_json::json!(failure),
+            );
+        }
         let context = HistoryEventTurnContext {
             session_id: Some(session_id.to_string()),
             agent_id: Some(agent_id.to_string()),
