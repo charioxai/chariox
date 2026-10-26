@@ -41,6 +41,10 @@ build. `GetAppDevPush {session_id, request_id}` reports building, a typed build
 failure, or the existing `AppInstallOperationStatus`. Repeat a request id to
 follow that exact push; use a new id for a new revision. Once installation has
 started, progress and approvals are the normal durable installer operation.
+Pre-install failures are retained for up to 30 minutes in a bounded cache of 64
+build records. New pushes evict the oldest finished record when necessary;
+finished history never throttles sequential saves. An evicted failure returns
+`not_found` on status lookup; durable installer operations remain replayable.
 Kernel restart can interrupt a build before installation starts; an unknown
 request then needs a new push. Local protocol 647 is required. No peer shape
 changes in D2.

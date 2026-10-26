@@ -227,7 +227,18 @@ impl AppDevPushControl {
                     || value.updated.elapsed() < Duration::from_secs(1800)
             });
             if entries.len() >= 64 {
-                return failed(AppRequestErrorCode::Busy);
+                // Finished builds are replay history, not concurrent work. Keep
+                // it bounded without imposing a push rate limit across Rooms.
+                let oldest = entries
+                    .iter()
+                    .filter(|(_, entry)| !matches!(entry.phase, Phase::Building))
+                    .min_by_key(|(_, entry)| entry.updated)
+                    .map(|(key, _)| key.clone());
+                if let Some(oldest) = oldest {
+                    entries.remove(&oldest);
+                } else {
+                    return failed(AppRequestErrorCode::Busy);
+                }
             }
             entries.insert(
                 key.clone(),

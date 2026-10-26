@@ -831,3 +831,155 @@ async fn app_dev_push_build_failure_is_typed_and_the_next_save_reaches_one_share
         .is_none());
     f.shutdown().await;
 }
+
+// MP-08 / MP-10 / MP-11: completed push history must not exhaust build admission.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_dev_push_admits_more_than_64_sequential_builds() {
+    let f = Fixture::new();
+    let source = f.path.join("source");
+    for index in 0..66 {
+        let id = format!("save-{index}");
+        assert!(
+            matches!(
+                f.request(
+                    "alice",
+                    LocalDaemonRequest::BeginAppDevPush(BeginAppDevPushRequest {
+                        session_id: f.session.clone(),
+                        request_id: id.clone(),
+                        directory: source.display().to_string(),
+                    })
+                )
+                .await,
+                LocalDaemonResponse::AppDevPushBuilding { .. }
+            ),
+            "save {index} must be admitted"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match f
+                    .request(
+                        "alice",
+                        LocalDaemonRequest::GetAppDevPush(AppDevPushRequest {
+                            session_id: f.session.clone(),
+                            request_id: id.clone(),
+                        }),
+                    )
+                    .await
+                {
+                    LocalDaemonResponse::AppDevPushBuilding { .. } => {}
+                    LocalDaemonResponse::AppDevPushFailed {
+                        code: AppDevPushFailureCode::SourceUnavailable,
+                        ..
+                    } => break,
+                    other => panic!("unexpected status for save {index}: {other:?}"),
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    f.shutdown().await;
+}
+
+// MP-08 / MP-10 / MP-11: durable installer replay survives build-cache eviction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_dev_push_replays_durable_installer_after_build_history_eviction() {
+    let f = Fixture::new();
+    let source = f.path.join("source");
+    let (bytes, publisher) = fixture_event_package();
+    let verified = chariox_app_package::verify(
+        &bytes,
+        &chariox_app_package::VerificationPolicy::new(
+            LOCAL_DAEMON_PROTOCOL_VERSION,
+            vec![publisher],
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(
+        source.join("app.json"),
+        serde_json::to_vec(verified.manifest()).unwrap(),
+    )
+    .unwrap();
+    for (name, bytes) in verified.files() {
+        let file = source.join("bundle").join(name);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, bytes).unwrap();
+    }
+    let push = |id: &str| {
+        LocalDaemonRequest::BeginAppDevPush(BeginAppDevPushRequest {
+            session_id: f.session.clone(),
+            request_id: id.into(),
+            directory: source.display().to_string(),
+        })
+    };
+    assert!(matches!(
+        f.request("alice", push("installed")).await,
+        LocalDaemonResponse::AppDevPushBuilding { .. }
+    ));
+    f.until(|| {
+        f.control()
+            .0
+            .shared
+            .store
+            .first_app_install_status("alice", "installed")
+            .is_ok_and(|op| op.phase == InstallPhase::AwaitingApproval)
+    })
+    .await;
+    f.request(
+        "alice",
+        LocalDaemonRequest::CancelAppInstallOperation(AppInstallOperationRequest {
+            request_id: "installed".into(),
+        }),
+    )
+    .await;
+    f.until(|| {
+        f.control()
+            .0
+            .shared
+            .store
+            .first_app_install_status("alice", "installed")
+            .is_ok_and(|op| op.phase == InstallPhase::Cancelled)
+    })
+    .await;
+    std::fs::write(source.join("app.json"), b"{}").unwrap();
+    for index in 0..66 {
+        let id = format!("failed-save-{index}");
+        assert!(
+            matches!(
+                f.request("alice", push(&id)).await,
+                LocalDaemonResponse::AppDevPushBuilding { .. }
+            ),
+            "save {index} must be admitted"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match f
+                    .request(
+                        "alice",
+                        LocalDaemonRequest::GetAppDevPush(AppDevPushRequest {
+                            session_id: f.session.clone(),
+                            request_id: id.clone(),
+                        }),
+                    )
+                    .await
+                {
+                    LocalDaemonResponse::AppDevPushBuilding { .. } => {}
+                    LocalDaemonResponse::AppDevPushFailed {
+                        code: AppDevPushFailureCode::BuildFailed,
+                        ..
+                    } => break,
+                    other => panic!("unexpected status for save {index}: {other:?}"),
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let replay = status(f.request("alice", push("installed")).await);
+    assert_eq!(replay.phase, AppInstallOperationPhase::Cancelled);
+    assert_eq!(replay.request_id, "installed");
+    f.shutdown().await;
+}
