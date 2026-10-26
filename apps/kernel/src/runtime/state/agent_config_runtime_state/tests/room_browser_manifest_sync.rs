@@ -351,6 +351,22 @@ async fn ordinary_completion_dispatches_workflow_head_after_projection() {
                 .await
         }
     });
+    // The completed turn's git observations are asked of the worker first.
+    let (harvest_id, harvest) = next_peer_request(&mut fixture).await;
+    assert!(matches!(
+        harvest,
+        crate::transport::relay_peer::RelayPeerRequest::ObserveLeasedGitAfter { .. }
+    ));
+    acknowledge_peer_response(
+        &fixture,
+        harvest_id,
+        crate::transport::relay_peer::RelayPeerResponse::LeasedGitObserved {
+            provider_run_id: "provider-run-current".to_string(),
+            git_observations: Vec::new(),
+            workspace_live_sync_change: None,
+        },
+    )
+    .await;
     tokio::time::timeout(std::time::Duration::from_secs(2), &mut projection)
         .await
         .expect("completion projection should finish before workflow dispatch")

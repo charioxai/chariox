@@ -1,8 +1,8 @@
 //! MP-08/MP-09/MP-10/MP-11 G06: forgetting a machine revokes the trust of its
 //! worker leases. The owner's `/machine forget` ends the leased agent's sudo
 //! window with a reason, and later calls through the lease are refused.
-use super::tests::{fixture_with_options, running, Fixture};
-use super::window_tests::outcomes;
+use super::tests::{fixture_with_options, Fixture};
+use super::window_tests::{open, outcomes};
 use super::*;
 use crate::runtime::command::{KernelCommand, KernelCommandSource};
 
@@ -79,7 +79,7 @@ async fn forgetting_the_worker_machine_ends_the_leased_sudo_window_and_refuses_l
     let worker = crate::config::DaemonConfig::for_tests();
     crate::config::DaemonConfig::approve_remote_machine(MACHINE, Some("amrig worker".into()))
         .unwrap();
-    let window = running(&f);
+    let window = open(&f, None).await;
     lease_agent_to_machine(&f, &worker.daemon_id);
     let state = f.state.with_relay_peer_authority(
         crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id),

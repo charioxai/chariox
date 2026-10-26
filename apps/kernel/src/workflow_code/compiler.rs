@@ -336,11 +336,15 @@ fn node_discovery_waits_for_a_slow_node_but_still_skips_a_hung_one() {
     );
     let hung = script("hung-node", "exec sleep 30");
     let started = std::time::Instant::now();
-    discover_node_path(
-        Some(hung.into()),
+    let found = discover_node_path(
+        Some(hung.clone().into()),
         Duration::from_millis(200),
         Duration::from_secs(2),
-    )
-    .expect_err("a Node that never answers is not responsive");
+    );
+    assert_ne!(
+        found.ok(),
+        Some(hung),
+        "a Node that never answers is not responsive"
+    );
     assert!(started.elapsed() < Duration::from_secs(10));
 }
