@@ -551,3 +551,109 @@ async fn async_popup_review_failed_turn_stays_blocked_with_question_pending() {
         .unwrap();
     assert!(resumed.obligations.iter().all(|o| o.status == "satisfied"));
 }
+
+#[tokio::test]
+async fn async_popup_review_finished_ticks_do_not_take_the_mutation_lock() {
+    let f = fixture("async-review-finished", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    answer_through_router(&f, id, "local", "owner-tui")
+        .await
+        .unwrap();
+    let sequence = f
+        .store()
+        .agent_wake(id)
+        .unwrap()
+        .unwrap()
+        .last_sequence
+        .unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Expire {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            sequence,
+        })
+        .unwrap();
+    let guard = f
+        .runtime
+        .owned
+        .pending_interactions
+        .mutation
+        .lock()
+        .unwrap();
+    let runtime = f.runtime.clone();
+    let handle = tokio::runtime::Handle::current();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _entered = handle.enter();
+        for _ in 0..65 {
+            runtime
+                .tick_interaction_wakes(crate::session::unix_epoch_ms())
+                .unwrap();
+        }
+        send.send(()).unwrap();
+    });
+    let completed = receive.recv_timeout(Duration::from_secs(2)).is_ok();
+    drop(guard);
+    worker.join().unwrap();
+    assert!(
+        completed,
+        "finished questions must not reacquire the interaction mutation lock each second"
+    );
+    assert_eq!(
+        f.store()
+            .agent_wake(id)
+            .unwrap()
+            .unwrap()
+            .last_delivery
+            .as_deref(),
+        Some("expired")
+    );
+}
+
+#[tokio::test]
+async fn async_popup_review_finished_recovery_cleans_the_remaining_card_once() {
+    let f = fixture("async-review-finished-recovery", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    f.store()
+        .agent_lifecycle(Operation::WakeOccurred {
+            id: id.into(),
+            occurrence: "resolved-before-crash".into(),
+            kind: "interaction_resolved".into(),
+            summary: None,
+            payload: serde_json::json!({"status":"answered"}),
+            end: Some(WakeEnd::Succeeded),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    assert!(f
+        .runtime
+        .owned
+        .pending_interactions
+        .write()
+        .contains_key(id));
+    f.runtime
+        .tick_interaction_wakes(crate::session::unix_epoch_ms())
+        .unwrap();
+    assert!(!f
+        .runtime
+        .owned
+        .pending_interactions
+        .write()
+        .contains_key(id));
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    f.runtime
+        .tick_interaction_wakes(crate::session::unix_epoch_ms())
+        .unwrap();
+    assert_eq!(f.store().agent_wake(id).unwrap().unwrap().fire_count, 1);
+}

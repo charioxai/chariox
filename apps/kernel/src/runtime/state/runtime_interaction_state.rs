@@ -238,7 +238,8 @@ impl KernelRuntimeState {
             custom_reply,
             None,
             false,
-        )
+        )?;
+        self.schedule_question_answer_delivery(interaction_id)
     }
 
     pub(super) fn create_terminal_credential_interaction(
@@ -411,7 +412,8 @@ impl KernelRuntimeState {
             .map_err(|error| {
                 self.owned
                     .closed_interaction_error(session_id, interaction_id, error)
-            })
+            })?;
+        self.schedule_question_answer_delivery(interaction_id)
     }
 
     pub(crate) async fn timeout_runtime_interaction(

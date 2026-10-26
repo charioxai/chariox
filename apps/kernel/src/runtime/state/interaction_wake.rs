@@ -107,6 +107,15 @@ impl KernelRuntimeState {
         state
     }
 
+    pub(super) fn schedule_question_answer_delivery(&self, id: &str) -> Result<(), DaemonError> {
+        if let Some(wake) = self.owned.durable_state_store.agent_wake(id)? {
+            if wake.kind == KIND && wake.state == "exited" {
+                self.schedule_wake_delivery(&wake);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn register_interaction_wake_driver(&mut self) {
         let driver = Arc::new(InteractionWakeDriver {
             owned: self.owned.clone(),
@@ -181,19 +190,48 @@ impl KernelRuntimeState {
             if wake.kind != KIND {
                 continue;
             }
-            if matches!(wake.state.as_str(), "exited" | "lost" | "cancelled") {
-                self.owned
-                    .remove_async_question(&wake, "Question is no longer pending")?;
-                if wake.last_sequence.is_some() && wake.last_delivered_at_ms.is_none() {
-                    self.schedule_wake_delivery(&wake);
-                }
-            } else if matches!(wake.state.as_str(), "starting" | "running")
-                && wake.next_due_ms.is_some_and(|deadline| deadline <= now)
-            {
-                self.owned
-                    .timeout_runtime_interaction(&wake.room_id, &wake.id)?;
-                self.schedule_wake_delivery(&wake);
+            self.tick_interaction_wake(&wake, now)?;
+        }
+        Ok(())
+    }
+
+    fn tick_interaction_wake(&self, wake: &AgentWake, now: u64) -> Result<(), DaemonError> {
+        if matches!(wake.state.as_str(), "exited" | "lost" | "cancelled") {
+            let pending = self
+                .owned
+                .pending_interactions
+                .write()
+                .get(&wake.id)
+                .is_some_and(|p| p.belongs_to(&self.owned.session_store));
+            let projected = self
+                .owned
+                .session_store
+                .get_session(&wake.room_id)
+                .is_ok_and(|s| s.active_interactions().iter().any(|q| q.id() == wake.id));
+            if !pending && !projected {
+                return Ok(());
             }
+            crate::logging::debug_with_fields(
+                "runtime.interaction_wake",
+                "reconciling finished question",
+                serde_json::json!({"interaction_id": wake.id}),
+            );
+            self.owned
+                .remove_async_question(wake, "Question is no longer pending")?;
+            // Ordinary answers dispatch at resolution. Only crash cleanup needs
+            // another kick here; terminal receipts belong to history.
+            if wake.last_sequence.is_some()
+                && wake.last_delivered_at_ms.is_none()
+                && !matches!(wake.last_delivery.as_deref(), Some("expired" | "failed"))
+            {
+                self.schedule_wake_delivery(wake);
+            }
+        } else if matches!(wake.state.as_str(), "starting" | "running")
+            && wake.next_due_ms.is_some_and(|deadline| deadline <= now)
+        {
+            self.owned
+                .timeout_runtime_interaction(&wake.room_id, &wake.id)?;
+            self.schedule_wake_delivery(wake);
         }
         Ok(())
     }
