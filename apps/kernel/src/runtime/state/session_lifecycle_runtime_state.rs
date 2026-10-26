@@ -930,13 +930,17 @@ impl KernelRuntimeState {
     /// the Room is already gone.
     pub(super) async fn release_worker_leases(&self, agents: Vec<crate::agent::AgentInstance>) {
         for agent in agents {
+            let Some(binding) = agent.remote_execution() else {
+                continue;
+            };
+            let plan = self
+                .with_app_side_effect(|app| app.prepare_remote_execution_cleanup(binding))
+                .await;
+            let result = plan
+                .execute(&|| self.authorize_current_external_command())
+                .await;
             let released = self
-                .with_app_side_effect(|app| {
-                    crate::app::KernelSessionService::new(app)
-                        .destroy_agent_worker_execution_authorized(&agent, &|| {
-                            self.authorize_current_external_command()
-                        })
-                })
+                .with_app_side_effect(|app| app.commit_remote_execution_cleanup(result))
                 .await;
             if let Err(error) = released {
                 crate::logging::error_with_fields(
