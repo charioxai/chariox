@@ -12,11 +12,14 @@ import { makeHarness, put } from "./lib/managed-kernel-upgrade-fixture.mjs"
 
 const updateId = "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"
 
+const targetTransitionPolicy = JSON.parse(await readFile(
+  new URL("../apps/kernel/managed-upgrade-protocol-transitions.json", import.meta.url), "utf8"))
+// The oldest release the repository policy still upgrades from, so trimming the policy cannot strand the fixture.
+const currentProtocol = targetTransitionPolicy.upgradeFrom[0]
+
 async function path1Harness(context) {
-  const targetTransitionPolicy = JSON.parse(await readFile(
-    new URL("../apps/kernel/managed-upgrade-protocol-transitions.json", import.meta.url), "utf8"))
   const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true,
-    currentProtocol: 371, targetProtocol: targetTransitionPolicy.protocol, targetTransitionPolicy,
+    currentProtocol, targetProtocol: targetTransitionPolicy.protocol, targetTransitionPolicy,
     currentAppArtifacts: false,
   })
   const home = join(harness.installRoot, "home/chariox")
@@ -119,7 +122,7 @@ for (const boundary of ["phase-activated", "phase-committed", "committed-tombsto
     const selected = boundary === "phase-activated" || boundary.includes("rolled_back") ? harness.current : harness.target
     const binary = join(harness.installRoot, "usr/lib/chariox/releases",
       selected.digest.slice(7), "usr/local/bin/chariox-kernel")
-    await put(binary, "#!/bin/sh\necho 371\n# corrupted signed executable\n", 0o755)
+    await put(binary, `#!/bin/sh\necho ${currentProtocol}\n# corrupted signed executable\n`, 0o755)
     const calls = await serviceMutations(harness)
     const current = await readlink(join(harness.installRoot, "usr/lib/chariox/current"))
     const result = await recoverWithoutImage(harness)
