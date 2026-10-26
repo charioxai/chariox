@@ -244,11 +244,7 @@ fn new_node_package_requires_rebuild_without_activating_or_deleting_data() {
     fs::write(&data, b"retained user data").unwrap();
     let (uploads, service) = service(&store);
     let handle = upload(&uploads, "alice", &node_archive(27), true);
-    let result = runtime().block_on(service.prepare_portable(
-        "alice".into(),
-        handle,
-        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
-    ));
+    let result = service.prepare_at("alice", &handle, crate::session::unix_epoch_ms(), true, |_| Ok(()));
     assert_eq!(result.err(), Some(PreparationError::LegacyNodePackage));
     assert!(root.releases().is_empty());
     assert!(store
@@ -441,4 +437,19 @@ fn retained_node_release_keeps_existing_deployment_preparation() {
             .release_metadata()
             .package_digest
     );
+}
+
+#[test]
+fn node_upload_is_accepted_while_native_v2_runtime_is_unavailable() {
+    assert!(chariox_app_runtime::worker_process::wasm::WasmRuntime::beside_kernel().is_err());
+    let root = Scratch::new();
+    let store = root.store();
+    enroll(&store, "alice");
+    let (uploads, service) = service(&store);
+    let bytes = node_archive(27);
+    let handle = upload(&uploads, "alice", &bytes, true);
+    let result = runtime().block_on(service.prepare_portable(
+        "alice".into(), handle, Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+    ));
+    assert!(result.is_ok(), "Node remains installable until a usable v2 runtime is shipped: {:?}", result.err());
 }

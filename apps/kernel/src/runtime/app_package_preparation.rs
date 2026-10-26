@@ -126,11 +126,14 @@ impl AppPackagePreparation {
     ) -> Result<PreparedAppPackage> {
         let service = self.clone();
         admitted_blocking(Arc::clone(&self.preparation), admission, move || {
+            // R5 has not shipped a contained native runtime in release builds.
+            // Keep the enrolled Node path usable until v2 can actually launch.
+            let portable_only = chariox_app_runtime::worker_process::wasm::WasmRuntime::beside_kernel().is_ok();
             service.prepare_at(
                 &trusted_owner,
                 &upload_handle,
                 crate::session::unix_epoch_ms(),
-                true,
+                portable_only,
                 |_| Ok(()),
             )
         })
