@@ -7,7 +7,6 @@ pub enum LocalDaemonResponse {
     EventsListed { events: Vec<OutsideEvent>, next_cursor: u64, oldest_cursor: u64, timed_out: bool },
     EventsAcknowledged { cursor: u64 },
     EventsCursorExpired { oldest_cursor: u64 },
-    AgentDeadline { deadline: Option<AgentDeadline> },
     SshMachine { machine: SshMachineResult },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },

@@ -701,23 +701,6 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
-### Executor-local lane deadlines (MP-08 / MP-09 / MP-10 / MP-11)
-
-Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
-deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
-`AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
-A deadline can shorten, never extend. The kernel rejects new work after it is
-reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
-admission fencing from completed cleanup. A kernel restart enforces overdue
-work on startup. This does not add a relay shape; peer **181** is inherited.
-Leased executors require their own deadline enforcement and are refused here.
-
-`RelayStatus.status.capabilities` advertises `agent_deadline_v1` only when these
-requests are implemented. Coordinator adapters check that capability before
-sending either request. Without it they report no kernel deadline and may keep
-a coordinator-side timer, whose process, network and access grant are required;
-that timer is not durable kernel enforcement.
-
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
@@ -5266,7 +5249,7 @@ no other detail.
 ### Outside event inbox (MP-08 / MP-09 / MP-10 / MP-11)
 
 Allocated local protocol 585 covers the external-agent / agent-model union,
-outside event subscriptions and agent deadlines; relay peer 181 retains the
+outside event subscriptions; relay peer 181 retains the
 merged peer contracts. The event requests are available to external Unix
 access grants and their kernel gateway only. They are absent from session-agent
 tools and sudo's allowed request vocabulary.

@@ -4,9 +4,6 @@
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
-#[cfg(test)]
-mod deadline_tests;
-mod deadlines;
 mod delegation;
 mod delivery;
 mod leased_processes;
@@ -103,7 +100,6 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
             .map_err(sql)?;
     }
     outside::initialize(db)?;
-    deadlines::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
     workflow_tasks::initialize(db)?;

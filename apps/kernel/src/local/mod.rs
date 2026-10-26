@@ -8,9 +8,6 @@ pub use api::{
 };
 mod api;
 pub use api::{
-    AgentDeadline, AgentDeadlineState, GetAgentDeadlineRequest, SetAgentDeadlineRequest,
-};
-pub use api::{
     CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
 };
 mod client;

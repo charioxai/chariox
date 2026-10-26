@@ -412,13 +412,3 @@ export type AgentWake = {
   last_delivery: string | null; last_delivered_at_ms: number | null; last_acknowledged_at_ms: number | null
   alerted_sequence: number | null
 }
-
-// MP-08 / MP-09 / MP-10 / MP-11: executor-local durable lane stop receipt.
-export type AgentDeadline = {
-  session_id: string
-  agent_id: string
-  deadline_ms: number
-  state: "armed" | "reached"
-  reached_at_ms: number | null
-  stopped_at_ms: number | null
-}

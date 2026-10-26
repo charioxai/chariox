@@ -10,7 +10,6 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
-mod agent_deadline;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
@@ -58,7 +57,6 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
-pub use agent_deadline::*;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
