@@ -265,10 +265,47 @@ fn resume_probe_failure(
         crate::DaemonError::ProviderProtocol { operation, .. } => *operation,
         _ => "native_checkpoint",
     };
+    let failure_terms = match error {
+        crate::DaemonError::ProviderProtocol { message, .. } => {
+            let message = message.to_ascii_lowercase();
+            [
+                "missing field",
+                "invalid type",
+                "unknown variant",
+                "expected",
+                "mcp",
+                "config",
+                "model",
+                "thread",
+                "rollout",
+                "session",
+                "not found",
+                "already",
+                "permission",
+                "sandbox",
+                "approval",
+                "runtime",
+                "cwd",
+                "path",
+                "unsupported",
+                "invalid",
+                "disabled",
+                "schema",
+                "url",
+                "refused",
+                "failed",
+                "closed",
+            ]
+            .into_iter()
+            .filter(|term| message.contains(*term))
+            .collect::<Vec<_>>()
+        }
+        _ => Vec::new(),
+    };
     crate::logging::warn_with_fields(
         "provider.checkpoint",
         "Native checkpoint probe failed",
-        json!({"provider_run_id":run.id(), "stage":stage, "operation":operation}),
+        json!({"provider_run_id":run.id(), "stage":stage, "operation":operation, "failure_terms":failure_terms}),
     );
     Failure::ResumeFailed
 }
@@ -332,4 +369,54 @@ pub(super) fn verify_required_artifact(
         }
     }
     Err(Failure::TargetConflict)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mk03_native_checkpoint_probe_logs_static_failure_terms() {
+        let capture = crate::logging::capture::start();
+        let request = crate::provider::LaunchProviderRequest::new(
+            "room",
+            "codex",
+            "codex",
+            "profile",
+            "gpt-6-luna",
+        );
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let error = crate::DaemonError::ProviderProtocol {
+            provider_run_id: "provider-run-1".into(),
+            operation: "thread/resume",
+            message: "missing field `model`; private-provider-value".into(),
+        };
+        assert_eq!(
+            super::resume_probe_failure(&run, "thread/resume", &error),
+            super::Failure::ResumeFailed
+        );
+        let records = capture.records();
+        let record = records
+            .iter()
+            .find(|row| row.contains("Native checkpoint probe failed"))
+            .unwrap();
+        assert!(
+            record.contains("missing field"),
+            "probe must retain a static failure classification"
+        );
+        assert!(record.contains("model"));
+        assert!(!record.contains("private-provider-value"));
+    }
 }
