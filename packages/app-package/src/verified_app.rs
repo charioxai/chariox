@@ -149,6 +149,16 @@ impl VerifiedApp for VerifiedAppPackage<'_> {
 
 /// A bounded claim for selecting enrolled trust, never an executable proof.
 pub fn inspect_publisher(bytes: &[u8], limits: &crate::Limits) -> crate::Result<crate::Publisher> {
+    Ok(match inspect_manifest(bytes, limits)? {
+        ReleaseManifest::Node(manifest) => manifest.publisher,
+        ReleaseManifest::Wasm(manifest) => manifest.publisher,
+    })
+}
+
+/// Bounded metadata inspection, never signature or execution authority.
+/// Retained archive digests let the supervisor select storage for deletion
+/// even after a publisher has been revoked.
+pub fn inspect_manifest(bytes: &[u8], limits: &crate::Limits) -> crate::Result<ReleaseManifest> {
     let entries = crate::archive::parse(bytes, limits)?;
     let value: serde_json::Value = crate::json::read_json(
         entries[0].data,
@@ -166,9 +176,9 @@ pub fn inspect_publisher(bytes: &[u8], limits: &crate::Limits) -> crate::Result<
                 )
             })?;
             manifest.validate(limits)?;
-            Ok(manifest.publisher)
+            Ok(ReleaseManifest::Wasm(manifest))
         }
-        Some(crate::APP_SCHEMA) => Ok(crate::inspect_untrusted(bytes, limits)?.manifest.publisher),
+        Some(crate::APP_SCHEMA) => Ok(ReleaseManifest::Node(crate::inspect_untrusted(bytes, limits)?.manifest)),
         _ => Err(crate::PackageError::new(
             crate::ErrorCode::IncompatibleContract,
             "unsupported App package schema; rebuild as chariox.app.v2",

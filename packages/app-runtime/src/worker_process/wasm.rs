@@ -21,6 +21,7 @@ use std::{
 
 mod compile;
 mod domain;
+pub mod storage;
 
 pub struct WasmRuntime {
     executable: File,
