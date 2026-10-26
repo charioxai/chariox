@@ -63,12 +63,14 @@ fn a12_long_timer_survives_two_checkins_without_spending_progress_guard() {
     start(&f, due);
     yield_on(&f, "p", 20, due);
     settle(&f, "p", 30, true);
-    assess_waiting(&f, 31, due);
+    // A completion check may choose an earlier finite recheck than the live timer.
+    let first_recheck = 600_031;
+    assess_waiting(&f, 31, first_recheck);
     assert_eq!(f.task().state, ExecutionState::Waiting);
     assert_eq!(
         f.task().wait.as_ref().unwrap().deadline_ms,
-        due,
-        "check-in time must not replace the admitted source wait deadline"
+        first_recheck,
+        "honour the completion check's earlier finite recheck"
     );
     for index in 0..2 {
         let now = f.task().goal.as_ref().unwrap().next_check_in_ms.unwrap();
