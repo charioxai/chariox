@@ -12,6 +12,7 @@ import {fileURLToPath, pathToFileURL} from 'node:url'
 import {LocalIpcClient} from '../../../packages/kernel-client/dist/ipc.js'
 import {createOwnedRuntime, sweepOwnedRuntime} from '../../../scripts/e2e-stack/context-switch/runtime-owned.mjs'
 import {openTui, publicSnapshot} from '../../../scripts/e2e-stack/context-switch/tui.mjs'
+import {reviewQuestions} from './live-async-question-review.mjs'
 import {spawnOwned, signalOwnedProcess, ownedProcessHandles} from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 
 const tree = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -131,6 +132,7 @@ async function setup(name,relayUrl,relaySecret) {
   await writeFile(path.join(home,'home/config.toml'),`version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${home}/home/private-vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`,{mode:0o600})
   const ports=await Promise.all(Array.from({length:4},port))
   const env={PATH:process.env.PATH,LANG:'C.UTF-8',HOME:home+'/os-home',CHARIOX_HOME:home+'/home',TMPDIR:home+'/tmp',XDG_CONFIG_HOME:home+'/config',XDG_STATE_HOME:home+'/state',XDG_DATA_HOME:home+'/data',XDG_CACHE_HOME:home+'/cache',CHARIOX_KERNEL_HOST:'127.0.0.1',CHARIOX_KERNEL_PORT:String(ports[0]),CHARIOX_MCP_PORT:String(ports[1]),CHARIOX_CODEX_PORT:String(ports[2]),CHARIOX_OPENCODE_PORT:String(ports[3]),CHARIOX_DAEMON_SOCKET:path.join(root,name+'.sock'),CHARIOX_ROOM_AGENT_TOOLS:'1',CHARIOX_RELAY_URL:relayUrl,CHARIOX_RELAY_TOKEN:relaySecret,NODE_OPTIONS:'--max-old-space-size=4096',RUST_MIN_STACK:'16777216'}
+  if(process.env.AMASK_REVIEW_ONLY==='1'){env.CHARIOX_LOG_DIR=path.join(home,'logs');env.CHARIOX_LOG_LEVEL='debug'}
   const k={home,env,passphrase,url:`ws://127.0.0.1:${ports[0]}/kernel`,name}
   k.child=start(bin+'/chariox-kernel',env,name)
   k.client=new LocalIpcClient(k.url,{localAuthEnvironment:env});clients.push(k.client)
@@ -173,11 +175,13 @@ try {
   const relayUrl=`ws://127.0.0.1:${relayPort}`
   start(bin+'/chariox-relay',{PATH:process.env.PATH,CHARIOX_RELAY_HOST:'127.0.0.1',CHARIOX_RELAY_PORT:String(relayPort),CHARIOX_RELAY_TOKEN:relaySecret},'relay')
   const owner=await setup('owner',relayUrl,relaySecret)
-  const follower=await setup('follower',relayUrl,relaySecret)
+  const follower=process.env.AMASK_REVIEW_ONLY==='1'?null:await setup('follower',relayUrl,relaySecret)
   for(const name of ['chariox-kernel','chariox-cli','chariox-relay'])report[name+'_sha256']=createHash('sha256').update(await readFile(bin+'/'+name)).digest('hex')
   if(process.env.AMASK_SETUP_ONLY==='1'){
     await capture(owner.tui,'preflight-owner');await capture(follower.tui,'preflight-follower')
     report.preflight='PASS (no provider turns; not acceptance)'
+  }else if(process.env.AMASK_REVIEW_ONLY==='1'){
+    await reviewQuestions({owner,root,until,sleep,capture,record,questionEvidence,report})
   }else if(process.env.AMASK_DELETE_ONLY==='1'){
     await owner.tui.send('submit_prompt',{prompt:'Call chariox.request_popup with wait:false, title "AMASK delete", message "Deleting the asking agent withdraws this question", choices [{id:"continue",label:"Continue",reply:"AMASK must not default"}], timeout_sec:300, default_on_timeout:"continue". Finish with AMASK_DELETE_ARMED. Do not answer the question.'})
     const s=await until('delete question',owner.session,s=>s.active_interactions?.some(q=>q.title==='AMASK delete'))
