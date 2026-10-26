@@ -70,40 +70,56 @@ def browser_control(node, pid):
     if not public: raise NativeExtensionDenied('browser control unavailable')
 
 
-def browser_destination(accessibility, process, point):
+def browser_frame(accessibility, connection, window, process):
+    """MP-08/MP-11: the one AT-SPI frame that is this exact X11 window.
+
+    AT-SPI reports logical extents on a scaled desktop, X11 physical pixels:
+    the frame must match the window's geometry under an integer scale.
+    """
     atspi = accessibility.pyatspi
+    root = connection.screen().root
+    geometry = window.get_geometry(); origin = root.translate_coords(window, 0, 0)
+    client = [origin.x, origin.y, geometry.width, geometry.height]
+    outer = accessibility.frame_rect(root, window)
     desktop = atspi.Registry.getDesktop(0)
     apps = [desktop.getChildAtIndex(i) for i in range(min(desktop.childCount, 64))]
     apps = [app for app in apps if app and app.get_process_id() == process['pid']]
     if len(apps) != 1: raise NativeExtensionDenied('browser app unavailable')
+    frames = []
+    for i in range(min(apps[0].childCount, 256)):
+        frame = apps[0].getChildAtIndex(i)
+        if not frame or not frame.getState().contains(atspi.STATE_SHOWING): continue
+        box = frame.queryComponent().getExtents(atspi.DESKTOP_COORDS)
+        scale = accessibility.native_frame_scale([box.x, box.y, box.width, box.height], outer, client)
+        if scale: frames.append((frame, scale))
+    if len(frames) != 1: raise NativeExtensionDenied('browser window unavailable')
+    return frames[0]
+
+
+def browser_destination(accessibility, process, point, connection, window):
+    atspi = accessibility.pyatspi
+    frame, scale = browser_frame(accessibility, connection, window, process)
     if point is not None:
-        frames=[]
-        for i in range(min(apps[0].childCount, 256)):
-            frame=apps[0].getChildAtIndex(i)
-            if not frame or not frame.getState().contains(atspi.STATE_SHOWING): continue
-            box=frame.queryComponent().getExtents(atspi.DESKTOP_COORDS)
-            if box.x<=point[0]<box.x+box.width and box.y<=point[1]<box.y+box.height: frames.append(frame)
-        if len(frames)!=1: raise NativeExtensionDenied('browser window unavailable')
-        node = frames[0].queryComponent().getAccessibleAtPoint(*point, atspi.DESKTOP_COORDS)
+        # The X11 point is physical; hit-test in AT-SPI's logical coordinates.
+        x, y = (int(value / scale) for value in point)
+        node = frame.queryComponent().getAccessibleAtPoint(x, y, atspi.DESKTOP_COORDS)
         for _ in range(48):
             if node is None: raise NativeExtensionDenied('browser point unavailable')
-            child = node.queryComponent().getAccessibleAtPoint(*point, atspi.DESKTOP_COORDS)
+            child = node.queryComponent().getAccessibleAtPoint(x, y, atspi.DESKTOP_COORDS)
             if child is None or child == node: break
             node = child
         else: raise NativeExtensionDenied('browser point depth exceeded')
     else:
+        # The recipient is the focused sink inside the focused X11 window;
+        # other windows and unfocused documents are not in its ancestry.
         # No page values or full observation snapshot are read to admit keys.
-        pending = [apps[0]]; focused = []; seen = 0
+        pending = [frame]; focused = []; seen = 0
         while pending and seen < 12000:
             candidate = pending.pop(); seen += 1
             state = candidate.getState()
             if state.contains(atspi.STATE_FOCUSED) and state.contains(atspi.STATE_SHOWING):
                 focused.append(candidate)
-            # A public web document admits its page descendants; inspect only
-            # native chrome for a second focused extension sink.
-            if candidate.getRoleName() == 'document web':
-                browser_control(candidate, process['pid'])
-                continue
+            if candidate.getRoleName() == 'document web': continue
             if candidate.childCount > 12000: raise NativeExtensionDenied('browser focus depth exceeded')
             for i in range(candidate.childCount):
                 child = candidate.getChildAtIndex(i)
@@ -141,7 +157,7 @@ def input_destination(connection, processes, accessibility, point=None):
         process=next((item for item in processes if item['pid']==pid),None)
         if not process or not accessibility.alive(process):raise ValueError('input destination is not owned')
         if process.get('browser'):
-            browser_destination(accessibility, process, point)
+            browser_destination(accessibility, process, point, connection, window)
         # MP-08/MP-11: Computer includes the owned browser's address bar and
         # page fields. The controller retains extension admission, and root
         # accelerator probes remain below; field values are observation policy.
