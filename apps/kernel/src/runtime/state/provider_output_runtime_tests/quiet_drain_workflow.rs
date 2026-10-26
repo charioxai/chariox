@@ -1242,6 +1242,15 @@ async fn assert_workflow_output_follow_up(
                 run.id(),
                 Vec::new(),
                 crate::provider::ProviderPromptSignalBatch {
+                    chunks: if wait_for_helper {
+                        vec![crate::provider::ProviderPromptChunk {
+                            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                            merge_key: Some("helper-result".into()),
+                            bytes: b"Helper finished; final workflow output submitted.".to_vec(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
                     prompt_completed: true,
                     ..Default::default()
                 },
@@ -1271,6 +1280,20 @@ async fn assert_workflow_output_follow_up(
         .filter(|event| event.payload["reason"] == "workflow_output_follow_up")
         .count();
     assert_eq!(follow_ups, usize::from(!valid_first && !wait_for_helper));
+    if wait_for_helper {
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Done,
+            "helper completion must settle the task: {}",
+            task.reason
+        );
+    }
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
