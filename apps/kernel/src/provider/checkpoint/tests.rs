@@ -396,3 +396,181 @@ fn review_native_checkpoint_service_plans_before_contacting_managed_endpoint() {
         .unwrap()
         .contains("native_checkpoint"));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_history() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use tokio_tungstenite::tungstenite::{accept, Message};
+    let root = Scratch::new();
+    let cwd = root.0.join("workspace");
+    let profile = root.0.join("profile");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&profile).unwrap();
+    let version = root.0.join("codex-version");
+    std::fs::write(&version, "#!/bin/sh\nprintf 'codex-cli 0.159.3\\n'\n").unwrap();
+    std::fs::set_permissions(&version, std::fs::Permissions::from_mode(0o700)).unwrap();
+    struct RestoreVersion(Option<std::ffi::OsString>);
+    impl Drop for RestoreVersion {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("CHARIOX_CODEX_BIN", value),
+                None => std::env::remove_var("CHARIOX_CODEX_BIN"),
+            }
+        }
+    }
+    let _version = RestoreVersion(std::env::var_os("CHARIOX_CODEX_BIN"));
+    std::env::set_var("CHARIOX_CODEX_BIN", &version);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let artifact = profile.join(ARTIFACT);
+    let server_artifact = artifact.clone();
+    let server_cwd = cwd.clone();
+    let thread = std::thread::spawn(move || {
+        while !stopped.load(Ordering::SeqCst) {
+            let (stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("checkpoint test listener: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut socket = accept(stream).unwrap();
+            while let Ok(message) = socket.read() {
+                if !message.is_text() {
+                    break;
+                }
+                let Ok(text) = message.to_text() else {
+                    break;
+                };
+                let request: serde_json::Value = serde_json::from_str(text).unwrap();
+                if request.get("id").is_none() {
+                    continue;
+                }
+                let result = match request["method"].as_str().unwrap() {
+                    "initialize" => serde_json::json!({"userAgent":"codex-cli 0.159.3"}),
+                    "account/read" => {
+                        serde_json::json!({"account":{"type":"chatgpt","email":"checkpoint@example.invalid"},"requiresOpenaiAuth":true})
+                    }
+                    "thread/read" if !server_artifact.exists() => {
+                        socket.send(Message::Text(serde_json::json!({"id":request["id"],"error":{"code":-32600,"message":format!("thread not loaded: {SESSION}")}}).to_string().into())).unwrap();
+                        continue;
+                    }
+                    "thread/read" => {
+                        serde_json::json!({"thread":{"id":SESSION,"path":server_artifact,"status":{"type":"idle"}}})
+                    }
+                    "thread/resume" => {
+                        std::fs::OpenOptions::new()
+                            .append(true)
+                            .open(&server_artifact)
+                            .unwrap()
+                            .write_all(b"{\"type\":\"turn_context\",\"payload\":{}}\n")
+                            .unwrap();
+                        serde_json::json!({"thread":{"id":SESSION},"model":"gpt-6-luna","cwd":server_cwd})
+                    }
+                    method => panic!("unexpected checkpoint method: {method}"),
+                };
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({"id":request["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+            }
+        }
+    });
+    struct Server {
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let result = self.thread.take().unwrap().join();
+            if !std::thread::panicking() {
+                result.unwrap();
+            }
+        }
+    }
+    let _server = Server {
+        stop,
+        thread: Some(thread),
+    };
+    let request = LaunchProviderRequest::new("session", "codex", "codex", "profile", "gpt-6-luna")
+        .with_variant(Some("low".into()))
+        .with_working_directory(cwd.clone());
+    let run = crate::provider::RuntimeProviderRun::new(
+        "checkpoint-import",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CODEX_HOME".into(),
+                profile.display().to_string(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(cwd),
+            structured_endpoint: Some(endpoint),
+        },
+    );
+    let mut checkpoint = checkpoint();
+    checkpoint.contents =
+        format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{SESSION}\"}}}}\n")
+            .into_bytes();
+    checkpoint.binding.artifact_sha256 = digest(&checkpoint.contents);
+    checkpoint.binding.account_sha256 = digest(b"codex:authenticated:checkpoint@example.invalid");
+    checkpoint
+        .import(&run)
+        .expect("readiness import must resume the original thread");
+    let after_probe = std::fs::read(&artifact).unwrap();
+    assert!(
+        after_probe.starts_with(&checkpoint.contents)
+            && after_probe.len() > checkpoint.contents.len()
+    );
+    checkpoint
+        .import(&run)
+        .expect("the first real launch must accept intact history after its readiness probe");
+    let after_launch = std::fs::read(&artifact).unwrap();
+    assert!(after_launch.starts_with(&after_probe) && after_launch.len() > after_probe.len());
+    let mut wrong_account = checkpoint.clone();
+    wrong_account.binding.account_sha256 = "0".repeat(64);
+    assert!(matches!(
+        wrong_account.import(&run),
+        Err(NativeCheckpointFailure::AccountMismatch)
+    ));
+    std::fs::write(
+        &artifact,
+        &checkpoint.contents[..checkpoint.contents.len() - 1],
+    )
+    .unwrap();
+    assert!(matches!(
+        checkpoint.import(&run),
+        Err(NativeCheckpointFailure::TargetConflict)
+    ));
+    let mut rewritten = checkpoint.contents.clone();
+    rewritten[0] ^= 1;
+    std::fs::write(&artifact, rewritten).unwrap();
+    assert!(matches!(
+        checkpoint.import(&run),
+        Err(NativeCheckpointFailure::TargetConflict)
+    ));
+}

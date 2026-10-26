@@ -193,7 +193,7 @@ pub(super) fn import(
     }
     let directory = super::files::Directory::open(root)?;
     let id = checkpoint.provider_session_id();
-    match metadata(&client, id) {
+    let already_published = match metadata(&client, id) {
         Ok(existing) => {
             idle(&existing, id)?;
             let relative = existing
@@ -202,21 +202,23 @@ pub(super) fn import(
                 .and_then(|p| p.strip_prefix(root).ok())
                 .and_then(Path::to_str)
                 .ok_or(Failure::TargetConflict)?;
-            if !valid_relative_path(relative, id)
-                || digest(&directory.read(relative)?) != checkpoint.sha256()
-            {
-                return Err(Failure::TargetConflict);
-            }
+            verify_required_artifact(&directory, relative, &checkpoint.binding)?;
+            true
         }
         Err(crate::DaemonError::ProviderProtocol {
             operation: "thread/read",
             message,
             ..
         }) if message == format!("thread not loaded: {id}")
-            || message == format!("no rollout found for thread id {id}") => {}
+            || message == format!("no rollout found for thread id {id}") =>
+        {
+            false
+        }
         Err(_) => return Err(Failure::ResumeFailed),
+    };
+    if !already_published {
+        directory.publish(&checkpoint.relative_path, &checkpoint.contents)?;
     }
-    directory.publish(&checkpoint.relative_path, &checkpoint.contents)?;
     let client = client
         .with_mcp_servers(run.mcp_servers())
         .with_provider_config_overrides(run.provider_config_overrides());
@@ -305,8 +307,9 @@ pub(super) fn verify_required_artifact(
     }
     let contents = directory.read(relative)?;
     // Official thread/resume appends native events before the first user turn.
-    // Import still requires exact bytes; continuity requires the full imported
-    // checkpoint to survive as a prefix ending at a JSONL record boundary.
+    // A Move readiness probe can resume this same thread before its first run.
+    // Re-import and continuity both retain the complete imported checkpoint
+    // as a prefix ending at a JSONL record boundary.
     let mut hash = Sha256::new();
     for record in contents.split_inclusive(|byte| *byte == b'\n') {
         hash.update(record);
