@@ -26,6 +26,10 @@ export async function executeStopCommand(
     return { ok: false, message: attachmentId.message }
   }
   const response = await deps.client.send(cancelActivePromptRequest(context.sessionId, attachmentId.attachmentId, context.agentId))
+  if ("AgentTaskUpdated" in response) {
+    const payload = response.AgentTaskUpdated as { session_id: string; task: { task_id: string } }
+    return { ok: true, message: `cancelled task ${payload.task.task_id}`, data: payload }
+  }
   const payload = expectVariant<{ cancellation: { prompt?: { id?: string | null } | null } }>(response, "PromptCancelled")
   return { ok: true, message: `cancellation requested${payload.cancellation.prompt?.id ? ` for prompt ${payload.cancellation.prompt.id}` : ""}`, data: payload }
 }
