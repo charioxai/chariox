@@ -41,6 +41,10 @@ fn main() {
     let executable = std::env::current_exe().unwrap();
     let mut failures = 0;
     for scenario in ["authority", "memory", "cpu", "file", "aot"] {
+        if scenario == "memory" && cfg!(target_os = "macos") {
+            println!("NATIVE memory: NOT RUN (native address-space cap is Linux-only)");
+            continue;
+        }
         for mode in ["red", "green"] {
             let red = std::env::var_os("CHARIOX_UNCONTAINED_PROBE");
             let binary = if mode == "red" {
@@ -156,9 +160,7 @@ fn child(scenario: &str, mode: &str) {
                     libc::close(socket);
                 }
             }
-            let spawned = Command::new(executable)
-                .arg("--spawn-probe")
-                .status();
+            let spawned = Command::new(executable).arg("--spawn-probe").status();
             assert_eq!(spawned.is_err(), green, "native process spawn: {spawned:?}");
             if green {
                 assert_eq!(spawned.unwrap_err().raw_os_error(), Some(libc::EPERM));
