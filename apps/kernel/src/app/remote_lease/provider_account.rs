@@ -79,7 +79,7 @@ impl RemoteLeaseRuntime<'_> {
             || lease.home_agent_id != context.home_agent_id
         {
             return Err(DaemonError::LocalTransport {
-                operation: "ensure remote provider account",
+                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 message:
                     "provider-account materialization context does not match the execution lease"
                         .to_string(),
@@ -87,7 +87,7 @@ impl RemoteLeaseRuntime<'_> {
         }
         if lease.owner_user_id != owner_user_id {
             return Err(DaemonError::LocalTransport {
-                operation: "ensure remote provider account",
+                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 message:
                     "provider-account materialization owner does not match the execution lease"
                         .to_string(),

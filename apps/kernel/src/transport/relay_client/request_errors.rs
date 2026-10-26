@@ -295,6 +295,108 @@ mod tests {
     }
 
     #[test]
+    fn ensure_remote_account_unverified_refusal_is_not_retryable() {
+        assert_ensure_remote_account_refusal(
+            crate::account_profile::ProviderAccountAuthState::Unknown,
+            "provider_profile_unverified",
+        );
+    }
+
+    #[test]
+    fn ensure_remote_account_unauthenticated_refusal_is_not_retryable() {
+        assert_ensure_remote_account_refusal(
+            crate::account_profile::ProviderAccountAuthState::NotConfigured,
+            "provider_profile_unauthenticated",
+        );
+    }
+
+    #[test]
+    fn ensure_remote_account_usage_refusal_is_not_retryable() {
+        assert_ensure_remote_account_refusal(
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            "provider_profile_usage_exhausted",
+        );
+    }
+
+    fn assert_ensure_remote_account_refusal(
+        auth_state: crate::account_profile::ProviderAccountAuthState,
+        expected_code: &str,
+    ) {
+        use crate::account_profile::{
+            ProviderAccountProfileRegistry, ProviderAccountUsageSnapshot,
+        };
+
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("ensure-account-refusal");
+        let registry =
+            ProviderAccountProfileRegistry::open(root.path().join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "codex", "private-label-canary")
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        let usage: ProviderAccountUsageSnapshot = serde_json::from_value(serde_json::json!({
+            "profile_id": profile.profile_id,
+            "provider": "codex",
+            "availability": "available",
+            "source": "regression",
+            "observed_at_ms": now,
+            "meters": (["rolling_limit", "credit_balance"].map(|kind| serde_json::json!({
+                "meter_id": kind,
+                "label": kind,
+                "kind": kind,
+                "scope": "account",
+                "state": "exhausted",
+                "source": "regression",
+                "observed_at_ms": now,
+            }))),
+        }))
+        .unwrap();
+        registry
+            .update_observation(
+                "local",
+                "codex",
+                &profile.profile_id,
+                auth_state,
+                None,
+                None,
+                None,
+                Some(usage),
+            )
+            .unwrap();
+        let error = registry
+            .require_authenticated(
+                "local",
+                "codex",
+                &profile.profile_id,
+                None,
+                crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
+            )
+            .unwrap_err();
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, expected_code);
+        assert!(!mapped.retryable);
+        assert_eq!(
+            mapped.message,
+            crate::error::external_request_failure_message(expected_code),
+        );
+        assert!(!mapped.message.contains(&profile.label));
+        assert!(!mapped.message.contains(&profile.profile_id));
+        let home =
+            crate::transport::kernel_protocol::map_kernel_error(&DaemonError::RelayTransport {
+                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
+                code: mapped.code,
+                message: mapped.message,
+                retryable: mapped.retryable,
+            });
+        assert_eq!(home.code, expected_code);
+        assert!(!home.retryable);
+        assert_eq!(
+            home.message,
+            crate::error::external_request_failure_message(expected_code)
+        );
+    }
+
+    #[test]
     fn typed_profile_refusal_keeps_the_existing_leased_admission_code() {
         crate::test_support::isolated_env_test!();
         let root = crate::test_support::TestWorktree::new("lane-leased-account-refusal");

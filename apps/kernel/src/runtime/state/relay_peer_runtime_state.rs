@@ -1053,7 +1053,7 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {
-            operation: "ensure remote provider account",
+            operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
             message: format!("provider-account provisioning task failed: {error}"),
         })??;
         // A lease may have been removed while its native utility was running.
