@@ -223,7 +223,10 @@ async fn reboot_worker(fixture: &mut Fixture) {
     // A crash may already have closed the worker connector. It is joined below.
     let _ = fixture.shutdown[0].send(true);
     fixture.tasks[1].abort();
-    let _ = (&mut fixture.tasks[1]).await;
+    // An offline-peer cell may already have joined this connector.
+    if !fixture.tasks[1].is_finished() {
+        let _ = (&mut fixture.tasks[1]).await;
+    }
     reboot_app(&fixture.workers[0]).await;
     let state = fixture.workers[0].lock().await.relay_client_state();
     let (tx, rx) = watch::channel(false);
