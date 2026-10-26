@@ -32,6 +32,16 @@ pub struct MigrationWorker {
     pre: InstancePre<Host>,
     limits: Limits,
 }
+fn check_scope(scope: &Scope, deadline: tokio::time::Instant) -> Result<(), RemoteError> {
+    if let Some(reason) = scope.reason() {
+        return Err(error(reason, "migration stopped"));
+    }
+    if tokio::time::Instant::now() >= deadline {
+        scope.cancel("DEADLINE_EXCEEDED");
+        return Err(error("DEADLINE_EXCEEDED", "migration deadline exceeded"));
+    }
+    Ok(())
+}
 impl MigrationWorker {
     pub fn new(
         engine: WorkerEngine,
@@ -80,6 +90,7 @@ impl MigrationWorker {
             }
         }
         let _finish = Finish(scope.clone());
+        check_scope(&scope, deadline)?;
         let host = Host::new(ipc, self.limits.memory_bytes, None)
             .map_err(|_| error("APP_UNAVAILABLE", "could not create migration host"))?;
         let attribution = host.attribution.clone();
@@ -94,6 +105,7 @@ impl MigrationWorker {
             .map_err(|_| error("APP_TRAPPED", "migration startup trapped"))?;
         let migration = bindings::Migration::new(&mut store, &instance)
             .map_err(|_| error("APP_UNAVAILABLE", "invalid migration export"))?;
+        check_scope(&scope, deadline)?;
         crate::limits::invocation_limits(&mut store, self.limits);
         let signal = scope.clone();
         let cancel = FutureReader::new(&mut store, async move {
@@ -110,11 +122,16 @@ impl MigrationWorker {
         tokio::pin!(running);
         let reason = tokio::select! {
             biased;
-            result=&mut running => return result.and_then(std::convert::identity).map_err(|failure| {
-                if let Some(stop) = failure.downcast_ref::<Stop>() { error(stop.0,"migration stopped") }
-                else if failure.downcast_ref::<crate::limits::MemoryLimit>().is_some() { error("APP_MEMORY_LIMIT","migration memory limit exceeded") }
-                else { error("APP_TRAPPED","migration trapped") }
-            })?.map_err(remote_error),
+            result=&mut running => {
+                // A guest may finish in the same poll that observes cancellation
+                // or runs past its budget. Its result cannot authorize activation.
+                check_scope(&scope, deadline)?;
+                return result.and_then(std::convert::identity).map_err(|failure| {
+                    if let Some(stop) = failure.downcast_ref::<Stop>() { error(stop.0,"migration stopped") }
+                    else if failure.downcast_ref::<crate::limits::MemoryLimit>().is_some() { error("APP_MEMORY_LIMIT","migration memory limit exceeded") }
+                    else { error("APP_TRAPPED","migration trapped") }
+                })?.map_err(remote_error);
+            },
             reason=scope.cancelled()=>reason,
             _=tokio::time::sleep_until(deadline)=>{scope.cancel("DEADLINE_EXCEEDED");"DEADLINE_EXCEEDED"},
         };

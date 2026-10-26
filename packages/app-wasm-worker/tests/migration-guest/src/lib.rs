@@ -15,6 +15,15 @@ impl Guest for App {
         cancel: FutureReader<String>,
     ) -> Result<(), AppError> {
         let work = Box::pin(async move {
+            if from == 0 {
+                return Ok(());
+            }
+            if from == 4 {
+                // Deliberately return success even when the final import is
+                // cancelled. The supervisor must enforce its own stop reason.
+                let _ = state::get("completion-race".into()).await;
+                return Ok(());
+            }
             if from == 98 {
                 core::arch::wasm32::unreachable();
             }

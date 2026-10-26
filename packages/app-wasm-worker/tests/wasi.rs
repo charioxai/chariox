@@ -15,6 +15,8 @@ use chariox_app_wasm_worker::{
 use serde_json::{json, Value};
 use std::time::Duration;
 use support::Harness;
+#[path = "wasi/migration.rs"]
+mod migration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "source WASI guest required; run scripts/wasi-drill.sh"]

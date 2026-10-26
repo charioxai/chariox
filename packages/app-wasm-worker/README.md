@@ -127,6 +127,8 @@ registry, filesystem, agents, workflows or host imports. The existing kernel
 staged-generation state broker must continue to refuse occurrences/wakes and
 other effects during migration. Memory, CPU-slice, deadline and cancellation
 grace limits apply; a failed migration is never replayed by this worker.
+Cancelled or expired scopes are rejected before guest entry and checked again
+before accepting a result, so guest success cannot override a stop reason.
 
 R4 must verify the signed migration artifact, fence old writers, checkpoint
 structured and private-file state, invoke the migration under the staged broker,
