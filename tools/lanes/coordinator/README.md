@@ -109,7 +109,8 @@ the normal card, and an admitted outside follower sees its `interaction` event
 with `value.state:"pending"` and `refs.interaction_id`. `lanewait` reads that
 pending card, prints its message and labelled fixed choices, and retains their
 ids in its JSON line. Loopd retains the same details in `LOOP_RUN.json.unanswered`
-and leaves choice questions pending for the coordinator.
+and leaves choice questions pending for the coordinator. Resolved events clear
+those entries; a later authoritative status read repairs a missed resolution.
 
 Answer with `node tools/lanes/coordinator/answer.mjs LANE INTERACTION_ID CHOICE_ID`
 (or `mac/laneanswer.sh` with those arguments). It checks that the choice remains

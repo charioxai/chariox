@@ -57,6 +57,7 @@ test('newSections splits appended sections and ignores earlier bytes', () => {
 test('round: permission answered, note delivered once, finish collected, hard stop stops', async t => {
   const r = await rig(t);
   r.interactions.alpha = [{ id: 'claude-permission-1', kind: 'permission', title: 'Approve Claude Code Read?', choices: ['allow_once'] }];
+  r.interactions.beta = [{ id: 'ask-1', kind: 'choice', title: 'Question for the user', choices: ['continue'] }];
   r.waits.push({ events: [r.ev('alpha', { at_ms: 123_456, type: 'interaction', refs: { interaction_id: 'claude-permission-1' }, summary: 'Approve Claude Code Read?', value: { state: 'pending' } }),
     r.ev('beta', { type: 'interaction', refs: { interaction_id: 'ask-1' }, summary: 'Question for the user', value: { state: 'pending' } })] });
   r.waits.push({});
@@ -332,7 +333,7 @@ test('round: a routine permission is answered for the session when the kernel of
   assert.deepEqual(run.permissions.map(p => p.offered), [['allow_once', 'allow_session', 'deny'], ['allow_once', 'deny']], 'the run records what the kernel offered');
 });
 
-test('round: critical, credential and unreadable decisions are left for the coordinator, not answered', async t => {
+test('round: protected decisions stay pending and an absent unreadable decision clears on status', async t => {
   const r = await rig(t, ['alpha']);
   const permission = (id, extra) => ({ id, kind: 'permission', level: 'warning', title: 'Approve Claude Code Bash?', choices: ['allow_once', 'allow_session'], ...extra });
   r.interactions.alpha = [permission('crit', { level: 'critical' }), permission('cred', { title: 'Approve Claude Code passkey entry?' }), permission('ok')];
@@ -343,7 +344,7 @@ test('round: critical, credential and unreadable decisions are left for the coor
   r.options.cli = async argv => { if (argv[1] === 'wait' && r.waits.length === 1) r.idle.add('alpha'); return before(argv); };
   const [alpha] = await runRound(r.spec, r.options);
   assert.deepEqual(r.calls.filter(c => c.op === 'respond').map(c => c.input.interactionId), ['ok'], 'only the routine one is answered');
-  assert.deepEqual(alpha.unanswered.map(u => [u.interactionId, u.reason]), [['crit', 'critical'], ['cred', 'credential_related'], ['missing', 'unclassified']]);
+  assert.deepEqual(alpha.unanswered.map(u => [u.interactionId, u.reason]), [['crit', 'critical'], ['cred', 'credential_related']]);
 });
 
 test('round: a note the coordinator already steered directly is recorded, not delivered again; another one still is', async t => {
