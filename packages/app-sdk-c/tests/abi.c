@@ -12,6 +12,7 @@ app_string_t *test_future_buffers[TEST_HANDLES];
 uint8_t *test_stream_buffer;
 char test_result[1024], test_error[128], test_message[256];
 static unsigned sets;
+static app_event_t queued[TEST_HANDLES];
 app_string_t test_string(const char *text) {
   size_t len = strlen(text); char *copy = malloc(len+1); assert(copy); memcpy(copy, text, len+1);
   return (app_string_t){(uint8_t *)copy, len};
@@ -24,6 +25,14 @@ void app_waitable_set_drop(app_waitable_set_t set) {
   for (size_t i = 0; i < TEST_HANDLES; i++) assert(test_joined[i] != set);
 }
 void app_waitable_join(uint32_t handle, app_waitable_set_t set) { assert(handle && handle < TEST_HANDLES); test_joined[handle] = set; }
+void app_waitable_set_poll(app_waitable_set_t set, app_event_t *event) {
+  *event = (app_event_t){APP_EVENT_NONE, 0, 0};
+  for (size_t i = 0; i < TEST_HANDLES; i++) {
+    if (test_joined[i] == set && queued[i].event != APP_EVENT_NONE) {
+      *event = queued[i]; queued[i] = (app_event_t){0}; return;
+    }
+  }
+}
 app_subtask_status_t app_subtask_cancel(app_subtask_t h) {
   assert(!test_joined[h]); test_cancel_calls++; return test_cancel_status;
 }
@@ -74,18 +83,26 @@ app_callback_code_t test_call(const char *name, const char *input, uint32_t canc
   chariox_app_app_types_invocation_context_t context = {.room_id={true,test_string("room")}, .actor={.is_some=true,.val={.id=test_string("actor")}}};
   return exports_chariox_app_handlers_call_tool(&n, &in, &context, cancel);
 }
-app_callback_code_t test_event(app_event_code_t event, uint32_t handle, uint32_t status) {
-  app_event_t e = {event,handle,status};
+static void ready(app_event_code_t event, uint32_t handle, uint32_t status) {
   if (event == APP_EVENT_FUTURE_READ) {
     test_future_active[handle] = false;
     if (APP_WAITABLE_STATE(status) == APP_WAITABLE_COMPLETED) *test_future_buffers[handle] = test_string("cancelled by test");
   }
   if (event == APP_EVENT_STREAM_READ) test_stream_active[handle] = false;
+}
+void test_queue_event(app_event_code_t event, uint32_t handle, uint32_t status) {
+  assert(handle && handle < TEST_HANDLES && queued[handle].event == APP_EVENT_NONE);
+  ready(event, handle, status);
+  queued[handle] = (app_event_t){event,handle,status};
+}
+app_callback_code_t test_event(app_event_code_t event, uint32_t handle, uint32_t status) {
+  app_event_t e = {event,handle,status};
+  ready(event, handle, status);
   return exports_chariox_app_handlers_call_tool_callback(&e);
 }
 void test_reset(void) {
   assert(!test_context);
-  for (size_t i = 0; i < TEST_HANDLES; i++) { assert(!test_joined[i]); assert(!test_future_active[i]); assert(!test_stream_active[i]); }
+  for (size_t i = 0; i < TEST_HANDLES; i++) { assert(!test_joined[i]); assert(!test_future_active[i]); assert(!test_stream_active[i]); assert(queued[i].event == APP_EVENT_NONE); }
   test_returns = test_destroys = test_cancel_calls = test_import_drops = test_stream_drops = 0;
   test_return_error = test_cancel_immediate = test_read_immediate = test_cancel_reason_race = false;
   test_cancel_status = APP_SUBTASK_RETURNED_CANCELLED;

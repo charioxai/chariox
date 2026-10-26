@@ -33,7 +33,7 @@ def run():
                 instrument = ["-include", str(SDK / "tests/alloc.h")]
             subprocess.run([compiler, *flags, *instrument, "-c", str(source), "-o", str(obj)], check=True)
             objects[source] = obj
-        for name, app in [("json", None), ("reader", None), ("task", None), ("review", None), ("template", template), ("transform", transform)]:
+        for name, app in [("json", None), ("reader", None), ("yield", None), ("task", None), ("review", None), ("template", template), ("transform", transform)]:
             needed = [SDK / f"tests/test-{name}.c", SDK / "tests/alloc.c"]
             needed += [SDK / "src/json.c"] if name == "json" else runtime + [SDK / "tests/abi.c"]
             if app:

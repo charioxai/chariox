@@ -18,5 +18,6 @@ extern char test_result[1024], test_error[128], test_message[256];
 app_string_t test_string(const char *text);
 app_callback_code_t test_call(const char *name, const char *input, uint32_t cancel);
 app_callback_code_t test_event(app_event_code_t event, uint32_t handle, uint32_t status);
+void test_queue_event(app_event_code_t event, uint32_t handle, uint32_t status);
 void test_reset(void);
 #endif

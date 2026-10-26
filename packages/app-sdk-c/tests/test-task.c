@@ -99,7 +99,8 @@ int main(void) {
   assert(test_event(APP_EVENT_NONE,0,0) == APP_CALLBACK_CODE_EXIT && !test_return_error);
   test_reset();
   assert(test_call("yield", "{}", 2) == APP_CALLBACK_CODE_YIELD);
-  assert(test_event(APP_EVENT_FUTURE_READ,2,APP_WAITABLE_COMPLETED) == APP_CALLBACK_CODE_EXIT && test_return_error);
+  test_queue_event(APP_EVENT_FUTURE_READ,2,APP_WAITABLE_COMPLETED);
+  assert(test_event(APP_EVENT_NONE,0,0) == APP_CALLBACK_CODE_EXIT && test_return_error);
   test_reset(); test_cancel_status = APP_SUBTASK_STARTED_CANCELLED;
   assert(test_call("early-error", "{}", 2) != APP_CALLBACK_CODE_EXIT);
   assert(test_destroys == 0 && test_returns == 0);

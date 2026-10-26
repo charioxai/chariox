@@ -113,12 +113,18 @@ app_callback_code_t cx_task_start(cx_request request, uint32_t cancel_handle) {
 }
 app_callback_code_t cx_task_callback(app_event_t *event) {
   cx_task *t = app_context_get_0();
-  if (event->event == APP_EVENT_NONE) return drive(t);
+  app_event_t ready;
+  if (event->event == APP_EVENT_NONE) {
+    /* Yield resumes with NONE, even when a joined waitable became ready. */
+    app_waitable_set_poll(t->set, &ready);
+    if (ready.event == APP_EVENT_NONE) return drive(t);
+    event = &ready;
+  }
   if (event->event == APP_EVENT_CANCEL) return cancel(t);
   if (event->event == APP_EVENT_FUTURE_READ && event->waitable == t->cancel) {
     app_waitable_join(t->cancel, 0); t->cancel_reading = false;
     if (APP_WAITABLE_STATE(event->code) == APP_WAITABLE_COMPLETED) return cancel(t);
-    return APP_CALLBACK_CODE_WAIT(t->set);
+    return drive(t);
   }
   if (event->event == APP_EVENT_SUBTASK && event->waitable == t->pending) {
     if (!cx_subtask_terminal(event->code)) return APP_CALLBACK_CODE_WAIT(t->set);
