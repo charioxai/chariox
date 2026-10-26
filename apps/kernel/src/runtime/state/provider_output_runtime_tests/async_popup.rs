@@ -701,3 +701,37 @@ async fn async_popup_review_bad_question_does_not_stall_other_questions_or_timer
         1
     );
 }
+
+#[tokio::test]
+async fn async_popup_review_wait_deadline_follows_the_latest_question() {
+    for seconds in [Some(60), Some(10 * 86_400), None] {
+        let f = fixture("async-review-deadline", true).await;
+        let task = f.begin(&f.prompt_id);
+        let result = ask(&f, serde_json::json!({"timeout_sec":seconds})).await;
+        ask(&f, serde_json::json!({"timeout_sec":1})).await;
+        let wake = f
+            .store()
+            .agent_wake(result["interaction_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let Outcome::Settled { task, .. } = f
+            .store()
+            .agent_lifecycle(Operation::Settle {
+                room: f.room.clone(),
+                agent: f.agent.clone(),
+                prompt: task.prompt_id,
+                run: f.run.clone(),
+                has_answer: true,
+                cancelled: false,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap()
+        else {
+            panic!("settlement outcome")
+        };
+        assert_eq!(
+            task.wait.unwrap().deadline_ms,
+            wake.next_due_ms.unwrap_or(8_639_999_999_999_999)
+        );
+    }
+}

@@ -147,6 +147,40 @@ pub(super) fn source_deadline(
     Ok(deadline)
 }
 
+/// Largest finite timestamp shared clients can render as a valid Date.
+const MAX_QUESTION_WAIT_DEADLINE_MS: u64 = 8_639_999_999_999_999;
+
+/// Retain every unanswered question until the latest source deadline. A question
+/// without a timeout uses the client date bound, rather than spending provider
+/// turns on an unrelated periodic retention deadline.
+pub(super) fn question_deadline(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    registrations: &[Registration],
+) -> Result<u64, DaemonError> {
+    if registrations.is_empty() {
+        return Err(error(
+            "pending question has no completion registration; restore its source binding",
+        ));
+    }
+    let mut deadline = 0;
+    for registration in registrations {
+        let wake = load_wake(tx, &registration.source_id)?;
+        if wake.kind != "interaction"
+            || wake.task_id != task.task_id
+            || wake.room_id != task.room_id
+            || wake.agent_id != task.agent_id
+            || wake.registration_id != registration.id
+        {
+            return Err(error(
+                "registered question binding corrupt; quarantine required",
+            ));
+        }
+        deadline = deadline.max(wake.next_due_ms.unwrap_or(MAX_QUESTION_WAIT_DEADLINE_MS));
+    }
+    Ok(deadline.min(MAX_QUESTION_WAIT_DEADLINE_MS))
+}
+
 fn save_wake(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_wakes VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![wake.id,wake.task_id,wake.room_id,wake.agent_id,encode(wake)?]).map_err(sql)?;
     Ok(())

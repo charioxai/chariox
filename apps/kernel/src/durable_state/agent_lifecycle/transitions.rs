@@ -745,17 +745,20 @@ fn retain_question_wait(
             .all(|o| o.kind == "interaction")
     {
         let regs = registrations(tx, &t.task_id)?;
-        t.wait = Some(AgentWait {
-            registration_ids: regs
-                .iter()
-                .filter(|r| {
-                    t.obligations.iter().any(|o| {
-                        o.kind == "interaction" && r.obligation_id.as_deref() == Some(&o.id)
-                    })
+        let selected: Vec<_> = regs
+            .into_iter()
+            .filter(|r| {
+                t.obligations.iter().any(|o| {
+                    o.kind == "interaction"
+                        && matches!(o.status.as_str(), "open" | "settling" | "failed")
+                        && r.obligation_id.as_deref() == Some(&o.id)
                 })
-                .map(|r| r.id.clone())
-                .collect(),
-            deadline_ms: now.saturating_add(7 * 86_400_000),
+            })
+            .collect();
+        let deadline_ms = super::wakes::question_deadline(tx, t, &selected)?;
+        t.wait = Some(AgentWait {
+            registration_ids: selected.into_iter().map(|r| r.id).collect(),
+            deadline_ms,
             started_at_ms: now,
             inbox_cursor: 0,
             long_wait_notified: false,

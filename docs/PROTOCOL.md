@@ -829,6 +829,10 @@ whose only unresolved obligations are questions may finish normally: settlement
 retains those registrations as a wait. Other unfinished work still requires
 normal completion or an explicit valid yield. The question survives native turn
 completion and kernel restart, including its original absolute deadline.
+The retained wait uses the latest outstanding question deadline. If any such
+question has no timeout, the wait uses the maximum finite timestamp clients can render
+(`8_639_999_999_999_999` milliseconds since the Unix epoch), so a periodic retention cap
+cannot wake a provider while the question is still pending.
 
 A failed provider turn keeps the task blocked with the provider failure reason
 and its pending questions intact. The owner must reconcile and resume or cancel;
