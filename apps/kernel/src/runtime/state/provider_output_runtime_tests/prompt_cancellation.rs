@@ -809,3 +809,271 @@ async fn structured_abort_waiter_releases_provider_lane_after_external_owner_set
         .try_acquire(run.id())
         .is_some());
 }
+
+// MP-08/MP-10/MP-11: a provider that never answers Stop cannot hold the next turn.
+#[tokio::test]
+async fn unresponsive_structured_abort_terminates_provider_and_settles_task() {
+    assert_unresponsive_abort_settles(false, false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn native_cancellation_reaps_a_tool_in_its_own_process_group() {
+    assert_unresponsive_abort_settles(true, false).await;
+}
+
+#[tokio::test]
+async fn pending_provider_reap_keeps_cancellation_owned_until_retry_succeeds() {
+    assert_unresponsive_abort_settles(false, true).await;
+}
+
+async fn assert_unresponsive_abort_settles(detached_tool: bool, deferred_reap: bool) {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let worktree = crate::test_support::TestWorktree::new("unresponsive-stop");
+    let mut config = crate::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stop-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "unresponsive-stop-provider",
+        session.id().into(),
+        Some(agent.id().into()),
+        "codex".into(),
+    );
+    run.mark_running();
+    let sentinel = worktree.path().join("tool-alive");
+    let pid_file = worktree.path().join("tool-pid");
+    let mut tool_pid = None;
+    if detached_tool {
+        std::fs::write(&sentinel, b"alive").unwrap();
+        let script = "import os,time,sys\npid=os.fork()\nif pid==0:\n os.setsid()\n open(sys.argv[1],'w').write(str(os.getpid()))\n while os.path.exists(sys.argv[2]): time.sleep(.02)\nelse: os.waitpid(pid,0)";
+        app.pty_mut()
+            .spawn(crate::pty::PtySpawnRequest {
+                process_key: run.id().into(),
+                provider_run_id: run.id().into(),
+                program: "python3".into(),
+                args: vec![
+                    "-c".into(),
+                    script.into(),
+                    pid_file.display().to_string(),
+                    sentinel.display().to_string(),
+                ],
+                env: Default::default(),
+                env_remove: vec![],
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !pid_file.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tool_pid = Some(
+            std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap(),
+        );
+    } else {
+        spawn_inert_pty_for_run(&mut app, run.id());
+    }
+    let reap_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!deferred_reap));
+    if deferred_reap {
+        app.pty_mut()
+            .defer_reap_for_test(run.id(), reap_ready.clone());
+    }
+    app.providers_mut().insert_run_for_test(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "unresponsive-stop-prompt",
+        attachment.id(),
+        agent.id(),
+        "run a tool that never answers",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let _cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    for (id, status) in [("tool-active", "running"), ("tool-finished", "completed")] {
+        let bytes =
+            serde_json::json!({"id": id, "tool": "bash", "status": status, "output": "partial"})
+                .to_string();
+        runtime
+            .owned
+            .note_prompt_tool_output(run.id(), Some(id), bytes.as_bytes());
+    }
+    let cancellation = runtime
+        .owned
+        .cancel_local_prompt(session.id(), agent.id(), attachment.id())
+        .unwrap()
+        .unwrap();
+    let dispatch = cancellation.dispatch.unwrap();
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: dispatch.prompt_id.clone(),
+            run: Some(run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    // A hung provider call can hold this lane before the abort is even enqueued.
+    let _held_lane = runtime.provider_runtime_lanes.acquire(run.id()).await;
+    runtime.spawn_prompt_abort(dispatch, runtime.provider_runtime_lanes.clone());
+    if deferred_reap {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let failures = runtime
+                    .owned
+                    .operational_history_store
+                    .query_events(crate::history::HistoryEventQuery {
+                        session_id: Some(session.id().into()),
+                        kind: Some("notice".into()),
+                        text: Some("Provider cancellation cleanup failed".into()),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                if !failures.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("pending cleanup must report its reason");
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let active = runtime.owned.session_snapshot(session.id()).unwrap();
+        assert_eq!(
+            active.active_prompt_for_agent(agent.id()).unwrap().status(),
+            crate::session::PromptStatus::Cancelling
+        );
+        assert!(
+            app.lock().await.pty().has_process(run.id()),
+            "failed reap lost physical ownership"
+        );
+        assert!(
+            !runtime
+                .owned
+                .terminal_stream
+                .output_records()
+                .iter()
+                .any(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderTool),
+            "tools must remain pending until physical cleanup succeeds"
+        );
+        let failures = runtime
+            .owned
+            .operational_history_store
+            .query_events(crate::history::HistoryEventQuery {
+                session_id: Some(session.id().into()),
+                kind: Some("notice".into()),
+                text: Some("Provider cancellation cleanup failed".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            failures.len(),
+            1,
+            "cleanup retries must not flood the transcript"
+        );
+        reap_ready.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_prompt_for_agent(agent.id())
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Stop must settle within seconds even while the provider lane is hung");
+    let snapshot = runtime.owned.session_snapshot(session.id()).unwrap();
+    assert!(snapshot.active_prompt_for_agent(agent.id()).is_none());
+    let tasks = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    assert_eq!(tasks[0].state, ExecutionState::Cancelled);
+    let tools = runtime
+        .owned
+        .terminal_stream
+        .output_records()
+        .into_iter()
+        .filter(|record| {
+            record.provider_run_id == run.id()
+                && record.kind == crate::terminal::TerminalOutputKind::ProviderTool
+        })
+        .map(|record| serde_json::from_slice::<serde_json::Value>(&record.bytes).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tools.len(),
+        1,
+        "Stop must publish one terminal update for each unfinished tool"
+    );
+    assert_eq!(tools[0]["id"], "tool-active");
+    assert_eq!(tools[0]["status"], "cancelled");
+    let history = runtime
+        .owned
+        .operational_history_store
+        .query_events(crate::history::HistoryEventQuery {
+            session_id: Some(session.id().into()),
+            kind: Some("provider_tool".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        history.iter().any(
+            |event| event.prompt_id.as_deref() == Some("unresponsive-stop-prompt")
+                && event
+                    .content
+                    .as_deref()
+                    .is_some_and(|text| text.contains("cancelled"))
+        ),
+        "cancelled tool update must survive transcript hydration"
+    );
+
+    if let Some(pid) = tool_pid {
+        let live = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .is_some_and(|stat| {
+                stat.split_once(") ")
+                    .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+            });
+        std::fs::remove_file(&sentinel).unwrap();
+        assert!(!live, "Stop left a tool alive in its own process group");
+    }
+    assert!(
+        app.lock().await.pty().process_id(run.id()).is_err(),
+        "Stop must terminate the owned provider process before releasing the turn"
+    );
+}

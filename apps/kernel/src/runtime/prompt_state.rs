@@ -200,6 +200,28 @@ impl PromptStateOwner {
         Ok(Some(settled))
     }
 
+    /// Keep a successor from replacing this cancellation during physical teardown.
+    /// The callback must not reenter the prompt owner.
+    pub(crate) fn with_cancelling_prompt_if_matches<R>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        finish: impl FnOnce() -> Result<R, DaemonError>,
+    ) -> Result<Option<R>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        if !state.active_prompt.as_ref().is_some_and(|prompt| {
+            prompt.id() == prompt_id && prompt.status() == PromptStatus::Cancelling
+        }) {
+            return Ok(None);
+        }
+        finish().map(Some)
+    }
+
     pub(crate) fn try_claim_active_prompt_delivery_settlement(
         &self,
         session: &RuntimeSession,

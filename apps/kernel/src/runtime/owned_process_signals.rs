@@ -28,8 +28,19 @@ impl OwnedProcessSignals {
     }
 
     fn capture(child: &Child, launched_exclusive_session: bool) -> io::Result<Self> {
+        Self::capture_pid(child.id(), launched_exclusive_session)
+    }
+
+    /// The retained PTY child reserves this PID until its manager reaps it.
+    pub(crate) fn for_pty_child(child: &dyn portable_pty::Child) -> io::Result<Self> {
+        let pid = child
+            .process_id()
+            .ok_or_else(|| io::Error::other("PTY child PID unavailable"))?;
+        Self::capture_pid(pid, false)
+    }
+
+    fn capture_pid(pid: u32, launched_exclusive_session: bool) -> io::Result<Self> {
         let rows = snapshot()?;
-        let pid = child.id();
         if pid <= 1 || pid > i32::MAX as u32 {
             return Err(io::Error::other("invalid child PID"));
         }
