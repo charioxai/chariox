@@ -30,6 +30,8 @@ const script = `
     async ({ text }) => { await chariox.call('todo.add', { text }); todos.push(text); chariox.view.changed({ added: text }); return { count: todos.length }; });
   chariox.action({ name: 'slow', description: 'Takes a while', effect: 'read', inputSchema: { type: 'object', additionalProperties: false } },
     async () => { await settle(700); return { done: true }; });
+  chariox.action({ name: 'long', description: 'Exceeds the CDP round trip', effect: 'read', inputSchema: { type: 'object', additionalProperties: false } },
+    async () => { await settle(6500); return { done: true }; });
   chariox.action({ name: 'hang', description: 'Never finishes', effect: 'read', inputSchema: { type: 'object', additionalProperties: false } },
     () => new Promise(() => {}));
   chariox.view.state(() => ({ todos }));
@@ -70,7 +72,7 @@ test('A2: an agent invoke runs the view function as that agent and the state and
   assert.deepEqual(app.calls, [{ method: 'todo.add', actor: { kind: 'agent', id: 'agent-7' } }], 'the handler\'s kernel call is the agent\'s, never the person\'s');
   assert.deepEqual(await app.agent({ call: 'state' }), { ok: true, value: { todos: ['milk'] } });
   assert.deepEqual(await app.agent({ call: 'changes', since: 0 }), { ok: true, value: { latest: 1, dropped: false, changes: [{ seq: 1, delta: { added: 'milk' } }] } });
-  assert.deepEqual((await app.agent({ call: 'registrations' })).value.map(r => r.name), ['add_todo', 'slow', 'hang']);
+  assert.deepEqual((await app.agent({ call: 'registrations' })).value.map(r => r.name), ['add_todo', 'slow', 'long', 'hang']);
   await serving;
 });
 
@@ -103,4 +105,19 @@ test('A2: a reload while an action runs ends the call with view_reloaded', async
     asset('index.html', 'text/html', '<main></main><script src="app.js"></script>'), asset('app.js', 'text/javascript', script)] } });
   assert.equal(reload.ok, true);
   assert.equal((await running).code, 'view_reloaded');
+});
+
+// MP-08/MP-10/MP-11: the transport timeout cannot retire a running page handler.
+test('A2: a handler beyond five seconds returns its successful result', async () => {
+  const app = await openApp('agent-long');
+  assert.deepEqual(await app.agent({ call: 'invoke', name: 'long', deadline_ms: 10000 }), { ok: true, value: { done: true } });
+});
+
+test('A2: a handler beyond the deadline and CDP timeout keeps ownership until settlement', async () => {
+  const app = await openApp('agent-long-deadline');
+  assert.equal((await app.agent({ call: 'invoke', name: 'long', deadline_ms: 150 })).code, 'deadline');
+  await new Promise(r => setTimeout(r, 5200));
+  assert.equal((await app.agent({ call: 'state' })).code, 'view_busy');
+  await new Promise(r => setTimeout(r, 1400));
+  assert.deepEqual(await app.agent({ call: 'state' }), { ok: true, value: { todos: [] } });
 });

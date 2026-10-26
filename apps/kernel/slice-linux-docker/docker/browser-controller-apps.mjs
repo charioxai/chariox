@@ -230,7 +230,7 @@ export class AppTabs {
     }
     if (runsAppCode) this.noteAgent(app.targetId, agent);
     const connection = this.connection;
-    const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)
+    const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId, { timeoutMs: null })
       .finally(() => { if (app.agentRunning === running) app.agentRunning = null; });
     if (runsAppCode) app.agentRunning = running;
     let timer;
@@ -406,6 +406,7 @@ export class AppTabs {
     if (message.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       app.document = message.params?.frame?.loaderId ?? null;
       app.pending.clear();
+      app.agentRunning = null;
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {
