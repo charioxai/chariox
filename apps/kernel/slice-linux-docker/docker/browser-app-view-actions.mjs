@@ -158,7 +158,7 @@ export function createViewActions() {
     for (const root of roots) {
       if (root.host?.closest('[inert]')) continue;
       for (const node of root.querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
-      const nodes = root.querySelectorAll('button,input,select,textarea,a[href],summary,[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[role="combobox"],[role="slider"],[contenteditable="true"]');
+      const nodes = root.querySelectorAll('button,input,select,textarea,a[href],summary,[data-chariox-action]:not(form),[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[role="combobox"],[role="slider"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="option"],[role="treeitem"],[role="textbox"],[role="searchbox"],[role="spinbutton"],[role="scrollbar"],[role="listbox"],[contenteditable="true"]');
       for (const node of nodes) {
         if (node.disabled || node.closest('[inert]') || !node.getClientRects().length
           || !node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;

@@ -168,7 +168,7 @@ wait; the observation is bounded at 256 KiB, 256 registrations and 512 controls.
 Errors and missing state providers remain explicit results. No DOM field value
 is read for coverage. Supported form fields reuse A1's `controlsOf`; submit
 controls inherit their form's action. For JS actions annotate the visible
-control with `data-chariox-action="name"`; event-listener closures are opaque.
+control with `data-chariox-action="name"`, including custom elements; event-listener closures are opaque. Unannotated ARIA controls (including tabs, menu items and options) remain visible in coverage diagnostics.
 Unsupported form controls and unannotated buttons remain uncovered. Coverage traverses light DOM and open shadow roots; closed roots cannot be enumerated by the page SDK and are outside this diagnostic scan. Use explicit JS registrations for controls in shadow roots; A1's simple form registrations still use document markup.
 
 `chariox_app_runtime::view_catalog::ViewCatalog::from_observation` compares

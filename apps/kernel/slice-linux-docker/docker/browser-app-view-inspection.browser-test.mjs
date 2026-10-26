@@ -51,3 +51,30 @@ test('A4: inspect covers form fields and annotated actions, warns on an undeclar
   assert.equal(excessive.ok,false);
   assert.equal(excessive.error.code,'app_view_coverage_too_large');
 });
+
+test('A4: coverage includes annotated custom controls and unannotated ARIA controls', async () => {
+  const html = `<div id="custom" data-chariox-action="activate">Activate</div>
+    <div id="tab" role="tab" data-chariox-action="activate">Tab</div>
+    <div id="menu" role="menuitem">Menu item</div>
+    <div id="option" role="option">Option</div>
+    <script src="app.js"></script>`;
+  const script = `chariox.action({name:'activate',description:'Activate',inputSchema:{type:'object'},effect:'write'},()=>{});window.ready=true;`;
+  const opened = await host.handle({id:5,method:'browser.app.open',params:{origin_label:'custom-controls',installation_id:'custom-controls',assets:[asset('index.html',html),asset('app.js',script)]}});
+  assert.equal(opened.ok,true,JSON.stringify(opened));
+  const {connection,sessionId}=await host.browser.resolvePageTarget(opened.result.target_id);
+  let ready=false;
+  for(let i=0;i<200&&!ready;i++) {
+    const reply=await connection.send('Runtime.evaluate',{expression:'window.ready === true',returnByValue:true},sessionId);
+    ready=reply.result.value;
+    if(!ready)await new Promise(r=>setTimeout(r,25));
+  }
+  assert.equal(ready,true);
+  const inspected=await host.handle({id:6,method:'browser.app.inspect',params:{target_id:opened.result.target_id}});
+  assert.equal(inspected.ok,true,JSON.stringify(inspected));
+  assert.deepEqual(inspected.result.controls,[
+    {control:'div#custom',action:'activate'},
+    {control:'div#tab',action:'activate'},
+    {control:'div#menu',action:null},
+    {control:'div#option',action:null},
+  ]);
+});
