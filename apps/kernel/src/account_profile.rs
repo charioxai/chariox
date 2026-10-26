@@ -1208,6 +1208,7 @@ impl ProviderAccountProfileRegistry {
         model: Option<&str>,
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
+        let profile = self.get(owner_user_id, provider, profile_id)?;
         // MP-08 / MP-10 / MP-11: existing peers use the admission operation to
         // classify a leased-account refusal. Keep that context and only static text.
         let refused = |reason: crate::error::ProviderProfileRefusal| {
@@ -1217,10 +1218,13 @@ impl ProviderAccountProfileRegistry {
                     message: crate::error::external_request_failure_message(reason.code()).into(),
                 }
             } else {
-                DaemonError::ProviderProfileRefused { reason }
+                DaemonError::ProviderProfileRefused {
+                    reason,
+                    provider: profile.provider.clone(),
+                    account_name: profile.label.clone(),
+                }
             }
         };
-        let profile = self.get(owner_user_id, provider, profile_id)?;
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check. A
@@ -5026,7 +5030,7 @@ mod tests {
     }
 
     #[test]
-    fn lane_profile_refusals_preserve_refresh_action_without_profile_values() {
+    fn local_profile_refusals_name_the_account_and_the_recovery_action() {
         crate::test_support::isolated_env_test!();
         let root = crate::test_support::TestWorktree::new("lane-profile-refusals");
         let registry =
@@ -5070,8 +5074,9 @@ mod tests {
             let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
             assert_eq!(mapped.code, code);
             assert!(!mapped.retryable);
-            assert!(mapped.message.contains("RefreshProviderAccountProfile"));
-            assert!(!mapped.message.contains("private-profile-label"));
+            assert!(mapped.message.contains("Provider Accounts"));
+            assert!(mapped.message.contains("private-profile-label"));
+            assert!(!mapped.message.contains(&profile.profile_id));
         }
     }
 

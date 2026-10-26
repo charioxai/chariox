@@ -569,7 +569,8 @@ fn amfix_r11_missing_downstream_account_rejects_before_any_workflow_agents() {
         panic!("generated node")
     };
     c.provider = "codex".into();
-    c.account_profile = Some(foreign.profile_id);
+    let unavailable_reference = foreign.profile_id.clone();
+    c.account_profile = Some(unavailable_reference.clone());
     let before = app.agents().get_session_agents(session.id()).len();
     let error = app
         .apply_workflow_code_definition(
@@ -581,13 +582,10 @@ fn amfix_r11_missing_downstream_account_rejects_before_any_workflow_agents() {
         )
         .unwrap_err()
         .to_string();
-    assert!(error.contains(&profile.profile_id) && error.contains(&profile.label));
+    assert!(error.contains(&unavailable_reference), "{error}");
+    assert!(error.contains("Provider Accounts"), "{error}");
     assert!(
-        !error
-            .split("available profiles: ")
-            .nth(1)
-            .unwrap_or("")
-            .contains(&foreign.label),
+        !error.contains(&foreign.label) && !error.contains(&profile.profile_id),
         "another owner's labels must not appear"
     );
     assert_eq!(app.agents().get_session_agents(session.id()).len(), before);
