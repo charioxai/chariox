@@ -55,6 +55,8 @@ export files. All operate on Excalidraw's own scene store. Its native toolbar,
 pointer editing and undo history remain available. File menu entries and native
 Open/Save shortcuts call the same broker functions as declared actions. Dropped
 files also request a kernel file grant.
+Opening a diagram keeps the previous canvas in native Undo history. Use Undo
+before closing or reloading the view to restore it; the restored scene auto-saves.
 
 The current scene auto-saves after 300 ms without an edit, with an optimistic
 state version check. Explicit private files use `files.atomic_replace`; imports

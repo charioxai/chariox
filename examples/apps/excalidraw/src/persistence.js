@@ -47,7 +47,7 @@ export function persistence(chariox, api, loaded) {
       const result = await chariox.call('read_file', request);
       const scene = checkedScene(JSON.stringify(result.scene));
       await save(JSON.stringify(scene));
-      api.resetScene();
+      // Keep the previous diagram in Excalidraw's native Undo history.
       api.addFiles(Object.values(scene.files));
       api.updateScene({ elements: scene.elements, appState: scene.appState, captureUpdate: 'IMMEDIATELY' });
       api.scrollToContent(undefined, { fitToContent: true, animate: false });

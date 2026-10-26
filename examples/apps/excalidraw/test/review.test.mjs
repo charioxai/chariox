@@ -112,3 +112,24 @@ test('an oversized human paste has one dismissible notice and can be removed', {
   assert(broker.saveAttempts > attempts, 'shrinking the scene must recover saving without reloading');
   await page.screenshot({ path: join(evidence, 'oversized-recovery.png') });
 }));
+
+test('opening a picked diagram keeps the previous canvas recoverable with Undo', { timeout: 30_000 }, () => fixture(async ({ page, broker, invoke, draw }) => {
+  await draw();
+  const previous = (await invoke('scene_summary')).value.elements.map(element => element.id);
+  const incoming = structuredClone(broker.scene);
+  incoming.elements = incoming.elements.map(element => ({ ...element, id: 'imported', x: 600 }));
+  broker.files.set('incoming.excalidraw', JSON.stringify(incoming));
+  broker.picked = 'incoming.excalidraw';
+  await page.keyboard.press('Control+o');
+  await page.waitForFunction(() => window.__charioxViewAgent.state().then(result => result.value?.elements.some(element => element.id === 'imported')));
+  await page.waitForTimeout(400);
+  await page.locator('.excalidraw__canvas.interactive').click({ position: { x: 1100, y: 650 } });
+  await page.keyboard.press('Control+z');
+  await page.waitForTimeout(500);
+  assert.deepEqual((await invoke('scene_summary')).value.elements.map(element => element.id), previous, 'Open must retain the previous diagram in native Undo');
+  assert.deepEqual(broker.scene.elements.map(element => element.id), previous, 'Undo must restore the durable scene too');
+  await page.reload();
+  await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
+  assert.deepEqual((await invoke('scene_summary')).value.elements.map(element => element.id), previous);
+  await page.screenshot({ path: join(evidence, 'open-undo-reload.png') });
+}));
