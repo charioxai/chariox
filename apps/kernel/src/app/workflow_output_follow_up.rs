@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn workflow_output_follow_up_skips_stopped_run() {
-        let (mut app, session, prompt, _worktree) = fixture();
+        let (app, session, prompt, _worktree) = fixture();
         app.sessions_mut()
             .stop_workflow_run_with_final_output(
                 &session,
