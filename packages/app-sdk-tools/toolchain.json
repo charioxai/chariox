@@ -6,8 +6,8 @@
     "url": "https://codeload.github.com/andreiltd/componentize-qjs/tar.gz/cecfa26bd323795be3a08afd3e08a26acfbc15dc",
     "sha256": "2fccd1633c13952b32ce18914c94e514f1ea3f9fa3a4371a98df493526380e51",
     "license": "Apache-2.0",
-    "snapshotPatchSha256": "a8a1272c19738bdc77f2a7231a5f05905134de6432760067fc9e4a5cc34fac26",
-    "cancelPatchSha256": "4380c645ab9e288d3c4c43333d5adad56a0d889e78e546de24549c6fb9ba264a"
+    "snapshotPatchSha256": "059d0f9db52ab78039f7fa57994ee744bdb9145b140837ee3e852ee2713b141b",
+    "cancelPatchSha256": "19b9152c1402cab60419b90ece039a9f28b76559948c30e54eee532f63e669d7"
   },
   "platforms": {
     "linux-x86_64": {

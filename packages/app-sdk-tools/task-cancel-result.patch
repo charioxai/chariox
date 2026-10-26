@@ -1,12 +1,9 @@
 --- a/crates/runtime/src/task.rs
 +++ b/crates/runtime/src/task.rs
-@@ -367,22 +367,20 @@
-         ctx: &Ctx<'_>,
-         handle: u32,
-         token: &Rc<()>,
+@@ -370 +370 @@
 -    ) -> rquickjs::Result<()> {
 +    ) -> rquickjs::Result<bool> {
-         if !self.is_active() {
+@@ -372,8 +372,6 @@
 -            return Ok(());
 -        }
 -        let matches = self.with(|inner| {
@@ -21,14 +18,9 @@
 +            inner.pending.get(&handle).map_or((false, false), |entry| {
 +                let matches = matches!(&entry.op, Pending::ImportCall { token: active, .. } if Rc::ptr_eq(active, token));
 +                (matches, entry.cancel)
-             })
-         });
+@@ -382 +380 @@
 -        if matches {
 +        if matches && !requested {
-             CancelRequest::Import.cancel(ctx, handle)?;
-         }
+@@ -385 +383 @@
 -        Ok(())
 +        Ok(matches)
-     }
- 
-     fn handle_wakeup(&self, handle: u32) -> bool {

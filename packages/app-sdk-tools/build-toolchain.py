@@ -80,11 +80,11 @@ def main():
         patch = HERE / 'deterministic-wizer.patch'
         if sha256(patch) != pin['quickjs']['snapshotPatchSha256']:
             raise RuntimeError('snapshot patch checksum mismatch')
-        subprocess.run(['git', 'apply', str(patch)], cwd=inputs['quickjs'], check=True)
+        subprocess.run(['git', 'apply', '--unidiff-zero', str(patch)], cwd=inputs['quickjs'], check=True)
         cancel_patch = HERE / 'task-cancel-result.patch'
         if sha256(cancel_patch) != pin['quickjs']['cancelPatchSha256']:
             raise RuntimeError('task cancellation patch checksum mismatch')
-        subprocess.run(['git', 'apply', str(cancel_patch)], cwd=inputs['quickjs'], check=True)
+        subprocess.run(['git', 'apply', '--unidiff-zero', str(cancel_patch)], cwd=inputs['quickjs'], check=True)
         env = {**os.environ, 'WASI_SDK_PATH': str(sdk), 'WASM_OPT': str(wasm_opt), 'CARGO_BUILD_JOBS': '4'}
         # Copy while holding the build slot: another lane may reuse its target.
         command = ['sh', '-c', 'cargo build --locked --release -p componentize-qjs-cli && cp "$CARGO_TARGET_DIR/release/componentize-qjs" "$1"', 'app-toolchain', str(output / 'componentize-qjs')]
