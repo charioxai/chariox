@@ -8,12 +8,11 @@ export function persistence(chariox, api, loaded) {
   let sequence = 0;
   const notify = () => chariox.view.changed({ sequence: ++sequence, persisted: !failure });
   function save(candidate) {
-    // Validation failures can recover after a person makes the diagram smaller.
-    try { checkedScene(candidate ?? sceneJSON(api)); } catch (error) { return Promise.reject(error); }
     const pending = queue.then(async () => {
-      if (failure) throw failure;
       const text = candidate ?? sceneJSON(api);
       if (text === lastSaved) return;
+      if (failure) throw failure;
+      // Validation failures can recover after a person makes the diagram smaller.
       const scene = checkedScene(text);
       let result;
       try { result = await chariox.call('save_scene', { scene, version }); }

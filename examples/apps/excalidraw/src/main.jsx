@@ -3,15 +3,21 @@ import { createRoot } from 'react-dom/client';
 import { Excalidraw, MainMenu } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import declarations from '../schemas/ui-actions.json';
-import { diagramActions, summary } from './scene.js';
+import { diagramActions, sceneJSON, summary } from './scene.js';
 import { persistence } from './persistence.js';
 
 const chariox = window.chariox;
 if (!chariox?.action || !chariox?.view || !chariox?.call) throw new Error('Open this App in a Chariox kernel with WASM and UI action support.');
-let api, storage, actions, timer;
+let api, storage, actions, timer, previousScene;
 let actionQueue = Promise.resolve();
 const loaded = await chariox.call('load_scene', {});
-const report = error => api?.updateScene({ appState: { errorMessage: error.message ?? String(error) } });
+const reported = new Set();
+const report = error => {
+  const message = error.message ?? String(error);
+  if (!api || reported.has(message)) return;
+  reported.add(message);
+  api.setToast({ message, closable: true, duration: Infinity });
+};
 const invoke = name => () => actions[name](name === 'export_file' ? { format: 'png' } : {}).catch(report);
 const ready = next => {
   if (api) return;
@@ -66,6 +72,10 @@ createRoot(document.getElementById('root')).render(
     onChange={() => {
       if (!storage) return;
       storage.changed();
+      const text = sceneJSON(api);
+      // Notices, selection and other UI state do not change the saved scene.
+      if (text === previousScene) return;
+      previousScene = text;
       clearTimeout(timer);
       timer = setTimeout(() => storage.save().catch(report), 300);
     }}>
