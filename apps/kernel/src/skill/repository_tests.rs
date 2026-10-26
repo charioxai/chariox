@@ -276,8 +276,54 @@ fn importing_an_installed_repository_again_says_how_to_proceed() {
     };
     let error = service.prepare(&again).unwrap_err().to_string();
     assert!(error.contains("`alpha` is occupied"), "{error}");
-    assert!(!error.contains("choose Rename or Replace"), "{error}");
-    assert!(error.contains("leave that directory out"), "{error}");
+    assert!(error.contains("choose Rename or Replace"), "{error}");
+    let before = service.storage.snapshot().unwrap();
+    assert_eq!(before.revision, 1);
+    assert_eq!(before.catalogs[0].skills.len(), 1);
+    let original_id = before.catalogs[0].skills[0].id.clone();
+    for (index, collision) in [
+        SkillCollisionAction::Rename {
+            name: "alpha-copy".into(),
+        },
+        SkillCollisionAction::Replace {
+            skill_id: original_id.clone(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let before = service.storage.snapshot().unwrap();
+        again.expected_revision = before.revision;
+        let id = format!("package-choice-{index}");
+        again.actions[0] = SkillCatalogAction::CreatePackage {
+            package_id: id.clone(),
+            name: format!("choice-{index}"),
+        };
+        if let SkillCatalogAction::Install {
+            collision: choice,
+            package_id,
+            ..
+        } = &mut again.actions[1]
+        {
+            *choice = collision;
+            *package_id = Some(id);
+        }
+        let SkillsV2Response::Preview { review_receipt, .. } =
+            service.preview_review("owner", &again).unwrap()
+        else {
+            panic!("expected collision choice review");
+        };
+        assert_eq!(service.storage.snapshot().unwrap(), before);
+        let after = service
+            .publish_reviewed("owner", &again, &review_receipt.id)
+            .unwrap();
+        assert!(after.record(&original_id).is_some());
+        assert_eq!(
+            after.catalogs[0].skills.len(),
+            2,
+            "Replace must keep the existing binding"
+        );
+    }
 }
 
 fn update_members(
@@ -308,6 +354,109 @@ fn update_members(
             })
             .collect(),
     }
+}
+
+#[test]
+fn sibling_repository_packages_do_not_reclaim_new_upstream_members() {
+    let fixture = StorageFixture::new();
+    let service = SkillCatalogService::new(fixture.storage.clone());
+    let repo = Repo::new();
+    let first = install_all(&repo, &repo.head(), &["skills/alpha"]);
+    let catalog = service
+        .publish_authorized(&first, &service.prepare(&first).unwrap())
+        .unwrap();
+    let mut second = install_all(&repo, &repo.head(), &["skills/beta"]);
+    second.expected_revision = catalog.revision;
+    for action in &mut second.actions {
+        match action {
+            SkillCatalogAction::CreatePackage { package_id, name } => {
+                *package_id = "package-second".into();
+                *name = "second".into();
+            }
+            SkillCatalogAction::Install { package_id, .. } => {
+                *package_id = Some("package-second".into())
+            }
+            _ => unreachable!(),
+        }
+    }
+    service
+        .publish_authorized(&second, &service.prepare(&second).unwrap())
+        .unwrap();
+    write_skill(&repo.root, "skills/gamma", "gamma");
+    git(&repo.root, &["add", "."]);
+    git(&repo.root, &["commit", "--quiet", "-m", "add gamma"]);
+    let resolve = |id| {
+        let SkillsV2Response::RepositoryUpdate { mutation, .. } =
+            service.resolve_repository_update(id).unwrap()
+        else {
+            panic!("expected an update diff");
+        };
+        mutation
+    };
+    let update = resolve("package-repo");
+    let SkillsV2Response::Preview { review_receipt, .. } =
+        service.preview_review("owner", &update).unwrap()
+    else {
+        panic!("expected review");
+    };
+    let catalog = service
+        .publish_reviewed("owner", &update, &review_receipt.id)
+        .unwrap();
+    let gamma = catalog.catalogs[0]
+        .skills
+        .iter()
+        .find(|s| s.name == "gamma")
+        .unwrap()
+        .clone();
+    let update = resolve("package-second");
+    let SkillsV2Response::Preview { review_receipt, .. } = service
+        .preview_review("owner", &update)
+        .expect("a sibling package already owns gamma; updating must retain that binding")
+    else {
+        panic!("expected review");
+    };
+    let catalog = service
+        .publish_reviewed("owner", &update, &review_receipt.id)
+        .unwrap();
+    assert_eq!(catalog.record(&gamma.id), Some(&gamma));
+    assert_eq!(catalog.catalogs[0].skills.len(), 3);
+    assert!(catalog.catalogs[0]
+        .packages
+        .iter()
+        .all(|p| p.source_revision.as_deref() == Some(repo.head().as_str())));
+    write_skill(&repo.root, "skills/colliding", "ALPHA");
+    git(&repo.root, &["add", "."]);
+    git(
+        &repo.root,
+        &["commit", "--quiet", "-m", "add a colliding directory"],
+    );
+    let mut update = resolve("package-second");
+    let error = service
+        .preview_review("owner", &update)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("choose Rename or Replace"), "{error}");
+    assert_eq!(service.storage.snapshot().unwrap(), catalog);
+    for action in &mut update.actions {
+        if let SkillCatalogAction::Install { collision, .. } = action {
+            *collision = SkillCollisionAction::Rename {
+                name: "alpha-added".into(),
+            };
+        }
+    }
+    let SkillsV2Response::Preview { review_receipt, .. } =
+        service.preview_review("owner", &update).unwrap()
+    else {
+        panic!("expected renamed member review");
+    };
+    let catalog = service
+        .publish_reviewed("owner", &update, &review_receipt.id)
+        .unwrap();
+    assert_eq!(catalog.record(&gamma.id), Some(&gamma));
+    assert!(catalog.catalogs[0]
+        .skills
+        .iter()
+        .any(|s| s.name == "alpha-added" && s.package_id.as_deref() == Some("package-second")));
 }
 
 // MP-08 / MP-10 / MP-11: source-backed packages advance as one reviewed revision.

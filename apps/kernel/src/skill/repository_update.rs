@@ -155,6 +155,24 @@ impl RepositoryUpdateDiff {
                 path: skill.path.clone(),
                 reason: "left unselected at the installed commit".into(),
             });
+        } else if let Some(owner) = catalog.catalogs.iter().flat_map(|c| &c.packages).find(|p| {
+            p.id != package.id
+                && p.source_locator == package.source_locator
+                && p.upstream_members
+                    .get(&skill.path)
+                    .and_then(|id| catalog.record(id))
+                    .is_some_and(|record| {
+                        record.provenance.kind == "repository"
+                            && record.provenance.locator == package.source_locator
+                            && (record.scope == package.scope
+                                || matches!(record.scope, SkillScope::Chariox)
+                                || matches!(package.scope, SkillScope::Chariox))
+                    })
+        }) {
+            self.skipped.push(RepositorySkillSkip {
+                path: skill.path.clone(),
+                reason: format!("already installed from this directory by package {}; its grouping and installed revision are retained", owner.name),
+            });
         } else {
             self.added.push(skill.clone());
             self.updates.push(SkillCatalogAction::Install {

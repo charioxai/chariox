@@ -398,27 +398,7 @@ impl SkillCatalogSet {
         for catalog in &mut next.catalogs {
             catalog.revision = next.revision;
         }
-        let repository_batch = mutation.actions.iter().any(|action| {
-            matches!(
-                action,
-                SkillCatalogAction::Install {
-                    source: SkillInstallSource::Repository { .. },
-                    ..
-                }
-            )
-        });
-        next.validate().map_err(|error| match error {
-            // A repository batch has no rename or replace choice to offer.
-            DaemonError::LocalTransport { message, .. }
-                if repository_batch && message.contains("is occupied") =>
-            {
-                failure(format!(
-                    "{}: a skill of this repository is already installed, or another skill uses that name; remove the installed one first, or leave that directory out of the import",
-                    message.split(';').next().unwrap_or(&message)
-                ))
-            }
-            other => other,
-        })?;
+        next.validate()?;
         Ok(next)
     }
     fn package_mut(

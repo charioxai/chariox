@@ -151,6 +151,12 @@ The Web update entry point remains outside this implementation. Members moved ou
 and directories left unselected at install are skipped; invalid current members
 refuse the whole update. Empty repositories and removal of every remaining member
 require explicit removal or ungrouping. The existing 512-action limit applies.
+MP-08 / MP-10 / MP-11: when another package from the same repository has already
+installed a newly added upstream directory in an overlapping name scope, skip it
+and retain that member's ID, grouping and installed revision. Updating the sibling
+package must not reclaim or duplicate it. Different upstream directories still
+use the normal name collision rules: refusal offers Rename/Replace and publishes
+nothing.
 
 Install/update/remove/state actions work on a single skill or a whole package.
 Show the affected members and collisions before authorization, and commit the
