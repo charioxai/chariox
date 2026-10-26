@@ -48,9 +48,12 @@ fn forwarded_context(
     }
 }
 
-async fn forget(f: &Fixture) {
+async fn forget_machine(
+    f: &Fixture,
+    machine_ref: &str,
+) -> Result<LocalDaemonResponse, DaemonError> {
     let request = LocalDaemonRequest::ForgetRemoteMachine(ForgetRemoteMachineRequest {
-        machine_ref: MACHINE.into(),
+        machine_ref: machine_ref.into(),
     });
     let command = KernelCommand::from_local_request_with_caller(
         "forget-machine",
@@ -65,7 +68,11 @@ async fn forget(f: &Fixture) {
         None,
         &request,
     );
-    let response = f.router.dispatch(command, request).await.unwrap();
+    f.router.dispatch(command, request).await
+}
+
+async fn forget(f: &Fixture) {
+    let response = forget_machine(f, MACHINE).await.unwrap();
     assert!(matches!(
         response,
         LocalDaemonResponse::RemoteMachineForgotten { .. }
@@ -104,6 +111,30 @@ async fn forgetting_the_worker_machine_ends_the_leased_sudo_window_and_refuses_l
         refusal.to_string().contains("was forgotten by the owner"),
         "{refusal}"
     );
+}
+
+#[tokio::test]
+async fn forgetting_an_unregistered_leased_machine_uses_its_known_identity() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture_with_options(None, true);
+    lease_agent_to_machine(&f, "private-slice-worker");
+    assert!(crate::config::DaemonConfig::resolve_registered_machine_ref(MACHINE).is_none());
+
+    forget(&f).await;
+
+    let agent = f
+        .state
+        .owned
+        .agent_store
+        .get_agent(f.request.target_agent_id.as_deref().unwrap())
+        .unwrap();
+    let refusal = crate::runtime::state::worker_lease_trust::ensure_worker_machine_trusted(
+        agent.remote_execution().unwrap(),
+    )
+    .unwrap_err();
+    assert!(refusal.to_string().contains("was forgotten by the owner"));
+    let unknown = forget_machine(&f, "unknown-machine").await.unwrap_err();
+    assert!(unknown.to_string().contains("no live remote machine found"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

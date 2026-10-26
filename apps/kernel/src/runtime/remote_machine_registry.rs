@@ -93,7 +93,12 @@ pub(crate) async fn execute_forget_remote_machine_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let config = config_projection.snapshot();
     let live = live_registry_machines(&config).await.unwrap_or_default();
-    let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
+    let machine =
+        resolve_machine_id_for_registry(&request.machine_ref, &live).or_else(|error| {
+            runtime_state
+                .resolve_leased_worker_machine_ref(&request.machine_ref)
+                .ok_or(error)
+        })?;
     let saved = crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
     invalidate_provider_catalog_caches(app, provider_catalog_projection).await;
     runtime_state

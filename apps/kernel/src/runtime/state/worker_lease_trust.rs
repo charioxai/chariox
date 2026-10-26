@@ -29,6 +29,21 @@ pub(crate) fn ensure_worker_machine_trusted(
 }
 
 impl KernelRuntimeState {
+    /// Private-slice workers are absent from primary-relay discovery. An
+    /// existing lease still gives the owner an exact machine identity to forget.
+    pub(crate) fn resolve_leased_worker_machine_ref(&self, machine_ref: &str) -> Option<String> {
+        self.owned
+            .agent_store
+            .list_agents()
+            .into_iter()
+            .find_map(|agent| {
+                agent.remote_execution().and_then(|binding| {
+                    (binding.worker_machine_id == machine_ref.trim())
+                        .then(|| binding.worker_machine_id.clone())
+                })
+            })
+    }
+
     /// Owner forgot `machine_id`: end the leases of every agent leased to it.
     pub(crate) async fn end_worker_leases_of_forgotten_machine(&self, machine_id: &str) {
         let reason = forgotten_machine_reason(machine_id);
