@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
 import { parseEntry, serve } from './loopd.mjs';
+import { requestRoundStop } from './round-stop.mjs';
 
 const sha = 'a'.repeat(40);
 const entryFile = (lane, round, extra = {}) => ({ lane, round, provider: 'claude', model: 'claude-sonnet-5-5', effort: 'high', hardStopMinutes: 60, brief: '/briefs/BRIEF.md', worktrees: ['/work/' + lane], ...extra });
@@ -127,6 +128,38 @@ test('a refused resume waits, replays the same delivery, and does not starve the
   assert.equal(attempts[0].prompt, attempts[2].prompt);
   assert.equal(r.logs.filter(event => event.kind === 'restart_resume_failed').length, 1);
 });
+
+for (const ending of ['stopped', 'stopping', 'finished', 'worker_lost']) {
+  test(`a pending recovery lane that is ${ending} cannot block another worker's retry`, async t => {
+    const r = await interruptedRounds(t), adapter = r.options.adapter, attempts = [];
+    r.options.reconcileMs = 0;
+    r.control.maxSends = 1;
+    let endingAlpha = false;
+    r.options.adapter = async (op, input) => {
+      if (endingAlpha && input.taskId === 'alpha-r1') {
+        if (op === 'stop' && ending === 'stopping') throw Object.assign(new Error('stop refused'), { code: 'stop_refused' });
+        if (op === 'status' && ending === 'worker_lost') throw Object.assign(new Error('worker gone'), { code: 'agent_not_found' });
+        if (op === 'status' && ending === 'finished') return { state: 'idle', currentPrompt: null, completedTurn: { promptId: 'prompt-alpha-r1', status: 'completed' } };
+      }
+      if (op === 'prompt') {
+        attempts.push(input.taskId);
+        if (attempts.length <= 2) {
+          if (input.taskId === 'beta-r1') {
+            endingAlpha = true;
+            if (['stopped', 'stopping'].includes(ending)) await requestRoundStop('alpha', { layout: r.layout });
+          }
+          throw Object.assign(new Error('rate limited'), { code: 'rate_limit_exceeded' });
+        }
+      }
+      return adapter(op, input);
+    };
+    await serve(r.options);
+    assert.deepEqual(attempts, ['alpha-r1', 'beta-r1', 'beta-r1']);
+    assert.equal(r.sends[0]?.key, 'beta-r1');
+    if (ending !== 'stopping') assert.equal((await runFile(r, 'alpha')).finishReason, ending);
+    else assert.equal((await runFile(r, 'alpha')).stopPending, true);
+  });
+}
 
 test('a provider 429 after admission gets a later new prompt; a content refusal does not', async t => {
   for (const reason of ['Codex error [response_too_many_failed_attempts]: last status: 429 Too Many Requests', 'content policy refusal']) {

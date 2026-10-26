@@ -50,7 +50,7 @@ export async function resumeAfterRestart({ lane, lanes, status, kernelStartedAtM
   const lastAttempt = Math.max(schedule?.attemptedAtMs ?? 0, ...lanes.map(item => item.run.restartRecovery?.attemptedAtMs ?? 0));
   if (now() < Math.max(lastAttempt + SPACING_MS, recovery.retryAtMs ?? 0)) return true;
   // A repeatedly refused worker cannot monopolize the slot ahead of one that has never been resumed.
-  if (lanes.some(other => other !== lane && other.run.restartRecovery?.pending
+  if (lanes.some(other => other !== lane && !other.finished && !other.stopping && other.run.restartRecovery?.pending
     && (other.run.restartRecovery.attemptedAtMs ?? 0) < (recovery.attemptedAtMs ?? 0))) return true;
   if (recovery.sentAtMs) {
     recovery.attempt++;
