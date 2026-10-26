@@ -32,6 +32,7 @@ async function turnProgress(r, label, snapshot) {
         activeProviderRunId: actual?.active_provider_run_id,
         remoteKernelId: actual?.remote_execution?.worker_kernel_id,
         leasedAgentId: actual?.remote_execution?.leased_agent_id,
+        notices: entries(snapshot).filter(row => row.role === 'notice' || row.role === 'error').map(row => ({id: row.id, promptId: row.promptId, text: row.text})),
         rowRoles: entries(snapshot).reduce((counts, row) => { counts[row.role] = (counts[row.role] ?? 0) + 1; return counts; }, {}),
         interactions: (snapshot.interactions ?? []).map(i => ({kind: i.kind, title: i.title, choices: i.choices?.map(c => c.id)})),
         providerRun: run && {id: run.id, state: run.state, phase: run.phase, workingDirectory: run.working_directory},
@@ -105,6 +106,8 @@ async function moveWithRestart(source, target, sessionId, agentId, workspace, ge
         assert.equal(captured.identity.target_kernel_id, forward ? target.status.daemon_id : source.status.daemon_id, 'Selected target identity');
         await record(forward ? 'forward-before-restart' : 'return-before-restart', {generation, operationId: captured.identity.operation_id, phase: captured.phase.phase});
         await restart(source, workspace, sessionId);
+        // The old connection cannot acknowledge a request killed with its kernel.
+        await client.close();
         await pending;
         let completed;
         for (let n = 0; n < 1200; n++) {
