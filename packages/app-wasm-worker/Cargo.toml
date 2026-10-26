@@ -6,10 +6,14 @@ license = "MIT"
 description = "Async component worker for kernel-owned App installations"
 
 [dependencies]
+libc = "0.2.172"
+chariox-app-package = { path = "../app-package" }
 chariox-app-runtime = { path = "../app-runtime" }
 chariox-app-wit = { path = "../app-wit" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
+base64 = "0.22.1"
+futures = "0.3.31"
 sha2 = "0.10.8"
 tokio = { version = "1.44.2", features = ["io-util", "time", "sync", "macros", "net", "rt-multi-thread"] }
 wasmtime = { version = "=50.0.0", default-features = false, features = ["std", "runtime", "cranelift", "component-model-async", "call-hook", "task-group-hook"] }
