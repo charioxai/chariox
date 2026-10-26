@@ -1,0 +1,202 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
+        "deliveredDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "reviewKeyIds": []
+      },
+      "input": {
+        "digestsOnly": true,
+        "reviews": [],
+        "ui": null
+      },
+      "name": "none"
+    },
+    {
+      "expected": {
+        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
+        "deliveredDigest": "sha256:ce232bdd959efa3c4800d7ed349f68054ed9362d7625745a2b920a36b2bd8f57",
+        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "reviewKeyIds": [
+          "reviewer-a"
+        ]
+      },
+      "input": {
+        "digestsOnly": true,
+        "reviews": [
+          "reviewer-a"
+        ],
+        "ui": null
+      },
+      "name": "a"
+    },
+    {
+      "expected": {
+        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
+        "deliveredDigest": "sha256:f7a1fcc83debbbe33cda4e45aea269bb560be8c6152094abba6cd0dbb28fb102",
+        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "reviewKeyIds": [
+          "reviewer-a",
+          "reviewer-b"
+        ]
+      },
+      "input": {
+        "digestsOnly": true,
+        "reviews": [
+          "reviewer-a",
+          "reviewer-b"
+        ],
+        "ui": null
+      },
+      "name": "a-b"
+    },
+    {
+      "expected": {
+        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
+        "deliveredDigest": "sha256:f7a1fcc83debbbe33cda4e45aea269bb560be8c6152094abba6cd0dbb28fb102",
+        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "reviewKeyIds": [
+          "reviewer-a",
+          "reviewer-b"
+        ]
+      },
+      "input": {
+        "digestsOnly": true,
+        "reviews": [
+          "reviewer-b",
+          "reviewer-a"
+        ],
+        "ui": null
+      },
+      "name": "b-a-reordered"
+    },
+    {
+      "expected": {
+        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
+        "deliveredDigest": "sha256:ce232bdd959efa3c4800d7ed349f68054ed9362d7625745a2b920a36b2bd8f57",
+        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "reviewKeyIds": [
+          "reviewer-a"
+        ]
+      },
+      "input": {
+        "digestsOnly": true,
+        "reviews": [
+          "reviewer-a"
+        ],
+        "ui": null
+      },
+      "name": "b-removed-a"
+    },
+    {
+      "expected": {
+        "contentDigest": "sha256:34eb8c7d0ac3e2c10d5b78ff6e4aff93fcdb94d85dafb74e99935ae927cc438c",
+        "deliveredDigest": "sha256:5412bf3e0acab2a740c327f70e70fba4d364d9a7e918bdd8d771703564390d91",
+        "publisherArchiveDigest": "sha256:bdacdd9ce0810b1655e135b42a6dc0dc1ab53d1b61d6a5e32526a69bb82644c4",
+        "reviewKeyIds": [
+          "reviewer-a"
+        ]
+      },
+      "input": {
+        "digestsOnly": true,
+        "reviews": [
+          "reviewer-a"
+        ],
+        "ui": "<!doctype html><title>Todo v2</title>"
+      },
+      "name": "changed-ui-with-a"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §1: reviews change only the delivered digest; changed UI changes the content digest",
+  "shared": {
+    "files": {
+      "migrations/001.wasm": "migration placeholder",
+      "runtime/app.wasm": "component placeholder",
+      "schemas/actions.json": "{\"actions\": [{\"name\": \"create_todo\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"criticalValidation\": {\"reason\": \"Confirm creation\", \"userVerification\": true}, \"effectRoutes\": [{\"origin\": \"https://api.example.com\", \"method\": \"POST\", \"path\": \"/todos\", \"connection\": \"todo_account\"}]}]}",
+      "schemas/events.json": "{\"events\": [{\"name\": \"todo_due\", \"schemaVersion\": 1, \"direction\": \"outgoing\", \"payloadSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}}]}",
+      "schemas/tools.json": "{\"tools\": [{\"name\": \"create_todo\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"action\": \"create_todo\"}]}",
+      "schemas/ui-actions.json": "{\"uiActions\": [{\"name\": \"add_todo\", \"description\": \"Add a todo to the current list\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"effect\": \"write\"}, {\"name\": \"list_todos\", \"description\": \"Read the current list\", \"inputSchema\": {\"type\": \"object\", \"additionalProperties\": false}, \"effect\": \"read\"}, {\"name\": \"clear_list\", \"description\": \"Remove every todo\", \"inputSchema\": {\"type\": \"object\", \"additionalProperties\": false}, \"effect\": \"approval\", \"approvalReason\": \"Clear the whole list\"}]}",
+      "ui/index.html": "<!doctype html><title>Todo</title>"
+    },
+    "manifest": {
+      "actions": "schemas/actions.json",
+      "appContractVersion": 2,
+      "appId": "com.example.todo",
+      "build": {
+        "language": "rust",
+        "sdkVersion": "1.0.0",
+        "toolchain": "rustc 1.90.0 wasm32-wasip2"
+      },
+      "capabilities": {
+        "network": [
+          {
+            "methods": [
+              "POST"
+            ],
+            "origin": "https://api.example.com"
+          }
+        ]
+      },
+      "events": "schemas/events.json",
+      "migrations": {
+        "directory": "migrations",
+        "steps": [
+          {
+            "entry": "migrations/001.wasm",
+            "from": 0,
+            "to": 1
+          }
+        ],
+        "targetVersion": 1
+      },
+      "publisher": {
+        "id": "com.example",
+        "keyId": "developer-1",
+        "name": "Local Developer"
+      },
+      "requiredFeatures": [
+        "wasm-component",
+        "ui-actions",
+        "directed-events"
+      ],
+      "resourcePolicy": "chariox.app.resources.v1",
+      "runtime": {
+        "component": "runtime/app.wasm",
+        "engine": "wasm"
+      },
+      "schema": "chariox.app.v2",
+      "tools": "schemas/tools.json",
+      "ui": {
+        "entry": "ui/index.html"
+      },
+      "uiActions": "schemas/ui-actions.json",
+      "version": "1.0.0",
+      "world": "chariox:app/app@1.0.0"
+    },
+    "reviews": {
+      "reviewer-a": {
+        "algorithm": "ed25519",
+        "attestation": {
+          "policy": "reserved",
+          "verdict": "none"
+        },
+        "keyId": "reviewer-a",
+        "schema": "chariox.package-review.v1",
+        "value": "AAAA"
+      },
+      "reviewer-b": {
+        "algorithm": "ed25519",
+        "attestation": {
+          "policy": "reserved",
+          "verdict": "none"
+        },
+        "keyId": "reviewer-b",
+        "schema": "chariox.package-review.v1",
+        "value": "AAAA"
+      }
+    },
+    "signingSeedHex": "0707070707070707070707070707070707070707070707070707070707070707"
+  }
+}

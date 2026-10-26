@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
+        "deliveredDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "inventoryBytes": "{\"files\":[{\"digest\":\"sha256:5ee2ebe08cb140b3c30246a8ab46aeacceeb42a33b4cc6a3f9e1fd0165a57a6a\",\"path\":\"migrations/001.wasm\",\"size\":21},{\"digest\":\"sha256:75788f44a9c627d4c86bad5b11850982da27f4b64b784b7c305bd6192c94c29e\",\"path\":\"runtime/app.wasm\",\"size\":21},{\"digest\":\"sha256:bfc13234a74f0f5829ea3a92b529c5e76ad1e847df84348b2479450b9c7979e7\",\"path\":\"schemas/actions.json\",\"size\":369},{\"digest\":\"sha256:5135cb78febd5a3bbc5c0389eab7543261b97dbfa59b71dbbe7b166d568e0278\",\"path\":\"schemas/events.json\",\"size\":209},{\"digest\":\"sha256:45c8c959cc0bdd75a4377c455cc49b83bb432260e20c1ec63e5dfa804b9b9997\",\"path\":\"schemas/tools.json\",\"size\":189},{\"digest\":\"sha256:169261a9fa84e6e5bee461836f3b507082dcdaaa2db87f9add237482228aff3c\",\"path\":\"schemas/ui-actions.json\",\"size\":571},{\"digest\":\"sha256:1e942e5b7e66b81fb4d02b4494f5480e4fe23a593cc8c5206c8b10c21a07faa9\",\"path\":\"ui/index.html\",\"size\":34}],\"schema\":\"chariox.integrity.v2\"}",
+        "manifestBytes": "{\"actions\":\"schemas/actions.json\",\"appContractVersion\":2,\"appId\":\"com.example.todo\",\"build\":{\"language\":\"rust\",\"sdkVersion\":\"1.0.0\",\"toolchain\":\"rustc 1.90.0 wasm32-wasip2\"},\"capabilities\":{\"agents\":[],\"clipboard\":[],\"externalFiles\":[],\"network\":[{\"methods\":[\"POST\"],\"origin\":\"https://api.example.com\"}],\"workflows\":[]},\"events\":\"schemas/events.json\",\"migrations\":{\"directory\":\"migrations\",\"steps\":[{\"entry\":\"migrations/001.wasm\",\"from\":0,\"to\":1}],\"targetVersion\":1},\"publisher\":{\"id\":\"com.example\",\"keyId\":\"developer-1\",\"name\":\"Local Developer\"},\"requiredFeatures\":[\"wasm-component\",\"ui-actions\",\"directed-events\"],\"resourcePolicy\":\"chariox.app.resources.v1\",\"runtime\":{\"component\":\"runtime/app.wasm\",\"engine\":\"wasm\"},\"schema\":\"chariox.app.v2\",\"tools\":\"schemas/tools.json\",\"ui\":{\"entry\":\"ui/index.html\"},\"uiActions\":\"schemas/ui-actions.json\",\"version\":\"1.0.0\",\"world\":\"chariox:app/app@1.0.0\"}",
+        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "reviewKeyIds": [],
+        "signatureValue": "mlktHLcrD0EAyA2h7GP/LTE1EXM7YHwEO9jDiAwZ9N9/zivriCtMNXIUT5drCHCWK9PjslLv+/NlxhnVydFaCw==",
+        "signingSubject": "{\"inventory\":{\"files\":[{\"digest\":\"sha256:5ee2ebe08cb140b3c30246a8ab46aeacceeb42a33b4cc6a3f9e1fd0165a57a6a\",\"path\":\"migrations/001.wasm\",\"size\":21},{\"digest\":\"sha256:75788f44a9c627d4c86bad5b11850982da27f4b64b784b7c305bd6192c94c29e\",\"path\":\"runtime/app.wasm\",\"size\":21},{\"digest\":\"sha256:bfc13234a74f0f5829ea3a92b529c5e76ad1e847df84348b2479450b9c7979e7\",\"path\":\"schemas/actions.json\",\"size\":369},{\"digest\":\"sha256:5135cb78febd5a3bbc5c0389eab7543261b97dbfa59b71dbbe7b166d568e0278\",\"path\":\"schemas/events.json\",\"size\":209},{\"digest\":\"sha256:45c8c959cc0bdd75a4377c455cc49b83bb432260e20c1ec63e5dfa804b9b9997\",\"path\":\"schemas/tools.json\",\"size\":189},{\"digest\":\"sha256:169261a9fa84e6e5bee461836f3b507082dcdaaa2db87f9add237482228aff3c\",\"path\":\"schemas/ui-actions.json\",\"size\":571},{\"digest\":\"sha256:1e942e5b7e66b81fb4d02b4494f5480e4fe23a593cc8c5206c8b10c21a07faa9\",\"path\":\"ui/index.html\",\"size\":34}],\"schema\":\"chariox.integrity.v2\"},\"manifest\":{\"actions\":\"schemas/actions.json\",\"appContractVersion\":2,\"appId\":\"com.example.todo\",\"build\":{\"language\":\"rust\",\"sdkVersion\":\"1.0.0\",\"toolchain\":\"rustc 1.90.0 wasm32-wasip2\"},\"capabilities\":{\"agents\":[],\"clipboard\":[],\"externalFiles\":[],\"network\":[{\"methods\":[\"POST\"],\"origin\":\"https://api.example.com\"}],\"workflows\":[]},\"events\":\"schemas/events.json\",\"migrations\":{\"directory\":\"migrations\",\"steps\":[{\"entry\":\"migrations/001.wasm\",\"from\":0,\"to\":1}],\"targetVersion\":1},\"publisher\":{\"id\":\"com.example\",\"keyId\":\"developer-1\",\"name\":\"Local Developer\"},\"requiredFeatures\":[\"wasm-component\",\"ui-actions\",\"directed-events\"],\"resourcePolicy\":\"chariox.app.resources.v1\",\"runtime\":{\"component\":\"runtime/app.wasm\",\"engine\":\"wasm\"},\"schema\":\"chariox.app.v2\",\"tools\":\"schemas/tools.json\",\"ui\":{\"entry\":\"ui/index.html\"},\"uiActions\":\"schemas/ui-actions.json\",\"version\":\"1.0.0\",\"world\":\"chariox:app/app@1.0.0\"},\"schema\":\"chariox.package-signature.v2\"}"
+      },
+      "input": {
+        "reviews": [],
+        "ui": null
+      },
+      "name": "publisher-only"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §1: canonical bytes, signing subject and the three digests of one package",
+  "shared": {
+    "files": {
+      "migrations/001.wasm": "migration placeholder",
+      "runtime/app.wasm": "component placeholder",
+      "schemas/actions.json": "{\"actions\": [{\"name\": \"create_todo\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"criticalValidation\": {\"reason\": \"Confirm creation\", \"userVerification\": true}, \"effectRoutes\": [{\"origin\": \"https://api.example.com\", \"method\": \"POST\", \"path\": \"/todos\", \"connection\": \"todo_account\"}]}]}",
+      "schemas/events.json": "{\"events\": [{\"name\": \"todo_due\", \"schemaVersion\": 1, \"direction\": \"outgoing\", \"payloadSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}}]}",
+      "schemas/tools.json": "{\"tools\": [{\"name\": \"create_todo\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"action\": \"create_todo\"}]}",
+      "schemas/ui-actions.json": "{\"uiActions\": [{\"name\": \"add_todo\", \"description\": \"Add a todo to the current list\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"effect\": \"write\"}, {\"name\": \"list_todos\", \"description\": \"Read the current list\", \"inputSchema\": {\"type\": \"object\", \"additionalProperties\": false}, \"effect\": \"read\"}, {\"name\": \"clear_list\", \"description\": \"Remove every todo\", \"inputSchema\": {\"type\": \"object\", \"additionalProperties\": false}, \"effect\": \"approval\", \"approvalReason\": \"Clear the whole list\"}]}",
+      "ui/index.html": "<!doctype html><title>Todo</title>"
+    },
+    "manifest": {
+      "actions": "schemas/actions.json",
+      "appContractVersion": 2,
+      "appId": "com.example.todo",
+      "build": {
+        "language": "rust",
+        "sdkVersion": "1.0.0",
+        "toolchain": "rustc 1.90.0 wasm32-wasip2"
+      },
+      "capabilities": {
+        "network": [
+          {
+            "methods": [
+              "POST"
+            ],
+            "origin": "https://api.example.com"
+          }
+        ]
+      },
+      "events": "schemas/events.json",
+      "migrations": {
+        "directory": "migrations",
+        "steps": [
+          {
+            "entry": "migrations/001.wasm",
+            "from": 0,
+            "to": 1
+          }
+        ],
+        "targetVersion": 1
+      },
+      "publisher": {
+        "id": "com.example",
+        "keyId": "developer-1",
+        "name": "Local Developer"
+      },
+      "requiredFeatures": [
+        "wasm-component",
+        "ui-actions",
+        "directed-events"
+      ],
+      "resourcePolicy": "chariox.app.resources.v1",
+      "runtime": {
+        "component": "runtime/app.wasm",
+        "engine": "wasm"
+      },
+      "schema": "chariox.app.v2",
+      "tools": "schemas/tools.json",
+      "ui": {
+        "entry": "ui/index.html"
+      },
+      "uiActions": "schemas/ui-actions.json",
+      "version": "1.0.0",
+      "world": "chariox:app/app@1.0.0"
+    },
+    "reviews": {
+      "reviewer-a": {
+        "algorithm": "ed25519",
+        "attestation": {
+          "policy": "reserved",
+          "verdict": "none"
+        },
+        "keyId": "reviewer-a",
+        "schema": "chariox.package-review.v1",
+        "value": "AAAA"
+      },
+      "reviewer-b": {
+        "algorithm": "ed25519",
+        "attestation": {
+          "policy": "reserved",
+          "verdict": "none"
+        },
+        "keyId": "reviewer-b",
+        "schema": "chariox.package-review.v1",
+        "value": "AAAA"
+      }
+    },
+    "signingSeedHex": "0707070707070707070707070707070707070707070707070707070707070707"
+  }
+}

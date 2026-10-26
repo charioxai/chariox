@@ -1,0 +1,485 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+};
+
+use ed25519_dalek::SigningKey;
+use serde_json::{json, Value};
+
+use super::*;
+use crate::{archive, read_inventory, signing_bytes_for, ErrorCode, Limits, TrustedPublisher};
+
+/// Vectors are shared with other implementations. Regenerate one only for a
+/// deliberate contract change: `CHARIOX_UPDATE_VECTORS=1 cargo test ...`.
+fn check_vectors(file: &str, run: impl Fn(&Value, &Value) -> Value) {
+    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests/vectors/v2", file]
+        .iter()
+        .collect();
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let shared = document.get("shared").cloned().unwrap_or(Value::Null);
+    let update = std::env::var_os("CHARIOX_UPDATE_VECTORS").is_some();
+    for case in document["cases"].as_array_mut().unwrap() {
+        let actual = run(&shared, &case["input"]);
+        if update {
+            case["expected"] = actual;
+        } else {
+            assert!(
+                case["expected"] == actual,
+                "{file} / {}: encoding changed\nexpected {:#}\nactual   {actual:#}",
+                case["name"],
+                case["expected"]
+            );
+        }
+    }
+    if update {
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&document).unwrap() + "\n",
+        )
+        .unwrap();
+    }
+}
+
+fn key() -> SigningKey {
+    SigningKey::from_bytes(&[7; 32])
+}
+
+fn policy() -> PolicyV2 {
+    PolicyV2::new(
+        BTreeSet::from([
+            RequiredFeature::WasmComponent,
+            RequiredFeature::UiActions,
+            RequiredFeature::AgentPanel,
+            RequiredFeature::Connections,
+            RequiredFeature::DirectedEvents,
+        ]),
+        vec![SupportedWorld {
+            name: "chariox:app/app".to_owned(),
+            major: 1,
+            minor: 0,
+        }],
+        vec![TrustedPublisher {
+            publisher_id: "com.example".to_owned(),
+            key_id: "developer-1".to_owned(),
+            public_key: key().verifying_key(),
+        }],
+    )
+}
+
+struct Fixture {
+    manifest: ManifestV2,
+    files: BTreeMap<String, Vec<u8>>,
+    reviews: BTreeMap<String, ReviewEntry>,
+}
+
+fn fixture(shared: &Value) -> Fixture {
+    Fixture {
+        manifest: serde_json::from_value(shared["manifest"].clone()).unwrap(),
+        files: shared["files"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(path, text)| (path.clone(), text.as_str().unwrap().as_bytes().to_vec()))
+            .collect(),
+        reviews: serde_json::from_value(shared["reviews"].clone()).unwrap(),
+    }
+}
+
+fn base() -> Fixture {
+    let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests/vectors/v2/package.json"]
+        .iter()
+        .collect();
+    let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    fixture(&document["shared"])
+}
+
+fn packed(fixture: &Fixture, reviews: &[&str]) -> Vec<u8> {
+    let reviews: Vec<_> = reviews
+        .iter()
+        .map(|k| fixture.reviews[*k].clone())
+        .collect();
+    pack(
+        &fixture.manifest,
+        &fixture.files,
+        &key(),
+        &reviews,
+        &Limits::default(),
+    )
+    .unwrap()
+}
+
+fn package_vector(shared: &Value, input: &Value) -> Value {
+    let mut fixture = fixture(shared);
+    if let Some(ui) = input["ui"].as_str() {
+        fixture
+            .files
+            .insert("ui/index.html".to_owned(), ui.as_bytes().to_vec());
+    }
+    let reviews: Vec<_> = input["reviews"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap())
+        .collect();
+    let bytes = packed(&fixture, &reviews);
+    let policy = policy();
+    let verified = verify(&bytes, &policy).unwrap();
+    let entries = archive::parse(&bytes, &policy.limits).unwrap();
+    let text = |index: usize| String::from_utf8(entries[index].data.to_vec()).unwrap();
+    let manifest_value: Value = serde_json::from_str(&text(0)).unwrap();
+    let inventory = read_inventory(entries[1].data, INTEGRITY_SCHEMA_V2, &policy.limits).unwrap();
+    let subject = signing_bytes_for(SIGNATURE_SCHEMA_V2, &manifest_value, &inventory).unwrap();
+    let signature: Value = serde_json::from_str(&text(2)).unwrap();
+    let mut vector = json!({
+        "manifestBytes": text(0),
+        "inventoryBytes": text(1),
+        "signingSubject": String::from_utf8(subject).unwrap(),
+        "signatureValue": signature["value"],
+        "contentDigest": verified.digests().content,
+        "publisherArchiveDigest": verified.digests().publisher_archive,
+        "deliveredDigest": verified.digests().delivered,
+        "reviewKeyIds": verified.reviews().iter().map(|r| &r.key_id).collect::<Vec<_>>(),
+    });
+    if input["digestsOnly"] == true {
+        for bulky in [
+            "manifestBytes",
+            "inventoryBytes",
+            "signingSubject",
+            "signatureValue",
+        ] {
+            vector.as_object_mut().unwrap().remove(bulky);
+        }
+    }
+    vector
+}
+
+#[test]
+fn package_vectors_are_stable() {
+    check_vectors("package.json", package_vector);
+}
+
+#[test]
+fn review_vectors_are_stable_and_bind_nothing_into_the_publisher_digests() {
+    check_vectors("package-reviews.json", package_vector);
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests/vectors/v2/package-reviews.json",
+    ]
+    .iter()
+    .collect();
+    let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let digests: BTreeMap<&str, &Value> = document["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|case| (case["name"].as_str().unwrap(), &case["expected"]))
+        .collect();
+    let field = |case: &str, name: &str| digests[case][name].clone();
+    for case in ["a", "a-b", "b-a-reordered", "b-removed-a"] {
+        for name in ["contentDigest", "publisherArchiveDigest"] {
+            assert!(
+                field(case, name) == field("none", name),
+                "{case} changed {name}"
+            );
+        }
+    }
+    assert!(field("none", "deliveredDigest") != field("a", "deliveredDigest"));
+    assert!(field("a", "deliveredDigest") != field("a-b", "deliveredDigest"));
+    assert!(
+        field("a-b", "deliveredDigest") == field("b-a-reordered", "deliveredDigest"),
+        "review order must not change the archive"
+    );
+    assert!(field("a", "deliveredDigest") == field("b-removed-a", "deliveredDigest"));
+    assert!(field("a-b", "reviewKeyIds") == json!(["reviewer-a", "reviewer-b"]));
+    // A changed UI invalidates what an attestation of the old content bound.
+    assert!(field("changed-ui-with-a", "contentDigest") != field("a", "contentDigest"));
+    assert!(
+        field("changed-ui-with-a", "publisherArchiveDigest")
+            != field("a", "publisherArchiveDigest")
+    );
+}
+
+#[test]
+fn app_id_vectors_are_stable() {
+    check_vectors("app-id.json", |_, input| {
+        match AppId::parse(input["appId"].as_str().unwrap()) {
+            Ok(id) => json!({"valid": true, "namespaces": id.namespaces()}),
+            Err(_) => json!({"valid": false}),
+        }
+    });
+}
+
+#[test]
+fn registration_vectors_are_stable() {
+    check_vectors("registration.json", |_, input| {
+        let signer = SignerPrincipal::of(&crate::Publisher {
+            id: input["signer"]["publisherId"].as_str().unwrap().to_owned(),
+            key_id: input["signer"]["keyId"].as_str().unwrap().to_owned(),
+            name: "Name".to_owned(),
+        });
+        match registration_outcome(input["bound"].as_str(), &signer) {
+            Ok(outcome) => serde_json::to_value(outcome).unwrap(),
+            Err(refusal) => serde_json::to_value(refusal).unwrap(),
+        }
+    });
+}
+
+#[test]
+fn world_vectors_are_stable() {
+    check_vectors("world.json", |_, input| {
+        let Ok(requested) = WorldId::parse(input["requested"].as_str().unwrap()) else {
+            return json!({"invalid": true});
+        };
+        let supported: Vec<SupportedWorld> =
+            serde_json::from_value(input["supported"].clone()).unwrap();
+        match check_world(&requested, &supported) {
+            Ok(()) => json!({"supported": true}),
+            Err(refusal) => serde_json::to_value(refusal).unwrap(),
+        }
+    });
+}
+
+fn code(result: crate::Result<impl std::fmt::Debug>) -> ErrorCode {
+    result.unwrap_err().code
+}
+
+/// Rebuild an archive with one more entry, keeping the sorted-tail rule.
+fn with_entry(bytes: &[u8], path: &str, data: &[u8]) -> Vec<u8> {
+    let limits = Limits::default();
+    let entries = archive::parse(bytes, &limits).unwrap();
+    let mut all: Vec<(&str, &[u8])> = entries.iter().map(|e| (e.path.as_str(), e.data)).collect();
+    all.push((path, data));
+    all[3..].sort_by_key(|entry| entry.0);
+    archive::encode(&all, &limits).unwrap()
+}
+
+#[test]
+fn unknown_signature_formats_are_refused_not_trusted() {
+    let bytes = packed(&base(), &[]);
+    let policy = policy();
+    for (path, data) in [
+        ("signatures/other.sig", b"{}".as_slice()),
+        ("signatures/reviews/reviewer-a.txt", b"{}"),
+        ("signatures/reviews/Bad Id.json", b"{}"),
+    ] {
+        let tampered = with_entry(&bytes, path, data);
+        assert_eq!(
+            code(verify(&tampered, &policy)),
+            ErrorCode::IncompatibleContract,
+            "{path}"
+        );
+    }
+    let future = json!({"schema": "chariox.package-review.v2", "keyId": "reviewer-a"});
+    let tampered = with_entry(
+        &bytes,
+        "signatures/reviews/reviewer-a.json",
+        &serde_json::to_vec(&future).unwrap(),
+    );
+    assert_eq!(
+        code(verify(&tampered, &policy)),
+        ErrorCode::IncompatibleContract
+    );
+}
+
+#[test]
+fn malformed_review_entries_are_refused() {
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let mut wrong_key = fixture.reviews["reviewer-a"].clone();
+    wrong_key.key_id = "reviewer-b".to_owned();
+    let mut not_canonical = serde_json::to_vec_pretty(&fixture.reviews["reviewer-a"]).unwrap();
+    not_canonical.push(b'\n');
+    for data in [serde_json::to_vec(&wrong_key).unwrap(), not_canonical] {
+        let tampered = with_entry(&bytes, "signatures/reviews/reviewer-a.json", &data);
+        assert_eq!(
+            code(verify(&tampered, &policy)),
+            ErrorCode::InvalidSignature
+        );
+    }
+    let many: Vec<_> = (0..=MAX_REVIEWS).map(|i| format!("reviewer-{i}")).collect();
+    let mut reviews = Vec::new();
+    for name in &many {
+        let mut review = fixture.reviews["reviewer-a"].clone();
+        review.key_id = name.clone();
+        reviews.push(review);
+    }
+    let limits = Limits::default();
+    assert_eq!(
+        code(pack(
+            &fixture.manifest,
+            &fixture.files,
+            &key(),
+            &reviews,
+            &limits
+        )),
+        ErrorCode::ArchiveLimit
+    );
+}
+
+#[test]
+fn a_review_never_stands_in_for_the_publisher_signature() {
+    let policy = policy();
+    let mut untrusted = policy.clone();
+    untrusted.trusted_publishers.clear();
+    let bytes = packed(&base(), &["reviewer-a"]);
+    assert_eq!(
+        code(verify(&bytes, &untrusted)),
+        ErrorCode::UntrustedPublisher
+    );
+    verify(&bytes, &policy).unwrap();
+}
+
+#[test]
+fn compatibility_is_checked_against_world_and_features() {
+    let bytes = packed(&base(), &[]);
+    let mut no_world = policy();
+    no_world.worlds.clear();
+    assert_eq!(
+        code(verify(&bytes, &no_world)),
+        ErrorCode::IncompatibleContract
+    );
+    let mut no_actions = policy();
+    no_actions
+        .kernel_features
+        .remove(&RequiredFeature::UiActions);
+    let error = verify(&bytes, &no_actions).unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleProtocol);
+    assert!(error.message.contains("ui-actions"), "{}", error.message);
+}
+
+#[test]
+fn a_package_cannot_understate_the_features_it_uses() {
+    let mut fixture = base();
+    fixture.manifest.required_features = vec![RequiredFeature::WasmComponent];
+    let limits = Limits::default();
+    assert_eq!(
+        code(pack(
+            &fixture.manifest,
+            &fixture.files,
+            &key(),
+            &[],
+            &limits
+        )),
+        ErrorCode::InvalidManifest
+    );
+}
+
+#[test]
+fn v1_and_v2_do_not_accept_each_others_packages() {
+    let bytes = packed(&base(), &[]);
+    let v1 = crate::VerificationPolicy::new(500, Vec::new());
+    assert_eq!(code(crate::verify(&bytes, &v1)), ErrorCode::InvalidManifest);
+    let mut forged = base();
+    forged.manifest.schema = "chariox.app.v1".to_owned();
+    assert_eq!(
+        code(pack(
+            &forged.manifest,
+            &forged.files,
+            &key(),
+            &[],
+            &Limits::default()
+        )),
+        ErrorCode::InvalidManifest
+    );
+}
+
+#[test]
+fn tampering_and_serialized_native_code_are_refused() {
+    let bytes = packed(&base(), &[]);
+    let policy = policy();
+    let mut tampered = bytes.clone();
+    let position = tampered
+        .windows(b"<title>Todo".len())
+        .position(|window| window == b"<title>Todo")
+        .unwrap();
+    tampered[position + 7] = b'X';
+    assert_eq!(
+        code(verify(&tampered, &policy)),
+        ErrorCode::IntegrityMismatch
+    );
+    let mut fixture = base();
+    fixture
+        .files
+        .insert("runtime/app.cwasm".to_owned(), b"native".to_vec());
+    assert_eq!(
+        code(pack(
+            &fixture.manifest,
+            &fixture.files,
+            &key(),
+            &[],
+            &Limits::default()
+        )),
+        ErrorCode::UnsupportedFeature
+    );
+}
+
+#[test]
+fn ui_action_declarations_are_validated() {
+    let mut fixture = base();
+    let closed = json!({"type":"object","additionalProperties":false});
+    let action = |name: &str, effect: &str, reason: Option<&str>| {
+        let mut value =
+            json!({"name": name, "description": "d", "inputSchema": closed, "effect": effect});
+        if let Some(reason) = reason {
+            value["approvalReason"] = json!(reason);
+        }
+        value
+    };
+    let cases = [
+        vec![action("clear", "approval", None)],
+        vec![action("read_it", "read", Some("why"))],
+        vec![action("same", "read", None), action("same", "write", None)],
+        vec![action("Bad-Name", "read", None)],
+    ];
+    for actions in cases {
+        fixture.files.insert(
+            "schemas/ui-actions.json".to_owned(),
+            serde_json::to_vec(&json!({"uiActions": actions})).unwrap(),
+        );
+        assert_eq!(
+            code(pack(
+                &fixture.manifest,
+                &fixture.files,
+                &key(),
+                &[],
+                &Limits::default()
+            )),
+            ErrorCode::InvalidSchema
+        );
+    }
+    let verified_bytes = packed(&base(), &[]);
+    let policy = policy();
+    let verified = verify(&verified_bytes, &policy).unwrap();
+    let effects: Vec<_> = verified.ui_actions().iter().map(|a| a.effect).collect();
+    assert_eq!(
+        effects,
+        [
+            UiActionEffect::Write,
+            UiActionEffect::Read,
+            UiActionEffect::Approval
+        ]
+    );
+}
+
+#[test]
+fn the_dev_identity_is_a_distinct_principal() {
+    let mut fixture = base();
+    fixture.manifest.publisher.id = DEV_PUBLISHER_ID.to_owned();
+    let bytes = pack(
+        &fixture.manifest,
+        &fixture.files,
+        &key(),
+        &[],
+        &Limits::default(),
+    )
+    .unwrap();
+    let mut policy = policy();
+    policy.trusted_publishers[0].publisher_id = DEV_PUBLISHER_ID.to_owned();
+    let verified = verify(&bytes, &policy).unwrap();
+    assert_eq!(
+        SignerPrincipal::of(&verified.manifest().publisher),
+        SignerPrincipal::Dev
+    );
+}
