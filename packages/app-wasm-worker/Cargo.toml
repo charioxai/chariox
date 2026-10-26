@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "Async component worker for kernel-owned App installations"
 
+[features]
+test-support = []
+
 [dependencies]
 libc = "0.2.172"
 chariox-app-package = { path = "../app-package" }
@@ -19,6 +22,7 @@ tokio = { version = "1.44.2", features = ["io-util", "time", "sync", "macros", "
 wasmtime = { version = "=50.0.0", default-features = false, features = ["std", "runtime", "cranelift", "component-model-async", "call-hook", "task-group-hook"] }
 
 [dev-dependencies]
+chariox-app-wasm-worker = { path = ".", features = ["test-support"] }
 wit-parser = "=0.262.0"
 wit-component = { version = "=0.262.0", features = ["dummy-module"] }
 wasm-encoder = { version = "=0.262.0", features = ["wasmparser"] }

@@ -28,6 +28,10 @@ cache by exact worker build, engine version, target and CPU-feature policy.
 fail linking; production does not install trapping placeholders or expose
 Wasmtime's ambient WASI linker.
 
+The `test-support` feature exposes `WorkerEngine::deserialize_module` only for
+the native containment probes. A dev-dependency enables it for `cargo test`;
+production builds leave it disabled.
+
 FD3 carries `chariox_app_runtime::wire::Channel`. FD4 writes `CXAWR001` and the
 existing length-prefixed generation, installation and release-digest identity,
 then waits for `CXAWGO01` before compiling or running guest code. Native

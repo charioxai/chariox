@@ -85,11 +85,12 @@ impl WorkerEngine {
         #[cfg(not(target_os = "macos"))]
         Component::new(&self.engine, bytes)
     }
-    /// Load a module produced by this exact engine/configuration.
+    /// Load a module produced by this exact engine/configuration for native probes.
     ///
     /// # Safety
     /// The caller must authenticate the artifact's compiler/configuration and
     /// integrity. App package bytes must never enter this native-code API.
+    #[cfg(feature = "test-support")]
     pub unsafe fn deserialize_module(&self, bytes: &[u8]) -> wasmtime::Result<wasmtime::Module> {
         #[cfg(target_os = "macos")]
         return unsafe { self.code.module(&self.engine, bytes) };

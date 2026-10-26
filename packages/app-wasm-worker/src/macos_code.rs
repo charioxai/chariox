@@ -6,7 +6,9 @@ use std::{
     ptr::NonNull,
     sync::{Arc, Mutex},
 };
-use wasmtime::{component::Component, CustomCodeMemory, Engine, Module};
+#[cfg(feature = "test-support")]
+use wasmtime::Module;
+use wasmtime::{component::Component, CustomCodeMemory, Engine};
 
 unsafe extern "C" {
     fn pthread_jit_write_protect_np(enabled: i32);
@@ -102,6 +104,7 @@ impl JitCode {
         unsafe { Component::deserialize_raw(engine, self.allocate(bytes)?) }
     }
 
+    #[cfg(feature = "test-support")]
     pub(crate) unsafe fn module(&self, engine: &Engine, bytes: &[u8]) -> wasmtime::Result<Module> {
         unsafe { Module::deserialize_raw(engine, self.allocate(bytes)?) }
     }
