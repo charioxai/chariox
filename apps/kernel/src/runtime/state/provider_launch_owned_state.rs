@@ -498,6 +498,81 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
+pub(super) async fn owned_runtime_state(
+    app: &Arc<Mutex<crate::app::DaemonApp>>,
+) -> KernelRuntimeState {
+    let (
+        config_projection,
+        session_store,
+        agent_store,
+        attachment_store,
+        provider_store,
+        provider_process_tracking,
+        slice_store,
+        session_projection,
+        provider_run_projection,
+        operational_history_store,
+        durable_state_store,
+        prompt_state_owner,
+        active_turns,
+        prompt_activity,
+        prompt_workspace_claims,
+        structured_output_records,
+        terminal_stream,
+        workflow_design_events,
+        metaagent_events,
+        workspace_coordinator,
+    ) = {
+        let app = app.lock().await;
+        (
+            app.config_projection_store(),
+            app.session_state_store(),
+            app.agents().clone(),
+            app.attachments().clone(),
+            app.providers().clone(),
+            app.provider_process_tracking_store(),
+            app.slices(),
+            app.session_state_projection_store(),
+            app.provider_run_projection_store(),
+            app.operational_history_store(),
+            app.durable_state_store(),
+            app.prompt_state_owner(),
+            app.active_turn_store(),
+            app.prompt_activity_store(),
+            app.prompt_workspace_claim_store(),
+            app.structured_output_record_store(),
+            app.terminal_stream_store(),
+            app.workflow_design_event_store(),
+            app.metaagent_event_store(),
+            app.workspace_coordinator(),
+        )
+    };
+    KernelRuntimeState::new_with_owned_state(
+        Arc::clone(app),
+        config_projection,
+        session_store,
+        agent_store,
+        attachment_store,
+        provider_store,
+        provider_process_tracking,
+        slice_store,
+        session_projection,
+        provider_run_projection,
+        operational_history_store,
+        durable_state_store,
+        prompt_state_owner,
+        active_turns,
+        prompt_activity,
+        prompt_workspace_claims,
+        structured_output_records,
+        terminal_stream,
+        workflow_design_events,
+        metaagent_events,
+        workspace_coordinator,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
@@ -2470,79 +2545,4 @@ mod tests {
             None
         );
     }
-}
-
-#[cfg(test)]
-pub(super) async fn owned_runtime_state(
-    app: &Arc<Mutex<crate::app::DaemonApp>>,
-) -> KernelRuntimeState {
-    let (
-        config_projection,
-        session_store,
-        agent_store,
-        attachment_store,
-        provider_store,
-        provider_process_tracking,
-        slice_store,
-        session_projection,
-        provider_run_projection,
-        operational_history_store,
-        durable_state_store,
-        prompt_state_owner,
-        active_turns,
-        prompt_activity,
-        prompt_workspace_claims,
-        structured_output_records,
-        terminal_stream,
-        workflow_design_events,
-        metaagent_events,
-        workspace_coordinator,
-    ) = {
-        let app = app.lock().await;
-        (
-            app.config_projection_store(),
-            app.session_state_store(),
-            app.agents().clone(),
-            app.attachments().clone(),
-            app.providers().clone(),
-            app.provider_process_tracking_store(),
-            app.slices(),
-            app.session_state_projection_store(),
-            app.provider_run_projection_store(),
-            app.operational_history_store(),
-            app.durable_state_store(),
-            app.prompt_state_owner(),
-            app.active_turn_store(),
-            app.prompt_activity_store(),
-            app.prompt_workspace_claim_store(),
-            app.structured_output_record_store(),
-            app.terminal_stream_store(),
-            app.workflow_design_event_store(),
-            app.metaagent_event_store(),
-            app.workspace_coordinator(),
-        )
-    };
-    KernelRuntimeState::new_with_owned_state(
-        Arc::clone(app),
-        config_projection,
-        session_store,
-        agent_store,
-        attachment_store,
-        provider_store,
-        provider_process_tracking,
-        slice_store,
-        session_projection,
-        provider_run_projection,
-        operational_history_store,
-        durable_state_store,
-        prompt_state_owner,
-        active_turns,
-        prompt_activity,
-        prompt_workspace_claims,
-        structured_output_records,
-        terminal_stream,
-        workflow_design_events,
-        metaagent_events,
-        workspace_coordinator,
-    )
 }
