@@ -12,9 +12,9 @@ import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands
 
 type Message = Record<string, any>
 
-test("a legacy Node package explains the rebuild and retained data", () => {
+test("a legacy Node rebuild explains that private files need migration", () => {
   assert.equal(formatInstallFailure("app_install_node_package_requires_rebuild"),
-    "This App uses the Node backend. Rebuild it as a portable Apps v2 .cxapp; your existing App data is retained.")
+    "This App uses the Node backend. Rebuild it as a portable Apps v2 .cxapp. Node private files are not migrated to v2; export and restore them separately.")
 })
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
 function deferred<T>() {
