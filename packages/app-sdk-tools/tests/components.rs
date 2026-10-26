@@ -56,6 +56,17 @@ fn source_templates_are_reproducible_and_pass_signed_package_admission() {
         let repeated = fs::read(format!("{directory}/{language}-2.wasm")).unwrap();
         assert!(bytes == repeated, "{language} template is not reproducible");
         check_component(&bytes, APP_WORLD).unwrap();
+        for notice in [
+            "wasi-libc-source-notices.txt",
+            "llvm-llvm-project-libunwind-LICENSE.TXT",
+        ] {
+            assert!(
+                bytes
+                    .windows(notice.len())
+                    .any(|part| part == notice.as_bytes()),
+                "{language}: missing linked sysroot notice {notice}"
+            );
+        }
         let source = format!("../app-sdk-{language}/template");
         let manifest: ManifestV2 =
             serde_json::from_slice(&fs::read(format!("{source}/app.json")).unwrap()).unwrap();

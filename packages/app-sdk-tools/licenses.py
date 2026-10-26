@@ -114,16 +114,11 @@ def permitted(expression):
     return select_licenses(expression) is not None
 
 
-def main():
-    output = Path(sys.argv[1])
-    metadata = json.load(sys.stdin)
-    guest = {tuple(line.replace('(*)', '').split()[:2]) for line in Path(sys.argv[2]).read_text().splitlines() if len(line.split()) >= 2}
-    guest = {(name, version.removeprefix('v')) for name, version in guest}
-    guest.add(('wasi-preview1-component-adapter-provider', '49.0.4'))
+def toolchain_notices(output):
     sources = json.loads(Path(__file__).with_name('notice-sources.json').read_text())
     upstream_texts = {}
     for source in sources:
-        destination = output / 'guest' / 'toolchain' / source['name']
+        destination = output / source['name']
         destination.parent.mkdir(parents=True, exist_ok=True)
         import urllib.request
         with urllib.request.urlopen(source['url'], timeout=60) as response:
@@ -152,6 +147,17 @@ def main():
             destination.write_bytes(data)
         for name in source.get('packages', []):
             upstream_texts.setdefault(name, []).append(destination)
+
+    return upstream_texts
+
+
+def main():
+    output = Path(sys.argv[1])
+    metadata = json.load(sys.stdin)
+    guest = {tuple(line.replace('(*)', '').split()[:2]) for line in Path(sys.argv[2]).read_text().splitlines() if len(line.split()) >= 2}
+    guest = {(name, version.removeprefix('v')) for name, version in guest}
+    guest.add(('wasi-preview1-component-adapter-provider', '49.0.4'))
+    upstream_texts = toolchain_notices(output / 'guest/toolchain')
 
     def local_texts(package):
         root = Path(package['manifest_path']).parent

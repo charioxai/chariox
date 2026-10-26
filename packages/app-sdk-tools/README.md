@@ -56,6 +56,9 @@ that upstream gap is required before distributing compiler binaries.
 
 The Rust builder preserves dependency and standard-library notices too (install
 the pinned toolchain's `rust-docs` component when those texts are absent). It
+fetches the pinned WASI SDK 33 libc/compiler-rt/libunwind notice set too; these
+self-contained objects are not covered by rustdoc's crate dependency inventory.
+The download digests are shared with the JS compiler's notice inventory. It
 normalizes only the standalone App crate's metadata salt and source prefix;
 dependency crate identities remain Cargo's responsibility. SDK dependencies come
 from the same fixed SDK checkout in the reproducibility drill.
@@ -70,6 +73,9 @@ trap implementations inside the component. Code attempting those facilities
 traps. Legacy insecure RNG imports are implemented using the already admitted
 secure random interface. Clocks, stdout/stderr and data/tmp operations retain
 their existing host interfaces. Sockets remain refused with R1's typed error.
+R6 must virtualize both admitted HTTP versions onto the kernel broker and
+restrict filesystem preopens to data/tmp. Import admission alone grants no
+ambient filesystem or network access and does not prove the future linker.
 
 JS handlers receive `ctx.signal`, `ctx.fetch`, `ctx.subscribe` and
 `ctx.resources`. Use these scoped APIs for concurrent calls. Scope exit drops
@@ -79,8 +85,16 @@ awaited, then dropped on **all** exits, including normal success.
 
 Raw WIT imports and standalone `fetch` are also available for explicit ownership.
 When using standalone fetch, consume its body, call `body.cancel()`, or pass an
-AbortSignal. Global timers must be awaited or cleared in their originating
-invocation. They are not durable App wakes; use `schedule` for that. UTF-8
+AbortSignal. Timer waits belong to the originating invocation and are cancelled
+and awaited when it exits. Already queued callbacks follow normal Promise job
+ordering. Cross-invocation `clearTimeout` suppresses the callback immediately;
+the wait is released when its owner finishes or the wait completes. Timers are
+not durable App wakes; use `schedule` for that. The pinned runtime patch makes an
+import promise's optional `cancel()` return true only for its current export's
+live token, including a repeated cancel request. Other exports get false. This
+internal ownership result adds no WIT host API; callers should prefer the SDK's
+AbortSignal/resource helpers. Worker deadlines still bound unresponsive hosts.
+UTF-8
 TextEncoder/TextDecoder, AbortController, Headers, bounded fetch responses,
 console, microtasks, timers and random values are provided. The response body is
 an async iterable, not a complete browser ReadableStream implementation. Buffered
@@ -89,6 +103,8 @@ encodings, DOM, Node APIs, relative URLs and WebCrypto algorithms are unsupporte
 
 Rust uses generated WIT ownership and `cancellable`, which drops the losing work
 future and its owned streams. It preserves all u64 values as u64; JS uses bigint.
+Cancellation is non-retryable: a write may already have committed. Inspect state
+or receipts before deciding to issue a new mutation.
 
 ## Evidence and integration boundaries
 

@@ -35,6 +35,7 @@ export interface AppDefinition {
   wake?: (wake: Wake, context: AppContext & { overdue: boolean }) => void | Promise<void>;
 }
 export interface FutureReader<T> { read(): Promise<T>; cancelRead(): void; drop(): void }
+export type ImportPromise<T> = Promise<T> & { cancel?: () => boolean };
 export interface Handlers {
   register(): void;
   callTool(name: string, input: string, context: InvocationContext, cancel: FutureReader<string>): Promise<string>;
@@ -51,40 +52,40 @@ export interface Transaction {
   occurrences: Occurrence[]; wakes: Array<{ tag: 'set'; val: Wake } | { tag: 'cancel'; val: string }>;
 }
 export const state: {
-  get(key: string): Promise<StateRecord | null>;
-  transact(tx: Transaction): Promise<{ revision: bigint; receipts: Receipt[] }>;
+  get(key: string): ImportPromise<StateRecord | null>;
+  transact(tx: Transaction): ImportPromise<{ revision: bigint; receipts: Receipt[] }>;
 };
-export const schedule: { set(wake: Wake): Promise<Wake[]>; cancel(id: string): Promise<Wake[]>; list(): Promise<Wake[]> };
+export const schedule: { set(wake: Wake): ImportPromise<Wake[]>; cancel(id: string): ImportPromise<Wake[]>; list(): ImportPromise<Wake[]> };
 export const events: {
-  emit(occurrence: Occurrence): Promise<Receipt>; status(id: string): Promise<Receipt>; retry(id: string): Promise<Receipt>;
-  automations(): Promise<Array<{ automationId: string; event: string; eventVersion: number; state: string; lastReceipt: Receipt | null }>>;
+  emit(occurrence: Occurrence): ImportPromise<Receipt>; status(id: string): ImportPromise<Receipt>; retry(id: string): ImportPromise<Receipt>;
+  automations(): ImportPromise<Array<{ automationId: string; event: string; eventVersion: number; state: string; lastReceipt: Receipt | null }>>;
   occurrenceId(sourceKey: string, occurredAtMs: bigint): string;
-  subscribe(name: string): Promise<HostStream<LiveEvent>>;
+  subscribe(name: string): ImportPromise<HostStream<LiveEvent>>;
 };
 export const connections: {
-  list(): Promise<Array<{ generatorId: string; connectionId: string; actions: string[] }>>;
-  action(request: { connectionId: string; action: string; input: string | null; context: string | null; idempotencyKey: string | null }): Promise<{ accepted: boolean; result: string; idempotencyKey: string }>;
+  list(): ImportPromise<Array<{ generatorId: string; connectionId: string; actions: string[] }>>;
+  action(request: { connectionId: string; action: string; input: string | null; context: string | null; idempotencyKey: string | null }): ImportPromise<{ accepted: boolean; result: string; idempotencyKey: string }>;
 };
 export const files: {
-  atomicReplace(path: string, contents: AsyncIterable<Uint8Array>): Promise<bigint>;
-  snapshot(name: string, consistency: 'quiescent' | 'crash-consistent'): Promise<{ snapshotId: string; consistency: 'quiescent' | 'crash-consistent'; files: bigint; bytes: bigint }>;
-  import(grantId: string, destination: string): Promise<[bigint, string]>;
-  export(path: string): Promise<string>;
+  atomicReplace(path: string, contents: AsyncIterable<Uint8Array>): ImportPromise<bigint>;
+  snapshot(name: string, consistency: 'quiescent' | 'crash-consistent'): ImportPromise<{ snapshotId: string; consistency: 'quiescent' | 'crash-consistent'; files: bigint; bytes: bigint }>;
+  import(grantId: string, destination: string): ImportPromise<[bigint, string]>;
+  export(path: string): ImportPromise<string>;
 };
 export const http: {
-  fetch(request: { url: string; method: string; headers: Array<[string, string]>; connectionId: string | null; operationId: string | null }, body: AsyncIterable<Uint8Array> | null): Promise<[{ status: number; headers: Array<[string, string]>; url: string }, HostStream<Uint8Array>]>;
+  fetch(request: { url: string; method: string; headers: Array<[string, string]>; connectionId: string | null; operationId: string | null }, body: AsyncIterable<Uint8Array> | null): ImportPromise<[{ status: number; headers: Array<[string, string]>; url: string }, HostStream<Uint8Array>]>;
 };
 export const log: { write(level: 'debug' | 'info' | 'warn' | 'error', message: string, fields: string): void };
 export const host: {
-  notify(title: string, body: string | null): Promise<string>;
-  openLink(url: string): Promise<{ offerId: string; state: string }>;
-  writeClipboard(text: string): Promise<{ offerId: string; state: string }>;
-  pickFile(request: { multiple: boolean; accept: string[] }): Promise<string[]>;
+  notify(title: string, body: string | null): ImportPromise<string>;
+  openLink(url: string): ImportPromise<{ offerId: string; state: string }>;
+  writeClipboard(text: string): ImportPromise<{ offerId: string; state: string }>;
+  pickFile(request: { multiple: boolean; accept: string[] }): ImportPromise<string[]>;
 };
 export interface Operation { operationId: string; state: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'reconciliation' }
 export const validation: {
-  request(request: { action: string; parameters: string; operationId: string | null; connectionId: string | null }): Promise<Operation>;
-  status(operationId: string): Promise<Operation>;
+  request(request: { action: string; parameters: string; operationId: string | null; connectionId: string | null }): ImportPromise<Operation>;
+  status(operationId: string): ImportPromise<Operation>;
 };
 export class Headers implements Iterable<[string, string]> {
   constructor(init?: Headers | Iterable<[string, string]> | Record<string, string>);

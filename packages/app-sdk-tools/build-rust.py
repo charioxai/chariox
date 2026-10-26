@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
-from licenses import rust_notices, select_licenses
+from licenses import rust_notices, select_licenses, toolchain_notices
 
 HERE = Path(__file__).resolve().parent
 
@@ -74,6 +74,11 @@ def main():
                 return encoded
 
     with tempfile.TemporaryDirectory(prefix='app-rust-', dir=os.environ['TMPDIR']) as temporary:
+        sysroot_notices = Path(temporary) / 'sysroot-notices'
+        toolchain_notices(sysroot_notices)
+        for text in sorted(sysroot_notices.rglob('*')):
+            if text.is_file():
+                notices['wasi-sdk33/' + text.relative_to(sysroot_notices).as_posix()] = text.read_text()
         admitted = Path(temporary) / 'app.wasm'
         subprocess.run([checker, components[0], str(admitted)], check=True)
         name = b'chariox:licenses'

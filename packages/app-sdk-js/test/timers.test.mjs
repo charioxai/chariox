@@ -25,3 +25,11 @@ test('finishing one invocation cancels only its own timers', async () => {
   await Promise.resolve();
   assert.equal(ran, 1);
 });
+
+test('already queued timer callbacks drain before invocation cleanup resolves', async () => {
+  let ran = false;
+  const timers = createTimers({ waitFor: () => Promise.resolve() }, error => { throw error; });
+  timers.setTimeout(() => { ran = true; });
+  await timers.finishInvocation();
+  assert.equal(ran, true);
+});
