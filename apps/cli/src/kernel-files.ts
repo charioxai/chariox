@@ -65,15 +65,15 @@ async function publish(partialPath: string, localPath: string, overwrite: boolea
 }
 
 // The staging name is predictable, so in a directory others can write to it may be a planted link or
-// someone else's file. Resume only a private regular file of ours; anything else is replaced.
-async function openStaging(partialPath: string, size: number): Promise<{ handle: FileHandle; resumedFrom: number }> {
+// someone else's file. Resume only a private regular file of ours with an expected hash to verify it.
+async function openStaging(partialPath: string, size: number, resume: boolean): Promise<{ handle: FileHandle; resumedFrom: number }> {
   const untrusted = (detail: string) => new CommandFailure("file_staging_untrusted", `${partialPath} ${detail}; remove it and run the same command again`)
   const mine = (info: Stats) => info.isFile() && info.uid === process.geteuid?.() && (info.mode & 0o077) === 0
   const existing = await lstat(partialPath).catch(error => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
     throw error
   })
-  if (existing && mine(existing) && existing.size <= size) {
+  if (resume && existing && mine(existing) && existing.size <= size) {
     const handle = await open(partialPath, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW)
     const opened = await handle.stat()
     if (mine(opened) && opened.ino === existing.ino && opened.dev === existing.dev) return { handle, resumedFrom: opened.size }
@@ -97,14 +97,14 @@ async function getFile(send: SendRequest, remotePath: string, localPath: string,
   const { size } = await readRemote(send, remotePath, 0, 0)
   const partialPath = localPath + PARTIAL_SUFFIX
   // Private while the bytes arrive; the published file gets its permissions below.
-  const { handle: partial, resumedFrom } = await openStaging(partialPath, size)
+  const { handle: partial, resumedFrom } = await openStaging(partialPath, size, expectedSha256 !== null)
   let sha256: string
   try {
     for (let offset = resumedFrom; offset < size;) {
       const chunk = await readRemote(send, remotePath, offset, Math.min(CHUNK_BYTES, size - offset))
       const bytes = Buffer.from(chunk.data_base64, "base64")
       if (chunk.size !== size) throw new CommandFailure("file_io_failed", `${remotePath} changed from ${size} to ${chunk.size} bytes while it was downloaded; remove ${partialPath} and run the same command again`)
-      if (bytes.length === 0) throw new CommandFailure("file_io_failed", `${remotePath} ended at ${offset} of ${size} bytes; run the same command again to continue`)
+      if (bytes.length === 0) throw new CommandFailure("file_io_failed", `${remotePath} ended at ${offset} of ${size} bytes; run the same command again to retry`)
       await partial.writeFile(bytes)
       offset += bytes.length
     }

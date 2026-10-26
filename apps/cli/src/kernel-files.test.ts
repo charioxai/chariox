@@ -238,12 +238,12 @@ test("get stops when the source changes size under it", async () => {
   }, growing)
 })
 
-test("get resumes an interrupted download from its .chariox-partial file", async () => {
+test("get --sha256 resumes an interrupted download from its .chariox-partial file", async () => {
   await withRig(async ({ kernel, store, dir, socket }) => {
     const content = randomBytes(2 * CHUNK + 10)
     store.files.set("/srv/f.bin", content)
     await writeFile(join(dir, "f.bin.chariox-partial"), content.subarray(0, CHUNK + 5), { mode: 0o600 })
-    const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
+    const result = await chariox(["files", "get", ...socket, "--sha256", sha256(content), "/srv/f.bin", join(dir, "f.bin")])
     assert.equal(result.exit, 0, result.stderr)
     assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => read.offset), [0, CHUNK + 5, 2 * CHUNK + 5])
     assert.deepEqual(await readFile(join(dir, "f.bin")), content)
@@ -252,6 +252,44 @@ test("get resumes an interrupted download from its .chariox-partial file", async
     assert.equal(JSON.parse(result.stdout).bytes_sent_or_received, content.length - CHUNK - 5)
   })
 })
+
+for (const full of [false, true]) {
+  test(`get restarts a ${full ? "full-length" : "prefix"} stale partial without --sha256`, async () => {
+    await withRig(async ({ kernel, store, dir, socket }) => {
+      const before = Buffer.alloc(CHUNK + 10, 1)
+      const after = Buffer.alloc(before.length, 2)
+      store.files.set("/srv/f.bin", after)
+      await writeFile(join(dir, "f.bin.chariox-partial"), before.subarray(0, full ? before.length : CHUNK), { mode: 0o600 })
+      await writeFile(join(dir, "f.bin"), "good destination")
+      const result = await chariox(["files", "get", ...socket, "--overwrite", "/srv/f.bin", join(dir, "f.bin")])
+      assert.equal(result.exit, 0, result.stderr)
+      assert.ok((await readFile(join(dir, "f.bin"))).equals(after), "download must contain only the new source bytes")
+      assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => read.offset), [0, 0, CHUNK])
+      assert.equal(JSON.parse(result.stdout).resumed_from, 0)
+      assert.deepEqual(await readdir(dir), ["f.bin"])
+    })
+  })
+
+  test(`get --sha256 discards a ${full ? "full-length" : "prefix"} stale partial after a mismatch`, async () => {
+    await withRig(async ({ store, dir, socket }) => {
+      const before = Buffer.alloc(CHUNK + 10, 1)
+      const after = Buffer.alloc(before.length, 2)
+      store.files.set("/srv/f.bin", after)
+      await writeFile(join(dir, "f.bin.chariox-partial"), before.subarray(0, full ? before.length : CHUNK), { mode: 0o600 })
+      await writeFile(join(dir, "f.bin"), "good destination")
+      const argv = ["files", "get", ...socket, "--overwrite", "--sha256", sha256(after), "/srv/f.bin", join(dir, "f.bin")]
+      const result = await chariox(argv)
+      assert.notEqual(result.exit, 0)
+      assert.equal(JSON.parse(result.stderr).error.code, "file_hash_mismatch")
+      assert.equal(await readFile(join(dir, "f.bin"), "utf8"), "good destination")
+      assert.deepEqual(await readdir(dir), ["f.bin"])
+      const retry = await chariox(argv)
+      assert.equal(retry.exit, 0, retry.stderr)
+      assert.equal(JSON.parse(retry.stdout).resumed_from, 0)
+      assert.ok((await readFile(join(dir, "f.bin"))).equals(after), "download must contain only the new source bytes")
+    })
+  })
+}
 
 // EA2-45: the download's staging name is predictable, so a link or another user's file planted there
 // must neither be written through nor have its bytes and owner kept.
@@ -262,7 +300,7 @@ test("get never writes through a symlink planted at its staging name", async () 
     const victim = join(dir, "victim.txt")
     await writeFile(victim, "private notes")
     await symlink(victim, join(dir, "f.bin.chariox-partial"))
-    const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
+    const result = await chariox(["files", "get", ...socket, "--sha256", sha256(content), "/srv/f.bin", join(dir, "f.bin")])
     assert.equal(result.exit, 0, result.stderr)
     assert.equal(await readFile(victim, "utf8"), "private notes")
     assert.deepEqual(await readFile(join(dir, "f.bin")), content)
@@ -280,7 +318,7 @@ test("get does not resume onto another user's file or one others can read", { sk
       await writeFile(partial, content.subarray(0, 100))
       await chown(partial, uid, uid)
       await chmod(partial, mode)
-      const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
+      const result = await chariox(["files", "get", ...socket, "--sha256", sha256(content), "/srv/f.bin", join(dir, "f.bin")])
       assert.equal(result.exit, 0, result.stderr)
       assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => read.offset), [0, 0, CHUNK])
       assert.equal((await stat(join(dir, "f.bin"))).uid, 0)
