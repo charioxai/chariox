@@ -48,7 +48,7 @@ impl ProviderAccountCopyBinding {
             self.source_profile_id,
             self.target_kernel_id
         ));
-        format!("copy-{:x}", digest)[..45].to_string()
+        format!("copy-{digest:x}")[..45].to_string()
     }
 }
 

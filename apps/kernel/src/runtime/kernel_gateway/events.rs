@@ -144,7 +144,7 @@ impl KernelGateway {
                 self.runtime_state.outside_subscription_response(id)?
             }
             LocalDaemonRequest::UnsubscribeEvents(request) => {
-                if request.all == !request.targets.is_empty() {
+                if request.all != request.targets.is_empty() {
                     return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "unsubscribe needs targets or --all",
                     ));
