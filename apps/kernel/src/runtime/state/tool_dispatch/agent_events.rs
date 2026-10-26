@@ -107,13 +107,22 @@ impl KernelRuntimeState {
         let task_id = args["task_id"]
             .as_str()
             .ok_or_else(|| ledger::error("task_id required"))?;
-        let task = self
+        let tasks = self
             .owned
             .durable_state_store
-            .agent_tasks(Some(room), Some(actor))?
-            .into_iter()
+            .agent_tasks(Some(room), Some(actor))?;
+        let task = tasks
+            .iter()
             .find(|t| t.task_id == task_id && t.prompt_id == prompt.id())
-            .ok_or_else(|| ledger::error("task unavailable in this room and turn"))?;
+            .ok_or_else(|| {
+                ledger::error(match tasks.iter().find(|t| t.prompt_id == prompt.id()) {
+                    Some(current) => format!(
+                        "task unavailable in this room and turn. This turn's task_id is `{}` and its origin_prompt_id is `{}`. Use these exact IDs to retry.",
+                        current.task_id, prompt.id()
+                    ),
+                    None => "task unavailable in this room and turn".to_owned(),
+                })
+            })?;
         // MP-08/MP-09/MP-10/MP-11 F03: polling cannot keep an accepted wait
         // inside a native turn or mutate its sources/deadline before settlement.
         if task.wait.is_some() {
@@ -262,7 +271,7 @@ impl KernelRuntimeState {
             | "chariox.events.terminal"
             | "chariox.events.cancel_wake"
             | "chariox.events.wakes" => {
-                self.dispatch_agent_wake_tool(run, name, &args, &task)
+                self.dispatch_agent_wake_tool(run, name, &args, task)
                     .await?
             }
             _ => return Err(ledger::error("unknown event tool")),

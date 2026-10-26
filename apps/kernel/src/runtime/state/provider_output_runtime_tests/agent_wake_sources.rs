@@ -1033,6 +1033,27 @@ async fn event_tools_cancel_a_timer_and_block_for_the_owner() {
     .await
     .is_err());
 
+    // MP-08 / MP-09 / MP-10 / MP-11 A12-S04: a goal id is not a task id.
+    let refusal = call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({
+            "task_id": format!("goal:{}", task.task_id),
+            "reason": "Need the owner to pick a branch",
+        }),
+    )
+    .await
+    .expect_err("a goal id must not gain task authority");
+    assert!(
+        refusal
+            .to_string()
+            .contains(&format!("task_id is `{}`", task.task_id)),
+        "the agent needs this turn's task id to correct its call: {refusal}"
+    );
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Working);
+
     call(
         &f,
         &token,
