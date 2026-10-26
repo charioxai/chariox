@@ -340,10 +340,18 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        if matches!(command, Command::NoteObservation { .. }) {
-            // MD-N2: Ping is understood by old workers; only send the new variant
-            // after a current, authenticated response from this exact target.
-            let value = format!("md-notes-protocol:{:016x}", rand::random::<u64>());
+        let feature = match &command {
+            Command::NoteObservation { .. } => Some("Room Notes"),
+            Command::AppView {
+                request:
+                    crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { .. },
+            } => Some("App view agent actions"),
+            _ => None,
+        };
+        if let Some(feature) = feature {
+            // Ping is understood by old workers. Authenticate this exact target's
+            // version before sending a union variant it may not understand.
+            let value = format!("room-browser-protocol:{:016x}", rand::random::<u64>());
             let response = Box::pin(self.send_room_slice_peer_request(
                 &config,
                 target.clone(),
@@ -361,7 +369,9 @@ impl KernelRuntimeState {
                 } if received == value => relay_peer_protocol_version,
                 _ => None,
             };
-            super::room_browser_controller_admission::require_notes_worker_protocol(version)?;
+            super::room_browser_controller_admission::require_room_feature_worker_protocol(
+                version, feature,
+            )?;
         }
         let recovery = receipt_recovery_command(&command);
         let request = |command| RelayPeerRequest::RoomBrowserController {

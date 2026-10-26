@@ -150,14 +150,17 @@ fn admission_error(message: &str) -> DaemonError {
 }
 
 // MD-N2: refuse before serializing a new command to an old or unknown worker.
-pub(super) fn require_notes_worker_protocol(version: Option<u32>) -> Result<(), DaemonError> {
+pub(super) fn require_room_feature_worker_protocol(
+    version: Option<u32>,
+    feature: &str,
+) -> Result<(), DaemonError> {
     if version.is_some_and(|version| {
         version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
     }) {
         Ok(())
     } else {
         Err(admission_error(&format!(
-            "Room Notes require relay peer protocol {} or newer",
+            "{feature} require relay peer protocol {} or newer",
             crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
         )))
     }
@@ -175,10 +178,22 @@ mod notes_peer_tests {
             Some(102),
             Some(minimum - 1),
         ] {
-            assert!(super::require_notes_worker_protocol(version).is_err());
+            assert!(super::require_room_feature_worker_protocol(version, "Room Notes").is_err());
         }
         for version in [Some(minimum), Some(minimum + 1)] {
-            assert!(super::require_notes_worker_protocol(version).is_ok());
+            assert!(super::require_room_feature_worker_protocol(version, "Room Notes").is_ok());
         }
+    }
+}
+
+#[cfg(test)]
+mod app_agent_peer_tests {
+    // MP-08/MP-10/MP-11: the base worker must be refused before an Agent union is sent.
+    #[test]
+    fn app_agent_worker_refuses_protocol_239_before_dispatch() {
+        assert!(
+            super::require_room_feature_worker_protocol(Some(239), "App view agent actions")
+                .is_err()
+        );
     }
 }
