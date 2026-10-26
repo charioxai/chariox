@@ -357,7 +357,29 @@ impl KernelRuntimeState {
             let state = self.clone();
             let (room, agent) = (turn.session_id.clone(), turn.agent_id.clone());
             runtime.spawn(async move {
-                Box::pin(state.advance_project_queued_prompt_after_settlement(&room, &agent)).await;
+                // A leased agent's turns run on its worker, so only the leased
+                // dispatch can start the prompts this window deferred.
+                let leased = state
+                    .owned
+                    .agent_store
+                    .get_agent(&agent)
+                    .is_ok_and(|target| target.remote_execution().is_some());
+                if leased {
+                    if let Err(error) = state.spawn_next_queued_remote_prompt(&room, &agent).await {
+                        crate::logging::warn_with_fields(
+                            "daemon.sudo",
+                            "deferred leased prompt could not start after the sudo window ended",
+                            serde_json::json!({
+                                "session_id": room,
+                                "agent_id": agent,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                } else {
+                    Box::pin(state.advance_project_queued_prompt_after_settlement(&room, &agent))
+                        .await;
+                }
                 let _ = Box::pin(state.deliver_agent_inbox(&room, &agent)).await;
             });
         }
@@ -385,7 +407,14 @@ impl KernelRuntimeState {
             .cloned()
             .filter(|turn| turn.session_id == request.session_id && turn.deadline.is_some())
             .ok_or_else(|| error("no live sudo window with that id; enter /sudo again"))?;
-        if attachment.owner_user_id() != owner || turn.owner_user_id != owner {
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        if !self
+            .owned
+            .acts_for_owner_in(session.owner_user_id(), owner, attachment.owner_user_id())
+            || !self
+                .owned
+                .acts_for_owner_in(session.owner_user_id(), owner, &turn.owner_user_id)
+        {
             return Err(error("only the session host can extend sudo"));
         }
         if turn.revision != request.revision {
@@ -407,7 +436,14 @@ impl KernelRuntimeState {
                 deadline.saturating_duration_since(Instant::now()).as_secs()
             })
             .clamp(1, decision_timeout.max(1));
-        let id = format!("{}:extend:{}", turn.entry_id, turn.revision);
+        // A refusal leaves the window revision unchanged. Clients remember
+        // answered interactions, so every new attempt needs its own id.
+        let id = format!(
+            "{}:extend:{}:{:016x}",
+            turn.entry_id,
+            turn.revision,
+            rand::random::<u64>()
+        );
         let interaction = RuntimeInteraction::for_kernel_operation(&id, &id, "Extend sudo window",
             format!("Extend agent {}'s sudo window {} in session {} for the same owner-authorized work. The new expiry is now plus the selected duration (at most 8 hours); unrelated prompts and messages stay outside it, and it never answers approvals.",
                 turn.agent_id, turn.entry_id, turn.session_id),

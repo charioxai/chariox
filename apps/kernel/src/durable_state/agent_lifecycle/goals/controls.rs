@@ -15,7 +15,7 @@ pub(in crate::durable_state::agent_lifecycle) fn control(
         || t.goal.is_none()
         || matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
     {
-        return Err(error("stale, terminal or foreign goal control"));
+        return Err(error("no longer current; reload the goal and retry"));
     }
     clock(&mut t, now);
     match action.as_str() {

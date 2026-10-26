@@ -1,6 +1,22 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: bounded public task answer projection.
 use super::*;
-use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
+use crate::durable_state::agent_lifecycle::{self as ledger, AgentTaskExecution, ExecutionState};
+/// The task whose live turn an artifact change counts as progress for. A completion check
+/// cannot mutate work, so the change it happens to observe is not progress for it (the ledger
+/// would refuse the receipt and the refusal would fail the whole output pump).
+pub(super) fn artifact_progress_task(
+    tasks: Vec<AgentTaskExecution>,
+    prompt: &str,
+    run: &str,
+) -> Option<AgentTaskExecution> {
+    tasks.into_iter().find(|t| {
+        t.prompt_id == prompt
+            && t.provider_run_id.as_deref() == Some(run)
+            && t.state == ExecutionState::Working
+            && t.pending_prompt_id.is_none()
+            && !ledger::goals::is_check(t, prompt)
+    })
+}
 impl KernelRuntimeOwnedState {
     pub(super) fn record_agent_artifact_progress(
         &self,
@@ -23,17 +39,12 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(());
         }
-        let Some(task) = self
-            .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|t| {
-                t.prompt_id == prompt.id()
-                    && t.provider_run_id.as_deref() == Some(run)
-                    && t.state == ExecutionState::Working
-                    && t.pending_prompt_id.is_none()
-            })
-        else {
+        let Some(task) = artifact_progress_task(
+            self.durable_state_store
+                .agent_tasks(Some(room), Some(agent))?,
+            prompt.id(),
+            run,
+        ) else {
             return Ok(());
         };
         use sha2::{Digest, Sha256};
@@ -92,9 +103,44 @@ impl KernelRuntimeOwnedState {
     }
 }
 
-// Leased history retains the worker run ID. Resolve it from the task's durable
-// execution binding, so reconciliation does not depend on the current lease or
-// active run. This is a history lookup only; the task's authority stays projected.
+/// Finished tasks a snapshot still carries; a long room must not grow every
+/// snapshot by one task per turn.
+const VISIBLE_FINISHED_TASKS: usize = 32;
+
+/// Every unfinished task plus the most recent finished ones, in ledger order.
+pub(super) fn visible_tasks(tasks: Vec<AgentTaskExecution>) -> Vec<AgentTaskExecution> {
+    let mut finished = 0;
+    let mut visible: Vec<_> = tasks
+        .into_iter()
+        .rev()
+        .filter(|task| {
+            if !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
+                return true;
+            }
+            finished += 1;
+            finished <= VISIBLE_FINISHED_TASKS
+        })
+        .collect();
+    visible.reverse();
+    visible
+}
+
+pub(super) fn task_status_notice(task: &AgentTaskExecution, name: &str) -> String {
+    let state = match task.state {
+        ExecutionState::Working => "Working",
+        ExecutionState::Waiting => "Waiting",
+        ExecutionState::Done => "Done",
+        ExecutionState::Blocked => "Needs your help",
+        ExecutionState::Cancelled => "Stopped",
+    };
+    format!("{name}: {state}.")
+}
+
+// Leased history entries carry either the worker's run ID or the projected
+// `leased:<lease>:<worker run>` one. Resolve both to the worker run ID from the
+// task's durable execution binding, so reconciliation does not depend on the
+// current lease or active run. This is a history lookup only; the task's
+// authority stays projected.
 pub(super) fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
     run.map(|run| {
         run.strip_prefix("leased:")
@@ -104,13 +150,64 @@ pub(super) fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
     })
 }
 
-fn answer_tail(text: &str, limit: usize) -> String {
+/// Assessment control is bound by the worker to the exact home check. A later
+/// history boundary can contain delayed work bytes or an earlier check's reply.
+pub(super) fn leased_assessment_reply(
+    entries: &[crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: &str,
+) -> String {
+    let key = format!("completion-assessment:home:{prompt}");
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
+                && entry.merge_key.as_deref() == Some(key.as_str())
+                && task_answer_history_run(entry.provider_run_id.as_deref()) == Some(run)
+        })
+        .map(|entry| entry.text.as_str())
+        .collect()
+}
+
+pub(super) fn answer_tail(text: &str, limit: usize) -> String {
     let count = text.chars().count();
     if count <= limit {
         return text.into();
     }
     let tail = text.chars().skip(count - limit + 1).collect::<String>();
     format!("…{tail}")
+}
+
+// The single correction for a turn that ended without a valid wait or answer.
+// Only unresolved obligations are actionable, each with the step that settles
+// it: a completion that already arrived is acknowledged, a running source is
+// waited on, a failure is handled. With none left, the agent just answers.
+pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
+    let with = |status: &str| {
+        task.obligations
+            .iter()
+            .filter(|o| o.status == status)
+            .collect::<Vec<_>>()
+    };
+    let (settling, running, failed) = (with("settling"), with("open"), with("failed"));
+    if task.obligations.is_empty() {
+        return "Your last turn ended without a final answer. Reply now with the final answer to the original request in plain text. One correction is allowed.".into();
+    }
+    if settling.is_empty() && running.is_empty() && failed.is_empty() {
+        return "Every tracked obligation is already resolved. Reply now with the final answer to the original request. No chariox.events call is needed.".into();
+    }
+    let mut text = String::from("The prior answer is progress, not completion.");
+    if !settling.is_empty() {
+        text.push_str(&format!(" Completion has already arrived for these obligations: {}. Read chariox.events.inbox and call chariox.events.ack with handled:true for each completion receipt you have reviewed; that settles them.", serde_json::to_string(&settling).unwrap_or_default()));
+    }
+    if !running.is_empty() {
+        text.push_str(&format!(" These are still running: {}. Finish or cancel them, or call chariox.events.yield with their registration_ids (chariox.events.subscriptions lists them) and a future deadline_ms. A child reply, provider Idle or assistant-message-completed does not close these obligations: the child may still be confirming its result. While those registrations are live, yield on them instead of answering. After the registered source_completed receipt arrives, review its public result in chariox.events.inbox and call chariox.events.ack with handled:true; only then report the final answer.", serde_json::to_string(&running).unwrap_or_default()));
+    }
+    if !failed.is_empty() {
+        text.push_str(&format!(" These failed: {}. Handle the failure, or call chariox.events.blocked with the exact owner action.", serde_json::to_string(&failed).unwrap_or_default()));
+    }
+    text.push_str(" If everything has resolved by now, reply with the final answer instead. One correction is allowed.");
+    text
 }
 
 // Steering belongs to the current turn; an independent prompt closes its answer boundary.
@@ -146,7 +243,10 @@ pub(super) fn task_public_outputs<'a>(
                 })
         })
         .filter(|e| {
-            e.kind == Kind::ProviderOutput && run.is_some() && e.provider_run_id.as_deref() == run
+            e.kind == Kind::ProviderOutput
+                && run.is_some()
+                && task_answer_history_run(e.provider_run_id.as_deref())
+                    == task_answer_history_run(run)
         })
         .filter(|e| {
             !e.is_external_provider_observed()
@@ -162,6 +262,96 @@ pub(super) fn task_public_outputs<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn correction_task(statuses: &[&str]) -> AgentTaskExecution {
+        let obligations = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, status)| serde_json::json!({"id":format!("ob-{i}"),"kind":"delegate","resource_id":format!("agent-{i}"),"status":status,"dispatch_state":"accepted"}))
+            .collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"working","reason":"","obligations":obligations,"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":true,"pending_prompt_id":"task-correction-t"})).unwrap()
+    }
+    #[test]
+    fn snapshot_keeps_every_unfinished_task_and_only_recent_finished_ones() {
+        let mut tasks = Vec::new();
+        for index in 0..40 {
+            let mut task = correction_task(&[]);
+            task.task_id = format!("t{index}");
+            task.state = if index == 0 {
+                ExecutionState::Waiting
+            } else {
+                ExecutionState::Done
+            };
+            tasks.push(task);
+        }
+        let ids: Vec<_> = visible_tasks(tasks)
+            .into_iter()
+            .map(|t| t.task_id)
+            .collect();
+        assert_eq!(ids.len(), 33);
+        assert_eq!((ids[0].as_str(), ids[1].as_str()), ("t0", "t8"));
+        assert_eq!(ids[32], "t39");
+    }
+    #[test]
+    fn r16_task_notice_uses_the_agent_name_without_protocol_details() {
+        let mut task = correction_task(&["open"]);
+        task.reason = "Evaluating original goal objective".into();
+        assert_eq!(
+            task_status_notice(&task, "Researcher"),
+            "Researcher: Working."
+        );
+        task.state = ExecutionState::Done;
+        assert_eq!(task_status_notice(&task, "Researcher"), "Researcher: Done.");
+    }
+    #[test]
+    fn correction_without_any_obligation_asks_for_the_final_answer() {
+        let mut task = correction_task(&["open"]);
+        task.obligations.clear();
+        let text = task_correction_text(&task);
+        assert!(text.contains("without a final answer"), "{text}");
+        assert!(
+            !text.contains("obligation") && !text.contains("chariox.events"),
+            "{text}"
+        );
+    }
+    #[test]
+    fn correction_with_no_open_obligation_asks_only_for_the_final_answer() {
+        let text = task_correction_text(&correction_task(&["satisfied", "cancelled"]));
+        assert!(text.contains("final"), "{text}");
+        assert!(
+            !text.contains("yield") && !text.contains("blocked") && !text.contains("ob-0"),
+            "{text}"
+        );
+    }
+    // MP-08 / MP-10 / MP-11: a real parent was blocked with a reply obligation
+    // stuck settling after its child answered; the correction must name the ack.
+    #[test]
+    fn correction_tells_a_settling_obligation_to_acknowledge_its_receipt() {
+        let text = task_correction_text(&correction_task(&["satisfied", "settling"]));
+        assert!(text.contains("ob-1") && !text.contains("ob-0"), "{text}");
+        assert!(
+            text.contains("chariox.events.inbox") && text.contains("chariox.events.ack"),
+            "{text}"
+        );
+        assert!(!text.contains("chariox.events.yield"), "{text}");
+    }
+    // MP-08 / MP-10 / MP-11: live Codex read the reply while the child
+    // was still confirming completion, then ended its sole correction early.
+    #[test]
+    fn r16_running_source_correction_covers_the_later_completion_receipt() {
+        let text = task_correction_text(&correction_task(&["open"]));
+        assert!(text.contains("provider Idle") && text.contains("registrations are live"));
+        assert!(text.contains("source_completed") && text.contains("chariox.events.inbox"));
+        assert!(text.contains("chariox.events.ack with handled:true"));
+    }
+    #[test]
+    fn correction_lists_only_unresolved_obligations_and_names_the_wait_route() {
+        let text = task_correction_text(&correction_task(&["satisfied", "open"]));
+        assert!(text.contains("ob-1") && !text.contains("ob-0"), "{text}");
+        assert!(
+            text.contains("chariox.events.yield") && text.contains("registration"),
+            "{text}"
+        );
+    }
     #[test]
     fn a02_public_answer_survives_steering_without_borrowing_later_tasks() {
         let entry = |kind: &str, key: Option<&str>, run: Option<&str>, text: &str| {
@@ -301,6 +491,35 @@ mod tests {
             ),
             vec!["verified worker answer"]
         );
+    }
+
+    // A leased turn's home history may carry the projected run id the task binds; the answer
+    // must be found under it too, or every leased turn ends Blocked "Repeated invalid turn end".
+    #[test]
+    fn leased_answer_is_found_under_the_projected_run_id() {
+        let projected = "leased:old-lease:old-run";
+        let entry = |kind: &str, key: Option<&str>, run: Option<&str>, text: &str| {
+            serde_json::from_value(serde_json::json!({"session_id":"room", "kind":kind,
+                "merge_key":key,"provider_run_id":run,"text":text,"timestamp_ms":1}))
+            .unwrap()
+        };
+        let entries = vec![
+            entry("user_prompt", Some("prompt:completed"), None, "task"),
+            entry("provider_output", None, Some(projected), "projected answer"),
+            entry("provider_output", None, Some("old-run"), "worker answer"),
+            entry(
+                "provider_output",
+                None,
+                Some("leased:other:other-run"),
+                "foreign",
+            ),
+        ];
+        for bound in [projected, "old-run"] {
+            assert_eq!(
+                task_public_outputs(&entries, "completed", Some(bound)),
+                vec!["projected answer", "worker answer"]
+            );
+        }
     }
 
     #[test]

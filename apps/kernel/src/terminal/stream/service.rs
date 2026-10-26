@@ -414,11 +414,21 @@ impl TerminalStreamService {
     fn push_output_record(&mut self, record: TerminalOutputRecord) {
         // Goal completion-check turns are agent-only: no client sees the
         // instruction, the receipt reply, or anything else the turn produces.
+        // Other kernel instruction echoes are agent-only too; replies to
+        // correction/inbox instructions remain visible.
+        let internal_echo = record.kind == TerminalOutputKind::PromptEcho
+            && record
+                .prompt_id
+                .as_deref()
+                .is_some_and(crate::session::is_internal_prompt_echo_id);
         if record.pending_recipient_attachment_ids.is_empty()
             || crate::session::is_internal_prompt_turn(
                 record.prompt_origin,
                 record.prompt_id.as_deref(),
             )
+            || internal_echo
+            || (record.kind == TerminalOutputKind::ProviderTool
+                && crate::history::public_history::is_private_history_tool_record(&record.bytes))
         {
             return;
         }

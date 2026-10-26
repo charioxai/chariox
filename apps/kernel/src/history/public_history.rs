@@ -13,7 +13,10 @@ fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
 // identity; version 2 indexed streamed deltas and allowed unknown tools. The
 // Version 3 could misclassify worker MCP calls using colliding local run IDs.
 // The existing version fence removes those projections on upgrade.
-pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 4;
+// Versions 5 and 6 retire internal assessment turns and kernel instruction
+// echoes (6 adds owner-resume), preserving unrelated sanitized source rather
+// than rebuilding from raw data.
+pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 6;
 // Internal projection input only; never serialized into operational events.
 pub(crate) const PUBLIC_HISTORY_BATCH_REFS: &str = "_public_history_batch_refs";
 pub(crate) type PublicHistoryProjector =
@@ -773,6 +776,99 @@ pub(super) fn write_public_document(
     Ok(())
 }
 
+// Only current sanitized history results may enter optional client tool traces.
+// Other native tools keep their ordinary output; no text-pattern filtering.
+pub(crate) fn is_private_history_tool_record(bytes: &[u8]) -> bool {
+    let Ok(record) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    let canonical = record
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .and_then(|name| {
+            crate::transport::runtime_tools::canonical_meta_tool_name(name).or_else(|| {
+                name.strip_prefix("chariox_")
+                    .and_then(crate::transport::runtime_tools::canonical_meta_tool_name)
+            })
+        });
+    if !matches!(
+        canonical,
+        Some(
+            crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL
+                | crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
+                | crate::transport::runtime_tools::META_TURN_BLOB_TOOL
+        )
+    ) {
+        return false;
+    }
+    let version = record
+        .get("output")
+        .and_then(|v| v.as_str())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .and_then(|result| {
+            let content = result.get("structuredContent")?;
+            let version =
+                if canonical == Some(crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL) {
+                    content.get("coverage")?.get("redaction_version")?
+                } else {
+                    content.get("redaction_version")?
+                };
+            version.as_u64()
+        });
+    version.is_none_or(|version| version != u64::from(PUBLIC_HISTORY_VERSION))
+}
+
+pub(crate) fn is_internal_protocol_event(event: &HistoryEvent) -> bool {
+    event.is_completion_check_turn()
+        || event.is_internal_prompt_echo()
+        || event.is_internal_dispatch_diagnostic()
+}
+
+// MP-08 / MP-10 / MP-11: remove only inadmissible old public rows. Operational
+// history is used for provenance, never to backfill or rewrite public content.
+fn retire_internal_public_history(connection: &Connection) -> Result<(), DaemonError> {
+    let mut through = -1_i64;
+    loop {
+        let rows = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT p.sequence,h.event_json FROM public_history p
+                 JOIN history_events h ON h.event_id=p.event_ref AND h.sequence=p.sequence
+                 WHERE p.sequence>?1 ORDER BY p.sequence LIMIT 16",
+                )
+                .map_err(public_error)?;
+            let rows = statement
+                .query_map([through], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(public_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(public_error)?;
+            rows
+        };
+        let Some((last, _)) = rows.last() else { break };
+        through = *last;
+        let tx = connection.unchecked_transaction().map_err(public_error)?;
+        for (sequence, json) in rows {
+            let event: HistoryEvent = serde_json::from_str(&json).map_err(|_| invalid_search())?;
+            if is_internal_protocol_event(&event) {
+                tx.execute(
+                    "INSERT INTO public_history_revision(session_id,revision)
+                    SELECT session_id,1 FROM public_history WHERE sequence=?1
+                    ON CONFLICT(session_id) DO UPDATE SET revision=revision+1",
+                    [sequence],
+                )
+                .map_err(public_error)?;
+                tx.execute("DELETE FROM public_history WHERE sequence=?1", [sequence])
+                    .map_err(public_error)?;
+            }
+        }
+        tx.commit().map_err(public_error)?;
+    }
+    checkpoint_public_history(connection, None);
+    Ok(())
+}
+
 pub(super) fn initialize_public_history(connection: &Connection) -> Result<(), DaemonError> {
     let index_existed: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_history_fts')",
@@ -801,9 +897,16 @@ pub(super) fn initialize_public_history(connection: &Connection) -> Result<(), D
         })
         .map_err(public_error)?;
     if version != PUBLIC_HISTORY_VERSION {
-        // Never repopulate from old/raw provenance after a redaction/schema change.
+        let retire_only = matches!(version, 4 | 5);
+        if retire_only {
+            retire_internal_public_history(connection)?;
+        }
+        // Earlier versions lack trustworthy provenance. Never repopulate them
+        // from raw history; versions 4 and 5 need only the internal-turn retirement.
         let tx = connection.unchecked_transaction().map_err(public_error)?;
-        tx.execute_batch("DELETE FROM public_history; DELETE FROM public_history_member; UPDATE public_history_revision SET revision=revision+1; UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;").map_err(public_error)?;
+        if !retire_only {
+            tx.execute_batch("DELETE FROM public_history; DELETE FROM public_history_member; UPDATE public_history_revision SET revision=revision+1; UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;").map_err(public_error)?;
+        }
         tx.execute(
             "UPDATE public_history_version SET version=?1",
             [PUBLIC_HISTORY_VERSION],

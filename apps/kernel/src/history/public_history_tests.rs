@@ -1204,3 +1204,96 @@ fn public_history_nonmatching_stream_growth_still_restarts_cursor() {
         2
     );
 }
+
+#[test]
+fn public_history_upgrade_retires_internal_turns_without_losing_public_answers() {
+    upgrade_retires_internal_turns_from_version(4);
+}
+
+#[test]
+fn public_history_version_five_upgrade_retires_owner_resume_echoes() {
+    upgrade_retires_internal_turns_from_version(5);
+}
+
+fn upgrade_retires_internal_turns_from_version(stored_version: u32) {
+    // MP-08 / MP-10 / MP-11: old sanitized rows need the same visibility fence.
+    let f = Fixture::new();
+    let public = f.append("room", "owner public task");
+    let mut private = Vec::new();
+    for (kind, prompt, origin) in [
+        (HistoryEventKind::UserPrompt, "goal-check-task-1", None),
+        (HistoryEventKind::ProviderOutput, "goal-check-task-1", None),
+        (HistoryEventKind::UserPrompt, "task-correction-task-1", None),
+        (HistoryEventKind::UserPrompt, "task-resume-task-1", None),
+        (HistoryEventKind::UserPrompt, "agent-event-peer-1", None),
+        (
+            HistoryEventKind::ProviderOutput,
+            "native-check",
+            Some("completion_check"),
+        ),
+    ] {
+        let mut metadata = BTreeMap::new();
+        if let Some(origin) = origin {
+            metadata.insert("prompt_origin".into(), serde_json::json!(origin));
+        }
+        private.push(
+            f.store
+                .append_operational_event(
+                    kind,
+                    None,
+                    Some("internal canary".into()),
+                    metadata,
+                    HistoryEventTurnContext {
+                        public_history_owner_user_id: Some("owner".into()),
+                        session_id: Some("room".into()),
+                        agent_id: Some("peer".into()),
+                        prompt_id: Some(prompt.into()),
+                        turn_id: Some(prompt.into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        f.search("room", "canary", 50, None).unwrap().hits.len(),
+        private.len()
+    );
+    let _guard = f.store.lock_public_history().unwrap();
+    {
+        let connection = f.store.connection.lock().unwrap();
+        connection
+            .execute(
+                "UPDATE public_history_version SET version=?1",
+                [stored_version],
+            )
+            .unwrap();
+        initialize_public_history(&connection).unwrap();
+    }
+    for event in private {
+        assert!(
+            f.store
+                .read_public_history_locked("owner", "room", &event.event_id)
+                .unwrap()
+                .is_none(),
+            "old private row survived upgrade"
+        );
+    }
+    assert!(f
+        .store
+        .read_public_history_locked("owner", "room", &public.event_id)
+        .unwrap()
+        .is_some());
+    assert!(f
+        .store
+        .search_public_history_locked("owner", "room", None, "canary", 50, None)
+        .unwrap()
+        .hits
+        .is_empty());
+    let turn = f
+        .store
+        .public_history_turn_locked("owner", "room", "peer", None, 0, 200)
+        .unwrap();
+    assert_eq!(turn.len(), 1);
+    assert_eq!(turn[0].event_ref, public.event_id);
+}

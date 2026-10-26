@@ -141,16 +141,25 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut projected_errors = Vec::new();
+    let mut acknowledged = 0;
     loop {
         runtime.pump_transport_runtime().await;
         // Same drain request as the home kernel's active-prompt loop. No local
         // terminal client is attached to wake the provider-output pump.
-        if let Some((_, event)) = runtime
-            .drain_relay_leased_runtime_projection(&leased.id, &run_id, true, true, false)
+        if let Some(drained) = runtime
+            .drain_relay_leased_runtime_projection(
+                &leased.id,
+                &run_id,
+                true,
+                true,
+                false,
+                acknowledged,
+            )
             .await
             .unwrap()
         {
-            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+            acknowledged = drained.sequence;
+            let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = drained.event;
             projected_errors.extend(
                 output_chunks
                     .into_iter()

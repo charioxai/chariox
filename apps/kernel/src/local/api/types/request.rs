@@ -117,6 +117,7 @@ pub enum LocalDaemonRequest {
     GetRoomEnvironmentTabAccessibility(GetRoomEnvironmentTabAccessibilityRequest),
     BindRoomEnvironmentSlice(BindRoomEnvironmentSliceRequest),
     RoomBrowserArtifact(RoomBrowserArtifactRequest),
+    RoomTerminal(RoomTerminalRequest),
     CaptureRoomEnvironmentScreenshot(CaptureRoomEnvironmentScreenshotRequest),
     ReadRoomEnvironmentScreenshotChunk(ReadRoomEnvironmentScreenshotChunkRequest),
     GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest),

@@ -42,7 +42,7 @@ impl KernelRuntimeState {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let session = self.owned.session_snapshot(agent.session_id())?;
         if self.provider_account_authority_owner_user_id(agent.owner_user_id()) != user
-            || !session.has_member(agent.owner_user_id())
+            || !self.is_room_member(&session, agent.owner_user_id())
             || session.status() == crate::session::SessionStatus::Ended
         {
             return Err(host_error(
@@ -364,7 +364,7 @@ impl KernelRuntimeState {
                 agent.id(),
                 crate::runtime::kernel_browser_host::KernelBrowserCapability::Computer,
             )
-            || !session.has_member(agent.owner_user_id())
+            || !self.is_room_member(&session, agent.owner_user_id())
             || session.status() == crate::session::SessionStatus::Ended
         {
             return Err(host_error(
@@ -406,7 +406,7 @@ impl KernelRuntimeState {
             .cloned()?;
         if grant.desktop_kernel_id != self.owned.config_projection.snapshot().daemon_id
             || agent.session_id() != run.session_id()
-            || !session.has_member(agent.owner_user_id())
+            || !self.is_room_member(&session, agent.owner_user_id())
             || session.status() == crate::session::SessionStatus::Ended
             || !self.owned.kernel_browser_host.is_loaded_for(
                 &user,

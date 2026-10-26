@@ -302,6 +302,7 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         let activity_mutation = owned.begin_managed_activity_mutation();
         let durable_state_store = owned.durable_state_store.clone();
+        let mut unsent_prompts = Vec::new();
         let (workflow_run, archived_runs) = durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 self.authorize_current_external_command()?;
@@ -338,6 +339,13 @@ impl KernelRuntimeState {
                     })
                     .map(|(agent_id, _)| agent_id.clone())
                     .collect::<Vec<_>>();
+                unsent_prompts = session_before_interrupt
+                    .prompt_states()
+                    .values()
+                    .flat_map(|state| state.queued_prompts().iter())
+                    .filter(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()))
+                    .cloned()
+                    .collect();
                 let workflow_run = if pause {
                     sessions.pause_workflow_run(session_id, workflow_run_ref)
                 } else {
@@ -369,9 +377,20 @@ impl KernelRuntimeState {
                 Ok((workflow_run, archived_runs))
             })?;
         let committed_session = owned.session_store.get_session(session_id)?;
-        let _ = owned
+        let removed = owned
             .prompt_state_owner
             .remove_queued_prompts_by_workflow_run(&committed_session, &workflow_run_id);
+        for prompt in removed {
+            if !unsent_prompts
+                .iter()
+                .any(|unsent| unsent.id() == prompt.id())
+            {
+                unsent_prompts.push(prompt);
+            }
+        }
+        if !pause {
+            owned.release_unsent_agent_events(session_id, &unsent_prompts);
+        }
         if !archived_runs.is_empty() {
             let recipient_attachment_ids = owned
                 .attachment_store
@@ -411,11 +430,12 @@ impl KernelRuntimeState {
                         (
                             agent.id().to_string(),
                             prompt.source_attachment_id().to_string(),
+                            prompt.id().to_string(),
                         )
                     })
             })
             .collect::<Vec<_>>();
-        for (agent_id, attachment_id) in active_agents {
+        for (agent_id, attachment_id, prompt_id) in active_agents {
             let cancellation = match self
                 .cancel_agent_prompt_with_external_authority(
                     session_id,
@@ -429,6 +449,13 @@ impl KernelRuntimeState {
             {
                 Ok(cancellation) => cancellation,
                 Err(DaemonError::NoActivePrompt { .. }) => continue,
+                // A kernel restart left the prompt without a provider run. The interrupt has
+                // already ended the run, so the prompt only needs settling here.
+                Err(DaemonError::NoActiveProviderRun { .. }) => {
+                    self.settle_prompt_without_provider_run(session_id, &agent_id, &prompt_id)
+                        .await?;
+                    continue;
+                }
                 Err(error) => return Err(error),
             };
             if let Some(dispatch) = cancellation.dispatch {
@@ -440,6 +467,26 @@ impl KernelRuntimeState {
                 .await?;
         }
         Ok((workflow_run, owned.session_snapshot(session_id)?))
+    }
+
+    async fn settle_prompt_without_provider_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, agent_id, Some(prompt_id))
+        else {
+            return Ok(());
+        };
+        self.release_cancelled_local_prompt_after_restart(session_id, agent_id, &prompt, None)
+            .await?;
+        // Without a provider run the release has nothing to advance the queue with.
+        self.recover_queue_head_after_restart(session_id, agent_id)
     }
 
     pub(super) async fn execute_workflow_resume_run_request(

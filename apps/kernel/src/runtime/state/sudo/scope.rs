@@ -54,6 +54,29 @@ impl KernelRuntimeState {
         let Ok(session) = self.owned.session_store.get_session(&turn.session_id) else {
             return false;
         };
+        // Creating another ordinary session in the task's existing workspace
+        // uses that same resource consent. Placement and account changes keep
+        // their separate scope; the new session never inherits this window.
+        if let LocalDaemonRequest::CreateSession(request) = request {
+            return request.workspace_id == session.workspace_id()
+                && request.worktree_id == session.worktree_id()
+                && request.kernel_ref.is_none()
+                && request.slice_ref.is_none()
+                // The session actor re-checks the request after the kernel
+                // filled its own configured defaults in; that is no account choice.
+                && (request.agent_defaults.is_none()
+                    || request.agent_defaults == self.owned.configured_session_agent_defaults())
+                && request.worktree_placement.is_none()
+                && request.workspace_live_sync_mode.is_none()
+                && matches!(
+                    request.project_selection,
+                    crate::session::SessionProjectSelection::Default
+                )
+                && !request.metaagent
+                && !request.hidden
+                && (request.owner_user_id == "local"
+                    || request.owner_user_id == turn.owner_user_id);
+        }
         // These public metadata operations do not choose an identity, link an
         // account or expose provider credentials.
         if matches!(
@@ -160,6 +183,16 @@ impl KernelRuntimeState {
         self.check_sudo_request(&turn.entry_id, request)?;
         if self.require_sudo_scope(&turn.entry_id, request).is_ok() {
             return Ok(());
+        }
+        // No session has an empty id, so there is nothing for the owner to approve.
+        if matches!(
+            crate::runtime::session_membership::scope::request_session_scope(request),
+            Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(id))
+                if id.trim().is_empty()
+        ) {
+            return Err(error(
+                "this kernel request names an empty session_id; pass a session id from chariox.room.overview or ListSessions",
+            ));
         }
         let encoded = serde_json::to_string_pretty(request)
             .map_err(|_| error("cannot describe sudo operation"))?;

@@ -1,3 +1,4 @@
+mod input_backlog;
 mod manager;
 
 #[cfg(all(test, target_os = "linux"))]

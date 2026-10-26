@@ -10,6 +10,7 @@ import type { RuntimeAttachment, RuntimeProviderRun, WorkflowDefinition, Workflo
 
 test("workflow command opens the workflow screen and manages local workflows", async () => {
   let flashedMessage = ""
+  let lastNotice = ""
   let shownWorkflowScreen = 0
   let addedWorkflowNodeAgentId: string | null = null
   let addedWorkflowEdgeRefs: { fromNodeId: string; toNodeId: string } | null = null
@@ -77,7 +78,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
     multiAgentResponseLayout: () => "split",
     maxAgentsPerScreen: () => 3,
     flashFooter: (message) => { flashedMessage = message },
-    appendNotice: () => {},
+    appendNotice: (message) => { lastNotice = message },
     formatError: (error) => String(error),
     createSession: async () => ({ id: "session-1", alias: null }),
     attachBinding: async () => {},
@@ -816,7 +817,8 @@ test("workflow command opens the workflow screen and manages local workflows", a
     raw: "/workflow runs workflow-1",
     args: ["runs", "workflow-1"],
   })
-  assert.equal(flashedMessage, "workflow runs: run-1 [running]")
+  assert.equal(lastNotice, "workflow runs (1):\nrun-1 [running]")
+  assert.equal(flashedMessage, "listed 1 workflow run")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",

@@ -174,14 +174,14 @@ async fn ensure_metaagent_owner(
         agent.id() == metaagent_id
             && agent.session_id() == session.id()
             && agent.is_metaagent()
-            && agent.owner_user_id() == caller_user_id
+            && runtime_state.acts_for_owner(session.id(), caller_user_id, agent.owner_user_id())
     }) else {
         return Err(DaemonError::LocalTransport {
             operation: "metaagent event request",
             message: "metaagent event access requires an owned session metaagent".to_string(),
         });
     };
-    if !session.has_member(caller_user_id) {
+    if !runtime_state.is_room_member(&session, caller_user_id) {
         return Err(DaemonError::LocalTransport {
             operation: "metaagent event request",
             message: "metaagent event access requires session membership".to_string(),

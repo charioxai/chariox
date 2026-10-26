@@ -73,12 +73,17 @@ impl KernelRuntimeState {
         let attachment = self
             .owned
             .ensure_attachment_in_session(&request.session_id, &request.attachment_id)?;
-        if attachment.owner_user_id() != owner {
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        if !self
+            .owned
+            .acts_for_owner_in(session.owner_user_id(), owner, attachment.owner_user_id())
+        {
             return Err(error("sudo needs the host's own terminal attachment"));
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        let session = self.owned.session_store.get_session(&request.session_id)?;
-        if session.owner_user_id() != owner
+        if !self
+            .owned
+            .acts_for_owner_in(session.owner_user_id(), owner, session.owner_user_id())
             || session.status() == SessionStatus::Ended
             || agent.session_id() != session.id()
         {

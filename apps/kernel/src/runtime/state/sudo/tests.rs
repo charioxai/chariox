@@ -158,6 +158,17 @@ pub(super) fn fixture_with_run_endpoint(
     provider: &str,
     endpoint: Option<String>,
 ) -> Fixture {
+    fixture_for_owner(script, room_tools, adapter, provider, endpoint, "local")
+}
+
+pub(super) fn fixture_for_owner(
+    script: Option<&str>,
+    room_tools: bool,
+    adapter: &str,
+    provider: &str,
+    endpoint: Option<String>,
+    owner: &str,
+) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
     let vault = worktree.path().join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
@@ -168,13 +179,14 @@ pub(super) fn fixture_with_run_endpoint(
     config.user_config.credential_vault.path = vault.display().to_string();
     let mut app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
+        .create_session(worktree.session_request().with_owner_user_id(owner))
         .unwrap();
     let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(AttachRequest::new(
+        .attach(AttachRequest::for_user(
             session.id(),
             "sudo-terminal",
             ClientCapabilityLevel::FullTerminal,
+            owner,
         ))
         .unwrap();
     let launch = LaunchProviderRequest::new(session.id(), adapter, provider, "default", "default")
@@ -421,10 +433,14 @@ impl Drop for Fixture {
 }
 
 pub(super) async fn popup(state: &KernelRuntimeState) -> PasskeyPrompt {
+    popup_for(state, "local").await
+}
+
+pub(super) async fn popup_for(state: &KernelRuntimeState, owner: &str) -> PasskeyPrompt {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(prompt) = state
-                .passkey_prompts_for("local")
+                .passkey_prompts_for(owner)
                 .into_iter()
                 .find(|p| p.kind == PasskeyPromptKind::Sudo)
             {
@@ -1072,7 +1088,7 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
         .unwrap();
 }
 
-fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
+pub(super) fn external_request(f: &Fixture) -> RequestKernelSudoRequest {
     RequestKernelSudoRequest {
         agent_id: f.request.target_agent_id.clone().unwrap(),
         prompt: "  external first line\nfull second line\t  \n".into(),
@@ -1935,4 +1951,70 @@ async fn legacy_sudo_message_keeps_full_task_beyond_structured_summary() {
         .await
         .unwrap();
     assert!(waiting.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
+    let f = fixture();
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    f.state
+        .owned
+        .agent_store
+        .update_agent_config(
+            agent,
+            None,
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    let turn = running(&f);
+    let call = || {
+        f.state.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            crate::transport::runtime_tools::TERMINAL_OPEN_TOOL,
+            serde_json::json!({"command": ["/bin/cat"]}),
+        )
+    };
+    let admitted = tokio::time::timeout(Duration::from_secs(2), call()).await;
+    assert!(
+        admitted.is_ok(),
+        "a live sudo turn asked for terminal approval"
+    );
+    let admitted = admitted.unwrap().unwrap();
+    assert!(admitted.ok);
+    let id = admitted.payload["terminal"]["terminal_id"]
+        .as_str()
+        .unwrap();
+    let sent = tokio::time::timeout(
+        Duration::from_secs(2),
+        f.state.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            crate::transport::runtime_tools::TERMINAL_SEND_TOOL,
+            serde_json::json!({"terminal_id": id, "text": "sudo-input", "enter": true}),
+        ),
+    )
+    .await
+    .expect("a sudo terminal_send must not ask for approval")
+    .unwrap();
+    assert!(sent.ok);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session, &turn.agent_id)
+        .unwrap();
+    assert!(!f.state.sudo_live(&turn));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), call())
+            .await
+            .is_err(),
+        "terminal approval was bypassed after sudo ended"
+    );
+    f.state.owned.room_terminals.end_session(&turn.session_id);
 }

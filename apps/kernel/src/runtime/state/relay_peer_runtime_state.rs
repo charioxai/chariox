@@ -1386,7 +1386,8 @@ impl KernelRuntimeState {
         pump_output: bool,
         replay_settled_completion: bool,
         require_authorization: bool,
-    ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+        acknowledged_projection_sequence: u64,
+    ) -> Result<Option<crate::app::DrainedLeasedProjection>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
         let target_leased_id = leased_agent_id.clone();
@@ -1428,11 +1429,12 @@ impl KernelRuntimeState {
         }
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.drain_leased_runtime_projection_with_recovery(
+            runtime.drain_acknowledged_leased_runtime_projection(
                 &leased_agent_id,
                 &provider_run_id,
                 pump_output,
                 replay_settled_completion,
+                acknowledged_projection_sequence,
             )
         })
         .await
@@ -1493,6 +1495,9 @@ impl KernelRuntimeState {
                     &completion.completed,
                     leased_agent_id,
                     &worker_provider_run_id,
+                    outcome
+                        .provider_failed
+                        .then_some("the provider run ended unexpectedly"),
                 )
                 .await;
             }

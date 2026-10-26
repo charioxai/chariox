@@ -13,6 +13,9 @@ pub(super) const MAX_OUTLINE_EVENTS_PER_BLOB: usize = 256;
 pub(super) const MAX_OUTLINE_INLINE_ENTRIES_PER_TURN: usize = 32;
 
 pub(super) fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
+    if event.is_internal_dispatch_diagnostic() {
+        return false;
+    }
     match event.kind {
         HistoryEventKind::ProviderOutput => true,
         HistoryEventKind::ProviderStatus => event_provider_status_projects_as_outline_entry(event),
@@ -64,6 +67,9 @@ fn is_steering_prompt_event(event: &HistoryEvent) -> bool {
 }
 
 fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineBlob> {
+    if event.is_internal_dispatch_diagnostic() {
+        return None;
+    }
     let entry = event.to_session_history_entry()?;
     if entry.is_external_provider_observed_state_signal() {
         return None;
@@ -449,6 +455,9 @@ fn page_entry_from_event_with_inline_limit(
     event: HistoryEvent,
     max_inline_chars: Option<usize>,
 ) -> Option<SessionHistoryPageEntry> {
+    if event.is_internal_dispatch_diagnostic() {
+        return None;
+    }
     let mut entry = event.to_session_history_entry()?;
     if entry.is_external_provider_observed_state_signal() {
         return None;

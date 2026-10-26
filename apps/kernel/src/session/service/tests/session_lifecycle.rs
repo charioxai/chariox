@@ -231,7 +231,9 @@ fn restoring_hidden_session_detaches_it_from_legacy_project() {
     let hidden = restored.restore_session(hidden);
     assert_eq!(hidden.project_id(), "");
     assert!(restored
-        .list_visible_projects(DEFAULT_LOCAL_USER_ID, true)
+        .list_visible_projects(true, |session| {
+            session.has_member(DEFAULT_LOCAL_USER_ID)
+        })
         .is_empty());
 
     assert_eq!(

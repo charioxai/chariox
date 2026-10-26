@@ -1,4 +1,5 @@
-//! Worker-local projection bookkeeping. No fields here are part of the relay protocol.
+//! Leased projection bookkeeping: the worker's drain cursors and the home's last applied
+//! projection sequence per leased agent. No fields here are part of the relay protocol.
 mod tools;
 pub(crate) use tools::{tool_identity, ProjectedToolState};
 
@@ -100,6 +101,7 @@ pub(super) fn migrate(connection: &mut rusqlite::Connection) -> Result<(), Daemo
          CREATE TABLE IF NOT EXISTS leased_projection_cursors (projection_id TEXT PRIMARY KEY, cursor_json TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS leased_projection_pending_keys (key TEXT PRIMARY KEY, projection_id TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS leased_projection_tools (stream_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, state_json TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS remote_projection_acknowledgements (delivery_key TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
          DROP TRIGGER IF EXISTS history_projection_prune;
          CREATE TRIGGER history_projection_prune BEFORE DELETE ON history_events BEGIN
              INSERT OR IGNORE INTO leased_projection_pending_keys
@@ -218,6 +220,43 @@ impl OperationalHistoryStore {
                 |row| row.get(0),
             )
             .map_err(|e| operational_history_error("lookup leased projection key", e))
+    }
+
+    /// The last projection sequence this home applied from a leased agent (0 when none).
+    pub(crate) fn load_remote_projection_acknowledgement(
+        &self,
+        delivery_key: &str,
+    ) -> Result<u64, DaemonError> {
+        self.ensure_leased_projection_schema()?;
+        let connection = self.lock_read_connection(None)?;
+        let sequence: Option<i64> = connection
+            .query_row(
+                "SELECT sequence FROM remote_projection_acknowledgements WHERE delivery_key = ?1",
+                [delivery_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| operational_history_error("load remote projection acknowledgement", e))?;
+        Ok(sequence.map_or(0, |sequence| sequence as u64))
+    }
+
+    pub(crate) fn save_remote_projection_acknowledgement(
+        &self,
+        delivery_key: &str,
+        sequence: u64,
+    ) -> Result<(), DaemonError> {
+        self.ensure_leased_projection_schema()?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|e| operational_history_error("lock remote projection acknowledgement", e))?;
+        connection
+            .execute(
+                "INSERT INTO remote_projection_acknowledgements VALUES (?1, ?2) ON CONFLICT(delivery_key) DO UPDATE SET sequence = MAX(sequence, excluded.sequence)",
+                params![delivery_key, sequence as i64],
+            )
+            .map_err(|e| operational_history_error("save remote projection acknowledgement", e))?;
+        Ok(())
     }
 
     pub(crate) fn delete_leased_projection_state(

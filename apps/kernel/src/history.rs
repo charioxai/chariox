@@ -329,7 +329,47 @@ impl HistoryEvent {
         }
     }
 
+    /// The kernel's own completion assessment turn (prompt, answer, settlement)
+    /// is internal protocol; clients never project it into a transcript.
+    pub fn is_completion_check_turn(&self) -> bool {
+        self.metadata
+            .get("prompt_origin")
+            .and_then(serde_json::Value::as_str)
+            == Some("completion_check")
+            || self.prompt_id.as_deref().is_some_and(
+                crate::durable_state::agent_lifecycle::goals::is_completion_check_prompt_id,
+            )
+    }
+
+    /// Agent-only kernel instructions never become user prompt rows.
+    pub fn is_internal_prompt_echo(&self) -> bool {
+        self.kind == HistoryEventKind::UserPrompt
+            && self
+                .prompt_id
+                .as_deref()
+                .is_some_and(crate::session::is_internal_prompt_echo_id)
+    }
+
+    /// MP-08/MP-10/MP-11: historical kernel diagnostics are not agent speech.
+    pub fn is_internal_dispatch_diagnostic(&self) -> bool {
+        matches!(
+            self.kind,
+            HistoryEventKind::ProviderError | HistoryEventKind::Notice
+        ) && self
+            .content
+            .as_deref()
+            .is_some_and(crate::terminal::is_internal_dispatch_diagnostic)
+    }
+
     pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
+        if self.kind == HistoryEventKind::ProviderTool
+            && self
+                .content
+                .as_deref()
+                .is_some_and(|text| public_history::is_private_history_tool_record(text.as_bytes()))
+        {
+            return None;
+        }
         let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
         let session_id = self.session_id.clone()?;
         let source_attachment_id = self

@@ -96,6 +96,51 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(&dispatch.session_id, Some(&dispatch.agent_id));
     }
 
+    /// Ends the tool rows a run left open when it ended without its provider
+    /// closing them (see `crate::app::ended_open_provider_tool_rows`).
+    pub(super) fn end_open_provider_tools(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        ending: crate::app::ProviderToolEnding,
+    ) -> Result<(), DaemonError> {
+        let rows = crate::app::ended_open_provider_tool_rows(
+            self.operational_history_store
+                .load_provider_tool_entries_for_run(session_id, provider_run_id)?,
+            ending,
+        );
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let outputs = rows
+            .into_iter()
+            .map(|(merge_key, bytes)| {
+                let entry = SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    Some(agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key.clone(),
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                );
+                (
+                    TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.to_string(),
+                        agent_id: Some(agent_id.to_string()),
+                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                        merge_key,
+                        sequence: None,
+                        bytes,
+                    },
+                    Some(entry),
+                )
+            })
+            .collect();
+        self.append_history_and_fan_out(session_id, None, outputs);
+        Ok(())
+    }
+
     pub(super) fn record_provider_failure_output(
         &self,
         session_id: &str,
@@ -105,6 +150,17 @@ impl KernelRuntimeOwnedState {
     ) {
         let message = crate::provider::sanitize_provider_diagnostic(message);
         if message.is_empty() {
+            return;
+        }
+        if self.config_projection.snapshot().room_agent_tools
+            && crate::terminal::is_internal_dispatch_diagnostic(&message)
+        {
+            crate::logging::debug_with_fields(
+                "daemon.prompt_delivery",
+                "internal dispatch diagnostic",
+                serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id,
+                    "agent_id": agent_id, "diagnostic": message}),
+            );
             return;
         }
         let prompt_metadata =

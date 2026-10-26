@@ -43,11 +43,13 @@ impl CommandRouter {
         &self,
         result: Result<LocalDaemonResponse, DaemonError>,
         caller_user_id: &str,
+        authenticated_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         result.and_then(|response| {
             redact_response_for_user(
                 response,
                 caller_user_id,
+                authenticated_user_id,
                 &self.provider_run_projection,
                 None,
                 Some(self.runtime_state.durable_state_store()),
@@ -59,6 +61,7 @@ impl CommandRouter {
         &self,
         result: Result<LocalDaemonResponse, DaemonError>,
         caller_user_id: &str,
+        authenticated_user_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let session_id = match request {
@@ -72,6 +75,7 @@ impl CommandRouter {
             redact_response_for_user(
                 response,
                 caller_user_id,
+                authenticated_user_id,
                 &self.provider_run_projection,
                 workflow_run_context.as_deref(),
                 Some(self.runtime_state.durable_state_store()),

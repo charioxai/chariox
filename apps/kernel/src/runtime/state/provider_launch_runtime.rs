@@ -185,7 +185,10 @@ impl KernelRuntimeState {
                 agent_id,
             });
         }
-        if agent.owner_user_id() != caller_user_id {
+        if !self
+            .owned
+            .acts_for_owner(&request.session_id, caller_user_id, agent.owner_user_id())
+        {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: caller_user_id.to_string(),
                 owner_user_id: agent.owner_user_id().to_string(),
@@ -257,7 +260,7 @@ impl KernelRuntimeState {
                                 agent_id,
                             });
                         }
-                        if agent.owner_user_id() != caller_user_id {
+                        if !state.acts_for_owner(&session_id, &caller_user_id, agent.owner_user_id()) {
                             return Err(DaemonError::OwnershipAccessDenied {
                                 user_id: caller_user_id,
                                 owner_user_id: agent.owner_user_id().to_string(),
@@ -456,7 +459,11 @@ impl KernelRuntimeState {
             .launch_provider_request_from_local_request(request.clone());
         {
             let owned = &self.owned;
-            if launch_request.owner_user_id != caller_user_id {
+            if !owned.acts_for_owner(
+                &launch_request.session_id,
+                &caller_user_id,
+                &launch_request.owner_user_id,
+            ) {
                 return Err(DaemonError::OwnershipAccessDenied {
                     user_id: caller_user_id,
                     owner_user_id: launch_request.owner_user_id.clone(),

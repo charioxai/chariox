@@ -101,7 +101,7 @@ remain visible and cannot be promoted by changing the advertised tool list.
 
 ## MP-08 / MP-11 — regular-agent surface and enforcement
 
-Add `chariox.events.yield`, `chariox.process.start/watch/cancel`,
+Add `chariox.events.yield`, `chariox.events.process`,
 `chariox.history.search` and `chariox.handoff.request` alongside the mapped
 tools. Preserve existing `chariox.send_agent_message`; regular messaging
 already has active-turn and remote-origin regressions in
@@ -626,13 +626,20 @@ Persist intent and result against the objective/ledger/work-turn revision;
 lost ACK reconciles exactly, never spends a second evaluation blindly. A stale
 result re-enters the revision check before accepting completion. Mark this
 turn's origin `completion_check`; its own end cannot recursively trigger another
-check, dispatch work or mint authority. On timeout/malformed result, make one
+check, dispatch work or mint authority.
+The assessment prompt and its JSON answer are kernel-internal: the kernel
+neither delivers them to client output streams nor projects them into the
+history outline, so no Chariox client shows protocol text in an agent pane. On timeout/malformed result, make one
 visible user-required recovery interaction, not an unbounded evaluation retry.
 Cost is at most one check turn per work-turn revision, plus ordinary continued
 work; the guard bounds no-progress attempts but does not cap a progressing
 multi-hour goal. Surface check count/elapsed/cost metadata if the harness
 provides it. Provider confirmation is evidence of its assessment, not proof of
 arbitrary semantic correctness; drills independently verify deployment/artifacts.
+
+The single correction lists only unresolved obligations. When none remain it
+asks only for the final answer; it never points an agent at yield/blocked tools
+that cannot apply.
 
 A done claim with open obligations retains the one-correction-then-blocked
 rule. The check lists them once; if the agent instead selects valid wait/cancel/
@@ -641,6 +648,17 @@ blocks, even for `/goal`. A legitimate not-achieved check with no sources
 continues only for goal mode. Plain prompts that still need work receive the
 single corrective turn when their ending was invalid; they cannot gain goal
 mode through repeated final answers or agent-created messages.
+Once that correction has produced a public answer and every obligation is
+resolved, a plain request ends Done. Any further assessment notes are retained
+as information and cannot create an owner blocker or another continuation
+(coordinator decision, 2026-10-15). Explicit unresolved obligations and real
+provider/assessment delivery failures retain their recovery paths.
+
+Kernel inbox instructions are agent-only too: live echoes, prompt-state rows
+and history user rows omit their text while preserving the agent's public
+answer, including a child whose first turn came only from an inbox event.
+Kernel task notices use the agent name and a short state, without task IDs,
+obligation counts or internal assessment reasons.
 
 **Check-in cadence and UI.** Propose default 10 minutes, owner-configurable
 1–60 minutes per goal (plain waits use the same maximum deadline interval).
@@ -1245,9 +1263,22 @@ security-anchor reviews. Fixture-seeded history is supplementary only.
 | Case | Exact steps and expected behavior | Expected evidence beyond E | Result |
 | --- | --- | --- | --- |
 | S01 | 1. Open real persisted legacy meta tasks/subscriptions and goal history. 2. Drain/migrate cursors idempotently, restart twice. 3. Ordinary agent delegates → yields → wakes → searches → browser → hand-off, sudo does typed Vault/login/payment. | Preserved event/history IDs, regular identity and zero-open final ledger. | BLOCKED(B0) |
-| S02 | 1. Attach old/minimum-version web/native/TUI clients. 2. Attempt dependent protected operations. 3. Upgrade/reconnect mixed clients. Correct upgrade diagnostic, no protected input fallback or protocol drift. | Rust/TS snapshot/hash checks and minimum-version screens. | BLOCKED(B0) |
+| S02 | 1. Attach retired and minimum-supported web/native/TUI clients. A frozen protocol-520 TUI must display `Update Chariox: relay requires chunks-v2 (protocol 532 / peer 140)` and disconnect before registration. 2. Supported clients attempt dependent protected operations; retired clients cannot reach them. 3. Upgrade/reconnect mixed clients. Correct upgrade diagnostic, no protected input fallback or protocol drift. | Rust/TS snapshot/hash checks, retired-client refusal and upgraded-client reconnect screens. | BLOCKED(B0) |
 | S03 | 1. Retire obsolete meta/task entry points only after replacement acceptance; keep `/goal` on the hybrid runtime. 2. Exercise old aliases/raw/native bridges. 3. Inspect unknown legacy lineage. No elevation/approval/destructive bypass; legacy history remains readable. | Removed-tool catalog, denial logs and immutable lineage migration receipts. | BLOCKED(B0) |
 | S04 | 1. Run full final expected cell manifest and security-anchor review on exact integrated head. 2. Compare ordinary/managed MP-09 activity/shutdown scenarios. 3. Verify every temporary owned resource and evidence leak scan. Any omitted cell, FAIL or unreviewed security anchor holds retirement/MP acceptance. | Complete manifest and current security review, paired results and exact cleanup. | BLOCKED(B0) |
+
+S02 distinguishes retired transports from supported client versions. The
+protocol-520 TUI predates the chunks-v2 relay transport introduced at local
+protocol 532 / peer 140. Its upgrade refusal is the intended product result,
+including against a newer kernel: those numbers identify the transport's
+minimum generation, not the connected kernel's current protocol. The relay
+completes the WebSocket handshake only to send a readable policy-close reason,
+then refuses registration and all operations. The frozen TUI discards HTTP 426
+response bodies, so an HTTP-only refusal would lose that diagnostic. Retiring
+this predecessor does not require a legacy transport or protected-input
+fallback. The live check must also reconnect with the current real TUI and
+verify that ordinary authorized work remains usable; it does not establish
+the web/native or managed-placement cells by itself.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — A12 goal acceptance matrix
 

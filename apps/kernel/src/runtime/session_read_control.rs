@@ -44,6 +44,8 @@ pub(crate) fn projected_session_state_response(
         Ok(_) => unreachable!("session state request returned a different response"),
         Err(error) => return Some(Err(error)),
     };
+    let caller_user_id =
+        &runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
     if !session.has_member(caller_user_id) {
         return Some(Err(DaemonError::SessionAccessDenied {
             session_id: session.id().to_string(),
@@ -86,9 +88,9 @@ pub(crate) fn projected_resolve_session_response(
         .resolve_session_ref(&request.session_ref, request.workspace_id.as_deref())
     {
         return Some(redacted_session_resolved_response(
+            runtime_state,
             session,
             caller_user_id,
-            runtime_state.durable_state_store(),
         ));
     }
     if let Some(result) = session_projection.resolve_session_ref_id_from_warmed_list(
@@ -106,9 +108,9 @@ pub(crate) fn projected_resolve_session_response(
             }
         };
         return Some(redacted_session_resolved_response(
+            runtime_state,
             session,
             caller_user_id,
-            runtime_state.durable_state_store(),
         ));
     }
     None
@@ -122,10 +124,12 @@ pub(crate) async fn projected_list_sessions_response(
     if let Some(sessions) = session_projection.list() {
         let sessions = sessions
             .into_iter()
-            .filter(|session| session.has_member(caller_user_id))
+            .filter(|session| runtime_state.is_room_member(session, caller_user_id))
             .map(|session| {
+                let member_user_id =
+                    runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
                 session.redacted_for_user_with_workflow_history(
-                    caller_user_id,
+                    &member_user_id,
                     runtime_state.durable_state_store(),
                 )
             })
@@ -135,15 +139,17 @@ pub(crate) async fn projected_list_sessions_response(
     let sessions: Vec<_> = runtime_state
         .list_session_snapshots()
         .into_iter()
-        .filter(|session| session.has_member(caller_user_id))
+        .filter(|session| runtime_state.is_room_member(session, caller_user_id))
         .collect();
     session_projection.update_list(sessions.clone());
     Ok(LocalDaemonResponse::SessionsListed {
         sessions: sessions
             .into_iter()
             .map(|session| {
+                let member_user_id =
+                    runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
                 session.redacted_for_user_with_workflow_history(
-                    caller_user_id,
+                    &member_user_id,
                     runtime_state.durable_state_store(),
                 )
             })
@@ -516,10 +522,13 @@ pub(crate) fn projected_session_or_absence(
 }
 
 fn redacted_session_resolved_response(
+    runtime_state: &KernelRuntimeState,
     session: RuntimeSession,
     caller_user_id: &str,
-    history: &crate::durable_state::DurableKernelStateStore,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let history = runtime_state.durable_state_store();
+    let caller_user_id =
+        &runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
     if !session.has_member(caller_user_id) {
         return Err(DaemonError::SessionAccessDenied {
             session_id: session.id().to_string(),

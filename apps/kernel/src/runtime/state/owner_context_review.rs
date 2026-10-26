@@ -121,22 +121,3 @@ impl KernelRuntimeOwnedState {
         owner.to_owned()
     }
 }
-
-impl KernelRuntimeState {
-    pub(in crate::runtime) fn is_legacy_local_terminal_owner(
-        &self,
-        session_id: &str,
-        user_id: &str,
-    ) -> bool {
-        self.owned
-            .session_store
-            .get_session(session_id)
-            .is_ok_and(|session| {
-                session.owner_user_id() == crate::session::DEFAULT_LOCAL_USER_ID
-                    && self
-                        .owned
-                        .owner_context_review_owner(session.owner_user_id())
-                        == user_id
-            })
-    }
-}

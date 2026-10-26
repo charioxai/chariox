@@ -285,18 +285,24 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
             "subscription consumed the native hook mailbox"
         );
     }
+    // Like the home, acknowledge each applied projection before draining again.
+    let mut acknowledged = 0;
     if hold_provider_lane {
         let permit = runtime.provider_runtime_lanes.acquire(run.id()).await;
-        runtime
+        if let Some(drained) = runtime
             .drain_relay_leased_runtime_projection(
                 leased_id.as_ref().unwrap(),
                 run.id(),
                 true,
                 false,
                 false,
+                acknowledged,
             )
             .await
-            .unwrap();
+            .unwrap()
+        {
+            acknowledged = drained.sequence;
+        }
         assert!(
             fs::read_to_string(&context).unwrap().is_empty(),
             "a home drain consumed the native hook while another pump owned the provider lane"
@@ -309,7 +315,14 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
     }
     if let Some(leased_id) = &leased_id {
         runtime
-            .drain_relay_leased_runtime_projection(leased_id, run.id(), true, false, false)
+            .drain_relay_leased_runtime_projection(
+                leased_id,
+                run.id(),
+                true,
+                false,
+                false,
+                acknowledged,
+            )
             .await
             .unwrap();
     } else {

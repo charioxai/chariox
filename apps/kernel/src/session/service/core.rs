@@ -294,15 +294,15 @@ impl SessionService {
 
     pub fn list_visible_projects(
         &self,
-        caller_user_id: &str,
         include_archived: bool,
+        is_member: impl Fn(&RuntimeSession) -> bool,
     ) -> Vec<RuntimeProject> {
         let visible_project_ids = self
             .store
             .list()
             .into_iter()
             .filter(|session| !session.is_hidden())
-            .filter(|session| session.has_member(caller_user_id))
+            .filter(|session| is_member(session))
             .map(|session| session.project_id().to_string())
             .collect::<BTreeSet<_>>();
         self.projects
@@ -911,6 +911,12 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         Ok(session.create_workflow_publication(publication, source_snapshot))
+    }
+
+    pub fn session_owner_user_id(&self, session_id: &str) -> Option<String> {
+        self.store
+            .get(session_id)
+            .map(|session| session.owner_user_id().to_owned())
     }
 
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {

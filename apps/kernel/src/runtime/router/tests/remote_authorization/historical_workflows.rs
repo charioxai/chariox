@@ -18,7 +18,10 @@ fn mp11_amfix_external_history_captured_stop_denied() {
 }
 
 // Web and remote TUI users reach the kernel as relay terminals.
-fn terminal_command(request: &LocalDaemonRequest, user_id: Option<&str>) -> KernelCommand {
+pub(super) fn terminal_command(
+    request: &LocalDaemonRequest,
+    user_id: Option<&str>,
+) -> KernelCommand {
     let mut command = remote_command_for_request(request, user_id);
     command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     command
@@ -396,6 +399,237 @@ async fn historical_workflows_inner() {
         .is_err());
 }
 
+// MP-08 / MP-11 F4: a room made before enrollment belongs to the enrolled owner, who reaches
+// it as a terminal under its Cloud identity, not under the pre-enrollment `local` one.
+#[test]
+fn mp11_f4_enrolled_terminal_owns_its_pre_enrollment_room() {
+    run_remote_authorization_large_stack_test("f4-legacy-local-room", f4_legacy_local_room_inner);
+}
+
+async fn f4_legacy_local_room_inner() {
+    let root = crate::test_support::TestWorktree::new("f4-legacy-local-room");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let room = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap();
+    let id = room.id().to_string();
+    assert_eq!(room.owner_user_id(), crate::session::DEFAULT_LOCAL_USER_ID);
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&id, Some("historical".into()))
+        .unwrap();
+    let mut snapshot = app.session_state_store().get_session(&id).unwrap();
+    let mut run = crate::session::WorkflowRun::new(
+        "old-active",
+        workflow.id(),
+        "endpoint",
+        "node",
+        Some("historical prompt".into()),
+        None,
+        vec![],
+        vec![],
+    );
+    run.set_status(crate::session::WorkflowRunStatus::Running);
+    snapshot.create_workflow_run(run);
+    app.session_state_store()
+        .write()
+        .restore_session(snapshot.clone());
+    app.durable_state_store()
+        .persist_workflow_runtime_transition(&snapshot, "historical-fixture")
+        .unwrap();
+    let agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&id, "dev-stub")
+                .with_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID),
+        )
+        .unwrap()
+        .id()
+        .to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    let req = LocalDaemonRequest::ListWorkflowRuns(crate::local::ListWorkflowRunsRequest {
+        session_id: id.clone(),
+        workflow_ref: None,
+        cursor: None,
+        limit: None,
+    });
+    let LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = router
+        .dispatch(terminal_command(&req, Some("kernel-owner")), req)
+        .await
+        .unwrap()
+    else {
+        panic!("list");
+    };
+    assert_eq!(
+        workflow_runs.len(),
+        1,
+        "the enrolled owner lists the history of its pre-enrollment room"
+    );
+    assert!(workflow_runs[0].created_before_ownership_tracking());
+
+    let req = LocalDaemonRequest::CreateSessionInvite(crate::local::CreateSessionInviteRequest {
+        session_id: id.clone(),
+        expires_in_ms: None,
+        max_uses: None,
+        collaboration_level: crate::session::CollaborationLevel::Full,
+    });
+    let response = router
+        .dispatch(terminal_command(&req, Some("kernel-owner")), req)
+        .await;
+    assert!(
+        matches!(
+            response,
+            Ok(LocalDaemonResponse::SessionInviteCreated { .. })
+        ),
+        "the enrolled owner invites collaborators to its pre-enrollment room: {response:?}"
+    );
+
+    let req = LocalDaemonRequest::FocusAgent(crate::local::FocusAgentRequest {
+        session_id: id.clone(),
+        agent_id,
+    });
+    let response = router
+        .dispatch(terminal_command(&req, Some("kernel-owner")), req)
+        .await;
+    assert!(
+        response.is_ok(),
+        "the enrolled owner focuses the agent it made before enrollment: {response:?}"
+    );
+
+    let req = LocalDaemonRequest::ListWorkflowRuns(crate::local::ListWorkflowRunsRequest {
+        session_id: id,
+        workflow_ref: None,
+        cursor: None,
+        limit: None,
+    });
+    let LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = router
+        .dispatch(terminal_command(&req, Some("someone-else")), req)
+        .await
+        .unwrap_or(LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs: Vec::new(),
+            next_cursor: None,
+        })
+    else {
+        panic!("list");
+    };
+    assert!(workflow_runs.is_empty(), "another user sees none of it");
+}
+
+// MP-08 / MP-10 / MP-11 F4: the enrolled owner is the `local` member its pre-enrollment room
+// kept: attach, prompt, run a workflow and subscribe all admit it, and nobody else.
+#[test]
+fn mp11_f4_enrolled_owner_is_a_member_of_its_pre_enrollment_room() {
+    run_remote_authorization_large_stack_test("f4-legacy-local-member", f4_legacy_member_inner);
+}
+
+async fn f4_legacy_member_inner() {
+    let root = crate::test_support::TestWorktree::new("f4-legacy-local-member");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let id = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap()
+        .id()
+        .to_string();
+    let agent = spawn_test_agent(&mut app, &id, "legacy-agent", "dev-stub");
+    let agent_id = agent.id().to_string();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&id, Some("legacy-flow".into()))
+        .unwrap();
+    let workflow_id = workflow.id().to_string();
+    let node = app
+        .sessions_mut()
+        .add_workflow_node_owned(
+            &id,
+            &workflow_id,
+            &agent_id,
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            agent_id.clone(),
+        )
+        .unwrap();
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(&id, &workflow_id, node.id(), Some("entry".into()))
+        .unwrap();
+    app.sessions_mut()
+        .set_workflow_endpoint_owner(
+            &id,
+            &workflow_id,
+            endpoint.id(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    for user in ["kernel-owner", "stranger"] {
+        let owner = user == "kernel-owner";
+        let attach = LocalDaemonRequest::AttachToSession(crate::local::AttachToSessionRequest {
+            session_id: id.clone(),
+            client_id: format!("client-{user}"),
+            capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+        });
+        let attached = router
+            .dispatch(terminal_command(&attach, Some(user)), attach)
+            .await;
+        assert_eq!(attached.is_ok(), owner, "attach as {user}: {attached:?}");
+        let attachment_id =
+            if let Ok(LocalDaemonResponse::SessionAttached { attachment }) = attached {
+                attachment.id().to_string()
+            } else {
+                "unattached".to_string()
+            };
+
+        let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: id.clone(),
+            attachment_id: attachment_id.clone(),
+            target_agent_id: Some(agent_id.clone()),
+            prompt: "Reply with the single word ok.".into(),
+            attachments: Vec::new(),
+        });
+        let submitted = router
+            .dispatch(terminal_command(&submit, Some(user)), submit)
+            .await;
+        assert_eq!(submitted.is_ok(), owner, "prompt as {user}: {submitted:?}");
+
+        let invoke = LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
+            session_id: id.clone(),
+            workflow_ref: workflow_id.clone(),
+            endpoint_ref: endpoint.id().to_string(),
+            prompt: Some("go".into()),
+            queue_ref: None,
+            publication_invocation: None,
+        });
+        let invoked = router
+            .dispatch(terminal_command(&invoke, Some(user)), invoke)
+            .await;
+        assert_eq!(invoked.is_ok(), owner, "run as {user}: {invoked:?}");
+
+        let subscribed = router
+            .ensure_relay_subscription_attachment_for_user(&id, &attachment_id, user)
+            .await;
+        assert_eq!(
+            subscribed.is_ok(),
+            owner,
+            "subscribe as {user}: {subscribed:?}"
+        );
+    }
+}
+
 // MP-08 / MP-10 / MP-11: completed history is pruned from hot state but remains readable.
 #[test]
 fn mp11_amfix_historical_archive_resume_reports_read_only() {
@@ -455,4 +689,50 @@ async fn historical_archive_resume_inner() {
         error.to_string().contains("ownership tracking"),
         "MP-11: an archived historical run must report its read-only policy: {error}"
     );
+}
+
+// Seam A (amlegacy r2): the waiting room projection keeps only the sessions whose member list
+// holds the caller's raw user id, so the enrolled owner of a pre-enrollment (`local`) room sees
+// an empty waiting room while the room's invited members see it.
+#[test]
+fn seam_a_enrolled_owner_waiting_room_lists_its_pre_enrollment_room() {
+    run_remote_authorization_large_stack_test("seam-a-legacy-waiting-room", seam_a_inner);
+}
+
+async fn seam_a_inner() {
+    let root = crate::test_support::TestWorktree::new("seam-a-legacy-waiting-room");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let app = DaemonApp::bootstrap(config).unwrap();
+    let id = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap()
+        .id()
+        .to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    for user in ["kernel-owner", "stranger"] {
+        let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            crate::local::GetWaitingRoomPublicSnapshotRequest,
+        );
+        let response = router
+            .dispatch(terminal_command(&request, Some(user)), request)
+            .await
+            .unwrap();
+        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = response else {
+            panic!("unexpected response for {user}: {response:?}");
+        };
+        let listed = snapshot.sessions.iter().any(|session| session.id == id);
+        assert_eq!(
+            listed,
+            user == "kernel-owner",
+            "waiting room for {user} lists the pre-enrollment room: {:?}",
+            snapshot.sessions.iter().map(|s| &s.id).collect::<Vec<_>>()
+        );
+    }
 }

@@ -280,9 +280,14 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     fixture.stop().await;
     assert_eq!(events.len(), 1, "one completion event: {events:?}");
     assert_eq!(events[0].kind, "source_completed", "{events:?}");
-    assert_eq!(
-        events[0].payload["public_answer"]["excerpt"], "MP-10 A10 delegated answer",
-        "MP-08/MP-10/MP-11 R947: completion carries the worker's actual answer"
+    // The home history carries the leased turn under its projected run id; the
+    // managed stub echoes its input before the answer, a real provider does not.
+    let excerpt = events[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        excerpt.ends_with("MP-10 A10 delegated answer"),
+        "MP-08/MP-10/MP-11 R947: completion carries the worker's actual answer: {excerpt}"
     );
     assert!(
         child_tasks.iter().all(|task| task
@@ -365,9 +370,12 @@ async fn leased_requested_reply_carries_worker_answer() {
     fixture.stop().await;
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0].kind, "source_completed");
-    assert_eq!(
-        replies[0].payload["public_answer"]["excerpt"],
-        "MP-10 A10 requested reply answer"
+    let excerpt = replies[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        excerpt.ends_with("MP-10 A10 requested reply answer"),
+        "{excerpt}"
     );
 }
 
@@ -466,6 +474,211 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
         )
     );
     assert_eq!(after.map(|event| event.state), Some("accepted".to_string()));
+}
+
+#[test]
+fn mp10_a10_urgent_message_steers_a_busy_leased_turn() {
+    run_test(urgent_message_steers_a_busy_leased_turn);
+}
+
+/// A10-S02: an urgent message to a busy leased agent steers its running
+/// worker turn, as it steers a local agent's turn, instead of waiting to run
+/// as a new turn. Base: deferred until the running turn ends.
+async fn urgent_message_steers_a_busy_leased_turn() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let (room, leased, running) = start_busy_leased_turn(&mut fixture).await;
+    let store = store(&fixture).await;
+    let event = urgent_message(&store, &room, &leased, "a10-urgent");
+    let delivered = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &leased)
+        .await;
+    let after = store
+        .agent_inbox(&room, &leased, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.sequence == event.sequence);
+    let queued = {
+        let app = fixture.home.app.lock().await;
+        let session = app.sessions().get_session(&room).unwrap();
+        session
+            .queued_prompts_for_agent(&leased)
+            .map_or(0, |queue| queue.len())
+    };
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .unwrap();
+    fixture.stop().await;
+    delivered.expect("urgent delivery to a busy leased agent");
+    let after = after.expect("the urgent message event");
+    assert_eq!(after.state, "accepted", "{after:?}");
+    assert_eq!(
+        after.target_prompt_id.as_deref(),
+        Some(running.as_str()),
+        "steered into the running turn: {after:?}"
+    );
+    assert_eq!(queued, 0, "no new turn is queued for the message");
+}
+
+/// Starts a leased turn that stays running; returns its room, agent and home prompt.
+async fn start_busy_leased_turn(fixture: &mut LiveWorker) -> (String, String, String) {
+    let room = fixture.rooms[0].clone();
+    let (leased, attachment) = spawn_leased(fixture, &room).await;
+    run_turn(fixture, &room, &attachment, &leased, "MP-10 A10 busy turn").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while binding(fixture, &leased)
+        .await
+        .active_worker_provider_run_id
+        .is_none()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the worker accepts the busy turn"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let running = {
+        let app = fixture.home.app.lock().await;
+        let session = app.sessions().get_session(&room).unwrap();
+        app.prompt_state_owner()
+            .active_prompt_for_agent(&session, &leased)
+            .expect("the busy leased turn")
+            .id()
+            .to_string()
+    };
+    (room, leased, running)
+}
+
+fn urgent_message(
+    store: &crate::durable_state::DurableKernelStateStore,
+    room: &str,
+    leased: &str,
+    occurrence: &str,
+) -> ledger::InboxEvent {
+    let mut message = ledger::occurrence(
+        room,
+        leased,
+        "a10-peer",
+        occurrence,
+        "message",
+        json!({"message": format!("MP-10 A10 urgent status {occurrence}")}),
+    );
+    message.urgent = true;
+    let Outcome::Event(event) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
+        panic!("durable message")
+    };
+    event
+}
+
+#[test]
+fn mp10_a10_lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
+    run_test(lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt);
+}
+
+/// #1065 review P2: the worker accepted an urgent steer but its reply was lost.
+/// Base: the event stayed uncertain, fenced every later delivery and was
+/// blocked for the owner after 120 s, although the worker kept its receipt.
+async fn lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let (room, leased, running) = start_busy_leased_turn(&mut fixture).await;
+    let store = store(&fixture).await;
+    let first = urgent_message(&store, &room, &leased, "a10-urgent-lost");
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .relay_client_state()
+        .write()
+        .await
+        .test_lose_next_leased_steer_response();
+    let lost = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &leased)
+        .await;
+    let steer = format!("agent-event-{leased}-{}", first.sequence);
+    let uncertain = store
+        .agent_event_for_prompt(&room, &leased, &steer)
+        .unwrap();
+    let reconciled = eventually("the worker's receipt settles the lost steer", || {
+        store
+            .agent_event_for_prompt(&room, &leased, &steer)
+            .unwrap()
+            .filter(|event| event.state == "accepted")
+    })
+    .await;
+    let second = urgent_message(&store, &room, &leased, "a10-urgent-next");
+    let next = fixture
+        .home
+        .runtime_state
+        .deliver_agent_inbox_for_test(&room, &leased)
+        .await;
+    let next_event = store
+        .agent_inbox(&room, &leased, 0)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.sequence == second.sequence);
+    let remote = binding(&fixture, &leased).await;
+    let receipt = match send_peer_request_via_temporary_connection(
+        &fixture.home_state.config,
+        ClientTarget {
+            daemon_id: Some(remote.worker_kernel_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: remote.leased_agent_id.clone(),
+            steer_id: steer.clone(),
+            target_home_prompt_id: running.clone(),
+            worker_provider_run_id: remote.active_worker_provider_run_id.clone().unwrap(),
+            execution_lease_id: remote.execution_lease_id.clone(),
+        },
+    )
+    .await
+    .expect("worker steer receipt query")
+    {
+        RelayPeerResponse::LeasedPromptReceiptQueried { receipt } => {
+            receipt.map(|receipt| receipt.phase)
+        }
+        other => panic!("unexpected worker response: {other:?}"),
+    };
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .unwrap();
+    fixture.stop().await;
+    lost.expect("a lost steer reply is not a delivery failure");
+    assert_eq!(
+        uncertain.map(|event| event.state),
+        Some("uncertain".to_string()),
+        "the lost reply leaves the steer uncertain"
+    );
+    assert_eq!(
+        reconciled.target_prompt_id.as_deref(),
+        Some(running.as_str())
+    );
+    assert_eq!(
+        receipt,
+        Some(crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted),
+        "the worker took the first steer once and was only asked for its receipt"
+    );
+    next.expect("the next urgent event is delivered");
+    let next_event = next_event.expect("the next urgent event");
+    assert_eq!(next_event.state, "accepted", "{next_event:?}");
+    assert_eq!(
+        next_event.target_prompt_id.as_deref(),
+        Some(running.as_str())
+    );
 }
 
 fn binding_leased_agent_id(projected: &str) -> String {
@@ -1000,7 +1213,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .unwrap();
     // Check the sibling's own current lease and turn over the real relay,
     // then the elevated agent's binding as a positive control.
-    let forward = |context| {
+    let forward = |context, arguments| {
         send_peer_request_via_temporary_connection(
             &worker.state.config,
             ClientTarget {
@@ -1010,11 +1223,11 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
             RelayPeerRequest::ForwardMetaRuntimeTool {
                 context,
                 tool_name: "chariox_kernel_request".into(),
-                arguments: request.clone(),
+                arguments,
             },
         )
     };
-    let sibling_at_home = forward(sibling_context).await;
+    let sibling_at_home = forward(sibling_context, request.clone()).await;
     let elevated_context = worker
         .router
         .runtime_state
@@ -1022,7 +1235,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .await
         .unwrap()
         .unwrap();
-    let elevated_at_home = forward(elevated_context.clone()).await;
+    let elevated_at_home = forward(elevated_context.clone(), request.clone()).await;
     // Each current causal binding is required independently. A mismatched
     // prompt, provider run or execution lease must deny at home even while
     // this agent's sudo window is live; a valid request still works afterward.
@@ -1032,10 +1245,32 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
     stale_run.worker_provider_run_id = "a10-previous-worker-run".into();
     let mut stale_lease = elevated_context.clone();
     stale_lease.leased_agent_id = "a10-previous-leased-agent".into();
-    let stale_prompt_result = forward(stale_prompt).await;
-    let stale_run_result = forward(stale_run).await;
-    let stale_lease_result = forward(stale_lease).await;
-    let valid_after_denials = forward(elevated_context.clone()).await;
+    let alias_before = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&room)
+        .unwrap()
+        .alias()
+        .map(str::to_owned);
+    let forbidden =
+        json!({"request":{"AliasSession":{"session_id":room,"alias":"outdated-request-ran"}}});
+    let stale_prompt_result = forward(stale_prompt, forbidden.clone()).await;
+    let stale_run_result = forward(stale_run, forbidden.clone()).await;
+    let stale_lease_result = forward(stale_lease, forbidden).await;
+    let alias_after = fixture
+        .home
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&room)
+        .unwrap()
+        .alias()
+        .map(str::to_owned);
+    let valid_after_denials = forward(elevated_context.clone(), request.clone()).await;
     // Expiry: both ends refuse once the home deadline passes.
     tokio::time::sleep(
         window_length.saturating_sub(verified.elapsed()) + Duration::from_millis(500),
@@ -1048,7 +1283,7 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         .router
         .dispatch_authenticated_runtime_tool_call(&token, "chariox_kernel_request", request.clone())
         .await;
-    let expired_at_home = forward(elevated_context).await;
+    let expired_at_home = forward(elevated_context, request.clone()).await;
     worker.stop().await;
     fixture.stop().await;
     assert!(
@@ -1085,12 +1320,23 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
         matches!(&elevated_at_home, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
         "control: the same path admits the elevated turn: {elevated_at_home:?}"
     );
-    assert!(stale_prompt_result.is_err(), "stale prompt must deny");
-    assert!(stale_run_result.is_err(), "stale provider run must deny");
-    assert!(
-        stale_lease_result.is_err(),
-        "stale leased binding must deny"
+    assert_eq!(
+        alias_after, alias_before,
+        "a refused reference changed the real home session"
     );
+    for (reference, result) in [
+        ("prompt", &stale_prompt_result),
+        ("provider run", &stale_run_result),
+        ("lease", &stale_lease_result),
+    ] {
+        let refusal = result
+            .as_ref()
+            .expect_err("outdated reference reached home dispatch");
+        assert!(
+            refusal.to_string().contains("no longer current"),
+            "{reference}: {refusal}"
+        );
+    }
     assert!(
         matches!(&valid_after_denials, Ok(RelayPeerResponse::MetaRuntimeToolHandled { result }) if result.ok),
         "valid binding remains usable after the denials: {valid_after_denials:?}"
@@ -1675,3 +1921,348 @@ async fn leased_process_runs_on_worker_and_only_home_owns_task() {
     assert!(worker_receipts[0].process_start_ticks.is_some());
     assert_eq!(worker_receipts[0].wake.id, settled.id);
 }
+
+#[test]
+fn mp10_a10_leased_process_match_wakes_the_home_agent_before_the_process_exits() {
+    run_test(leased_process_match_wakes_the_home_agent_before_the_process_exits);
+}
+
+// A12-S02: the output line a leased watcher was armed on (the test watcher's
+// initial passing count) reaches the agent while the process keeps running,
+// as for a local watcher, instead of waiting for the process to exit.
+async fn leased_process_match_wakes_the_home_agent_before_the_process_exits() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        "MP-10 A10 leased watched process match",
+    )
+    .await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let result = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.process",
+            json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,
+                "argv":["/bin/sh","-c","echo 24 passing; sleep 60"],
+                "label":"MP-10 A10 leased watcher match","match_text":"passing"}),
+        )
+        .await;
+    let mut matched = None;
+    let mut delivered = None;
+    if let Ok(result) = &result {
+        if let Some(id) = result.payload["wake_id"].as_str() {
+            matched = Some(
+                eventually("home projects the worker's match", || {
+                    store
+                        .agent_wakes(Some(&room), Some(&agent))
+                        .unwrap()
+                        .into_iter()
+                        .find(|w| w.id == id && w.state == "running" && w.matched_at_ms.is_some())
+                })
+                .await,
+            );
+            // The match is announced on the home session as for a local
+            // watcher, while the process still runs.
+            delivered = Some(
+                eventually("home announces the match while the process runs", || {
+                    fixture
+                        .home
+                        .runtime_state
+                        .agent_notices_for_test(&room, &agent)
+                        .into_iter()
+                        .find(|text| text.contains("printed its match"))
+                })
+                .await,
+            );
+        }
+    }
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(
+        result.is_ok(),
+        "leased process must be admitted: {result:?}"
+    );
+    assert!(matched.is_some(), "the match is projected at home");
+    assert!(delivered.is_some(), "the match is announced at home");
+}
+
+#[test]
+fn mp10_a10_leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease() {
+    run_test(leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease);
+}
+
+// A12-S02 R: when the worker no longer holds the lease the launch was made under
+// (an ordinary worker restart), the home still gets the worker's stored outcome
+// instead of waiting out the error bound or declaring the process lost.
+async fn leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease() {
+    leased_process_after_lease_removal(false).await;
+}
+
+#[test]
+fn mp10_a10_leased_process_cancels_after_same_worker_lease_replacement() {
+    run_test(|| leased_process_after_lease_removal(true));
+}
+
+async fn leased_process_after_lease_removal(cancel: bool) {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        "A12-S02 R leased process",
+    )
+    .await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let remote = binding(&fixture, &agent).await;
+    let result = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.process",
+            json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,"argv":["/bin/sleep", if cancel {"900"} else {"4"}],"label":"A12-S02 R lost lease"}),
+        )
+        .await
+        .expect("leased process is admitted");
+    let id = result.payload["wake_id"].as_str().unwrap().to_string();
+    {
+        let mut app = worker.router.app.lock().await;
+        let mut leases = crate::app::RemoteLeaseRuntime::new(&mut app);
+        leases
+            .destroy_leased_agent(&remote.leased_agent_id)
+            .unwrap();
+        leases
+            .destroy_execution_lease(&remote.execution_lease_id)
+            .unwrap();
+    }
+    if cancel {
+        // MP-08 / MP-10 / MP-11: replace the lease without restarting the worker
+        // or its supervised launch, then cancel through the home wake ledger.
+        let target = || ClientTarget {
+            daemon_id: Some(AGENT_WORKER.into()),
+            daemon_alias: None,
+        };
+        let RelayPeerResponse::ExecutionLeaseCreated { lease, .. } =
+            send_peer_request_via_temporary_connection(
+                &fixture.home_state.config,
+                target(),
+                RelayPeerRequest::CreateExecutionLease {
+                    home_kernel_id: fixture.home_state.config.daemon_id.clone(),
+                    home_session_id: room.clone(),
+                    home_agent_id: agent.clone(),
+                    home_agent_metaagent: false,
+                    owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("replacement lease is admitted");
+        };
+        let RelayPeerResponse::LeasedAgentSpawned { leased_agent } =
+            send_peer_request_via_temporary_connection(
+                &fixture.home_state.config,
+                target(),
+                RelayPeerRequest::SpawnLeasedAgent {
+                    lease_id: lease.id.clone(),
+                    provider: "managed-dev-stub".into(),
+                    account_profile: "default".into(),
+                    model: Some("controlled-cancel-idle".into()),
+                    effort: None,
+                    execution_mode: None,
+                    permission_level: None,
+                    workspace_live_sync_mode: None,
+                    worktree_id: None,
+                    worktree_placement: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("replacement leased agent is admitted");
+        };
+        let mut replacement = remote.clone();
+        replacement.execution_lease_id = lease.id;
+        replacement.leased_agent_id = leased_agent.id;
+        replacement.active_worker_provider_run_id = None;
+        fixture
+            .home
+            .app
+            .lock()
+            .await
+            .agents()
+            .bind_remote_execution(&agent, replacement)
+            .unwrap();
+        let receipt = worker
+            .router
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .leased_process_receipt(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.wake.state, "running",
+            "old launch is still live on the same worker"
+        );
+        store
+            .agent_lifecycle(Operation::CancelWake {
+                id: id.clone(),
+                task: task.task_id.clone(),
+                prompt: Some(task.prompt_id.clone()),
+                pending: true,
+            })
+            .unwrap();
+    }
+    let settled = timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(wake) = store
+                .agent_wakes(Some(&room), Some(&agent))
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == id && matches!(w.state.as_str(), "exited" | "lost" | "cancelled"))
+            {
+                break wake;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    // Always stop the exact launch, including on the red baseline.
+    worker.router.shutdown_cleanup().await.unwrap();
+    worker.stop().await;
+    fixture.stop().await;
+    let settled =
+        settled.expect("home cancellation must settle the original launch within 20 seconds");
+    if cancel {
+        assert_eq!(settled.state, "cancelled");
+    } else {
+        assert_eq!(settled.state, "exited");
+        assert_eq!(settled.exit_code, Some(0));
+    }
+}
+
+#[test]
+fn mp10_leased_required_agent_with_a_home_sudo_window_types_without_approval() {
+    run_test(leased_required_agent_with_a_home_sudo_window_types_without_approval);
+}
+
+/// A Required agent on a worker whose owner holds a live home /sudo window
+/// types into its terminal without a question; without the window it asks.
+async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let placement = fixture.placement();
+    let spawned = dispatch_json(
+        &fixture.home,
+        json!({"SpawnAgent":{
+            "session_id":room, "provider":"managed-dev-stub", "model":"controlled-cancel-idle",
+            "kernel_ref":AGENT_WORKER, "worktree_placement":placement,
+            "permission_level":"required"
+        }}),
+    )
+    .await
+    .expect("spawn a Required leased agent on the worker");
+    let agent = spawned["AgentSpawned"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (owner, _) = open_leased_sudo(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        Duration::from_secs(60),
+    )
+    .await;
+    let home_prompt = fixture
+        .home
+        .runtime_state
+        .list_sudo_turns(&owner)
+        .pop()
+        .unwrap()
+        .prompt_id
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &home_prompt).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let call = |tool: &'static str, arguments: serde_json::Value| {
+        let router = worker.router.clone();
+        let token = token.clone();
+        async move {
+            timeout(
+                Duration::from_secs(5),
+                router.dispatch_authenticated_runtime_tool_call(&token, tool, arguments),
+            )
+            .await
+        }
+    };
+    let opened = call(
+        "mcp__chariox__terminal_open",
+        json!({"command": ["/bin/cat"]}),
+    )
+    .await;
+    let terminal_id = opened
+        .as_ref()
+        .ok()
+        .and_then(|result| result.as_ref().ok())
+        .and_then(|result| result.payload["terminal"]["terminal_id"].as_str())
+        .map(str::to_owned);
+    let sent = match &terminal_id {
+        Some(id) => Some(
+            call(
+                "mcp__chariox__terminal_send",
+                json!({"terminal_id": id, "text": "leased-sudo-input", "enter": true}),
+            )
+            .await,
+        ),
+        None => None,
+    };
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(
+        terminal_id.is_some(),
+        "the leased agent opens a terminal: {opened:?}"
+    );
+    let sent = sent.unwrap();
+    assert!(
+        sent.as_ref()
+            .is_ok_and(|result| result.as_ref().is_ok_and(|result| result.ok)),
+        "a live home sudo window covers terminal input, no approval is asked: {sent:?}"
+    );
+}
+
+mod connectivity;

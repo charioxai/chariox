@@ -36,7 +36,9 @@ impl KernelRuntimeOwnedState {
                 workflow_id: workflow.id().to_string(),
                 node_id: request.to_node_id.clone(),
             })?;
-        if from_owner != caller_user_id && to_owner != caller_user_id {
+        if !self.acts_for_owner(&request.session_id, caller_user_id, from_owner)
+            && !self.acts_for_owner(&request.session_id, caller_user_id, to_owner)
+        {
             return Err(Self::deny_owner(
                 caller_user_id,
                 from_owner,

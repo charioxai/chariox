@@ -210,6 +210,38 @@ fn a12_immediate_no_progress_guard_survives_restart() {
 }
 
 #[test]
+fn a10_outdated_goal_revision_keeps_current_work_unchanged() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    let original = f.task();
+    f.apply(Operation::ControlGoal {
+        task: original.task_id.clone(),
+        owner: "owner".into(),
+        revision: original.revision,
+        action: "interval".into(),
+        value: Some("20".into()),
+        now: 2,
+    });
+    let current = f.task();
+    let refused = f
+        .store
+        .agent_lifecycle(Operation::ControlGoal {
+            task: original.task_id,
+            owner: "owner".into(),
+            revision: original.revision,
+            action: "edit".into(),
+            value: Some("outdated request must not replace the objective".into()),
+            now: 3,
+        })
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("no longer current"),
+        "{refused}"
+    );
+    assert_eq!(f.task(), current);
+}
+
+#[test]
 fn a12_owner_revision_pause_edit_and_cancel_fence_late_checks() {
     let f = Fixture::new();
     goal(&f, 10);
@@ -726,6 +758,8 @@ fn a12_check_preserves_an_earlier_registered_timer_deadline() {
             matched_at_ms: None,
             pid: None,
             exit_code: None,
+            summary: String::new(),
+            detail: serde_json::Value::Null,
             fire_count: 0,
             missed_fires: 0,
             last_fired_at_ms: None,
@@ -938,4 +972,382 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     assert_eq!(after.no_progress_wakes, 1);
     assert_eq!(after.progress_sequence, before.progress_sequence);
     assert_eq!(after.blocked_revision, before.blocked_revision);
+}
+// MP-08 / MP-09 / MP-10 / MP-11 A12 (accam r3): a workflow node's goal
+// check is a continuation of its bound task. It keeps that lineage and can
+// neither rebind it nor block the B->C edge until the 60 s bound.
+#[test]
+fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    let bind = |prompt: &str, node: &str| {
+        f.store.agent_lifecycle(Operation::BindWorkflow {
+            task: "p".into(),
+            prompt: prompt.into(),
+            run: "run".into(),
+            node: node.into(),
+        })
+    };
+    bind("p", "node").unwrap();
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.clone().unwrap();
+    f.begin(&id);
+    bind(&id, "node").expect("the check continuation keeps its workflow lineage");
+    assert!(bind(&id, "other-node").is_err());
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: serde_json::json!({"status":"achieved","final_answer":"Built and tested","evidence":["public:artifact"]}).to_string(),
+        now: 4,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Done);
+    assert_eq!(
+        f.store.agent_task_workflow("p").unwrap(),
+        Some(("run".into(), "node".into()))
+    );
+}
+
+// A turn admitted before it had a provider run (queued behind another turn)
+// settles with the run that ended it; its check must read that run's answer.
+#[test]
+fn completion_check_names_the_run_that_ended_the_work_turn() {
+    let f = Fixture::new();
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: None,
+        now: 1,
+    });
+    f.apply(Operation::StartGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        objective: "Implement and verify real work".into(),
+        minutes: 1,
+        now: 1,
+    });
+    f.settle("p", true);
+    let task = f.task();
+    let check = completion::evaluation(&task).unwrap();
+    assert_eq!(check.work_provider_run_id.as_deref(), Some("run"));
+}
+
+// The 60 s check bound is a service bound, not an owner deadline: the time the check waits
+// for the owner's Vault unlock is given back, and a refusal is a definitive Blocked.
+fn wait_for_owner(f: &Fixture, at: u64) -> (String, goals::GoalEvaluation) {
+    goal(f, 1);
+    f.settle("p", true);
+    let task = f.task();
+    let check = completion::evaluation(&task).unwrap().clone();
+    f.apply(Operation::BeginOwnerWait {
+        task: task.task_id.clone(),
+        prompt: check.prompt_id.clone(),
+        now: at,
+    });
+    (task.task_id, check)
+}
+
+#[test]
+fn owner_wait_stops_the_check_bound_and_an_unlock_gives_the_time_back() {
+    let f = Fixture::new();
+    let (task, check) = wait_for_owner(&f, 5_000);
+    let waiting = f.task();
+    assert_eq!(waiting.state, ExecutionState::Working);
+    assert_eq!(waiting.reason, "Waiting for the Vault unlock");
+    assert!(!lacks_live_executor(
+        &waiting,
+        check.deadline_ms * 10,
+        false,
+        false
+    ));
+    f.apply(Operation::TimeoutGoal {
+        task: task.clone(),
+        prompt: check.prompt_id.clone(),
+        now: check.deadline_ms + 300_000,
+    });
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Working,
+        "the wait is not a timeout"
+    );
+    let paused_at = completion::evaluation(&f.task())
+        .unwrap()
+        .paused_at_ms
+        .unwrap();
+    let unlocked_at = paused_at + 420_000;
+    f.apply(Operation::EndOwnerWait {
+        task: task.clone(),
+        prompt: check.prompt_id.clone(),
+        refusal: None,
+        now: unlocked_at,
+    });
+    let resumed = f.task();
+    let after = completion::evaluation(&resumed).unwrap();
+    assert_eq!(after.paused_at_ms, None);
+    assert_eq!(after.deadline_ms, check.deadline_ms + 420_000);
+    assert_eq!(
+        after.deadline_ms,
+        after.started_at_ms + goals::CHECK_BOUND_MS
+    );
+    assert_eq!(resumed.reason, "Evaluating original goal objective");
+    f.apply(Operation::TimeoutGoal {
+        task,
+        prompt: check.prompt_id.clone(),
+        now: after.deadline_ms,
+    });
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Blocked,
+        "the bound counts again after the unlock"
+    );
+}
+
+#[test]
+fn owner_refusal_blocks_with_the_reason_and_resume() {
+    let f = Fixture::new();
+    let (task, check) = wait_for_owner(&f, 1_000);
+    f.apply(Operation::EndOwnerWait {
+        task,
+        prompt: check.prompt_id,
+        refusal: Some("The Vault unlock was declined".into()),
+        now: 9_000,
+    });
+    let blocked = f.task();
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    assert_eq!(
+        blocked.reason,
+        "The Vault unlock was declined; unlock the Vault and Resume"
+    );
+    assert_eq!(completion::evaluation(&blocked).unwrap().paused_at_ms, None);
+}
+
+// #1044 P1 on the goal ledger: an unacknowledged receipt of a clean source exit
+// ("settling") must never let any verdict sequence save Done; the persisted task reloads valid.
+#[test]
+fn a12_settling_obligation_never_saves_done_on_repeated_verdicts() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.subscribe();
+    f.apply(Operation::SourceOutcome {
+        now: 2,
+        public_answer: None,
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "result".into(),
+        success: true,
+    });
+    assert_eq!(f.task().obligations[0].status, "settling");
+    f.settle("p", true);
+    let claim =
+        serde_json::json!({"status":"achieved","final_answer":"done","evidence":["history"]});
+    for verdict in [
+        assessment("continue"),
+        assessment("continue"),
+        claim.clone(),
+        claim,
+    ] {
+        let t = check(&f, verdict);
+        let saved = f.task();
+        assert_eq!(saved, t);
+        assert_ne!(saved.state, ExecutionState::Done);
+        assert_eq!(saved.obligations[0].status, "settling");
+        let Some(id) = saved.pending_prompt_id else {
+            break;
+        };
+        f.begin(&id);
+        f.settle(&id, true);
+    }
+    assert_eq!(f.task().state, ExecutionState::Blocked);
+}
+
+// A12-S02/S07: a continuation that made no handled progress and yielded again on
+// live sources covering every obligation keeps that wait; a repeated continue
+// must not discard it and spend the guard while the build is still running.
+#[test]
+fn a12_repeated_continue_keeps_the_agents_covered_wait() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    let yield_on = |prompt: &str, now: u64| {
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: prompt.into(),
+            registrations: vec!["reg".into()],
+            cursor: 0,
+            deadline: 9_000_000,
+            reason: "build still running".into(),
+            now,
+        });
+    };
+    yield_on("p", 2);
+    f.settle("p", true);
+    let first = check(&f, assessment("continue"));
+    assert_eq!(first.state, ExecutionState::Working);
+    let id = first.pending_prompt_id.unwrap();
+    f.begin(&id);
+    yield_on(&id, 3);
+    f.settle(&id, true);
+    let t = check(&f, assessment("continue"));
+    assert_eq!(t.state, ExecutionState::Waiting, "{t:?}");
+    assert_eq!(t.no_progress_wakes, first.no_progress_wakes);
+    let wait = t.wait.clone().unwrap();
+    assert_eq!(wait.registration_ids, vec!["reg".to_string()]);
+    assert_eq!(
+        t.goal.as_ref().unwrap().next_check_in_ms,
+        Some(wait.deadline_ms)
+    );
+    assert!(wait.deadline_ms <= 3 + 60_000);
+    assert_eq!(f.task(), t);
+}
+
+// The kept wait never bypasses the guard: at the limit a covered wait still blocks.
+#[test]
+fn a12_kept_wait_still_ends_at_the_progress_guard() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    let mut t = check(&f, assessment("continue"));
+    for _ in 1..NO_PROGRESS_LIMIT {
+        let id = t.pending_prompt_id.clone().unwrap();
+        f.begin(&id);
+        f.settle(&id, true);
+        t = check(&f, assessment("continue"));
+    }
+    assert_eq!(t.no_progress_wakes, NO_PROGRESS_LIMIT);
+    let id = t.pending_prompt_id.clone().unwrap();
+    f.begin(&id);
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: id.clone(),
+        registrations: vec!["reg".into()],
+        cursor: 0,
+        deadline: 9_000_000,
+        reason: "build still running".into(),
+        now: 3,
+    });
+    f.settle(&id, true);
+    assert_eq!(
+        check(&f, assessment("continue")).state,
+        ExecutionState::Blocked
+    );
+}
+
+fn lease(id: &str) -> goals::CheckLease {
+    goals::CheckLease {
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "machine".into(),
+        execution_lease_id: id.into(),
+        leased_agent_id: "leased".into(),
+    }
+}
+
+fn bound_check(f: &Fixture, lease_id: &str) -> goals::GoalEvaluation {
+    goal(f, 10);
+    f.settle("p", true);
+    let prompt = completion::evaluation(&f.task()).unwrap().prompt_id.clone();
+    f.begin(&prompt);
+    f.apply(Operation::BindGoalCheckLease {
+        task: "p".into(),
+        prompt,
+        lease: lease(lease_id),
+    });
+    completion::evaluation(&f.task()).unwrap().clone()
+}
+
+fn retry(
+    f: &Fixture,
+    check: &goals::GoalEvaluation,
+    lease: goals::CheckLease,
+    now: u64,
+) -> Outcome {
+    f.apply(Operation::RetryGoalCheck {
+        task: "p".into(),
+        prompt: f
+            .task()
+            .pending_prompt_id
+            .unwrap_or(check.prompt_id.clone()),
+        lease,
+        now,
+    })
+}
+
+// MP-08 / MP-10 / MP-11 A12-S02: a leased worker that restarts inside a running check gets the check once more.
+#[test]
+fn a12_check_interrupted_by_a_worker_restart_is_asked_once_more() {
+    let f = Fixture::new();
+    let check = bound_check(&f, "lease-1");
+    let Outcome::Task(task) = retry(&f, &check, lease("lease-2"), check.deadline_ms) else {
+        panic!("a restarted worker must get its check back");
+    };
+    let again = completion::evaluation(&task).unwrap();
+    assert_eq!(task.state, ExecutionState::Working);
+    assert_eq!(again.prompt_id, format!("{}-retry", check.prompt_id));
+    assert_eq!(
+        task.pending_prompt_id.as_deref(),
+        Some(again.prompt_id.as_str())
+    );
+    assert_eq!(again.deadline_ms, check.deadline_ms + goals::CHECK_BOUND_MS);
+    assert!(again.retried && again.result.is_none());
+    assert!(goals::is_completion_check_prompt_id(&again.prompt_id));
+    // The retry is the last: a second restart (or any expiry) blocks the task.
+    f.begin(&again.prompt_id);
+    assert!(matches!(
+        retry(&f, again, lease("lease-3"), again.deadline_ms),
+        Outcome::Saved
+    ));
+    f.apply(Operation::TimeoutGoal {
+        task: "p".into(),
+        prompt: again.prompt_id.clone(),
+        now: again.deadline_ms,
+    });
+    assert_eq!(f.task().state, ExecutionState::Blocked);
+}
+
+#[test]
+fn a12_check_is_not_retried_unless_the_same_worker_came_back_after_the_bound() {
+    let other_worker = goals::CheckLease {
+        worker_kernel_id: "other".into(),
+        ..lease("lease-2")
+    };
+    for (current, early, why) in [
+        (
+            lease("lease-1"),
+            false,
+            "same lease: the worker never restarted",
+        ),
+        (
+            other_worker,
+            false,
+            "another worker never answers for this check",
+        ),
+        (lease("lease-2"), true, "the service bound has not run out"),
+    ] {
+        let f = Fixture::new();
+        let check = bound_check(&f, "lease-1");
+        let now = check.deadline_ms - u64::from(early);
+        assert!(
+            matches!(retry(&f, &check, current, now), Outcome::Saved),
+            "{why}"
+        );
+        assert_eq!(completion::evaluation(&f.task()).unwrap(), &check);
+    }
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.settle("p", true);
+    let unleased = completion::evaluation(&f.task()).unwrap().clone();
+    f.begin(&unleased.prompt_id);
+    assert!(
+        matches!(
+            retry(&f, &unleased, lease("lease-2"), unleased.deadline_ms),
+            Outcome::Saved
+        ),
+        "a check that never ran on a leased worker keeps the plain bound"
+    );
 }

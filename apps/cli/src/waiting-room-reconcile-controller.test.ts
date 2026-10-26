@@ -231,6 +231,7 @@ function createHarness(options: {
       calls.push("syncCommandCenter")
     },
     deriveStateUpdate: ({ nextState }) => {
+      assert.ok(nextState, "inventory reconciliation requires the current state")
       options.inspectNextState?.(nextState)
       return options.update
     },

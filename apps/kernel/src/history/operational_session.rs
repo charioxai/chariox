@@ -326,6 +326,38 @@ impl OperationalHistoryStore {
         read_history_events_from_rows(session_id, &mut rows)
     }
 
+    /// The tool rows one provider run wrote, oldest first.
+    pub fn load_provider_tool_entries_for_run(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
+        self.delay_read_if_configured();
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_json FROM history_events
+                 WHERE session_id = ?1 AND provider_run_id = ?2 AND kind = 'provider_tool'
+                 ORDER BY sequence ASC",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare provider run tool load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![session_id, provider_run_id])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load provider run tools",
+                message: error.to_string(),
+            })?;
+        Ok(read_history_events_from_rows(session_id, &mut rows)?
+            .into_iter()
+            .filter_map(|event| event.to_session_history_entry())
+            .collect())
+    }
+
     pub fn load_session_history_entries(
         &self,
         session_id: &str,

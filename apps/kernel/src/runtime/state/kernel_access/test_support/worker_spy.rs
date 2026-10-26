@@ -106,7 +106,7 @@ impl WorkerSpy {
                                 return;
                             }
                             let response = match request {
-                                RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                                RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None, projection_sequence: None },
                                 RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
                                 RelayPeerRequest::DestroyExecutionLease { lease_id } => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
                                 RelayPeerRequest::CreateExecutionLease { home_kernel_id, home_session_id, home_agent_id, home_agent_metaagent, owner_user_id } => {

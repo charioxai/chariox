@@ -557,6 +557,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     getFocusedInteraction: deps.focusedAgentInteraction,
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
+    getActiveInteractions: () => deps.sessionState().active_interactions ?? [],
     getComposerText: () => deps.promptTextController.currentText(),
     getSelectedIndex: deps.interactionChoiceStore.getSelectedIndex,
     setSelectedIndex: deps.interactionChoiceStore.setSelectedIndex,

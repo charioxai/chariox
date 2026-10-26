@@ -651,6 +651,10 @@ pub(crate) fn can_skip_session_snapshot(
             if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
                 return false;
             }
+            // Wake changes have no event of their own.
+            if previous.session.agent_wakes() != snapshot.session.agent_wakes() {
+                return false;
+            }
             if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
                 return true;
             }

@@ -7,6 +7,7 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
         leased_agent_id: "leased-agent-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
         pump_output: true,
+        acknowledged_projection_sequence: 3,
     };
     let request_json = serde_json::to_value(&request).expect("request should serialize");
     assert_eq!(
@@ -16,10 +17,14 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
             "leased_agent_id": "leased-agent-1",
             "provider_run_id": "provider-run-1",
             "pump_output": true,
+            "acknowledged_projection_sequence": 3,
         })
     );
 
-    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None };
+    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained {
+        event: None,
+        projection_sequence: None,
+    };
     let response_json = serde_json::to_value(&response).expect("response should serialize");
     assert_eq!(
         response_json,
@@ -27,6 +32,35 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
             "kind": "leased_runtime_projection_drained",
         })
     );
+}
+
+// MP-08 / MP-10 A10-S02: peer 196 makes the acknowledgement part of every drain; a
+// drain without it is from a worker contract that consumed output on a lost reply.
+#[test]
+fn drain_without_a_projection_acknowledgement_is_refused() {
+    let unacknowledged = serde_json::json!({
+        "kind": "drain_leased_runtime_projection",
+        "leased_agent_id": "leased-agent-1",
+        "provider_run_id": "provider-run-1",
+        "pump_output": true,
+    });
+    assert!(serde_json::from_value::<RelayPeerRequest>(unacknowledged).is_err());
+
+    let response = RelayPeerResponse::LeasedRuntimeProjectionDrained {
+        event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+            home_session_id: "home".into(),
+            home_agent_id: "agent".into(),
+            provider_run_id: "provider-run-1".into(),
+            provider_run: None,
+            prompts: Vec::new(),
+            output_chunks: Vec::new(),
+            notices: Vec::new(),
+            completions: Vec::new(),
+        }),
+        projection_sequence: Some(4),
+    };
+    let response_json = serde_json::to_value(&response).expect("response should serialize");
+    assert_eq!(response_json["projection_sequence"], 4);
 }
 
 #[tokio::test(flavor = "current_thread")]

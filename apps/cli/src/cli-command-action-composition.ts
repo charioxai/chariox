@@ -8,7 +8,7 @@ import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types
 import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
-import type { BootstrapState, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
@@ -202,10 +202,11 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
-  userAppViews?: { handle(args: string[]): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
+  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
+  roomTerminalScreen?: import("./room-terminal-slash.js").RoomTerminalScreen
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
@@ -481,7 +482,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
-    currentProviderId: () => options.provider ?? "opencode",
+    currentProviderId: () => (isAttached()
+      ? sessionState().agents.find((agent: AgentInstance) => agent.id === focusedAgentId())?.provider
+      : undefined) ?? options.provider ?? "opencode",
     currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
@@ -519,6 +522,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return true
     },
     openRoomViewer,
+    ...(deps.roomTerminalScreen ? { roomTerminalScreen: deps.roomTerminalScreen } : {}),
     captureRoomScreenshot: async () => {
       const attachment = attachmentState()
       if (!attachment) throw new Error("Room screenshot capture requires an active attachment")

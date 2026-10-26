@@ -29,7 +29,7 @@ impl KernelRuntimeState {
         let Some(snapshot) = snapshot else {
             return Ok(None);
         };
-        if publication.created_by_user_id() != caller_user_id {
+        if !self.acts_for_owner(session_id, caller_user_id, publication.created_by_user_id()) {
             return Ok(None);
         }
         let plan = self

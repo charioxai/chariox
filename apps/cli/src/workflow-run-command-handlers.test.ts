@@ -38,7 +38,8 @@ test("workflow runs command lists run summaries for an optional workflow", async
 
   assert.deepEqual(calls, [
     "list:workflow-1",
-    "footer:info:workflow runs: run-1 [running], run-2 [failed, failures 1]",
+    "notice:workflow runs (2):\nrun-1 [running]\nrun-2 [failed, failures 1]",
+    "footer:info:listed 2 workflow runs",
   ])
 })
 
@@ -160,6 +161,9 @@ function createDeps(
     flashFooter: (message, tone) => {
       calls.push(`footer:${tone}:${message}`)
     },
+    appendNotice: (message) => {
+      calls.push(`notice:${message}`)
+    },
     applySessionState: (session) => {
       calls.push(`session:${session.id}`)
     },
@@ -204,6 +208,24 @@ function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession
     ...overrides,
   }
 }
+
+// MP-08 / MP-10 / MP-11 HW-01: a long list reaches the transcript whole, oldest historical run
+// and its label included; a one-line footer cut it off.
+test("workflow runs command lists every run with the historical label", async () => {
+  const calls: string[] = []
+  const runs = Array.from({ length: 60 }, (_, index) => workflowRun({
+    id: `run-${index}`,
+    status: index === 59 ? "Completed" : "Running",
+    created_before_ownership_tracking: index === 59,
+  }))
+
+  await handleWorkflowRunsCommand(createDeps(calls, { listWorkflowRuns: async () => runs }), ["runs"])
+
+  const notice = calls.find(call => call.startsWith("notice:")) ?? ""
+  assert.equal(notice.split("\n").length, 61)
+  assert.match(notice, /run-59 \[completed\] · Created before ownership tracking · read-only$/)
+  assert.equal(calls.at(-1), "footer:info:listed 60 workflow runs")
+})
 
 // MP-08 / MP-10 / MP-11: historical user-facing output is explicitly read-only.
 test("historical workflow summaries label ownership tracking", () => {

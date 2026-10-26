@@ -48,6 +48,31 @@ fn interaction_reference_error(
 }
 
 impl KernelRuntimeOwnedState {
+    /// Whether the caller is the owner a decision is bound to, in the room it was raised in.
+    /// Takes the session store's read lock: under that lock use `is_decision_owner_in`.
+    fn is_decision_owner(
+        &self,
+        session_id: &str,
+        caller_user_id: Option<&str>,
+        owner: &str,
+    ) -> bool {
+        caller_user_id.is_some_and(|caller| self.acts_for_owner(session_id, caller, owner))
+    }
+
+    /// `is_decision_owner` for a room owner already read; a kernel-wide decision has no room.
+    fn is_decision_owner_in(
+        &self,
+        room_owner: Option<&str>,
+        caller_user_id: Option<&str>,
+        owner: &str,
+    ) -> bool {
+        caller_user_id.is_some_and(|caller| {
+            caller == owner
+                || room_owner
+                    .is_some_and(|room_owner| self.acts_for_owner_in(room_owner, caller, owner))
+        })
+    }
+
     /// The owner and operation of a pending decision whose chosen choice needs
     /// the passkey, when the caller owns that decision and it has not expired
     /// (its popup is closed then, so no passkey is checked for it).
@@ -71,7 +96,7 @@ impl KernelRuntimeOwnedState {
         let owner = pending
             .kernel_operation_owner
             .clone()
-            .filter(|owner| Some(owner.as_str()) == caller_user_id)?;
+            .filter(|owner| self.is_decision_owner(session_id, caller_user_id, owner))?;
         let interaction = if let Some(interaction) = pending
             .kernel_wide_interaction
             .or(pending.user_domain_interaction)
@@ -269,7 +294,7 @@ impl KernelRuntimeOwnedState {
             .kernel_operation_owner
             .as_deref()
             .or(pending.terminal_credential_owner.as_deref())
-            .is_some_and(|owner| Some(owner) != caller_user_id)
+            .is_some_and(|owner| !self.is_decision_owner(session_id, caller_user_id, owner))
         {
             return Err(interaction_reference_error(
                 session_id,
@@ -338,11 +363,16 @@ impl KernelRuntimeOwnedState {
             } else {
                 owner.to_owned()
             };
-            if Some(owner.as_str()) != caller_user_id
-                || (review
-                    && session.as_ref().is_none_or(|session| {
-                        self.owner_context_review_owner(session.owner_user_id()) != owner
-                    }))
+            if !self.is_decision_owner_in(
+                session
+                    .as_ref()
+                    .map(crate::session::RuntimeSession::owner_user_id),
+                caller_user_id,
+                &owner,
+            ) || (review
+                && session.as_ref().is_none_or(|session| {
+                    self.owner_context_review_owner(session.owner_user_id()) != owner
+                }))
             {
                 return Err(interaction_error(
                     "Only the operation owner can answer this decision",
@@ -365,7 +395,18 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if take_host
-            && (pending.kernel_operation_owner.as_deref() != caller_user_id
+            && (!pending
+                .kernel_operation_owner
+                .as_deref()
+                .is_some_and(|owner| {
+                    self.is_decision_owner_in(
+                        session
+                            .as_ref()
+                            .map(crate::session::RuntimeSession::owner_user_id),
+                        caller_user_id,
+                        owner,
+                    )
+                })
                 || !interaction.kernel_operation_id().is_some_and(|subject| {
                     subject
                         .strip_prefix("host_action:")
