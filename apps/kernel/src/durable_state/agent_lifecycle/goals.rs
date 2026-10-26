@@ -206,9 +206,14 @@ pub(super) fn blocked(t: &mut AgentTaskExecution, reason: &str) {
 }
 
 /// One persisted intent per work turn; duplicate EOF/ACK cannot spend again.
-pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -> bool {
+pub(super) fn work_end(
+    t: &mut AgentTaskExecution,
+    has_answer: bool,
+    valid_wait: bool,
+    now: u64,
+) -> bool {
     clock(t, now);
-    if !has_answer {
+    if !has_answer && !valid_wait {
         blocked(
             t,
             "Goal provider ended without a public answer; reconcile failure and explicitly resume",

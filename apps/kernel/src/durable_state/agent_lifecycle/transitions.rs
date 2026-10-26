@@ -556,9 +556,36 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     correction: false,
                 });
             }
+            let valid_wait = if let Some(w) = t
+                .wait
+                .as_ref()
+                .filter(|_| !cancelled && t.state != ExecutionState::Blocked)
+            {
+                let regs = registrations(tx, &t.task_id)?;
+                let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
+                // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
+                // at admission. A late native boundary commits that same
+                // wait; the normal sweep delivers its elapsed deadline.
+                w.deadline_ms > w.started_at_ms
+                    && !w.registration_ids.is_empty()
+                    && w.registration_ids
+                        .iter()
+                        .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
+                    && t.obligations
+                        .iter()
+                        .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+                        .all(|o| {
+                            regs.iter().any(|r| {
+                                w.registration_ids.contains(&r.id)
+                                    && r.obligation_id.as_deref() == Some(&o.id)
+                            })
+                        })
+            } else {
+                false
+            };
             if !cancelled && t.state == ExecutionState::Working && t.goal.is_some() {
                 t.provider_run_id = Some(run);
-                let correction = super::goals::work_end(&mut t, has_answer, now);
+                let correction = super::goals::work_end(&mut t, has_answer, valid_wait, now);
                 t.revision += 1;
                 save(tx, &t)?;
                 return Ok(Outcome::Settled {
@@ -583,30 +610,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     .obligations
                     .iter()
                     .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
-                let valid_wait = if let Some(w) = &t.wait {
-                    let regs = registrations(tx, &t.task_id)?;
-                    let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
-                    // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
-                    // at admission. A late native boundary commits that same
-                    // wait; the normal sweep delivers its elapsed deadline.
-                    w.deadline_ms > w.started_at_ms
-                        && !w.registration_ids.is_empty()
-                        && w.registration_ids
-                            .iter()
-                            .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
-                        && t.obligations
-                            .iter()
-                            .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
-                            .all(|o| {
-                                regs.iter().any(|r| {
-                                    w.registration_ids.contains(&r.id)
-                                        && r.obligation_id.as_deref() == Some(&o.id)
-                                })
-                            })
-                } else {
-                    false
-                };
-                if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
+                let plain = is_plain(tx, &t)?;
+                if has_answer && (plain || (!open && t.wait.is_none())) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
                 } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {

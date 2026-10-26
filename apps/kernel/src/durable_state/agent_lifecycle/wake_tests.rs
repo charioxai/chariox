@@ -1,6 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A03: durable timer/process wake transactions.
 use super::*;
 mod goal_waits;
+mod goal_yields;
 struct Fixture {
     root: std::path::PathBuf,
     store: DurableKernelStateStore,
