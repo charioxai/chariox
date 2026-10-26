@@ -38,11 +38,42 @@ impl KernelRuntimeState {
                     );
                 }
             }
+            if let Err(error) = self.spawn_agent_move_queue_promotion(
+                &operation.identity.home_session_id,
+                &operation.identity.home_agent_id,
+            ) {
+                crate::logging::warn_with_fields(
+                    "agent_move.queue",
+                    "Settled Move queue recovery failed; retry the agent's queued prompts",
+                    serde_json::json!({"operation_id":operation.identity.operation_id,"error":error.to_string()}),
+                );
+            }
         }
         self.owned.agent_moves.pending().len()
     }
 
     pub(super) async fn move_agent_transaction(
+        &self,
+        session_id: &str,
+        agent: crate::agent::AgentInstance,
+        target_ref: Option<String>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent_id = agent.id().to_string();
+        let result = self
+            .move_agent_transaction_inner(session_id, agent, target_ref)
+            .await;
+        // Preflight can also queue work under its temporary transition claim.
+        if !self
+            .owned
+            .agent_moves
+            .dispatch_fenced(session_id, &agent_id)
+        {
+            self.spawn_agent_move_queue_promotion(session_id, &agent_id)?;
+        }
+        result
+    }
+
+    async fn move_agent_transaction_inner(
         &self,
         session_id: &str,
         agent: crate::agent::AgentInstance,

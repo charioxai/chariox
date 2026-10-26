@@ -1321,6 +1321,166 @@ async fn mk03_abort_retires_empty_move_lease_and_rejects_delayed_creation() {
     );
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: ordinary prompts arriving behind the Move barrier resume automatically.
+async fn queued_mid_move(abort: bool) {
+    let (fixture, session, _) = crash_fixture().await;
+    let attachment = {
+        let mut home = fixture.home.lock().await;
+        let configured = &home.config.user_config.credential_vault.path;
+        let isolated_home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let vault = configured
+            .strip_prefix("~/")
+            .map(|path| isolated_home.join(path))
+            .unwrap_or_else(|| PathBuf::from(configured));
+        assert!(
+            vault.starts_with(&isolated_home),
+            "the queue fixture must use its isolated Vault"
+        );
+        crate::secret::create_chariox_encrypted_vault_for_test(&vault, "queue fixture").unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "queue fixture",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let mut agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+        agent.set_provider("dev-stub");
+        agent.set_model(Some("queue-test-model".into()));
+        agent.set_account_profile(None);
+        home.agents().restore_agent(agent);
+        crate::app::KernelSessionService::new(&mut home)
+            .attach(crate::attachment::AttachRequest::new(
+                &session,
+                "move-queue-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap()
+            .id()
+            .to_string()
+    };
+    interrupt_public_move(&fixture, &session, "captured").await;
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        fixture.home.clone(),
+        8,
+    );
+    async fn dispatch(
+        router: &crate::runtime::router::CommandRouter,
+        value: serde_json::Value,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        let request: crate::local::LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk03-queue",
+            None,
+            None,
+            &request,
+        );
+        router.dispatch(command, request).await
+    }
+    // Match the live transport: one retained router and its independent readiness consumer.
+    let output_runtime = router.runtime_state();
+    let output_pump = tokio::spawn(async move { output_runtime.run_provider_output_pump().await });
+    dispatch(&router, serde_json::json!({"SubmitPrompt": {"session_id": session, "attachment_id": attachment, "target_agent_id":fixture.agent_id, "prompt":"queued during Move"}})).await.unwrap();
+    {
+        let mut home = fixture.home.lock().await;
+        // Dispatch peeking deliberately hides fenced work. Inspect the queue
+        // itself so the assertion does not mistake that barrier for data loss.
+        let room = home.sessions().get_session(&session).unwrap();
+        assert_eq!(
+            home.prompt_state_owner()
+                .state_parts(&room, &fixture.agent_id)
+                .1
+                .len(),
+            1
+        );
+        assert!(home
+            .prompt_owner_active_prompt_for_agent(&session, &fixture.agent_id)
+            .unwrap()
+            .is_none());
+    }
+    if abort {
+        dispatch(&router, serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id,"abort_pending":true}})).await.unwrap();
+    } else {
+        dispatch(&router, serde_json::json!({"MoveAgentToRemote":{"session_id":session,"agent_ref":fixture.agent_id,"machine_ref":fixture.presences[0].machine_id}})).await.unwrap();
+    }
+    let promoted = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (empty, remote, local_started) = {
+                let mut home = fixture.home.lock().await;
+                let room = home.sessions().get_session(&session).unwrap();
+                let empty = home
+                    .prompt_state_owner()
+                    .state_parts(&room, &fixture.agent_id)
+                    .1
+                    .is_empty();
+                let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+                (
+                    empty,
+                    agent.remote_execution().cloned(),
+                    home.providers
+                        .get_run_for_agent(&session, &fixture.agent_id)
+                        .is_some(),
+                )
+            };
+            let started = if let Some(remote) = remote {
+                let worker = fixture.workers[0].lock().await;
+                let lease = worker.leased_agents.get(&remote.leased_agent_id).unwrap();
+                worker
+                    .providers
+                    .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+                    .is_some()
+            } else {
+                local_started
+            };
+            if empty && started {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    output_pump.abort();
+    let _ = output_pump.await;
+    let home = fixture.home.lock().await;
+    let room = home.sessions().get_session(&session).unwrap();
+    let notices: Vec<_> = home
+        .load_session_history_entries(&room, None)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::Notice)
+        .map(|entry| entry.text)
+        .collect();
+    let latest = home
+        .providers
+        .get_latest_run_for_agent(&session, &fixture.agent_id)
+        .map(|run| (run.provider().to_string(), run.state()));
+    let fenced = home
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id);
+    let preparing = home
+        .prompt_state_owner
+        .has_idle_queue_promotion(&session, &fixture.agent_id);
+    let interactions: Vec<_> = room
+        .active_interactions()
+        .iter()
+        .filter_map(|interaction| interaction.title().map(str::to_string))
+        .collect();
+    assert!(promoted.is_ok(), "a prompt queued during Move must advance when the operation settles; fenced={fenced}, preparing={preparing}, interactions={interactions:?}, run={latest:?}, notices={notices:?}");
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_prompt_queued_mid_move_advances_after_complete() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    queued_mid_move(false).await;
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_prompt_queued_mid_move_advances_after_abort() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    queued_mid_move(true).await;
+}
+
 async fn slice_membership_survives_completion_crash(forward: bool) {
     let fixture = Fixture::with_relay_fixture(false, false, false, true).await;
     let session = {

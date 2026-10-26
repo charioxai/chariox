@@ -28,6 +28,7 @@ impl KernelRuntimeState {
             .for_agent(session_id, agent.id())
             .ok_or_else(|| move_error("This agent has no Move to abort"))?;
         if matches!(operation.phase, HomeMovePhase::RolledBack { .. }) {
+            self.spawn_agent_move_queue_promotion(session_id, agent.id())?;
             return self.owned.agent_store.get_agent(agent.id());
         }
         if matches!(operation.phase, HomeMovePhase::Cancelling) {
@@ -94,6 +95,13 @@ impl KernelRuntimeState {
             reason: "Move cancelled; source execution restored".into(),
         };
         self.owned.agent_moves.save_home(operation)?;
+        let session_id = self
+            .owned
+            .agent_store
+            .get_agent(&agent_id)?
+            .session_id()
+            .to_string();
+        self.spawn_agent_move_queue_promotion(&session_id, &agent_id)?;
         self.owned.agent_store.get_agent(&agent_id)
     }
 

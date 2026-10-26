@@ -146,7 +146,7 @@ impl Fixture {
                 machine_alias: None,
                 relay_alias: None,
                 kernel_alias: worker_config.daemon_alias.clone(),
-                available_providers: vec![agent.provider().into()],
+                available_providers: vec![agent.provider().into(), "dev-stub".into()],
                 provider_accounts: Vec::new(),
                 capabilities: Vec::new(),
                 accepting_remote_leases: true,

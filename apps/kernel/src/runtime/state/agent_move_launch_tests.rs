@@ -498,3 +498,100 @@ fn mk03_chunk_admission_preserves_prefix_and_allows_retry_without_free_space() {
         .expect("unpublished staging with crash-corrupted data must be rewritable");
     assert_eq!(std::fs::read(files[0].path()).unwrap(), [1, 2]);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a crash after terminal persistence cannot strand its backlog.
+#[tokio::test]
+async fn mk03_restart_promotes_queue_of_already_rolled_back_move() {
+    use crate::agent_move::*;
+    let worktree = crate::test_support::TestWorktree::new("move-settled-queue-restart");
+    let config = crate::config::DaemonConfig::for_tests();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let (session, mut agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    agent.set_provider("dev-stub");
+    agent.set_model(Some("queue-test-model".into()));
+    agent.set_account_profile(None);
+    app.agents().restore_agent(agent.clone());
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "settled-queue",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let prompt = crate::session::PromptQueueItem::new(
+        "queued-at-crash",
+        attachment.id(),
+        agent.id(),
+        "queued at crash",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, true)
+        .unwrap();
+    app.agent_moves
+        .save_home(HomeMoveOperation {
+            identity: AgentMoveIdentity {
+                operation_id: "settled-queue".into(),
+                generation: 1,
+                home_kernel_id: config.daemon_id.clone(),
+                home_session_id: session.id().into(),
+                home_agent_id: agent.id().into(),
+                owner_user_id: agent.owner_user_id().into(),
+                source_kernel_id: config.daemon_id.clone(),
+                target_kernel_id: "target".into(),
+                home_key_thumbprint: "home-key".into(),
+                source_key_thumbprint: "home-key".into(),
+                target_key_thumbprint: "target-key".into(),
+                target_public_key: "target-public".into(),
+            },
+            revision: 0,
+            original_agent: agent.clone(),
+            target_ref: Some("target".into()),
+            source_remote: None,
+            phase: HomeMovePhase::RolledBack {
+                reason: "source restored before crash".into(),
+            },
+        })
+        .unwrap();
+    app.save_durable_state_snapshot().unwrap();
+    drop(app);
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let runtime = owned_runtime_state(&app).await;
+    assert!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent.id())
+            .is_some(),
+        "the real restart must restore the queued prompt"
+    );
+    let output_runtime = runtime.clone();
+    let output_pump = tokio::spawn(async move { output_runtime.run_provider_output_pump().await });
+    assert_eq!(runtime.recover_agent_moves_after_restart().await, 0);
+    let promoted = tokio::time::timeout(Duration::from_secs(5), async {
+        while runtime
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent.id())
+            .is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    output_pump.abort();
+    let _ = output_pump.await;
+    assert!(
+        promoted.is_ok(),
+        "terminal journal recovery must promote the restored backlog"
+    );
+    assert!(
+        runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .is_some(),
+        "restart recovery must start its provider"
+    );
+}
