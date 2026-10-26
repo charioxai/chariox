@@ -514,6 +514,7 @@ dependencies = [
  "chariox-aegs-sdk",
  "chariox-app-package",
  "chariox-app-runtime",
+ "chariox-app-wasm-worker",
  "chariox-event-protocol",
  "chariox-relay",
  "chrono",
@@ -558,6 +559,7 @@ dependencies = [
  "webpki-roots 1.0.8",
  "whisper-rs",
  "windows-sys 0.61.2",
+ "wit-component 0.262.0",
  "zeroize",
 ]
 

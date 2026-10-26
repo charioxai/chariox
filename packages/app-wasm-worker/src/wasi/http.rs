@@ -42,6 +42,11 @@ impl Broker {
     }
 }
 impl WasiHttpHooks for Broker {
+    fn set_host_header(&mut self) -> bool {
+        // The kernel rejects caller-supplied Host and derives authority from
+        // the approved URL when it opens the actual HTTP connection.
+        false
+    }
     fn send_request(
         &mut self,
         request: http::Request<WasiBody>,

@@ -89,6 +89,8 @@ there is no socket, DNS, incoming HTTP, process, environment or terminal linker.
 Standard HTTP cannot select opaque connection/effect handles: use `chariox:app/http`
 when an operation needs those explicit authorities. HTTP destinations and effects
 remain subject to the kernel's normal manifest/grant/approval checks.
+Wasmtime's synthesized `Host` header is disabled for this broker; the kernel
+derives HTTP authority from the approved URL and still rejects App-supplied Host.
 
 Responses and uploads use bounded chunks and backpressure. Dropping a response,
 including an early response during an unfinished upload, cancels both pumps and
@@ -137,6 +139,13 @@ release, advance the kernel migration journal or claim that SQL rollback restore
 private files. No serialized migration-run request or launch mode is added here.
 
 ## Additional real-engine drills
+
+`scripts/wasi-policy-drill.sh` builds the source WASI guest and runs both HTTP
+versions through the real Wasmtime adapters, wire decoder and kernel HTTP policy.
+Run it through `cargo-slot.sh` with an external `CHARIOX_WORKER_DRILL_DIR`.
+It requires no controlled HTTP broker reply or network service, and checks that
+URL authority survives while App-supplied Host remains forbidden. This is a
+policy-boundary regression drill, not installed-App or live network acceptance.
 
 `scripts/sdk-drill.sh` builds the actual C/C++ templates and behavioral components
 from `CHARIOX_SDK_CHECKOUT`, using `CHARIOX_C_TOOLCHAIN`, then runs them in the
