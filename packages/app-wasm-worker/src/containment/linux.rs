@@ -1,11 +1,7 @@
 //! Port of the v1 native worker's seccomp allowlist and pthread checks
 //! (apps/app-worker/src/sandbox_linux.c), narrowed to broker-only native I/O.
-//! An empty Landlock ruleset additionally removes filesystem authority.
-use std::{
-    io,
-    mem::size_of,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-};
+//! Path syscalls are absent from the allowlist, including on older kernels.
+use std::io;
 
 const ALLOW: u32 = 0x7fff0000;
 const DENY: u32 = 0x00050000 | libc::EPERM as u32;
@@ -42,45 +38,9 @@ fn case(filter: &mut Vec<libc::sock_filter>, syscall: libc::c_long, body: &[libc
     filter.push(load(0));
 }
 
-fn landlock() -> io::Result<()> {
-    // ABI 3 includes truncation and cross-directory rename. Seccomp below also
-    // denies opening paths, metadata enumeration and every newer syscall.
-    let abi = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            std::ptr::null::<u8>(),
-            0,
-            1,
-        )
-    };
-    if abi < 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "APP_SANDBOX_UNAVAILABLE: Linux Landlock ABI 3 required",
-        ));
-    }
-    let handled_access_fs: u64 = (1 << 15) - 1;
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            &handled_access_fs,
-            size_of::<u64>(),
-            0,
-        )
-    };
-    if descriptor < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let ruleset = unsafe { OwnedFd::from_raw_fd(descriptor as i32) };
-    if unsafe { libc::syscall(libc::SYS_landlock_restrict_self, ruleset.as_raw_fd(), 0) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 pub(super) fn enter() -> io::Result<()> {
-    // Landlock is thread-local. Refuse to leave any pre-existing thread outside
-    // it; the epoch ticker and Tokio threads must all be born after this point.
+    // Descriptor cleanup must precede threads sharing the descriptor table.
+    // The epoch ticker and Tokio threads must all be born after this point.
     if std::fs::read_dir("/proc/self/task")?.count() != 1 {
         return Err(io::Error::other(
             "APP_SANDBOX_ORDER: containment must precede threads",
@@ -103,7 +63,6 @@ pub(super) fn enter() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     super::ceilings()?;
-    landlock()?;
     let pid = unsafe { libc::getpid() };
     if pid <= 1 {
         return Err(io::Error::other("APP_SANDBOX_PID: invalid worker PID"));
@@ -304,7 +263,7 @@ pub(super) fn enter() -> io::Result<()> {
         len: filter.len().try_into().expect("bounded seccomp program"),
         filter: filter.as_mut_ptr(),
     };
-    // TSYNC is defense in depth; Landlock above still requires a single thread.
+    // Apply the policy to every thread, including any created by system APIs.
     if unsafe { libc::syscall(libc::SYS_seccomp, 1, 1, &program) } != 0 {
         return Err(io::Error::last_os_error());
     }

@@ -68,14 +68,15 @@ process requests go through kernel brokers. R6 must not add ambient native WASI.
 Offline `check`/`precompile` compile without instantiating; they do not assert a
 contained installation or run any App export.
 
-Linux requires enabled Landlock ABI 3 (Linux 6.2+). An empty Landlock filesystem
-domain and a default-deny seccomp allowlist remove path access, sockets,
+Linux uses a default-deny seccomp allowlist to remove path access, sockets,
 exec/fork, ptrace, foreign signals, namespaces, kernel interfaces, memfd and
 io_uring. This ports the v1 native worker's allowlist, thread-only clone,
 clone3-to-ENOSYS and self-query-only prlimit checks from
 `apps/app-worker/src/sandbox_linux.c`, narrowed for the Rust broker transport.
 The v1 Node/bubblewrap/cgroup path is unchanged. No user namespace, mount,
 delegated cgroup or privileged host change is required for the WASM entry.
+Landlock is not required: all path syscalls are already refused by seccomp,
+and inherited descriptors are closed before that boundary.
 Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready.
 
 The Linux executable-memory policy is W^X: seccomp refuses simultaneous WRITE
