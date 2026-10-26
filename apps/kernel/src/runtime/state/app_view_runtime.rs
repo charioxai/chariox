@@ -175,7 +175,7 @@ impl KernelRuntimeState {
     /// Room command holds it (that rejection means it never ran; an Open is
     /// not idempotent, and a Reload refused this way would unbind a working
     /// view). An answer is idempotent, so any failure is retried.
-    async fn app_view_command<T: serde::de::DeserializeOwned>(
+    pub(in crate::runtime::state) async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,

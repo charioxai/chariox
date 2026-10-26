@@ -139,3 +139,44 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   enter a value it knows into a password or masked field; the product keeps
   masking what a Vault fill put there in model-bound observations. Anything
   richer uses `chariox.action`, whose schema the developer writes.
+
+## 9. The agent bridge and the runtime MCP catalog (A2)
+
+- **Tools.** An agent holding an App grant gets `chariox.app_view_catalog`,
+  `_invoke`, `_state`, `_changes` and `_batch` on the existing runtime MCP. They
+  address the open views of the agent's own Room by the id the catalog lists.
+  A view's actions come only from the signed declarations of the generation it
+  runs (`AppCatalog::ui_actions()`; empty for v1 packages, filled by R4).
+- **Order of gates for `invoke`.** Grant (`AppViewAuthority`, rechecked at every
+  step, cancelling the wait when revoked) → generation (a view of an older one
+  is `APP_VIEW_STALE`) → declared (`find_declared`) → input against the signed
+  schema (`check_input`) → approval for an `approval` action → the view's one
+  queue → the page's registration against the declaration
+  (`check_registered`) → the call. Nothing reaches the page before the last step.
+- **Approval.** An `approval` action asks through the kernel interaction
+  `app-view-action-*` (allow once / deny, shown on every client of the Room;
+  `/sudo` answers it like a provider permission). `batch` never decides one: it
+  stops before the first approval step and reports it.
+- **Batch.** Every step is checked first (`plan_batch`), then run in order. It
+  stops at the first error or approval and reports `completed` and `stopped`;
+  there is no rollback.
+- **One queue per view.** `AppViews::agent_queue` serializes agent calls on a
+  view. The controller (`browser.app.agent`) adds a deadline and refuses
+  `view_busy` while a handler that missed its deadline still runs.
+- **Actor attribution (answers A1 question 2).** The call is the agent's input
+  to the Tab: the controller records the agent (`noteAgent`) before the page can
+  run, so a `chariox.call` made by the handler, or by anything the handler
+  starts, runs as that agent with that agent's App grant, like the agent's
+  clicks. With two agents on one view, a stray call of either is refused
+  (`APP_ACTOR_UNKNOWN`) until the view is reopened, as for input.
+- **Redaction (answers A1 question 3).** State, results, changes and App error
+  messages go through the Room's secret observation scrub
+  (`room_secret_observations.scrub`) before reaching the model; the protection
+  being unavailable withholds the answer. Values the agent supplies are its own.
+- **Errors** are `{code, message}` with a stable code: `unknown_view`,
+  `unknown_action`, `invalid_input`, `view_mismatch`, `action_not_registered`,
+  `approval_denied`, `APP_VIEW_STALE`, `AGENT_APP_NOT_GRANTED`,
+  `view_busy`, `deadline`, `view_reloaded`, `view_unavailable`, `withheld`, or
+  the App's own code.
+- **Waits for R4/L1.** Declarations of an installed App exist only once a v2
+  package installs; until then catalogs list views with no actions.

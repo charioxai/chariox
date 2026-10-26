@@ -21,6 +21,7 @@ impl KernelRuntimeState {
             Command::AppView {
                 request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Calls
                     | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Respond { .. }
+                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { .. }
             }
         ) {
             self.owned.slice_store.check_shared_environment_use(
