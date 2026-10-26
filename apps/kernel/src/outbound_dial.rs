@@ -302,6 +302,10 @@ async fn race(addresses: Vec<SocketAddr>) -> io::Result<TcpStream> {
 }
 
 /// Connects a websocket (TLS for `wss`) over the raced TCP socket with Nagle off.
+#[allow(
+    clippy::result_large_err,
+    reason = "tungstenite fixes the handshake error type"
+)]
 pub(crate) async fn connect_websocket(
     request: impl IntoClientRequest,
 ) -> Result<(WebSocket, Response), Error> {
