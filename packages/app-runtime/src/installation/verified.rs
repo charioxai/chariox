@@ -60,7 +60,16 @@ impl VerifiedInstallCandidate {
         let declarations = package.declarations();
         let authority =
             super::activation::AuthoritySet::of(&manifest.capabilities, &declarations.actions);
-        let capabilities_digest = authority.digest();
+        // Release fingerprints are persisted and compared when catalogs reopen.
+        // Approval normalization has its own authority table; changing this
+        // historical fingerprint would make unchanged installed Apps stale.
+        let capabilities_digest = json_digest(&json!({
+            "schema": "chariox.installation-capabilities.v2",
+            "capabilities": manifest.capabilities,
+            "actions": declarations.actions,
+            "toolActions": declarations.tools.iter().filter_map(|tool| tool.action.as_ref().map(|action|
+                json!({"tool": tool.name, "action": action}))).collect::<Vec<_>>()
+        }))?;
         let catalog_digest = json_digest(&json!({
             "schema": "chariox.installation-catalog.v2", "declarations": declarations
         }))?;

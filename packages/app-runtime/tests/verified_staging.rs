@@ -788,7 +788,7 @@ fn plain_commit_cannot_bypass_current_or_revoked_stage_trust() {
 
 // MP-08 / MP-10 / MP-11: declaration order is not new authority.
 #[test]
-fn reordered_capabilities_reuse_the_same_authority_digest() {
+fn reordered_capabilities_reuse_authority_without_changing_release_fingerprints() {
     let database = Database::new();
     let mut connection = database.open();
     let mut package = Package::new();
@@ -804,10 +804,26 @@ fn reordered_capabilities_reuse_the_same_authority_digest() {
         before.release_metadata().package_digest,
         after.release_metadata().package_digest
     );
-    assert_eq!(
+    assert_ne!(
         before.release_metadata().capabilities_digest,
         after.release_metadata().capabilities_digest
     );
+    assert_eq!(
+        before.review_metadata()["authoritySet"],
+        after.review_metadata()["authoritySet"]
+    );
+    let tx = connection.transaction().unwrap();
+    before.stage_first_in(&tx, "alice", "first", 1).unwrap();
+    after.stage_first_in(&tx, "alice", "second", 1).unwrap();
+    let stored = |id| {
+        tx.query_row(
+        "SELECT authority_json FROM app_installation_authority WHERE installation_id=?1 AND generation=1",
+        [id], |r| r.get::<_, String>(0)
+    ).unwrap()
+    };
+    assert_eq!(stored("first"), stored("second"));
+    let authority: serde_json::Value = serde_json::from_str(&stored("first")).unwrap();
+    assert_eq!(authority, before.review_metadata()["authoritySet"]);
 }
 
 // MP-08 / MP-10 / MP-11: dev data and signer never replace the release lane.
