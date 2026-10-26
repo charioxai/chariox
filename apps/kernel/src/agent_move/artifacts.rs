@@ -174,6 +174,24 @@ impl AgentMoveStore {
         {
             return Err(error("Move capture descriptor is invalid"));
         }
+        let required = capture
+            .workspace
+            .size_bytes
+            .checked_add(
+                capture
+                    .native
+                    .as_ref()
+                    .map_or(0, |native| native.size_bytes),
+            )
+            .ok_or_else(|| {
+                error("Move artifact sizes overflow available space; recapture the Project")
+            })?;
+        let available = crate::managed_context::limits::disk_budget(
+            &self.artifact_root(&capture.identity.operation_id),
+        );
+        if required > available {
+            return Err(error(format!("Move artifact staging requires {required} bytes but only {available} bytes of free space are available; free disk space and retry")));
+        }
         fs::create_dir_all(workspace_parent).map_err(|_| {
             error("Cannot create the move workspace parent; choose a writable destination")
         })?;
@@ -259,6 +277,12 @@ impl AgentMoveStore {
         if target.receipt.is_some() || offset != length {
             return Err(error(
                 "Move chunk is out of order or its target is already published",
+            ));
+        }
+        let available = crate::managed_context::limits::disk_budget(&self.artifact_root(operation));
+        if bytes.len() as u64 > available {
+            return Err(error(
+                "Move chunk exceeds available staging space; free disk space and retry this chunk",
             ));
         }
         file.seek(SeekFrom::Start(offset))
