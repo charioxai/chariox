@@ -655,6 +655,11 @@ impl RuntimeProviderRun {
     }
 
     pub fn set_resume_state(&mut self, resume_state: ProviderResumeState) {
+        if self.resume_state.required_native_session().is_some()
+            && resume_state.required_native_session().is_none()
+        {
+            self.clear_native_checkpoint();
+        }
         self.resume_state = resume_state;
     }
 

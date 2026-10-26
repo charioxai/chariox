@@ -524,24 +524,22 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
             "http://127.0.0.1:9/mcp",
             "synthetic-probe-token",
         ));
-    let run = crate::provider::RuntimeProviderRun::new(
-        "checkpoint-import",
-        &request,
-        crate::provider::ProviderLaunchResult {
-            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-            process_label: "test".into(),
-            pty_target: None,
-            pty_program: None,
-            pty_args: Vec::new(),
-            pty_env: std::collections::BTreeMap::from([(
-                "CODEX_HOME".into(),
-                profile.display().to_string(),
-            )]),
-            pty_env_remove: Vec::new(),
-            working_directory: Some(cwd),
-            structured_endpoint: Some(endpoint),
-        },
-    );
+    let launch = crate::provider::ProviderLaunchResult {
+        endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+        process_label: "test".into(),
+        pty_target: None,
+        pty_program: None,
+        pty_args: Vec::new(),
+        pty_env: std::collections::BTreeMap::from([(
+            "CODEX_HOME".into(),
+            profile.display().to_string(),
+        )]),
+        pty_env_remove: Vec::new(),
+        working_directory: Some(cwd),
+        structured_endpoint: Some(endpoint),
+    };
+    let run =
+        crate::provider::RuntimeProviderRun::new("checkpoint-import", &request, launch.clone());
     let mut checkpoint = checkpoint();
     checkpoint.contents =
         format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{SESSION}\"}}}}\n")
@@ -588,8 +586,37 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
         .expect("an unindexed home rollout must preserve and extend its older native history");
     let after_unindexed_probe = std::fs::read(&artifact).unwrap();
     assert!(after_unindexed_probe.starts_with(&unindexed.contents));
-    codex::import_for_move(&unindexed, &run)
-        .expect("unindexed Move replay must preserve native appends after the imported checkpoint");
+    unindexed.import(&run).expect(
+        "strict first launch must accept an unindexed rollout extended by its readiness probe",
+    );
+    let verify_request = request
+        .clone()
+        .with_native_checkpoint(unindexed.clone())
+        .with_resume_state(
+            ProviderResumeState::from_codex_thread_id(SESSION).requiring_native_session(
+                "codex",
+                SESSION,
+                Some(unindexed.binding.clone()),
+            ),
+        );
+    let mut verify_run =
+        crate::provider::RuntimeProviderRun::new("checkpoint-verify", &verify_request, launch);
+    assert!(verify_run.native_checkpoint().is_some());
+    let client = crate::provider::CodexClient::new(
+        "checkpoint-verify",
+        verify_run.structured_endpoint().unwrap(),
+    )
+    .unwrap();
+    unindexed.binding.requirement().verify_run(&verify_run, &client)
+        .expect("required continuity must verify an unindexed native rollout without losing its binding");
+    let mut accepted = verify_run.resume_state().clone();
+    accepted.record_native_resume_accepted("codex", SESSION);
+    verify_run.set_resume_state(accepted);
+    assert!(
+        verify_run.native_checkpoint().is_none(),
+        "acceptance must release the private artifact"
+    );
+
     assert!(std::fs::read(&artifact)
         .unwrap()
         .starts_with(&after_unindexed_probe));

@@ -97,6 +97,11 @@ fn metadata(client: &CodexClient, id: &str) -> Result<ThreadMetadata, crate::Dae
     Ok(response.thread)
 }
 
+fn missing_thread(error: &crate::DaemonError, id: &str) -> bool {
+    matches!(error, crate::DaemonError::ProviderProtocol { operation: "thread/read", message, .. }
+        if message == &format!("thread not loaded: {id}") || message == &format!("no rollout found for thread id {id}"))
+}
+
 fn idle(metadata: &ThreadMetadata, id: &str) -> Result<(), Failure> {
     if metadata.id != id {
         return Err(Failure::SessionChanged);
@@ -222,21 +227,18 @@ fn import_checkpoint(
             prepare_existing_artifact(&directory, relative, checkpoint, allow_extension)?;
             true
         }
-        Err(crate::DaemonError::ProviderProtocol {
-            operation: "thread/read",
-            message,
-            ..
-        }) if message == format!("thread not loaded: {id}")
-            || message == format!("no rollout found for thread id {id}") =>
-        {
-            false
-        }
+        Err(error) if missing_thread(&error, id) => false,
         Err(_) => return Err(Failure::ResumeFailed),
     };
     if !already_published {
         match directory.publish(&checkpoint.relative_path, &checkpoint.contents) {
-            Err(Failure::TargetConflict) if allow_extension => {
-                prepare_existing_artifact(&directory, &checkpoint.relative_path, checkpoint, true)?;
+            Err(Failure::TargetConflict) => {
+                prepare_existing_artifact(
+                    &directory,
+                    &checkpoint.relative_path,
+                    checkpoint,
+                    allow_extension,
+                )?;
             }
             result => result?,
         }
@@ -381,16 +383,30 @@ pub(super) fn verify_required_checkpoint(
     }
     #[cfg(unix)]
     {
-        let metadata = metadata(client, &binding.session_id).map_err(|_| Failure::ResumeFailed)?;
-        idle(&metadata, &binding.session_id)?;
         let root = profile_root(run.pty_env())?;
-        let relative = metadata
-            .path
-            .as_deref()
-            .and_then(|path| path.strip_prefix(root).ok())
-            .and_then(Path::to_str)
-            .ok_or(Failure::TargetConflict)?;
-        verify_required_artifact(&super::files::Directory::open(root)?, relative, binding)?;
+        let relative = match metadata(client, &binding.session_id) {
+            Ok(metadata) => {
+                idle(&metadata, &binding.session_id)?;
+                metadata
+                    .path
+                    .as_deref()
+                    .and_then(|path| path.strip_prefix(root).ok())
+                    .and_then(Path::to_str)
+                    .ok_or(Failure::TargetConflict)?
+                    .to_string()
+            }
+            Err(error) if missing_thread(&error, &binding.session_id) => {
+                // Startup still holds the exact imported artifact until a real
+                // native turn is accepted; a missing index cannot strip its binding.
+                run.native_checkpoint()
+                    .filter(|checkpoint| checkpoint.binding == *binding)
+                    .ok_or(Failure::ResumeFailed)?
+                    .relative_path
+                    .clone()
+            }
+            Err(_) => return Err(Failure::ResumeFailed),
+        };
+        verify_required_artifact(&super::files::Directory::open(root)?, &relative, binding)?;
     }
     Ok(())
 }
