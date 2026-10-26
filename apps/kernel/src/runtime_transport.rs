@@ -1738,7 +1738,8 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 let Some(caller) = external_caller.as_ref() else {
                     refuse(KernelTransportError {
                         code: "kernel_not_available".into(),
-                        message: "kernel routing is only available to a local access grant holder".into(),
+                        message: "kernel routing is only available to a local access grant holder"
+                            .into(),
                         retryable: false,
                     });
                     return;
