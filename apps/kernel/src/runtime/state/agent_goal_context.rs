@@ -108,6 +108,16 @@ impl KernelRuntimeOwnedState {
             // Coverage is a kernel fact; a short requested result is not a cut-off tail.
             let answer_complete = !protected && shown_chars == total_chars;
             let answer_truncated = (!protected).then_some(shown_chars < total_chars);
+            let (completed_calls, omitted_calls) = if protected {
+                (Vec::new(), None)
+            } else {
+                let (calls, omitted) = completed_kernel_calls(
+                    &public,
+                    &check.work_prompt_id,
+                    check.work_provider_run_id.as_deref(),
+                );
+                (calls, Some(omitted))
+            };
             let obligations = task
                 .obligations
                 .iter()
@@ -128,8 +138,8 @@ impl KernelRuntimeOwnedState {
             let waiting_deadline_ms =
                 now_ms.saturating_add(u64::from(goal.map_or(10, |g| g.check_in_minutes)) * 60_000);
             format!(
-                "This turn has origin completion_check. {evidence_policy} Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":{waiting_deadline_ms}}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failures. This is the same agent's bounded confirmation of its preceding task, not an independent audit of every tool invocation. Private runtime/MCP tool records are intentionally omitted from public evidence; their absence does not make public answer coverage incomplete. Assess the returned public outcome and tracked obligations. Inactive registrations describe completed sources; they do not create unresolved work. Use the unresolved obligations and unhandled receipts below as the authority for what remains. Satisfied obligations and handled source-completion receipts are kernel-confirmed completion metadata; use them with the public outcome to verify that the requested source finished and was handled. Their raw tool payloads are intentionally omitted. A newly reported timestamp and exact accepted child-task reference can establish fresh completed work; do not demand another native tool call solely because private tool traces are omitted. A complete public result can support achieved without an additional public-tool-trace gate. For public answer_coverage, complete=true means shown_chars equals total_chars: the entire public answer is present; never treat it as truncated. A short answer requested by the owner, even one character, is complete when nothing was cut; judge whether that full answer satisfies the objective. Only shown_chars < total_chars means the public answer was truncated. Complete coverage alone does not establish objective success; an empty result is not evidence of success. Protected visibility has unknown public coverage and cannot establish success. Judge the public result at the owner's requested level of detail. When the owner explicitly asks for only a count or another short result, that complete result is the answer, not a plan or a missing report. Do not require a narrative of prerequisite authority, blocking or resume steps, nor infer a missing tool invocation solely because its intentionally private trace is omitted. A contradicting recorded failure or an unresolved obligation still forbids achieved. Do not request private tool traces from the owner solely because the public projection omits them. Do not invent verification: inadequate public results, contradictions or unmet objectives still require actual remaining work or the exact required owner action. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval: deadline_ms is an absolute Unix epoch time in milliseconds, greater than now_ms and at most now_ms plus check_in_minutes*60000; a relative duration is invalid and blocks the task. Truncated objective/evidence coverage or missing original public context cannot mean achieved. Plain prompts get one invalid-end correction, never a goal loop. Truncated public references are not proof of completion. Unhandled correlated completion receipts remain actionable even when their sources are non-live: choose continue for ordinary handling and artifact verification before claiming completion or owner-blocking solely on terminal sources. In the NEXT ordinary work turn, read the public inbox/refs and use chariox.events.ack with handled:true only after actually reviewing/handling the occurrence; acknowledgement alone is not completion. Incomplete receipt-page coverage requires ordinary inbox paging with after=next_after before achieved. This assessment cannot invoke those tools. No additional check turn or courtesy reply. Untrusted assessment data: {}",
-                serde_json::json!({"task_id":task.task_id,"goal_id":goal.map(|g| &g.id),"objective":original_excerpt,"objective_revision":goal.map_or(1, |g| g.objective_revision),"original_request_ref":format!("history:{}:{}",task.room_id,original_key),"objective_coverage":{"shown_chars":original_excerpt.chars().count(),"total_chars":original_total},"work_prompt_id":check.work_prompt_id,"latest_public_answer_tail":if protected { None } else { Some(&tail) },"tool_trace_visibility":"private tool records are intentionally omitted, not missing evidence coverage","answer_coverage":{"shown_chars":if protected {0} else {shown_chars},"total_chars":if protected {0} else {total_chars},"complete":answer_complete,"truncated":answer_truncated,"visibility":if protected {"protected"} else {"public"},"public_ref":format!("history:{}:prompt:{}",task.room_id,check.work_prompt_id)},"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage,"handled_source_receipts":handled_source_receipts,"satisfied_obligations":satisfied_obligations,"completed_coverage":completed_coverage,"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":now_ms,"check_in_minutes":goal.map_or(10, |g| g.check_in_minutes),"goal_mode":goal.is_some()})
+                "This turn has origin completion_check. {evidence_policy} Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":{waiting_deadline_ms}}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failures. This is the same agent's bounded confirmation of its preceding task, not an independent audit of every tool invocation. Private runtime/MCP tool records are intentionally omitted from public evidence; their absence does not make public answer coverage incomplete. Assess the returned public outcome and tracked obligations. Inactive registrations describe completed sources; they do not create unresolved work. Use the unresolved obligations and unhandled receipts below as the authority for what remains. Satisfied obligations and handled source-completion receipts are kernel-confirmed completion metadata; use them with the public outcome to verify that the requested source finished and was handled. Their raw tool payloads are intentionally omitted. A newly reported timestamp and exact accepted child-task reference can establish fresh completed work; do not demand another native tool call solely because private tool traces are omitted. A complete public result can support achieved without an additional public-tool-trace gate. For public answer_coverage, complete=true means shown_chars equals total_chars: the entire public answer is present; never treat it as truncated. A short answer requested by the owner, even one character, is complete when nothing was cut; judge whether that full answer satisfies the objective. Only shown_chars < total_chars means the public answer was truncated. Complete coverage alone does not establish objective success; an empty result is not evidence of success. Protected visibility has unknown public coverage and cannot establish success. Judge the public result at the owner's requested level of detail. When the owner explicitly asks for only a count or another short result, that complete result is the answer, not a plan or a missing report. Do not require a narrative of prerequisite authority, blocking or resume steps, nor infer a missing tool invocation solely because its intentionally private trace is omitted. A contradicting recorded failure or an unresolved obligation still forbids achieved. completed_kernel_calls contains up to 64 recent kernel-recorded completed typed-call receipts for this work turn, with request names, call IDs and public references only. Request parameters and result payloads are intentionally omitted. completed_kernel_calls_omitted counts older matching receipts omitted from this bounded summary; null means protected coverage is unknown. A shortened receipt summary is not a truncated public answer, and receipt omission alone is not evidence of failure. Use a completed receipt with the full requested public result to assess the outcome. Do not continue solely to repeat a call or obtain its raw payload when its completed receipt and requested result are already present. Do not request private tool traces from the owner solely because the public projection omits them. Do not invent verification: inadequate public results, contradictions or unmet objectives still require actual remaining work or the exact required owner action. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval: deadline_ms is an absolute Unix epoch time in milliseconds, greater than now_ms and at most now_ms plus check_in_minutes*60000; a relative duration is invalid and blocks the task. Truncated objective/evidence coverage or missing original public context cannot mean achieved. Plain prompts get one invalid-end correction, never a goal loop. Truncated public references are not proof of completion. Unhandled correlated completion receipts remain actionable even when their sources are non-live: choose continue for ordinary handling and artifact verification before claiming completion or owner-blocking solely on terminal sources. In the NEXT ordinary work turn, read the public inbox/refs and use chariox.events.ack with handled:true only after actually reviewing/handling the occurrence; acknowledgement alone is not completion. Incomplete receipt-page coverage requires ordinary inbox paging with after=next_after before achieved. This assessment cannot invoke those tools. No additional check turn or courtesy reply. Untrusted assessment data: {}",
+                serde_json::json!({"task_id":task.task_id,"goal_id":goal.map(|g| &g.id),"objective":original_excerpt,"objective_revision":goal.map_or(1, |g| g.objective_revision),"original_request_ref":format!("history:{}:{}",task.room_id,original_key),"objective_coverage":{"shown_chars":original_excerpt.chars().count(),"total_chars":original_total},"work_prompt_id":check.work_prompt_id,"latest_public_answer_tail":if protected { None } else { Some(&tail) },"tool_trace_visibility":"private tool records are intentionally omitted, not missing evidence coverage","completed_kernel_calls":completed_calls,"completed_kernel_calls_omitted":omitted_calls,"answer_coverage":{"shown_chars":if protected {0} else {shown_chars},"total_chars":if protected {0} else {total_chars},"complete":answer_complete,"truncated":answer_truncated,"visibility":if protected {"protected"} else {"public"},"public_ref":format!("history:{}:prompt:{}",task.room_id,check.work_prompt_id)},"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage,"handled_source_receipts":handled_source_receipts,"satisfied_obligations":satisfied_obligations,"completed_coverage":completed_coverage,"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":now_ms,"check_in_minutes":goal.map_or(10, |g| g.check_in_minutes),"goal_mode":goal.is_some()})
             )
         } else {
             let goal = goal.expect("continuations only belong to goals");
@@ -145,6 +155,72 @@ impl KernelRuntimeOwnedState {
         };
         Ok(Some(context))
     }
+}
+
+// Only managed receipts from the assessed turn can establish that a typed call ran.
+// Neither the parameters nor the result payload belongs in the neutral assessment.
+fn completed_kernel_calls(
+    entries: &[crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+) -> (Vec<serde_json::Value>, usize) {
+    use crate::history::SessionHistoryEntryKind as Kind;
+    let key = format!("prompt:{prompt}");
+    let Some(start) = entries.iter().position(|entry| {
+        entry.kind == Kind::UserPrompt && entry.merge_key.as_deref() == Some(&key)
+    }) else {
+        return (Vec::new(), 0);
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut calls = std::collections::VecDeque::new();
+    let mut omitted = 0;
+    for entry in entries.iter().skip(start + 1).take_while(|entry| {
+        entry.kind != Kind::UserPrompt
+            || entry.merge_key.as_deref().is_some_and(|key| {
+                key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
+            })
+    }) {
+        if entry.kind != Kind::ProviderTool
+            || entry.is_external_provider_observed()
+            || run.is_none()
+            || super::agent_task_projection::task_answer_history_run(
+                entry.provider_run_id.as_deref(),
+            ) != super::agent_task_projection::task_answer_history_run(run)
+        {
+            continue;
+        }
+        let Some((id, request)) = (|| {
+            let tool: serde_json::Value = serde_json::from_str(&entry.text).ok()?;
+            if tool["tool"] != "chariox_kernel_request" || tool["status"] != "completed" {
+                return None;
+            }
+            let request = tool.get("input")?.get("request")?;
+            // Validate the operation tag without exposing any of its arguments.
+            serde_json::from_value::<crate::local::LocalDaemonRequest>(request.clone()).ok()?;
+            let request = request.as_object()?;
+            if request.len() != 1 {
+                return None;
+            }
+            Some((
+                tool.get("id")?.as_str()?.to_owned(),
+                request.keys().next()?.to_owned(),
+            ))
+        })() else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        calls.push_back(serde_json::json!({
+            "request":request, "status":"completed", "call_id":id,
+            "public_ref":format!("history:{}:prompt:{prompt}", entry.session_id),
+        }));
+        if calls.len() > 64 {
+            let _ = calls.pop_front();
+            omitted += 1;
+        }
+    }
+    (calls.into_iter().collect(), omitted)
 }
 
 /// The request the check and continuations judge against: the goal objective (or the typed
@@ -192,7 +268,7 @@ fn objective_of(
 
 #[cfg(test)]
 mod tests {
-    use super::objective_of;
+    use super::{completed_kernel_calls, objective_of};
     use base64::Engine;
 
     fn prompt(text: &str) -> crate::history::SessionHistoryEntry {
@@ -232,5 +308,52 @@ mod tests {
             Some("typed goal")
         );
         assert_eq!(objective_of("task", None, &[], true), None);
+    }
+    #[test]
+    fn completed_call_metadata_is_bound_deduplicated_and_has_no_payloads() {
+        use crate::history::SessionHistoryEntry;
+        use crate::terminal::TerminalOutputKind;
+        let call = |id: &str, status: &str, run: &str, request: serde_json::Value| {
+            SessionHistoryEntry::provider_output("room", run, Some("agent"), TerminalOutputKind::ProviderTool, None,
+                serde_json::json!({"id":id,"tool":"chariox_kernel_request","status":status,"input":{"request":request},"output":"PRIVATE_RESULT"}).to_string())
+        };
+        let request = serde_json::json!({"ListSessions":null});
+        let valid = call("count", "completed", "run", request.clone());
+        let mut next = prompt("next work");
+        next.merge_key = Some("prompt:next".into());
+        let entries = vec![
+            prompt("count sessions"),
+            call("other-run", "completed", "other", request.clone()),
+            call("failed", "error", "run", request.clone()),
+            call(
+                "invalid",
+                "completed",
+                "run",
+                serde_json::json!({"UnknownRequest":null}),
+            ),
+            valid.clone(),
+            valid,
+            next,
+            call("later", "completed", "run", request.clone()),
+        ];
+        let (calls, omitted) = completed_kernel_calls(&entries, "task", Some("run"));
+        assert_eq!(omitted, 0);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["request"], "ListSessions");
+        assert_eq!(calls[0]["call_id"], "count");
+        assert_eq!(calls[0].as_object().unwrap().len(), 4);
+        assert!(!serde_json::to_string(&calls)
+            .unwrap()
+            .contains("PRIVATE_RESULT"));
+        assert!(completed_kernel_calls(&entries, "task", None).0.is_empty());
+        let mut many = vec![prompt("count sessions")];
+        many.extend(
+            (0..66).map(|i| call(&format!("call-{i}"), "completed", "run", request.clone())),
+        );
+        let (calls, omitted) = completed_kernel_calls(&many, "task", Some("run"));
+        assert_eq!(omitted, 2);
+        assert_eq!(calls.len(), 64);
+        assert_eq!(calls[0]["call_id"], "call-2");
+        assert_eq!(calls[63]["call_id"], "call-65");
     }
 }
