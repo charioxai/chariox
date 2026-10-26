@@ -498,6 +498,7 @@ test('round.mjs serve starts as a real process, serves the queue and stops clean
     assert.equal(code, 0);
   }
   assert.match(output, /"kind":"stopped"/);
+  assert.equal(output.includes('unsettled top-level await'), false);
 });
 
 test('a stop request targets the current loopd round, collects it, and releases only that lane', async t => {

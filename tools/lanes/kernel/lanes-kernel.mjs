@@ -3,7 +3,7 @@
 // Usage: lanes-kernel.mjs setup|start|stop|status|grant|exec|env|set-claude-credential  (see docs/LANES_KERNEL.md)
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer, connect } from 'node:net';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkSync, chmodSync, unlinkSync, copyFileSync, rmSync, renameSync, readdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, closeSync, readlinkSync, chmodSync, unlinkSync, copyFileSync, rmSync, renameSync, readdirSync } from 'node:fs';
 import { randomBytes, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -310,7 +310,11 @@ function runHolder(seatName) {
       buffer += chunk;
       if (!buffer.includes('\n')) return;
       const request = JSON.parse(buffer.split('\n')[0]); buffer = '';
-      const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', request.logFile ? openSync(request.logFile, 'a') : 'pipe', request.logFile ? openSync(request.logFile, 'a') : 'pipe'] });
+      const stdout = request.logFile ? openSync(request.logFile, 'a') : 'pipe';
+      const stderr = request.stderrLogFile ? openSync(request.stderrLogFile, 'a') : stdout;
+      let child;
+      try { child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', stdout, stderr] }); }
+      finally { for (const fd of new Set([stdout, stderr])) if (typeof fd === 'number') closeSync(fd); }
       child.on('error', error => socket.end(JSON.stringify({ err: Buffer.from(String(error.message)).toString('base64'), exit: 127 }) + '\n'));
       // A detached command is acknowledged once it has really started; a failed spawn answers through the error above.
       if (request.detach) { child.on('spawn', () => { child.unref(); socket.end(JSON.stringify({ pid: child.pid, exit: 0 }) + '\n'); }); return; }
@@ -374,7 +378,7 @@ async function startLoopd() {
   if (existing) return { loopd: existing, started: false };
   if (!existsSync(loopdEntry)) throw new Error('no frozen adapters in run/; run: lanes-kernel.mjs loopd install');
   if (!holderPid()) throw new Error('the holder is not running; run start first');
-  const started = await execInHolder({ argv: [process.execPath, loopdEntry, 'serve'], cwd: STATE, detach: true, logFile: join(STATE, 'loopd.log') });
+  const started = await execInHolder({ argv: [process.execPath, loopdEntry, 'serve'], cwd: STATE, detach: true, logFile: join(STATE, 'loopd.log'), stderrLogFile: join(STATE, 'loopd.stderr.log') });
   if (!Number.isSafeInteger(started.pid) || started.pid <= 1) throw new Error('loopd did not start');
   writeFileSync(loopdPidFile, String(started.pid));
   return { loopd: started.pid, started: true };

@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: the holder's detached exec through the public lanes-kernel.mjs command.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,6 +41,26 @@ test('exec --detach fails with the reason when the command cannot start', async 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /ENOENT/);
   assert.equal(result.stdout.includes('"pid"'), false);
+});
+
+test('loopd keeps Node warnings and stderr out of its JSON log', async t => {
+  const { state, env } = await holder(t);
+  const entry = join(state, 'run/tools/lanes/coordinator/round.mjs');
+  await mkdir(join(state, 'run/tools/lanes/coordinator'), { recursive: true });
+  await writeFile(entry, `console.log(JSON.stringify({ kind: 'started' }));
+process.emitWarning('loopd warning regression');
+console.error('loopd stderr regression');
+setTimeout(() => console.log(JSON.stringify({ kind: 'stopped' })), 100);\n`);
+  const result = spawnSync(process.execPath, [script, 'loopd', 'start'], { env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const log = join(state, 'loopd.log');
+  for (let i = 0; i < 100 && !readFileSync(log, 'utf8').includes('stopped'); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  const output = await readFile(log, 'utf8');
+  assert.equal(output.includes('regression'), false, 'stdout contains JSON events only');
+  assert.deepEqual(output.trim().split('\n').map(JSON.parse).map(event => event.kind), ['started', 'stopped']);
+  const diagnostics = await readFile(join(state, 'loopd.stderr.log'), 'utf8');
+  assert.match(diagnostics, /loopd warning regression/);
+  assert.match(diagnostics, /loopd stderr regression/);
 });
 
 test('a state dir with its own agents directory hands it to the commands it runs, so a drill loopd cannot read the real queue', async t => {
