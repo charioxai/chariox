@@ -73,6 +73,11 @@ room for base64 within the broker's JSON envelope. Larger diagrams fail clearly
 and can be split; they are never silently truncated on disk.
 The scene budget includes embedded images in imported diagrams. New image
 insertion is disabled; Open accepts Excalidraw/JSON through the broker picker.
+The UI stays within the browser host's 8 MiB asset budget. Mermaid source is
+pasted as plain text; conversion is omitted. Excalifont CJK text uses the
+browser's local fallback font instead of bundling Xiaolai's 12 MiB glyph set.
+The build checks the exact upstream chunk hash before removing Xiaolai's
+downloadable face registration; the fallback family and metrics remain.
 
 ## Licenses and assets
 

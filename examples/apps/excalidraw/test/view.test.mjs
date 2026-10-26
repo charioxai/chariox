@@ -29,6 +29,7 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
   try {
     for (const dpr of [1, 2]) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr });
+      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
       const page = await context.newPage();
       const errors = [], network = [], calls = [];
       page.on('pageerror', error => errors.push(error.message));
@@ -101,6 +102,20 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
       const png = files.get('proof.png');
       assert.equal(png.subarray(1, 4).toString(), 'PNG');
       assert(png.readUInt32BE(16) > 300 && png.readUInt32BE(20) > 50);
+      const cjk = structuredClone(json);
+      const text = cjk.elements.find(element => element.type === 'text');
+      cjk.elements = [{ ...text, id: 'cjk', text: '你好世界', originalText: '你好世界', fontFamily: 5, containerId: null, boundElements: null, groupIds: [], x: 100, y: 100 }];
+      files.set('cjk.excalidraw', Buffer.from(JSON.stringify(cjk)));
+      await invoke('open_file', { name: 'cjk' });
+      await invoke('export_file', { format: 'svg', name: 'cjk' });
+      assert(files.get('cjk.svg').toString().includes('你好世界'));
+      await page.locator('.excalidraw__canvas.interactive').click({ position: { x: 50, y: 450 } });
+      await page.evaluate(() => navigator.clipboard.writeText('flowchart LR\nA --> B'));
+      await page.keyboard.press('Control+v');
+      await page.waitForFunction(() => window.__charioxViewAgent.state().then(result => result.value.elements.some(element => element.text?.includes('flowchart LR'))));
+      await invoke('open_file', { name: 'roundtrip' });
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForTimeout(400);
       await invoke('delete_elements', { ids: ['client'] });
       const deleted = await invoke('scene_summary');
       assert(!deleted.elements.some(e => e.id === 'client' || e.containerId === 'client'));
