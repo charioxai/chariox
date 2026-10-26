@@ -1254,6 +1254,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !intentionally_cancelled
                 && active_prompt.workflow_run_id().is_some()
                 && !workflow_output_ready
+                && (projected_termination.is_some()
+                    || self
+                        .app
+                        .provider_run_projection
+                        .get(&projected_provider_run_id)
+                        .is_some_and(|run| run.terminal_diagnostic().is_some())
+                    || crate::app::workflow_output_follow_up::supervised_task(
+                        &self.app.durable_state_store(),
+                        session_id,
+                        &active_prompt,
+                    )?
+                    .is_none())
             {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                     active_prompt.workflow_run_id(),

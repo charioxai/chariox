@@ -85,6 +85,36 @@ pub fn on_workflow_prompt_completed(
     else {
         return Ok(());
     };
+    if let Some(task) = crate::app::workflow_output_follow_up::supervised_task(
+        &app.durable_state_store(),
+        session_id,
+        prompt,
+    )? {
+        if provider_run_id
+            .and_then(|run| provider_run_terminal_diagnostic(app, run))
+            .is_none()
+        {
+            if let Some(run) = provider_run_id {
+                app.durable_state_store().agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::Settle {
+                        room: session_id.into(),
+                        agent: prompt.target_agent_id().into(),
+                        prompt: prompt.id().into(),
+                        run: run.into(),
+                        has_answer: false,
+                        cancelled: false,
+                        now: crate::session::unix_epoch_ms(),
+                    },
+                )?;
+            } else if task.state == crate::durable_state::agent_lifecycle::ExecutionState::Working {
+                return Err(DaemonError::LocalTransport {
+                    operation: "settle supervised workflow turn",
+                    message: "provider run identity is required to settle a waiting task".into(),
+                });
+            }
+            return persist_workflow_session_state(app, session_id, "workflow_task_waiting");
+        }
+    }
     let completion_snapshot = build_workflow_completion_snapshot(
         app,
         session_id,
