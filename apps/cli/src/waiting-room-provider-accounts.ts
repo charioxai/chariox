@@ -117,10 +117,7 @@ export function selectedProviderAccountStartBlockReason(
   const label = profile?.label ?? profileId ?? "default"
   const alternative = providerAccountsForProvider(profiles, provider)
     .find((candidate) => candidate.auth_state === "authenticated")
-  const requirement = profile?.auth_state === "unknown"
-    ? "sign-in not checked. Refresh its status through Provider Accounts"
-    : "needs sign-in. Sign in through Provider Accounts"
-  return `${label} ${requirement}${alternative ? `, or select signed-in account ${alternative.label}` : ""}.`
+  return `${label} needs sign-in. Sign in through Provider Accounts${alternative ? `, or select signed-in account ${alternative.label}` : ""}.`
 }
 
 export function providerAccountSignInCommand(profile: ProviderAccountProfile): string {
