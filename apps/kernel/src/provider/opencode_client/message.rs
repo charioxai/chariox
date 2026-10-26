@@ -12,7 +12,7 @@ pub(super) fn opencode_error_text(error: &Value, message: &str) -> String {
         .and_then(Value::as_u64);
     let code = match (error.get("name").and_then(Value::as_str), status) {
         (Some("ProviderAuthError"), _) => "provider_auth_error",
-        (Some("APIError"), Some(401 | 403)) => "unauthorized",
+        (Some("APIError"), Some(401)) => "unauthorized",
         (Some("APIError"), Some(429)) => "rate_limit_exceeded",
         (Some("APIError"), Some(503 | 529)) => "server_overloaded",
         (Some("APIError"), Some(500..=599)) => "internal_server_error",
