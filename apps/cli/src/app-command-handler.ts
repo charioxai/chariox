@@ -71,6 +71,19 @@ export async function handleAppSlashCommand(
   deps: AppCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "app" }>,
 ): Promise<void> {
+  try {
+    await executeAppSlashCommand(deps, command)
+  } catch (error) {
+    if (command.args[0] !== "actions") throw error
+    deps.appendNotice(error instanceof Error ? error.message : "App view inspection failed; retry /app actions")
+    deps.flashFooter("App view inspection failed; see transcript", "error")
+  }
+}
+
+async function executeAppSlashCommand(
+  deps: AppCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "app" }>,
+): Promise<void> {
   if (cliOnlyAppVerbs.has(command.args[0] ?? "")) {
     deps.flashFooter(`app ${command.args[0]} runs in a shell: use chariox app ${command.args[0]}`, "error")
     return
@@ -220,6 +233,7 @@ export async function handleAppSlashCommand(
     sessionId: deps.currentAppSessionId?.(), appCommandPrefix: "/app",
   })
   if (!result.ok) {
+    if (command.args[0] === "actions") throw new Error(result.message ?? "App view inspection failed; retry /app actions")
     deps.flashFooter(result.message ?? "App command failed", "error")
     return
   }

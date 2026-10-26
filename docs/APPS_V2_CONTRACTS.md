@@ -183,7 +183,7 @@ not extend v1's manifest or admit its registrations as agent actions. Wiring
 `/app actions [--tab TARGET] [--json]` and `chariox app actions --session ROOM`
 share the same read. `--json` emits `catalog_json`, serialized once by the kernel; the client never reserializes it (number formatting and numeric object keys must survive). `/app actions
 toggle` opens the DEV-only TUI inspector using that same JSON; A/Esc closes it,
-R refreshes the bound Tab, F8 reaches the shared approval handler, and a Room/kernel change closes it. Human-readable labels escape terminal controls; `catalog_json` remains the unchanged machine-readable payload. This shared
+R refreshes the bound Tab, F8 reaches the shared approval handler, and a Room/kernel change closes it. Inspection command failures keep their full recovery message in the TUI transcript so a clipped or expired footer cannot hide it. Human-readable labels escape terminal controls; `catalog_json` remains the unchanged machine-readable payload. This shared
 serialization proves inspector/read equivalence; equivalence with A2's agent
 catalog needs its integration drill. The web inspector remains a proposal until
 Miguel approves a prototype-copy mock; no web behavior ships in A4.
