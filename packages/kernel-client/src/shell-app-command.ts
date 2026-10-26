@@ -372,11 +372,13 @@ export function appViewCatalogJson(view: AppViewInspection): string {
 }
 export function formatAppViewInspection(view: AppViewInspection): string {
   const catalog = JSON.parse(appViewCatalogJson(view)) as AppViewCatalog
-  const lines = [`${view.development ? "DEV " : ""}App ${view.installation_id} · generation ${view.generation} · Tab ${view.target_id}`, "Signed actions:"]
-  for (const action of catalog.actions) lines.push(`${action.name} · ${action.effect} · ${action.description}\n  input: ${JSON.stringify(action.inputSchema)}${action.outputSchema ? `\n  output: ${JSON.stringify(action.outputSchema)}` : ""}${action.approvalReason ? `\n  approval: ${action.approvalReason}` : ""}`)
+  const text = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu,
+    char => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"))
+  const lines = [`${view.development ? "DEV " : ""}App ${text(view.installation_id)} · generation ${text(view.generation)} · Tab ${text(view.target_id)}`, "Signed actions:"]
+  for (const action of catalog.actions) lines.push(`${text(action.name)} · ${action.effect} · ${text(action.description)}\n  input: ${text(JSON.stringify(action.inputSchema))}${action.outputSchema ? `\n  output: ${text(JSON.stringify(action.outputSchema))}` : ""}${action.approvalReason ? `\n  approval: ${text(action.approvalReason)}` : ""}`)
   if (!catalog.actions.length) lines.push("No signed UI actions in this release.")
-  lines.push("View registrations:", ...catalog.registrations.map(action => JSON.stringify(action)))
-  lines.push(`State: ${JSON.stringify(catalog.state)}`, "Coverage warnings:", ...catalog.warnings.map(warning => `${warning.code}: ${warning.message}`))
+  lines.push("View registrations:", ...catalog.registrations.map(action => text(JSON.stringify(action))))
+  lines.push(`State: ${text(JSON.stringify(catalog.state))}`, "Coverage warnings:", ...catalog.warnings.map(warning => `${text(warning.code)}: ${text(warning.message)}`))
   if (!catalog.warnings.length) lines.push("None.")
   return lines.join("\n")
 }

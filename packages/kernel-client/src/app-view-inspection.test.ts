@@ -27,3 +27,9 @@ test("catalog JSON survives numeric keys and integral floats byte for byte", asy
   const result = await executeAppCommand(["actions","--json"],{send:async () => ({AppViewInspected:{...view,catalog_json}})},{sessionId:"room"})
   assert.equal(result.message,catalog_json)
 })
+
+test("human App inspection treats control labels as text, never terminal escapes",async () => {
+  const dangerous={...catalog,warnings:[{code:"undeclared_control",message:"button#\u001b[2J\u009b31m"}]}
+  const result=await executeAppCommand(["actions"],{send:async () => ({AppViewInspected:{...view,catalog_json:JSON.stringify(dangerous)}})},{sessionId:"room"})
+  assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(result.message??""),"App data must not emit terminal controls")
+})
