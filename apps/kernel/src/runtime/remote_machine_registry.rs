@@ -14,8 +14,10 @@ use crate::local::{
 };
 use crate::runtime::projection::RemoteRelayInventoryProjectionStore;
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
+use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) async fn execute_remote_machine_registry_request(
+    runtime_state: &KernelRuntimeState,
     app: &Arc<Mutex<DaemonApp>>,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
@@ -35,6 +37,7 @@ pub(crate) async fn execute_remote_machine_registry_request(
         }
         LocalDaemonRequest::ForgetRemoteMachine(request) => {
             execute_forget_remote_machine_request(
+                runtime_state,
                 app,
                 config_projection,
                 provider_catalog_projection,
@@ -81,6 +84,7 @@ pub(crate) async fn execute_approve_remote_machine_request(
 }
 
 pub(crate) async fn execute_forget_remote_machine_request(
+    runtime_state: &KernelRuntimeState,
     app: &Arc<Mutex<DaemonApp>>,
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
@@ -92,6 +96,9 @@ pub(crate) async fn execute_forget_remote_machine_request(
     let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
     let saved = crate::config::DaemonConfig::forget_remote_machine(machine.clone())?;
     invalidate_provider_catalog_caches(app, provider_catalog_projection).await;
+    runtime_state
+        .end_worker_leases_of_forgotten_machine(&machine)
+        .await;
     let machine = forgotten_machine_record(machine, saved.alias, live, &config.host_machine_id);
     remote_relay_inventory_projection.remove_machine(&machine.machine_id);
     Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })

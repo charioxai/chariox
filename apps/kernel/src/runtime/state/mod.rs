@@ -495,6 +495,7 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_completion_harvest;
 mod remote_native_provider_launch;
 mod remote_prompt_claim_runtime;
 mod remote_prompt_dispatch_execution_runtime;
@@ -509,6 +510,7 @@ mod remote_provider_failure_runtime;
 #[cfg(test)]
 mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
+mod worker_lease_trust;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
 mod claude_token_checks;
@@ -1398,4 +1400,3 @@ mod terminal_wake;
 mod terminal_wake_worker;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
-mod remote_completion_harvest;

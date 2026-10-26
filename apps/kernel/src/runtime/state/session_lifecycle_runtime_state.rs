@@ -928,7 +928,7 @@ impl KernelRuntimeState {
     /// terminals it hosts. A worker that cannot be reached keeps its lease
     /// until the lease expires; the failure is logged, never raised, because
     /// the Room is already gone.
-    async fn release_worker_leases(&self, agents: Vec<crate::agent::AgentInstance>) {
+    pub(super) async fn release_worker_leases(&self, agents: Vec<crate::agent::AgentInstance>) {
         for agent in agents {
             let released = self
                 .with_app_side_effect(|app| {
@@ -949,6 +949,16 @@ impl KernelRuntimeState {
                 );
             }
         }
+    }
+
+    /// The owner must not wait for an unreachable worker: its lease is
+    /// released in the background and a failure is only logged.
+    pub(super) fn release_worker_leases_in_background(
+        &self,
+        agents: Vec<crate::agent::AgentInstance>,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move { state.release_worker_leases(agents).await });
     }
 
     fn remove_destroyed_agent_provider_processes(&self, provider_run_ids: Vec<String>) {

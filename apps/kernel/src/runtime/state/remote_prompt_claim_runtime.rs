@@ -933,6 +933,33 @@ impl KernelRuntimeState {
         stale_provider_run_id: &str,
         trigger_error: &str,
     ) -> Result<(), DaemonError> {
+        let diagnostic = format!(
+            "Worker kernel `{}` lost this turn after accepting it (it restarted or dropped the lease). The turn may have partly run; Chariox did not run it again",
+            stale_binding.worker_kernel_id,
+        );
+        self.end_accepted_remote_prompt_run(
+            session_id,
+            agent_id,
+            stale_binding,
+            stale_provider_run_id,
+            &diagnostic,
+            trigger_error,
+        )
+        .await
+    }
+
+    /// Ends the accepted turn of a leased agent without replaying it: the
+    /// turn fails with `diagnostic` and its task waits for the owner to resume
+    /// or cancel it.
+    pub(in crate::runtime::state) async fn end_accepted_remote_prompt_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        diagnostic: &str,
+        trigger_error: &str,
+    ) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let Some(binding) = agent.remote_execution().filter(|current| {
             current.leased_agent_id == stale_binding.leased_agent_id
@@ -948,13 +975,9 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        let diagnostic = format!(
-            "Worker kernel `{}` lost this turn after accepting it (it restarted or dropped the lease). The turn may have partly run; Chariox did not run it again",
-            binding.worker_kernel_id,
-        );
         crate::logging::warn_with_fields(
             "daemon.remote_prompt_dispatch",
-            "worker lost an accepted remote prompt; ending it for the owner without replay",
+            "ending an accepted remote prompt for the owner without replay",
             serde_json::json!({
                 "session_id": session_id,
                 "agent_id": agent_id,
@@ -975,7 +998,7 @@ impl KernelRuntimeState {
             agent_id,
             prompt.id(),
             Some(&projected_run_id),
-            &diagnostic,
+            diagnostic,
         )?;
         self.owned.end_open_provider_tools(
             session_id,
@@ -992,7 +1015,7 @@ impl KernelRuntimeState {
                 binding,
                 provider_run_id: stale_provider_run_id,
                 termination: Some(crate::provider::ProviderRunTermination::runtime_failure(
-                    &diagnostic,
+                    diagnostic,
                     crate::session::unix_epoch_ms(),
                 )),
                 diagnostic: None,

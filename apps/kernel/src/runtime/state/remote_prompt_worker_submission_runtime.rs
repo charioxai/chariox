@@ -903,6 +903,7 @@ impl KernelRuntimeState {
                     &closure_prompt_id,
                     "leased_agent_lane_acquired",
                 );
+                super::worker_lease_trust::ensure_worker_machine_trusted(&remote_execution)?;
                 if !remote_execution.relay_peer_protocol_compatible() {
                     return Err(DaemonError::LocalTransport {
                         operation: "dispatch remote agent prompt",
