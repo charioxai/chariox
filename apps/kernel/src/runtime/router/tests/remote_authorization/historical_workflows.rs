@@ -707,7 +707,7 @@ async fn seam_a_inner() {
         realm_id: "test-realm".into(),
         ..Default::default()
     });
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let app = DaemonApp::bootstrap(config).unwrap();
     let id = app
         .sessions_mut()
         .create_session(root.session_request())
