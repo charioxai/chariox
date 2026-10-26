@@ -357,6 +357,18 @@ impl KernelRuntimeState {
                     }
                 }
             }
+            let record_owner_choice = || {
+                if origin == AppGrantOrigin::Requested {
+                    // Serialize the owner's choice with revoke. The later grant
+                    // audit may arrive after a revoke and cannot re-enable dev.
+                    self.owned.durable_state_store.append_event(
+                        "app.binding.owner_granted",
+                        Some(agent.id().into()),
+                        serde_json::json!({"installation_id":grant.name}),
+                    )?;
+                }
+                Ok::<_, DaemonError>(())
+            };
             if self.room_agent_tools_enabled()
                 && current.has_extension_grant(ExtensionKind::App, &grant.name)
                 && current.extension_grants().iter().any(|existing| {
@@ -367,20 +379,12 @@ impl KernelRuntimeState {
             {
                 // MP-11: an idempotent grant cannot renew its lifetime or orphan
                 // descendants by silently replacing their source generation.
+                record_owner_choice()?;
                 return Ok(Ok(current));
             }
             let mut commit = || {
-                let granted = agents.grant_extension(agent.id(), grant.clone())?;
-                if origin == AppGrantOrigin::Requested {
-                    // Serialize the owner's choice with revoke. The later grant
-                    // audit may arrive after a revoke and cannot re-enable dev.
-                    self.owned.durable_state_store.append_event(
-                        "app.binding.owner_granted",
-                        Some(agent.id().into()),
-                        serde_json::json!({"installation_id":grant.name}),
-                    )?;
-                }
-                Ok::<_, DaemonError>(granted)
+                record_owner_choice()?;
+                agents.grant_extension(agent.id(), grant.clone())
             };
             let agent = if let Some(permit) = binding_permit
                 .as_ref()
