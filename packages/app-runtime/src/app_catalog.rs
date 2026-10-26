@@ -90,7 +90,6 @@ pub struct AppCatalog {
     release: ReleaseMetadata,
     tools: BTreeMap<String, CompiledTool>,
     clipboard_write: bool,
-    ui_actions: Vec<chariox_app_package::v2::UiActionDeclaration>,
 }
 
 impl AppCatalog {
@@ -175,7 +174,6 @@ impl AppCatalog {
             trust: trust.clone(),
             release: candidate.release_metadata().clone(),
             tools,
-            ui_actions: package.ui_actions(),
             clipboard_write: package
                 .manifest()
                 .capabilities
@@ -207,10 +205,6 @@ impl AppCatalog {
         self.binding
             .require_current(transaction, trusted_owner, &self.trust)?;
         Ok(())
-    }
-
-    pub fn ui_actions(&self) -> &[chariox_app_package::v2::UiActionDeclaration] {
-        &self.ui_actions
     }
 
     pub fn installation_id(&self) -> &str {

@@ -438,7 +438,6 @@ name = "chariox-app-runtime"
 version = "0.1.0"
 dependencies = [
  "chariox-app-package",
- "chariox-app-wit",
  "ed25519-dalek",
  "jsonschema",
  "libc",
@@ -450,8 +449,6 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
- "wit-component 0.262.0",
- "wit-parser 0.262.0",
 ]
 
 [[package]]
