@@ -1,12 +1,12 @@
-//! MP-08/MP-10/MP-11: two existing single-frame credits overlap the peer RTT.
+//! MP-08/MP-10/MP-11: three existing single-frame credits overlap the peer RTT.
 //! The worker still serializes capture. Reply order is not execution order.
 use crate::error::DaemonError;
 use futures_util::{future::BoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
 use std::{collections::BTreeMap, future::Future};
 
-const CAPACITY: usize = 2;
-// The producer's 1 MiB egress limit plus encryption/base64 overhead. Two
-// pending replies therefore retain at most 4 MiB of ciphertext per viewer.
+const CAPACITY: usize = 3;
+// The producer's 1 MiB egress limit plus encryption/base64 overhead. Three
+// pending replies therefore retain at most 6 MiB of ciphertext per viewer.
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 
 pub(super) struct Frame<T> {
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn room_window_overlaps_two_credits_and_orders_worker_sequences() {
+    async fn room_window_overlaps_three_credits_and_orders_worker_sequences() {
         let mut window = CaptureWindow::default();
         window
             .next(0, false, |_, reset| async move {
@@ -153,14 +153,18 @@ mod tests {
                         // Request order and worker sequence differ; sequence 3
                         // reaches home first and must wait for sequence 2.
                         sleep(Duration::from_millis(if call == 0 { 1 } else { 10 })).await;
-                        Ok(Some(frame(if call == 0 { 3 } else { 2 })))
+                        Ok(Some(frame(match call {
+ 0 => 3,
+ 1 => 2,
+ _ => 4,
+ })))
                     }
                 }
             })
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(first.sequence, 2);
         let next = window
             .next(2, false, |_, _| async { Ok(None) })
