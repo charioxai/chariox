@@ -39,3 +39,10 @@ test("MP-08/MP-10/MP-11 shared display resumption pins allocated protocol 525", 
     })
   }
 })
+
+// MP-08/MP-10: protocol 629 capabilities already exist on the Rust wire.
+test("viewport-first and visited-link subscriptions retain their opt-in fields", () => {
+  assert.deepEqual(kernelBrowserRequest({ op: "mirror_subscribe", tab_id: "t", generation: 1, device_scale_factor: 1, wire: 2, viewport_first: true, visited_links: true }), {
+    KernelBrowser: { command: { op: "mirror_subscribe", tab_id: "t", generation: 1, device_scale_factor: 1, wire: 2, viewport_first: true, visited_links: true } },
+  })
+})
