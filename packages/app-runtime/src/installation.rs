@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod activation;
 pub mod channel;
+mod release_versions;
 mod verified;
 pub use verified::{StageTrustBinding, VerifiedInstallCandidate, VerifiedStageError};
 
@@ -253,7 +254,13 @@ impl<'a> InstallationRegistry<'a> {
                 ))?;
             }
         }
-        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS app_release_versions (owner_id TEXT NOT NULL,publisher_id TEXT NOT NULL,app_id TEXT NOT NULL,version TEXT NOT NULL,package_digest TEXT NOT NULL,PRIMARY KEY(owner_id,publisher_id,app_id,version)); CREATE TABLE IF NOT EXISTS app_installation_authority (installation_id TEXT NOT NULL, generation INTEGER NOT NULL, authority_json TEXT NOT NULL, PRIMARY KEY(installation_id,generation));")?;
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_installation_authority (
+                installation_id TEXT NOT NULL, generation INTEGER NOT NULL,
+                authority_json TEXT NOT NULL, PRIMARY KEY(installation_id,generation)
+             );",
+        )?;
+        release_versions::initialize(self.connection)?;
         crate::managed_state::migration::initialize(self.connection)?;
         Ok(())
     }

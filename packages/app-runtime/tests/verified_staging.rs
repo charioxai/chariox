@@ -22,6 +22,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "verified_staging/upgrades.rs"]
+mod upgrades;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Database(PathBuf);
 impl Database {
