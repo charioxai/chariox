@@ -584,9 +584,10 @@ fn amfix_r11_missing_downstream_account_rejects_before_any_workflow_agents() {
         .to_string();
     assert!(error.contains(&unavailable_reference), "{error}");
     assert!(error.contains("Provider Accounts"), "{error}");
+    let details = error.replace(&unavailable_reference, "<requested account>");
     assert!(
-        !error.contains(&foreign.label) && !error.contains(&profile.profile_id),
-        "another owner's labels must not appear"
+        !details.contains(&foreign.label) && !details.contains(&profile.profile_id),
+        "the refusal must not disclose other profiles beyond the caller's reference"
     );
     assert_eq!(app.agents().get_session_agents(session.id()).len(), before);
     assert!(app

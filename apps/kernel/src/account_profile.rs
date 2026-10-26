@@ -1209,10 +1209,12 @@ impl ProviderAccountProfileRegistry {
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let profile = self.get(owner_user_id, provider, profile_id)?;
-        // MP-08 / MP-10 / MP-11: existing peers use the admission operation to
-        // classify a leased-account refusal. Keep that context and only static text.
+        // Peer admission and credential installation retain their operation and
+        // static remediation; local owners get the selected account's name.
         let refused = |reason: crate::error::ProviderProfileRefusal| {
-            if operation == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION {
+            if operation == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION
+                || operation == "ensure remote provider account"
+            {
                 DaemonError::LocalTransport {
                     operation,
                     message: crate::error::external_request_failure_message(reason.code()).into(),

@@ -536,7 +536,7 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
     let message = error.to_string();
     assert!(message.contains("Unavailable account"), "{message}");
     assert!(message.contains("codex"), "{message}");
-    assert!(message.contains("authenticate"), "{message}");
+    assert!(message.contains("refresh"), "{message}");
     assert!(
         !message.contains(&unavailable_account.profile_id),
         "the public error must not expose the stable internal account id: {message}"
