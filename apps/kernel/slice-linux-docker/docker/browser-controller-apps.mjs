@@ -228,10 +228,15 @@ export class AppTabs {
     if (runsAppCode && app.agentRunning) {
       return { ok: false, code: "view_busy", message: "An earlier action in this view is still running; retry when it has finished" };
     }
-    if (runsAppCode) this.noteAgent(app.targetId, agent);
+    if (runsAppCode) app.agentActor = { kind: "agent", id: agent };
     const connection = this.connection;
     const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId, { timeoutMs: null })
-      .finally(() => { if (app.agentRunning === running) app.agentRunning = null; });
+      .finally(() => {
+        if (app.agentRunning === running) {
+          app.agentRunning = null;
+          app.agentActor = undefined;
+        }
+      });
     if (runsAppCode) app.agentRunning = running;
     let timer;
     const late = new Promise((resolve) => {
@@ -255,6 +260,9 @@ export class AppTabs {
 
   // undefined: the person; null: unknown, refused.
   callActor(app) {
+    // The serialized bridge call owns backend calls until its handler settles,
+    // including after its deadline. Catalog reads leave no lasting Tab actor.
+    if (app.agentActor) return app.agentActor;
     if (!app.agents.size) return undefined;
     return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
   }
@@ -407,6 +415,7 @@ export class AppTabs {
       app.document = message.params?.frame?.loaderId ?? null;
       app.pending.clear();
       app.agentRunning = null;
+      app.agentActor = undefined;
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {

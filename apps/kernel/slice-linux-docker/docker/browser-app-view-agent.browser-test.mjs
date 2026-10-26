@@ -35,12 +35,13 @@ const script = `
   chariox.action({ name: 'hang', description: 'Never finishes', effect: 'read', inputSchema: { type: 'object', additionalProperties: false } },
     () => new Promise(() => {}));
   chariox.view.state(() => ({ todos }));
+  document.querySelector('button').onclick = () => chariox.call('human.click');
   window.ready = true;`;
 
 async function openApp(label) {
   const reply = await host.handle({ id: ++requests, method: 'browser.app.open', params: {
     origin_label: label, installation_id: label, assets: [
-      asset('index.html', 'text/html', '<main></main><script src="app.js"></script>'), asset('app.js', 'text/javascript', script)] } });
+      asset('index.html', 'text/html', '<button style="width:100px;height:60px">Human</button><main></main><script src="app.js"></script>'), asset('app.js', 'text/javascript', script)] } });
   assert.equal(reply.ok, true, JSON.stringify(reply));
   const target = reply.result.target_id;
   const { connection, sessionId } = await host.browser.resolvePageTarget(target);
@@ -60,7 +61,10 @@ async function openApp(label) {
       }
     }
   };
-  return { agent, calls, serve, target };
+  const click = async () => {
+    for (const type of ['mousePressed', 'mouseReleased']) await connection.send('Input.dispatchMouseEvent', { type, x: 30, y: 30, button: 'left', clickCount: 1 }, sessionId);
+  };
+  return { agent, calls, serve, target, click };
 }
 
 test('A2: an agent invoke runs the view function as that agent and the state and changes show the result', async () => {
@@ -102,7 +106,7 @@ test('A2: a reload while an action runs ends the call with view_reloaded', async
   const running = app.agent({ call: 'invoke', name: 'hang', deadline_ms: 20000 });
   await new Promise(r => setTimeout(r, 300));
   const reload = await host.handle({ id: ++requests, method: 'browser.app.reload', params: { target_id: app.target, entry: 'index.html', assets: [
-    asset('index.html', 'text/html', '<main></main><script src="app.js"></script>'), asset('app.js', 'text/javascript', script)] } });
+    asset('index.html', 'text/html', '<button style="width:100px;height:60px">Human</button><main></main><script src="app.js"></script>'), asset('app.js', 'text/javascript', script)] } });
   assert.equal(reload.ok, true);
   assert.equal((await running).code, 'view_reloaded');
 });
@@ -120,4 +124,19 @@ test('A2: a handler beyond the deadline and CDP timeout keeps ownership until se
   assert.equal((await app.agent({ call: 'state' })).code, 'view_busy');
   await new Promise(r => setTimeout(r, 1400));
   assert.deepEqual(await app.agent({ call: 'state' }), { ok: true, value: { todos: [] } });
+});
+
+// MP-08/MP-10/MP-11: catalog discovery cannot consume the shared view's actor.
+test('A2: two agents and a human share a view with per-invocation actors', async () => {
+  const app = await openApp('agent-shared');
+  const serving = app.serve();
+  for (const id of ['agent-7', 'agent-8']) assert.equal((await app.agent({ call: 'state' }, id)).ok, true);
+  for (const id of ['agent-7', 'agent-8']) assert.equal((await app.agent({ call: 'invoke', name: 'add_todo', input: { text: id } }, id)).ok, true);
+  await app.click();
+  await serving;
+  assert.deepEqual(app.calls, [
+    { method: 'todo.add', actor: { kind: 'agent', id: 'agent-7' } },
+    { method: 'todo.add', actor: { kind: 'agent', id: 'agent-8' } },
+    { method: 'human.click', actor: null },
+  ]);
 });
