@@ -6,7 +6,8 @@
 - `*-0.2.0/package.wit`: `wasmtime-wasi` 20.0.2, `wit/deps/*` (WASI 0.2.0), obtained
   from its published crates.io source archive. Files within each package are
   sorted by filename and concatenated; repeated package headers are removed.
-  All upstream interfaces and documentation remain unchanged.
+  Trailing whitespace is trimmed; interface signatures and documentation text
+  remain unchanged. The licence has its extra final blank line removed.
 - `LICENSE`: the upstream Apache-2.0 WITH LLVM-exception licence, retained from
   `wasmtime-wasi` 20.0.2. WASI 0.3 definitions have the same upstream licence.
 - `SHA256.json`: hashes of the vendored files after the documented flattening.
