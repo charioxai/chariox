@@ -122,7 +122,10 @@ class DevRun {
       void this.close()
       throw error
     }
-    this.deps.notice(`Watching ${this.root} for changes. Use /app dev stop to stop.`)
+    const mode = this.workspace
+      ? "remote: uploads the prebuilt bundle/; compile with the SDK tools before saving"
+      : "kernel builds source"
+    this.deps.notice(`Watching ${this.root} for changes (${mode}). Use /app dev stop to stop.`)
     this.trigger()
   }
 

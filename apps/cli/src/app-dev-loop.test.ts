@@ -39,6 +39,34 @@ function harness(f: { root: string, app: string, home: string, key: string }) {
   return {deps,packs,workspaces,calls}
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: the start notice explains what each save runs.
+for (const local of [true, false]) {
+  test(`dev start notice explains ${local ? "kernel source builds" : "remote prebuilt bundle uploads"}`, async t => {
+    const f = await fixture(t), h = harness(f)
+    const notices: string[] = []
+    if (local) h.deps.send = async request => {
+      assert.ok(request.BeginAppDevPush)
+      return { AppInstallOperationStatus: { operation: await h.deps.installer.status("register") } }
+    }
+    const loop = new AppDevLoop({ ...h.deps, isKernelLocal: () => local,
+      notice: text => notices.push(text), watch: () => ({ close() {} }),
+    })
+    t.after(() => loop.dispose())
+    await loop.start("my-app"); await loop.settled()
+    const notice = notices[0]!
+    assert.ok(notice.startsWith(`Watching ${f.app} for changes`))
+    assert.ok(notice.includes("Use /app dev stop to stop."))
+    if (local) {
+      assert.match(notice, /kernel builds source/)
+      assert.doesNotMatch(notice, /prebuilt bundle/)
+    } else {
+      assert.match(notice, /remote: uploads the prebuilt bundle\//)
+      assert.match(notice, /compile with the SDK tools before saving/)
+      assert.doesNotMatch(notice, /kernel builds source/)
+    }
+  })
+}
+
 test("missing-key guidance uses protected paths and private directory modes without creating a key", async t => {
   const f = await fixture(t)
   const home = join(f.root, "empty-home")
