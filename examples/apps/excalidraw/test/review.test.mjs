@@ -257,3 +257,36 @@ test('opening an idle second view does not conflict with the editor', { timeout:
   assert.equal(await page.locator('.Toast').count(), 0, 'opening a view must not cause a conflict');
   await page.screenshot({ path: join(evidence, 'idle-view-editor.png') });
 }));
+
+test('selection and hover do not parse or normalize an unchanged scene', { timeout: 30_000 }, () => fixture(async ({ page, broker, draw }) => {
+  await draw();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('v');
+  await page.waitForTimeout(500);
+  const before = broker.saveAttempts;
+  const changes = await page.evaluate(() => window.__charioxViewAgent.changes(0));
+  await page.evaluate(() => {
+    const parse = JSON.parse, stringify = JSON.stringify;
+    window.sceneWork = { parses: 0, normalizations: 0 };
+    JSON.parse = function (...args) {
+      const value = parse.apply(this, args);
+      if (value?.type === 'excalidraw' && Array.isArray(value.elements) && value.appState && value.files) window.sceneWork.parses++;
+      return value;
+    };
+    JSON.stringify = function (value, replacer, ...args) {
+      if (value?.type === 'excalidraw' && typeof replacer === 'function') window.sceneWork.normalizations++;
+      return stringify.call(this, value, replacer, ...args);
+    };
+  });
+  // Select and deselect the existing rectangle, then hover over the canvas.
+  await page.mouse.click(300, 240);
+  await page.keyboard.press('Escape');
+  await page.mouse.move(600, 400, { steps: 15 });
+  await page.waitForTimeout(500);
+  const work = await page.evaluate(() => window.sceneWork);
+  await writeFile(join(evidence, 'unchanged-scene-work.json'), JSON.stringify(work));
+  assert.equal(work.parses, 0, 'unchanged canvas events must skip full scene parsing');
+  assert.equal(work.normalizations, 0, 'unchanged canvas events must skip key sorting and serialization');
+  assert.equal(broker.saveAttempts, before);
+  assert.equal((await page.evaluate(() => window.__charioxViewAgent.changes(0))).value.latest, changes.value.latest);
+}));
