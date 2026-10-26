@@ -489,6 +489,7 @@ impl KernelRuntimeState {
             )
             .await?;
         let audience_epoch = self.room_display_audience_epoch(&lease.session_id);
+        let capture_started = Instant::now();
         let result = self
             .room_display_peer(
                 &slice,
@@ -504,6 +505,7 @@ impl KernelRuntimeState {
                 },
             )
             .await?;
+        crate::transport::kernel_browser_display::timing("room_capture_peer", capture_started);
         let RoomDisplayResult::Frame { frame } = result else {
             return Err(error());
         };
