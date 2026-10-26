@@ -15,6 +15,9 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+mod wasm;
+use wasm::archive;
+
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
@@ -95,7 +98,7 @@ fn enroll(store: &DurableKernelStateStore, owner: &str) {
         )
         .unwrap();
 }
-fn archive(signing_byte: u8) -> Vec<u8> {
+fn node_archive(signing_byte: u8) -> Vec<u8> {
     let manifest: Manifest = serde_json::from_value(json!({
         "schema":"chariox.app.v1", "appId":"com.example.prepared", "version":"1.0.0",
         "publisher":{"id":"com.example","keyId":"developer-1","name":"Developer"},
@@ -231,6 +234,28 @@ fn preparation_publishes_exact_verified_bytes_without_installing_and_retries_reu
     drop(uploads);
     let (_, reopened) = self::service(&store);
     assert!(prepare(&reopened, "alice", &handle).unwrap().reused());
+}
+
+#[test]
+fn new_node_package_requires_rebuild_without_activating_or_deleting_data() {
+    let root = Scratch::new();
+    let store = root.store();
+    enroll(&store, "alice");
+    let data = root.0.join("existing-app-data");
+    fs::write(&data, b"retained user data").unwrap();
+    let (uploads, service) = service(&store);
+    let handle = upload(&uploads, "alice", &node_archive(27), true);
+    let prepared = prepare(&service, "alice", &handle).unwrap();
+    assert_eq!(
+        prepared.require_supported_runtime(),
+        Err(PreparationError::LegacyNodePackage)
+    );
+    assert!(store
+        .list_app_installations("alice", None, 10)
+        .unwrap()
+        .installations
+        .is_empty());
+    assert_eq!(fs::read(data).unwrap(), b"retained user data");
 }
 
 #[test]

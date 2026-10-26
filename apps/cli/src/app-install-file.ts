@@ -326,6 +326,7 @@ const installFailures: Record<string, string> = {
   app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
   app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
   app_install_package_rejected: "The kernel rejected the package contents.",
+  app_install_node_package_requires_rebuild: "This App uses the Node backend. Rebuild it as a portable Apps v2 .cxapp; your existing App data is retained.",
   // One message per stable package error code (V-PKG-03).
   app_install_package_invalid_arguments: "The package request was invalid.",
   app_install_package_io: "The kernel could not read the package.",

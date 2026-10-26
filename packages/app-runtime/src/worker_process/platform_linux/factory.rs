@@ -152,7 +152,7 @@ pub(in crate::worker_process) fn prepare(
     Ok(PreparedWorker {
         program,
         arguments,
-        record,
+        record: record.into(),
         _objects: vec![held_entry],
         domain: Box::new(domain),
     })
@@ -202,13 +202,16 @@ fn libraries_for(target: &str) -> Result<Vec<(&'static str, String)>> {
     Ok(libraries)
 }
 fn bootstrap(package: &VerifiedReleaseLease, migrate_from: Option<u32>) -> Result<String> {
-    let mut config = serde_json::json!({"version":1,"entry":package.manifest().runtime.entry,
+    let mut config = serde_json::json!({"version":1,"entry":package.manifest().node().ok_or(WorkerError::Preparation)?.runtime.entry,
         "declarations":{"tools":package.declarations().tools.iter().map(|tool| &tool.name).collect::<Vec<_>>(),
         "incomingEvents":package.declarations().events.iter().filter(|event| matches!(event.direction, EventDirection::Incoming | EventDirection::Both)).map(|event| &event.name).collect::<Vec<_>>()},
         "startupTimeoutMs":15000});
     if let Some(from) = migrate_from {
-        config["migrations"] = crate::worker_process::migration_steps(package.manifest(), from)
-            .ok_or(WorkerError::Preparation)?;
+        config["migrations"] = crate::worker_process::migration_steps(
+            package.manifest().node().ok_or(WorkerError::Preparation)?,
+            from,
+        )
+        .ok_or(WorkerError::Preparation)?;
         config["migrationTimeoutMs"] = crate::worker_process::MIGRATION_TIMEOUT_MS.into();
     }
     let config = serde_json::to_string(&config).map_err(|_| WorkerError::Preparation)?;

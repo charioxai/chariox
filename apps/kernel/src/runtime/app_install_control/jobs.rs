@@ -61,6 +61,9 @@ fn preparation(error: PreparationError) -> Error {
             Error::Storage
         }
         PreparationError::PackageRejected(code) => Error::Failed(package_failure(code)),
+        PreparationError::LegacyNodePackage => {
+            Error::Failed("app_install_node_package_requires_rebuild")
+        }
         PreparationError::InvalidRequest => Error::Failed("app_install_invalid_request"),
         PreparationError::UploadConflict => Error::Failed("app_install_upload_aborted"),
         PreparationError::UploadDigestMismatch => {
@@ -164,6 +167,7 @@ pub(super) async fn run(
                         .await
                 }
                 .map_err(preparation)?;
+                prepared.require_supported_runtime().map_err(preparation)?;
                 let admitted = shared
                     .admission
                     .clone()

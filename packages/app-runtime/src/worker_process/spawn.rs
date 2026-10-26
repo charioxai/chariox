@@ -44,13 +44,6 @@ pub(super) fn launch(
             "worker descriptor count",
         ));
     }
-    #[cfg(target_os = "macos")]
-    if files.len() != 5 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "worker descriptor count",
-        ));
-    }
     let boundary = files.len() as i32;
     let mut raw_actions = MaybeUninit::uninit();
     let mut raw_attributes = MaybeUninit::uninit();

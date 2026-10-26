@@ -458,8 +458,10 @@ dependencies = [
  "chariox-app-package",
  "chariox-app-runtime",
  "chariox-app-wit",
+ "ed25519-dalek",
  "futures",
  "libc",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -550,6 +552,8 @@ dependencies = [
  "webpki-roots 1.0.8",
  "whisper-rs",
  "windows-sys 0.61.2",
+ "wit-component 0.262.0",
+ "wit-parser 0.262.0",
  "zeroize",
 ]
 

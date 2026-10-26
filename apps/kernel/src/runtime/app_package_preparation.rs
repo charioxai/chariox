@@ -6,7 +6,9 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 
-use chariox_app_package::{inspect_untrusted, verify, ErrorCode, Limits, VerificationPolicy};
+use chariox_app_package::{
+    inspect_publisher, verify_app as verify, ErrorCode, Limits, VerificationPolicy, VerifiedApp,
+};
 use chariox_app_runtime::{
     installation::{VerifiedInstallCandidate, VerifiedStageError},
     package_upload::{UploadError, MAX_UPLOAD_ARCHIVE_BYTES},
@@ -36,6 +38,7 @@ pub(crate) enum PreparationError {
     PublisherNotEnrolled,
     PublisherRevoked,
     PackageRejected(ErrorCode),
+    LegacyNodePackage,
     InsufficientStorage,
     UnsafeRelease,
     ArchiveMismatch,
@@ -52,6 +55,7 @@ type Result<T> = std::result::Result<T, PreparationError>;
 /// No display path or caller-supplied verification flag is exposed.
 pub(crate) struct PreparedAppPackage {
     owner: String,
+    legacy_node: bool,
     candidate: VerifiedInstallCandidate,
     #[allow(
         dead_code,
@@ -61,6 +65,15 @@ pub(crate) struct PreparedAppPackage {
 }
 
 impl PreparedAppPackage {
+    /// New installs require a portable v2 package. The retained v1 verifier and
+    /// store remain available for existing installations until the P1 port.
+    pub(crate) fn require_supported_runtime(&self) -> Result<()> {
+        if self.legacy_node {
+            Err(PreparationError::LegacyNodePackage)
+        } else {
+            Ok(())
+        }
+    }
     pub(crate) fn candidate(&self, trusted_owner: &str) -> Result<&VerifiedInstallCandidate> {
         self.require_owner(trusted_owner)?;
         Ok(&self.candidate)
@@ -195,15 +208,11 @@ impl AppPackagePreparation {
         expected_digest: &str,
         mut checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
     ) -> Result<PreparedAppPackage> {
-        let claimed = inspect_untrusted(bytes, &Limits::default())
+        let claimed = inspect_publisher(bytes, &Limits::default())
             .map_err(|e| PreparationError::PackageRejected(e.code))?;
         let trust = self
             .store
-            .trusted_app_publisher(
-                owner,
-                &claimed.manifest.publisher.id,
-                &claimed.manifest.publisher.key_id,
-            )
+            .trusted_app_publisher(owner, &claimed.id, &claimed.key_id)
             .map_err(publisher_error)?;
         let policy = VerificationPolicy::new(
             crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -246,6 +255,7 @@ impl AppPackagePreparation {
         checkpoint(PreparationCheckpoint::Published)?;
         Ok(PreparedAppPackage {
             owner: owner.into(),
+            legacy_node: matches!(verified, chariox_app_package::VerifiedAppPackage::Node(_)),
             candidate,
             release,
         })

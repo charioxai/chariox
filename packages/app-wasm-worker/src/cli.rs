@@ -34,7 +34,9 @@ fn bounded_read(path: impl AsRef<Path>, limit: usize) -> wasmtime::Result<Vec<u8
     wasmtime::ensure!(bytes.len() <= limit, "input exceeds the {limit} byte limit");
     Ok(bytes)
 }
-fn inherited_stream(descriptor: i32) -> wasmtime::Result<std::os::unix::net::UnixStream> {
+pub(crate) fn inherited_stream(
+    descriptor: i32,
+) -> wasmtime::Result<std::os::unix::net::UnixStream> {
     // Duplicate through libc first: FromRawFd must never receive a missing fd.
     let duplicate = unsafe { libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 5) };
     if duplicate < 0 {
@@ -49,27 +51,30 @@ fn inherited_stream(descriptor: i32) -> wasmtime::Result<std::os::unix::net::Uni
     }
     Ok(stream)
 }
-fn ready(launch: &Launch) -> wasmtime::Result<()> {
-    let generation = launch.generation.parse::<u64>()?;
+pub(crate) fn ready(
+    generation_text: &str,
+    installation_id: &str,
+    release_digest: &str,
+) -> wasmtime::Result<()> {
+    let generation = generation_text.parse::<u64>()?;
     wasmtime::ensure!(
         generation > 0
             && generation <= i64::MAX as u64
-            && generation.to_string() == launch.generation,
+            && generation.to_string() == generation_text,
         "invalid generation"
     );
     wasmtime::ensure!(
-        !launch.installation_id.is_empty()
-            && launch.installation_id.len() <= 128
-            && launch
-                .installation_id
+        !installation_id.is_empty()
+            && installation_id.len() <= 128
+            && installation_id
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte)),
         "invalid installation id"
     );
     wasmtime::ensure!(
-        launch.release_digest.len() == 71
-            && launch.release_digest.starts_with("sha256:")
-            && launch.release_digest[7..]
+        release_digest.len() == 71
+            && release_digest.starts_with("sha256:")
+            && release_digest[7..]
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
         "invalid release digest"
@@ -80,11 +85,7 @@ fn ready(launch: &Launch) -> wasmtime::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     stream.write_all(b"CXAWR001")?;
-    for value in [
-        &launch.generation,
-        &launch.installation_id,
-        &launch.release_digest[7..],
-    ] {
+    for value in [generation_text, installation_id, &release_digest[7..]] {
         stream.write_all(&(value.len() as u32).to_be_bytes())?;
         stream.write_all(value.as_bytes())?;
     }
@@ -105,6 +106,18 @@ pub fn main() -> std::process::ExitCode {
 fn run() -> wasmtime::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
+        [command] if command == "identity" => {
+            println!("{}", serde_json::to_string(&crate::engine::runtime_identity(&crate::engine::engine()?)?)?);
+        },
+        [command] if command == "serve-supervised" => crate::supervised::serve()?,
+        [command, world] if command == "precompile-stdio" => {
+            let mut bytes = Vec::new();
+            std::io::stdin().take(chariox_app_wit::MAX_COMPONENT_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+            wasmtime::ensure!(bytes.len() <= chariox_app_wit::MAX_COMPONENT_BYTES, "component exceeds limit");
+            let compiled = WorkerEngine::new()?.precompile(&bytes, world)?;
+            wasmtime::ensure!(compiled.len() <= chariox_app_runtime::release_store::aot_cache::MAX_ARTIFACT_BYTES, "AOT artifact exceeds limit");
+            std::io::stdout().write_all(&compiled)?;
+        },
         [command,world,input] if command=="check"=> {
             let engine=WorkerEngine::new()?;
             engine.compile(&bounded_read(input,chariox_app_wit::MAX_COMPONENT_BYTES)?,world)?;
@@ -125,7 +138,7 @@ fn run() -> wasmtime::Result<()> {
             launch.limits.validate()?;
             launch.manifest.validate(&chariox_app_package::Limits::default())?;
             wasmtime::ensure!(launch.manifest.world==chariox_app_wit::APP_WORLD,"backend requires the App world");
-            ready(&launch)?;
+            ready(&launch.generation, &launch.installation_id, &launch.release_digest)?;
             let engine=WorkerEngine::new()?;
             let component=engine.compile(&bounded_read(&launch.component,chariox_app_wit::MAX_COMPONENT_BYTES)?,&launch.manifest.world)?;
             let worker=AppWorker::new(engine,component,launch.limits,RetryPolicy::from_manifest(&launch.manifest))?;

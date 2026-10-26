@@ -7,7 +7,7 @@ use crate::durable_state::{
     app_validations::{self, ValidationCommand, ValidationOperation, ValidationState},
     DurableKernelStateStore,
 };
-use chariox_app_package::{compile_schema, Limits, VerifiedPackage};
+use chariox_app_package::{compile_schema, Limits, VerifiedApp};
 use chariox_app_runtime::{wire::RemoteError, worker_peer::BrokerRequest};
 use jsonschema::JSONSchema;
 use serde::Deserialize;
@@ -57,7 +57,7 @@ impl AppValidationBroker {
         owner: String,
         installation: String,
         generation: u64,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         admission: Arc<Semaphore>,
     ) -> Option<Self> {
         let limits = Limits::default();

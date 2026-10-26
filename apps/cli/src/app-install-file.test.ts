@@ -11,6 +11,11 @@ import { runAppCommand } from "./app-command.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 
 type Message = Record<string, any>
+
+test("a legacy Node package explains the rebuild and retained data", () => {
+  assert.equal(formatInstallFailure("app_install_node_package_requires_rebuild"),
+    "This App uses the Node backend. Rebuild it as a portable Apps v2 .cxapp; your existing App data is retained.")
+})
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
 function deferred<T>() {
   let resolve!: (value: T) => void

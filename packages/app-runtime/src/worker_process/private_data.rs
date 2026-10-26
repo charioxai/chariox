@@ -51,13 +51,13 @@ impl PreparedWorker {
         visit: impl FnOnce(&PrivateData) -> T,
     ) -> std::result::Result<(Self, T), WorkerError> {
         let directory = self.domain.private_data_directory()?;
-        let installation = self.record.installation.clone();
+        let installation = self.record.installation().to_owned();
         let generation = self
             .record
-            .generation
+            .generation()
             .parse()
             .map_err(|_| WorkerError::Identity)?;
-        let release_digest = self.record.release_digest.clone();
+        let release_digest = self.record.release_digest().to_owned();
         let preparation = Arc::new(Mutex::new(self));
         let data = PrivateData {
             root: Arc::new(Dir(directory)),
