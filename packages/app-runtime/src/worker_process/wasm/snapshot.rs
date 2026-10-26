@@ -1,13 +1,11 @@
 //! The checkpoint stays outside the two guest preopens until the writer's
 //! committed data generation advances. Every retry restores it before entry.
 use super::*;
-use crate::worker_process::private_data::{PrivateData, TreeLimits};
+use crate::worker_process::private_data::PrivateData;
 
-const LIMITS: TreeLimits = TreeLimits {
-    files: 10_000,
-    bytes: 512 * 1024 * 1024,
-    depth: 32,
-};
+mod tree;
+pub(super) use tree::clear;
+
 fn failed() -> WorkerError {
     WorkerError::Storage("app_wasm_migration_snapshot")
 }
@@ -21,10 +19,7 @@ fn discard(root: &Dir, name: &str) -> Result<(), WorkerError> {
         }
         Err(_) => return Err(failed()),
     };
-    crate::private_fs::remove_contents_preserving(&child, &mut 20_010, OsStr::new(""), &mut || {
-        Ok(())
-    })
-    .map_err(|_| failed())?;
+    tree::clear(&child)?;
     root.remove_directory(name).map_err(|_| failed())?;
     root.sync().map_err(|_| failed())
 }
@@ -38,9 +33,9 @@ fn retire(root: &Dir) -> Result<(), WorkerError> {
 
 pub(super) fn prepare(
     root: &Dir,
-    path: &Path,
     data: &PrivateData,
     committed: Option<u64>,
+    migrating: bool,
 ) -> Result<(), WorkerError> {
     discard(root, ".retired")?;
     discard(root, ".pending")?;
@@ -67,14 +62,12 @@ pub(super) fn prepare(
         }
         let committed = committed.ok_or_else(failed)?;
         if origin == committed {
-            let source = path.join(".migration/data");
-            let expected =
-                PrivateData::copy_saved_tree(&source, None, LIMITS).map_err(|_| failed())?;
-            if expected.skipped != 0 {
-                return Err(failed());
-            }
-            let copied = data.restore_tree(&source, LIMITS).map_err(|_| failed())?;
-            if copied != expected {
+            let source = snapshot.child(OsStr::new("data")).map_err(|_| failed())?;
+            let expected = tree::copy(&source, None)?;
+            tree::clear(data.directory())?;
+            if tree::copy(&source, Some(data.directory()))? != expected
+                || tree::copy(data.directory(), None)? != expected
+            {
                 return Err(failed());
             }
             if data.generation() == committed {
@@ -87,6 +80,9 @@ pub(super) fn prepare(
         }
         retire(root)?;
     }
+    if !migrating {
+        return Ok(());
+    }
     if let Some(committed) = committed.filter(|generation| *generation != data.generation()) {
         if committed > data.generation() {
             return Err(failed());
@@ -94,15 +90,10 @@ pub(super) fn prepare(
         let pending = root
             .create_child(OsStr::new(".pending"))
             .map_err(|_| failed())?;
-        pending
+        let target = pending
             .create_child(OsStr::new("data"))
             .map_err(|_| failed())?;
-        let copied = data
-            .copy_tree(&path.join(".pending/data"), LIMITS, &mut || true)
-            .map_err(|_| failed())?;
-        if copied.skipped != 0 {
-            return Err(failed());
-        }
+        tree::copy(data.directory(), Some(&target))?;
         pending
             .write_new(OsStr::new("generation"), committed.to_string().as_bytes())
             .map_err(|_| failed())?;

@@ -94,6 +94,10 @@ impl WorkerProcess {
 }
 
 impl PrivateData {
+    pub(in crate::worker_process) fn directory(&self) -> &Dir {
+        &self.root
+    }
+
     pub fn installation_id(&self) -> &str {
         &self.installation
     }

@@ -109,6 +109,23 @@ async fn run(name: String, input: String) -> Result<String, AppError> {
         "echo" if input["portable"] == "migration-state" => Ok(state::get("migrated".into())
             .await?
             .map_or("null".into(), |record| record.value)),
+        "echo" if input["portable"] == "files-links" || input["portable"] == "files-links-read" => {
+            use wasi::filesystem0_2_0::types::{DescriptorFlags as D, OpenFlags as O, PathFlags as P};
+            let (dir, _) = wasi::filesystem0_2_0::preopens::get_directories().into_iter().find(|(_, name)| name == "data").ok_or_else(|| fail("NO_DATA"))?;
+            if input["portable"] == "files-links" {
+                let file = dir.open_at(P::empty(), "linked-value", O::CREATE, D::READ | D::WRITE).unwrap();
+                file.write(b"committed-linked-data", 0).unwrap();
+                dir.symlink_at("linked-value", "symlink").unwrap();
+                dir.link_at(P::empty(), "linked-value", &dir, "hardlink").unwrap();
+                let large = dir.open_at(P::empty(), "large", O::CREATE, D::READ | D::WRITE).unwrap();
+                large.set_size(513 * 1024 * 1024).unwrap();
+            }
+            let read = |path| {
+                let file = dir.open_at(P::SYMLINK_FOLLOW, path, O::empty(), D::READ).unwrap();
+                String::from_utf8(file.read(100, 0).unwrap().0).unwrap()
+            };
+            Ok(json!({"value":read("linked-value"),"hardlink":read("hardlink"),"symlink":dir.readlink_at("symlink").unwrap(),"bytes":dir.stat_at(P::empty(), "large").unwrap().size}).to_string())
+        }
         "echo" if input["portable"] == "files-write" || input["portable"] == "files-read" => {
             use wasi::filesystem0_2_0::types::{
                 DescriptorFlags as D, OpenFlags as O, PathFlags as P,

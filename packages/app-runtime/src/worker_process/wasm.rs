@@ -280,7 +280,7 @@ impl PreparedWorker {
             )),
         };
         let (prepared, result) = prepared.visit_private_data(|data| {
-            snapshot::prepare(&installation_root, &installation_path, data, committed)
+            snapshot::prepare(&installation_root, data, committed, migrate_from.is_some())
         })?;
         result?;
         Ok(prepared)

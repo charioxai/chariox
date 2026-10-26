@@ -22,6 +22,10 @@ test("cache contention, capacity and storage failures explain recovery", () => {
   assert.match(formatInstallFailure("app_aot_limit"), /Rebuild a smaller/)
   assert.match(formatInstallFailure("app_aot_store"), /disk space and permissions/)
 })
+test("migration checkpoint failures explain storage recovery", () => {
+  assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /Free disk space and check storage permissions/)
+  assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /retry the update/)
+})
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => { resolve = done })

@@ -48,13 +48,7 @@ pub fn delete(database: &Path, owner: &str, installation_id: &str) -> Result<(),
             return Err(WorkerError::Storage("app_storage_busy"));
         }
     }
-    crate::private_fs::remove_contents_preserving(
-        &dir,
-        &mut 30_010,
-        OsStr::new(""),
-        &mut || Ok(()),
-    )
-    .map_err(|_| WorkerError::Preparation)?;
+    snapshot::clear(&dir).map_err(|_| WorkerError::Storage("app_storage_io"))?;
     root.remove_directory(OsStr::new(&name))
         .map_err(|_| WorkerError::Preparation)?;
     root.sync().map_err(|_| WorkerError::Preparation)
