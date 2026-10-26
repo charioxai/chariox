@@ -373,10 +373,12 @@ impl KernelRuntimeState {
                         .await
                     {
                         Ok(_) => Some(context.target),
+                        // Open waits for retirement; a failed close leaves the
+                        // adopted Tab live, including its human restore intent.
+                        Err(error) if error.code == "view_retired" => None,
                         Err(error)
-                            if error.code == "view_retired"
-                                || (error.code == "view_unavailable"
-                                    && error.message.contains("unknown App tab")) =>
+                            if error.code == "view_unavailable"
+                                && error.message.contains("unknown App tab") =>
                         {
                             self.app_control()
                                 .views()

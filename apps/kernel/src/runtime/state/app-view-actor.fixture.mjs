@@ -7,16 +7,24 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const [directory, root] = process.argv.slice(2);
 const { AppTabs } = await import(pathToFileURL(join(directory, 'browser-controller-apps.mjs')));
+let releaseClose, retirement;
 const originalAgent = AppTabs.prototype.agent;
 AppTabs.prototype.agent = async function (params) {
   if (params.call === 'registrations' && existsSync(join(root, 'registration-error'))) {
     throw new Error('registration-vault-value');
+  }
+  if (!retirement && existsSync(join(root, 'fail-idle-close'))) {
+    const app = [...this.apps.values()].find(app => app.targetId === params.target_id);
+    app.lastActivity = this.now() - this.idleMs;
+    retirement = this.retireIdle();
+    await new Promise(resolve => setImmediate(resolve));
   }
   return originalAgent.call(this, params);
 };
 const originalOpen = AppTabs.prototype.open;
 AppTabs.prototype.open = function (params) {
   appendFileSync(join(root, 'app-opens'), 'open\n');
+  releaseClose?.();
   return originalOpen.call(this, params);
 };
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, 'browser-controller.mjs')));
@@ -58,7 +66,11 @@ const connection = {
 const browser = {
   ensureConnection: async () => connection,
   ensureTargetSession: async () => 'actor-session',
-  closePageTarget: async () => {},
+  closePageTarget: async () => {
+    if (existsSync(join(root, 'fail-idle-close'))) {
+      await new Promise((_, reject) => { releaseClose = () => reject(new Error('CDP close unavailable')); });
+    }
+  },
   close: async () => {},
 };
 await new BrowserControllerStdioServer({ browser }).run();

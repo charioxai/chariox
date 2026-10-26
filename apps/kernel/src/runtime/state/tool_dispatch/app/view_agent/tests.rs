@@ -576,11 +576,18 @@ async fn mp08_a3_registration_errors_are_scrubbed_on_every_agent_path() {
     check_live_binding(LiveBindingCheck::RegistrationErrors).await;
 }
 
+// MP-08/MP-09/MP-10/MP-11: a failed idle close keeps the person's restore intent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_failed_retirement_keeps_the_adopted_tabs_restore_intent() {
+    check_live_binding(LiveBindingCheck::FailedRetirement).await;
+}
+
 #[derive(PartialEq)]
 enum LiveBindingCheck {
     Catalog,
     Panel,
     RegistrationErrors,
+    FailedRetirement,
 }
 
 async fn check_live_binding(check: LiveBindingCheck) {
@@ -714,7 +721,10 @@ async fn check_live_binding(check: LiveBindingCheck) {
             );
             return;
         }
-        if check == LiveBindingCheck::Panel {
+        if matches!(
+            check,
+            LiveBindingCheck::Panel | LiveBindingCheck::FailedRetirement
+        ) {
             rig.runtime
                 .ensure_room_app_view(
                     "alice",
@@ -745,6 +755,24 @@ async fn check_live_binding(check: LiveBindingCheck) {
                 before,
                 "agent state preserves the adopted page's panel request"
             );
+        }
+        if check == LiveBindingCheck::FailedRetirement {
+            std::fs::write(rig.root.join("fail-idle-close"), "").unwrap();
+            let context = rig.runtime.view_context(&rig.agent, APP).await.unwrap();
+            assert_eq!(
+                context.target, "actor-target",
+                "the failed close reuses the adopted document"
+            );
+            let views = rig.runtime.app_control().views();
+            views.suspend_for_cold_start(&rig.session);
+            let restoring = views.cold_start_views(&rig.session);
+            assert_eq!(
+                restoring.len(),
+                1,
+                "failed retirement must preserve the adopted Tab's restore intent"
+            );
+            assert_eq!(restoring[0].installation, APP);
+            return;
         }
         let opens = || {
             std::fs::read_to_string(rig.root.join("app-opens"))
