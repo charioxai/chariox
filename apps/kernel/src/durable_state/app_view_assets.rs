@@ -22,14 +22,14 @@ impl AppViewAssetsError {
             Self::Release(ActiveReleaseError::Unavailable) => "The App is installed, but its stored package is unavailable. Reinstall the package with /app update <installation-id> <package> before opening it.",
             Self::Release(ActiveReleaseError::NotActive) => "The App's active release has no usable trust binding. Review /app status <installation-id> and reinstall the signed package.",
             Self::Release(ActiveReleaseError::Storage) => "App storage is unavailable. Restore access to kernel storage and try again.",
-            Self::TooLarge => "The App view exceeds the 2 MiB transfer limit. Ask the publisher for a smaller UI package.",
+            Self::TooLarge => "The App view exceeds the 8 MiB transfer limit. Ask the publisher for a smaller UI package.",
         }
     }
 }
 
 /// UI bytes sent to the browser controller in one relayed request (about
-/// 2.7 MiB as base64). Larger views need chunked delivery first.
-const MAX_VIEW_BYTES: usize = 2 * 1024 * 1024;
+/// 10.7 MiB as base64). Larger views need chunked delivery first.
+const MAX_VIEW_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct AppViewAsset {
@@ -129,6 +129,17 @@ mod tests {
     use super::*;
     use chariox_app_package::{verify, VerificationPolicy};
     use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
+
+    #[test]
+    fn app_view_asset_budget_matches_the_browser_host() {
+        let browser = include_str!("../../slice-linux-docker/docker/browser-controller-apps.mjs");
+        assert_eq!(MAX_VIEW_BYTES % (1024 * 1024), 0);
+        assert!(browser.lines().any(|line| line
+            == format!(
+                "const MAX_ASSET_BYTES = {} * 1024 * 1024;",
+                MAX_VIEW_BYTES / (1024 * 1024)
+            )));
+    }
 
     #[test]
     fn serves_only_signed_ui_files_of_the_owners_active_release() {

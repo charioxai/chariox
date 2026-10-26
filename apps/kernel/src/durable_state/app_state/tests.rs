@@ -229,6 +229,37 @@ pub(super) fn update_package(
 pub(super) fn inbox_package_version(version: &str, schema: u32) -> (Vec<u8>, TrustedPublisher) {
     package_build(false, false, version, schema, true, false)
 }
+pub(super) fn view_package(total_bytes: usize) -> (Vec<u8>, TrustedPublisher) {
+    let (bytes, publisher) = package();
+    let verified = verify(
+        &bytes,
+        &VerificationPolicy::new(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            vec![publisher.clone()],
+        ),
+    )
+    .unwrap();
+    let mut manifest = verified.manifest().clone();
+    manifest.version = "2.0.0".into();
+    let html = b"<!doctype html><title>Asset boundary</title><script src=app.js></script>".to_vec();
+    let mut files: BTreeMap<String, Vec<u8>> = verified
+        .files()
+        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+        .collect();
+    files.insert("ui/app.js".into(), vec![b' '; total_bytes - html.len()]);
+    files.insert("ui/index.html".into(), html);
+    (
+        pack(
+            &manifest,
+            &files,
+            &SigningKey::from_bytes(&[71; 32]),
+            &Limits::default(),
+        )
+        .unwrap(),
+        publisher,
+    )
+}
+
 pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(false)
 }

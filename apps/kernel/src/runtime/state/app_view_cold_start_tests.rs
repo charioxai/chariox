@@ -658,3 +658,60 @@ fn mp08_inflight_restore_intent_survives_kernel_shutdown_and_restart() {
     );
     assert_eq!(restarted.restore_batch(owner), vec!["todo", "documents"]);
 }
+
+#[tokio::test]
+async fn app_view_asset_budget_installs_and_opens_under_eight_mib_and_refuses_over() {
+    use chariox_app_package::{verify, VerificationPolicy};
+    use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
+    for (total, allowed) in [(8 * 1024 * 1024 - 1, true), (8 * 1024 * 1024 + 1, false)] {
+        let (runtime, _, _cleanup) = fixture_for_owner("alice");
+        let store = &runtime.owned.durable_state_store;
+        crate::durable_state::app_state::fixture_event_catalog(store);
+        let (bytes, publisher) = crate::durable_state::app_state::fixture_view_package(total);
+        let package = verify(
+            &bytes,
+            &VerificationPolicy::new(
+                crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                vec![publisher.clone()],
+            ),
+        )
+        .unwrap();
+        ReleaseStore::open_or_create(store.path())
+            .unwrap()
+            .stage(
+                &package,
+                &bytes,
+                StageBudget {
+                    max_stage_bytes: 64 * 1024 * 1024,
+                    reserved_bytes: 64 * 1024 * 1024,
+                    host_reserve_bytes: 1024 * 1024,
+                },
+            )
+            .unwrap();
+        crate::durable_state::app_state::fixture_update_installation(
+            store,
+            "alice",
+            "installed",
+            (bytes, publisher),
+        );
+        assert!(store
+            .get_app_installation("alice", "installed")
+            .unwrap()
+            .active
+            .is_some());
+        let opened = runtime
+            .open_user_app_view("alice", "installed", None)
+            .await
+            .unwrap();
+        if allowed {
+            let (view, frontend) = opened.expect("signed view just under 8 MiB opens");
+            assert_eq!(view.installation_id, "installed");
+            assert_eq!(frontend.assets.len(), 2);
+        } else {
+            assert!(matches!(
+                opened,
+                Err(crate::local::AppRequestErrorCode::LimitExceeded)
+            ));
+        }
+    }
+}
