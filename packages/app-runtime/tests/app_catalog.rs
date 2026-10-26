@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 mod owned;
 #[path = "app_catalog/readiness.rs"]
 mod readiness;
+#[path = "app_catalog/ui_actions.rs"]
+mod ui_actions;
 
 struct Package {
     manifest: Manifest,

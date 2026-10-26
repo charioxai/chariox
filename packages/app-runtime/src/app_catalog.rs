@@ -90,6 +90,7 @@ pub struct AppCatalog {
     release: ReleaseMetadata,
     tools: BTreeMap<String, CompiledTool>,
     clipboard_write: bool,
+    ui_actions: Vec<chariox_app_package::v2::UiActionDeclaration>,
 }
 
 impl AppCatalog {
@@ -174,6 +175,7 @@ impl AppCatalog {
             trust: trust.clone(),
             release: candidate.release_metadata().clone(),
             tools,
+            ui_actions: package.ui_actions(),
             clipboard_write: package
                 .manifest()
                 .capabilities
@@ -207,17 +209,16 @@ impl AppCatalog {
         Ok(())
     }
 
+    /// Signed declarations; invocation still requires the agent's current grant.
+    pub fn ui_actions(&self) -> &[chariox_app_package::v2::UiActionDeclaration] {
+        &self.ui_actions
+    }
+
     pub fn installation_id(&self) -> &str {
         &self.binding.token().installation_id
     }
     pub fn generation(&self) -> u64 {
         self.binding.token().generation
-    }
-    /// The signed UI actions an agent may run through an open view of this
-    /// generation. A v1 package declares none; R4 returns the v2 package's
-    /// `ui-actions` here, and nothing else in the runtime changes.
-    pub fn ui_actions(&self) -> &[chariox_app_package::v2::UiActionDeclaration] {
-        &[]
     }
     pub fn catalog_digest(&self) -> &str {
         &self.release.catalog_digest
