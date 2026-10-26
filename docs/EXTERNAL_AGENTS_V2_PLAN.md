@@ -6,7 +6,7 @@
 
 1. One local passkey grant reaches all of the user's machines; no per-machine narrowing. The popup says so and revoke is immediate.
 2. The remote kernel also enforces the human-only set when a request carries `on_behalf_of` (section 5.3). One shared function; no Cloud and no link involved.
-3. Machine file requests (`Read/Write/StatMachineFile`) are added, chunked, resumable, sha256-checked, 2 GiB cap (section 9.1).
+3. Kernel file requests (`ReadKernelFile`, `WriteKernelFile`) are added, chunked, resumable, sha256-checked, 2 GiB cap (section 9.1).
 4. b3 becomes a real signed kernel in Miguel's hosted account through a one-time ssh bootstrap. This is an interim step: it is replaced when b3 becomes a Path-1 Chariox-managed machine or a BYOM machine.
 5. Verify first, then decide: Cloud already lists kernels for **user** sessions (waiting room, remote TUI picker). Step 1 checks whether a **kernel** credential can call that list. A kernel-scoped read-only variant is added only if it cannot (section 3.3).
 6. Approval deep link (128-bit, single use, 10 min, account and kernel bound) ships as an extension after the core. Self-hosted uses a remote TUI until the native mobile client exists.
@@ -193,12 +193,12 @@ Per AGENTS.md: version bump, snapshot and hash tests, a focused drill. Numbers a
 - Self-hosted kernel list: `JoinKernelLink { link, relay_token? }` (human-only), `ForgetGatewayKernel`, and `ListGatewayKernels`. Hosted needs no new request if step 1 confirms existing listing.
 - Kernel view for agents: extend `RemoteMachinesListed` rows with `kernel_id`, `machine`, `label`, `status`, `last_seen`, `kernel_protocol_version`, `via` (hosted/self-hosted) if they are not already there.
 - Relay client request context: `on_behalf_of` (5.3).
-- Files (section 9): `ReadMachineFile`, `WriteMachineFile`, `StatMachineFile` with offset, length, sha256, mode.
+- Files (section 9.1): `ReadKernelFile` and `WriteKernelFile` only, with offset, length and sha256. Listing, stat, hashing and small reads go through the terminal. Local protocol 615 removed `StatKernelFile`, `ListKernelDirectory` and `ListEvents`; there is no agent-deadline request.
 - Client minimums: raised only for clients that show the grant list (term) and the popup choices; the web and TUI popups need the three-choice answer.
 
 **Relay peer protocol.** Verified in step 1: the relay client envelope (`KernelIncomingFrame::Request { request_id, command_id, causation_id, correlation_id, request }`, `transport/kernel_protocol.rs`) is not peer-versioned and has no `deny_unknown_fields`: a kernel that predates a new optional field (`kernel`, `on_behalf_of`) ignores it silently, which is why 5.3 defines the compatibility rule on the origin side. The *relay peer* protocol versions kernel-to-kernel `RelayPeer` messages, which the gateway never sends. It is still bumped together with the local protocol in this repo, because the peer union embeds local response shapes (the term change touches `KernelAccessGrant`, which appears in `KernelSudoTurn.requester`); the relay binary itself does not change.
 
-**Local protocol, events extension (section 14).** `SubscribeEvents { targets }`, `UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `ListEvents { since, limit }`, `WaitEvents { since, timeout_ms, limit }`, `AckEvents { cursor }`, the `EventsListed` response `{ events, next_cursor, oldest_cursor, timed_out }`, the record of 14.5 (types `agent`, `interaction`, `terminal`, `session`; control records `gap`, `subscription_ended`), the `cursor_expired` code, and the `Outside` recipient kind in the agent-model ledger. External access path only, never in the session-agent or `/sudo` vocabulary. Allocated at the integration that ships it; it can share a number with `NEXT` or `NEXT+1`.
+**Local protocol, events extension (section 14).** `SubscribeEvents { targets }`, `UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `WaitEvents { since, timeout_ms, limit }`, `AckEvents { cursor }`, the `EventsListed` response `{ events, next_cursor, oldest_cursor, timed_out }`, the record of 14.5 (types `agent`, `interaction`, `terminal`, `session`; control records `gap`, `subscription_ended`), the `cursor_expired` code, and the `Outside` recipient kind in the agent-model ledger. External access path only, never in the session-agent or `/sudo` vocabulary. Allocated at the integration that ships it; it can share a number with `NEXT` or `NEXT+1`.
 
 **Local protocol `NEXT+1` (approvals extension).** `ApprovalPending` frame to the waiting agent connection, `ListPendingApprovals` (read-only for agents), pointer record `{approval_id, kind, kernel, one_line, link?, expires_at}`; Cloud API `POST /v1/approval-pointers` (chariox-cloud).
 
@@ -217,11 +217,11 @@ chariox request [--kernel M] [--command-id ID] < request.json   # one LocalDaemo
 chariox sessions|agent|terminal|files ... [--kernel M]          # thin verbs (below)
 chariox sudo request --agent A --prompt P [--kernel M]
 chariox approvals list | wait <id> [--timeout S]                 # extension
-chariox events subscribe|unsubscribe|subscription|list|wait|watch|ack ...   # extension, section 14
+chariox events subscribe|unsubscribe|subscription|wait|watch|ack ...   # extension, section 14
 ```
 
 - `chariox request` is the single generic door: any `LocalDaemonRequest` the grant allows, locally or on `--kernel`. It is the same shape as the sudo MCP `chariox_kernel_request`, so there is one request vocabulary.
-- Thin verbs only where the raw request is awkward for an agent: `terminal open|send|read|wait|close`, `files get|put|stat`, `agent spawn|prompt|steer|read`, `sessions list|create`. Each is a one-screen mapping onto a request; none adds behaviour. `--kernel` is accepted by every verb and by the existing non-TUI commands that talk to a kernel (`context`, `app`). `chariox logs` reads local files today; remote logs are read with `terminal`/`files get` in the core.
+- Thin verbs only where the raw request is awkward for an agent: `terminal open|send|read|wait|close`, `files get|put`, `agent spawn|prompt|steer|read`, `sessions list|create`. Each is a one-screen mapping onto a request; none adds behaviour. `--kernel` is accepted by every verb and by the existing non-TUI commands that talk to a kernel (`context`, `app`). `chariox logs` reads local files today; remote logs are read with `terminal`/`files get` in the core. Listing, stat, hashing and small reads of files also go through the terminal (`ls -la`, `stat`, `sha256sum`, `head -c`).
 - No "current kernel" state: every call names its kernel, or means the local one.
 - `chariox guide` is static text compiled from the same command table the parser uses, so a test fails if the guide mentions a command or flag that does not exist. It tells the agent: request access once, list kernels, always pass `--kernel`, which things are human-only, and **what to do with an approval pointer: show it to the user verbatim and wait**.
 - The default holder for `access request` stays the nearest provider harness. `--no-wait` exists because harness tool calls time out (minutes): it prints the pointer and exits 6, then `access status` polls.
@@ -247,8 +247,8 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 |---|---|---|
 | Run commands, incl. long ones that outlive the agent's call | Room terminals (`chariox-terminal` #1054, term/r1: open/list/send/read/wait/close, Room-owned, survive client disconnect, background jobs count as work, protocol 562 / peer 170 pending) | #1054 must be on main; add the `terminal` verbs (7); `read --since <cursor>` and `wait --timeout` for detached jobs. **Verified in step 1** (term/r1 `ac9db6927`, `docs/PROTOCOL.md` Room terminals): a terminal is opened with `RoomTerminal { session_id, acting_agent?, operation: open }`. It needs no agent (without `acting_agent` the actor is the user; `host_agent: null` means the Room's home kernel), but it is **Room-scoped**: it needs a session (Room) on that machine, runs in the Room's project folder, and only the Room's owner may send it (the gateway is an owner terminal). So the coordinator keeps an ops Room per machine (`sessions create --kernel b3`), and the `terminal` verbs take `--session`. No machine-level terminal exists; none is added. |
 | Start/steer sessions and agents on a machine | Existing `CreateSession`, `SpawnAgent`, prompt/steer requests via the gateway | `agent`/`sessions` verbs; kernel tag on events. |
-| Read files, logs, run `git` | Terminal (`cat`, `tail`, `journalctl`) works with no new code | Convenience `files stat/get`. |
-| **Transfer files, incl. git bundles and artifacts** | Nothing general today (`DIRECTORY_WORKSPACE_TRANSFER` and managed context transfer only move provisioned contexts; `ReadFileCapabilityRequest` is session-scoped text) | New small family `Read/Write/StatMachineFile`, see 9.1. A git bundle is then `files put` + `git fetch bundle` in a terminal. |
+| Read files, logs, run `git` | Terminal (`cat`, `tail`, `journalctl`) works with no new code | None: `files get` moves large files; listing, stat and small reads stay in the terminal. |
+| **Transfer files, incl. git bundles and artifacts** | Nothing general today (`DIRECTORY_WORKSPACE_TRANSFER` and managed context transfer only move provisioned contexts; `ReadFileCapabilityRequest` is session-scoped text) | Two requests, `ReadKernelFile` and `WriteKernelFile`, see 9.1. A git bundle is then `files put` + `git fetch bundle` in a terminal. |
 | Logs of the kernel itself | Terminal / `files get` | A dedicated logs request is not in v2. |
 | Being woken when a lane finishes, blocks or asks (today `watch.sh` polling lane folders over ssh) | Nothing for an outside recipient; session subscriptions need a held connection per session | Events extension, section 14: following the lane agents plus one background `chariox events wait` replaces the watcher. |
 | Build slots, drills, killing exact PIDs | Terminal | None. |
@@ -260,13 +260,13 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 **Why.** The coordinator's day on b3 moves files in both directions: git bundles from b3 to the Mac so the Mac can publish them (b3 has no GitHub credentials by design), lane results and `LANE_STATUS.md`, evidence (screenshots, recordings, logs), and briefs or prompts going the other way. Pushing these through a terminal as base64 is slow, breaks on large files, cannot resume, and fills the agent's context with bytes. A terminal is also the wrong tool: it is a live shell, not a transfer.
 
 **How.**
-- They are ordinary kernel API requests (`ReadMachineFile`, `WriteMachineFile`, `StatMachineFile`), not terminal traffic. The gateway routes them to the target kernel like any other request with `kernel`; the target kernel does the file work and answers.
+- They are ordinary kernel API requests (`ReadKernelFile`, `WriteKernelFile`), not terminal traffic. There is no stat or listing request: the terminal does that. The gateway routes them to the target kernel like any other request with `kernel`; the target kernel does the file work and answers.
 - Chunked: each request moves one bounded chunk (offset, length) of at most 256 KiB, so it fits the relay's 768 KiB request bound after base64 (found in the r5 drill: 1 MiB chunks were refused). A large file is a sequence of chunks.
-- Resumable: `Stat` returns size and sha256 of what is already there; the client continues at the offset after an interruption (drill EA2-07 interrupts at 40 %).
+- Resumable: a zero-length `ReadKernelFile` of `<path>.chariox-partial` returns the bytes an unfinished upload holds (`file_not_found` means start at 0); the client continues at that offset after an interruption (drill EA2-07 interrupts at 40 %). `files get` takes the size from a zero-length first read and resumes from its own local `.chariox-partial`.
 - Verified: the final sha256 is compared by the receiving kernel; a mismatch is a typed error and the partial file is never presented as complete.
 - Capped: 2 GiB per file; a larger file is refused with a typed error naming the cap.
 - Authority: the user's, no wider. Files are read and written as the target kernel's OS user; a terminal of that kernel can already read and write any file that user can; the requests add convenience, not power. The bytes never reach the model unless the agent chooses to read them, and everything stays inside the relay's end-to-end encryption.
-- CLI: `chariox files get|put|stat --kernel <name>`, JSON result with size, sha256 and elapsed time.
+- CLI: `chariox files get|put --kernel <name>`, JSON result with size, sha256 and elapsed time. `files get` prints the sha256 of what it wrote; `--sha256 HEX` makes a different hash fail and keep nothing.
 
 Every break-glass ssh during the dogfooding day (EA2-16) is logged as a product issue with the missing capability.
 
@@ -333,7 +333,7 @@ Process: the `val910` lane and its "val910 r3 + Miguel attended session" next st
 4. **Core D, work surface.** Terminal verbs on top of #1054; file family; slice check. (EA2-06, 07, 13, 15)
 5. **Dogfood.** EA2-14, 16, 19 on the real Mac + b3.
 6. **Extension, approvals.** Pointer frame, `approvals`, Cloud pointer endpoint, web approval view, self-hosted remote-TUI path. (EA2-17, 18)
-7. **Extension, events (section 14).** `Outside` recipient and per-kernel subscription parts in the ledger (agent-model side), the four record types from the existing producers, gateway-managed parts on other kernels, merged inbox, `SubscribeEvents`/`ListEvents`/`WaitEvents`/`AckEvents`, `chariox events`, guide paragraph. After step 2 (the gateway) and after the agent-model event core is on `main`. (EA2-26..EA2-34; EA2-34 is the dogfood that retires `watch.sh`.)
+7. **Extension, events (section 14).** `Outside` recipient and per-kernel subscription parts in the ledger (agent-model side), the four record types from the existing producers, gateway-managed parts on other kernels, merged inbox, `SubscribeEvents`/`WaitEvents`/`AckEvents`, `chariox events`, guide paragraph. After step 2 (the gateway) and after the agent-model event core is on `main`. (EA2-26..EA2-34; EA2-34 is the dogfood that retires `watch.sh`.)
 
 Steps 1–3 can be separate PRs; step 6 includes a `chariox-cloud` PR. One build per machine at a time (AGENTS.md).
 
@@ -487,8 +487,7 @@ A record is `{ cursor, kernel, machine, session_id, agent_id?, type, value, summ
 
 **Requests (external access path only).**
 - `SubscribeEvents { targets }` adds targets; `UnsubscribeEvents { targets | all }` removes them, and `all` cancels the subscription; `GetEventSubscription` lists targets and per-kernel health.
-- `ListEvents { since?, limit }` returns records after `since`, oldest first.
-- `WaitEvents { since?, timeout_ms, limit }` returns as soon as at least one record exists after `since`, with every record already pending (up to `limit`), or empty with `timed_out: true` at the timeout. The kernel caps `timeout_ms` at 15 min.
+- `WaitEvents { since?, timeout_ms, limit }` (`timeout_ms: 0` reads what is pending now) returns as soon as at least one record exists after `since`, with every record already pending (up to `limit`), or empty with `timed_out: true` at the timeout. The kernel caps `timeout_ms` at 15 min.
 - `AckEvents { cursor }`. `since` omitted means "after the last ack".
 - Response `EventsListed { events, next_cursor, oldest_cursor, timed_out }`.
 - The gateway uses the same requests on the other kernels to manage their parts; there is no second protocol.
@@ -503,8 +502,7 @@ A record is `{ cursor, kernel, machine, session_id, agent_id?, type, value, summ
 chariox events subscribe   --kernel K --session S [--agent A]      # add a target (agent omitted = the whole session)
 chariox events unsubscribe --kernel K --session S [--agent A] | --all
 chariox events subscription                                        # targets and per-kernel health
-chariox events list  [--since C] [--limit L]
-chariox events wait  [--since C] [--timeout S]
+chariox events wait  [--since C] [--timeout S]      # --timeout 0 reads what is pending now
 chariox events watch [--since C]          # one JSON line per record until interrupted or the subscription ends
 chariox events ack <cursor>
 ```
@@ -513,7 +511,7 @@ chariox events ack <cursor>
 - Three ways to use it, no custom tool needed:
   - **Synchronous:** `wait --timeout 540` in the foreground, looping on `next_cursor`. Works in any harness; the timeout stays under the harness's own cap for one command (about 10 min for Claude Code).
   - **Background:** the same command with the harness's background option (`run_in_background` in Claude Code). The agent stays free and the harness tells it when the command exits.
-  - **Polling:** `list --since <cursor>` whenever the agent wants to look.
+  - **Polling:** `wait --timeout 0 --since <cursor>` whenever the agent wants to look.
 - `watch` is for harnesses that read a live output stream.
 - `chariox guide` gains one paragraph: follow sessions or single agents, the three ways to wait, keep the cursor, resync on exit 7, show approval pointers to the user verbatim.
 
