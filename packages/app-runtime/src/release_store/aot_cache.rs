@@ -217,7 +217,7 @@ impl AotCache {
         if digest(component.bytes()) != component.digest {
             return Err(AotError::Integrity);
         }
-        let _lock = lock(&self.root)?;
+        let _lock = key_lock(&self.root, &identity.key(component.digest()))?;
         self.prepare_locked(component, identity, compile)
     }
     fn prepare_locked(
@@ -298,22 +298,29 @@ impl AotCache {
     }
     /// Removing derived code cannot remove the separately leased release or data.
     pub fn evict(&self, key: &AotCacheKey) -> Result<()> {
-        let _lock = lock(&self.root)?;
+        let _lock = key_lock(&self.root, key)?;
         self.root.remove_file(OsStr::new(&key.id()[7..]))?;
         self.root.sync()?;
         Ok(())
     }
 }
-fn lock(root: &Dir) -> Result<File> {
-    let lock = match root.create_private_file(OsStr::new(".lock")) {
+fn key_lock(root: &Dir, key: &AotCacheKey) -> Result<File> {
+    let name = format!(".lock-{}", &key.id()[7..]);
+    lock(root, &name, std::time::Duration::from_secs(125))
+}
+fn lock(root: &Dir, name: &str, wait: std::time::Duration) -> Result<File> {
+    let name = OsStr::new(name);
+    let lock = match root.create_private_file(name) {
         Ok(file) => file,
         Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            root.open_private_file(OsStr::new(".lock"))?
+            root.open_private_file(name)?
         }
         Err(error) => return Err(error.into()),
     };
-    if !crate::private_fs::try_lock_file(&lock)? {
-        return Err(AotError::Busy);
+    let deadline = std::time::Instant::now() + wait;
+    while !crate::private_fs::try_lock_file(&lock)? {
+        if std::time::Instant::now() >= deadline { return Err(AotError::Busy); }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     Ok(lock)
 }

@@ -60,6 +60,31 @@ fn compiled(_: &VerifiedComponent) -> Result<Vec<u8>> {
 }
 
 #[test]
+fn a_hit_does_not_contend_with_another_components_compile() {
+    let scratch = Scratch::new();
+    let cache = scratch.cache();
+    let first = component(b"release");
+    cache.prepare_with(&first, &identity(), compiled).unwrap();
+    let bytes = b"another signed component".to_vec();
+    let second = VerifiedComponent::new(bytes.clone(), digest(&bytes), digest(b"release2"), first.world().into());
+    let (started, compiling) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let cache = &cache;
+        let background = scope.spawn(move || cache.prepare_with(&second, &identity(), |_| {
+            started.send(()).unwrap();
+            released.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            compiled(&second)
+        }));
+        compiling.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let hit = cache.prepare_with(&first, &identity(), |_| panic!("warm key compiled"));
+        release.send(()).unwrap();
+        background.join().unwrap().unwrap();
+        assert!(hit.unwrap().cache_hit);
+    });
+}
+
+#[test]
 fn cold_compile_restart_hit_and_cross_release_reuse_keep_original_provenance() {
     let scratch = Scratch::new();
     let source = component(b"first release");

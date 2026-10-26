@@ -322,6 +322,9 @@ function operation(reply: Record<string, unknown>, request: string): AppInstallO
 }
 
 const installFailures: Record<string, string> = {
+  app_aot_busy: "The App cache is compiling this component. Retry starting the App shortly.",
+  app_aot_limit: "The compiled App exceeds this runtime's cache limit. Rebuild a smaller App.",
+  app_aot_store: "The App cache could not be read or written. Check disk space and permissions, then retry.",
   app_aot_integrity: "The App cache failed verification and was removed. Start the App again to compile its retained component; your App data is retained.",
   app_aot_incompatible: "The App cache does not match this runtime. Start the App again to compile its retained component.",
   app_aot_compile: "The App could not be compiled with the current runtime. Retry after updating the runtime; your App data is retained.",

@@ -18,7 +18,7 @@ fn subject(provenance: &AotProvenance) -> Result<Vec<u8>> {
 }
 impl Auth {
     pub(super) fn open(root: &Dir) -> Result<Self> {
-        let _lock = lock(root)?;
+        let _lock = lock(root, ".lock", std::time::Duration::from_secs(1))?;
         let name = OsStr::new(".provenance-key");
         match root.open_private_file(name) {
             Ok(mut file) => {

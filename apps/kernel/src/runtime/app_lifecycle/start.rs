@@ -263,12 +263,7 @@ fn spawn(
             binding,
             context.store.path(),
         )
-        .map_err(|error| match error {
-            chariox_app_runtime::worker_process::WorkerError::Storage(code) => {
-                LifecycleError::Wasm(code)
-            }
-            _ => LifecycleError::Preparation,
-        })?;
+        .map_err(wasm_preparation_error)?;
         if context.control.stopped() {
             return Err(LifecycleError::Stopped);
         }
@@ -594,4 +589,13 @@ fn require_wasm_migration_orchestrator(verified: &VerifiedAppPackage<'_>) -> Res
         return Err(LifecycleError::Wasm("app_wasm_migration_unavailable"));
     }
     Ok(())
+}
+
+fn wasm_preparation_error(error: chariox_app_runtime::worker_process::WorkerError) -> LifecycleError {
+    use chariox_app_runtime::worker_process::WorkerError;
+    match error {
+        WorkerError::Storage("app_aot_busy") => LifecycleError::Busy,
+        WorkerError::Storage(code) => LifecycleError::Wasm(code),
+        _ => LifecycleError::Preparation,
+    }
 }
