@@ -778,9 +778,9 @@ fn mp08_repair_strips_encode_at_the_low_lossless_effort() {
     use base64::{engine::general_purpose::STANDARD, Engine};
     let (w, h) = (300usize, 70usize);
     let mut pixels = vec![0u8; w * h * 4];
-    for (i, p) in pixels.chunks_exact_mut(4).enumerate() {
+    for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let (x, y) = (i % w, i / w);
-        p.copy_from_slice(&[(x * 7 + y) as u8, (y * 13) as u8, (x ^ y) as u8, 0x5a]);
+        *p = [(x * 7 + y) as u8, (y * 13) as u8, (x ^ y) as u8, 0x5a];
     }
     let rect = [0, 0, w as i32, h as i32];
     let (low, high) = (
