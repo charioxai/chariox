@@ -548,13 +548,17 @@ exit 2
             )
             .expect_err("malformed transferred credentials must fail closed");
         let message = error.to_string();
-        // The refusal is a constant remediation and never names the profile or provider output.
+        // Local provisioning retains the reason; the relay projection redacts account names.
+        assert!(matches!(
+            &error,
+            DaemonError::ProviderProfileRefused {
+                reason: crate::error::ProviderProfileRefusal::Unauthenticated,
+                ..
+            }
+        ));
         assert!(message.contains("not authenticated"), "{message}");
-        assert!(
-            message.contains("RefreshProviderAccountProfile"),
-            "{message}"
-        );
-        assert!(!message.contains("OpenCode Zen"), "{message}");
+        assert!(message.contains("Provider Accounts"), "{message}");
+        assert!(message.contains("OpenCode Zen"), "{message}");
         assert!(!message.contains("eyJvcGVuY29kZSI"), "{message}");
         let corrected = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(
