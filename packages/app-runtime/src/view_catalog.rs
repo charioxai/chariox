@@ -81,7 +81,9 @@ impl ViewCatalog {
         }
         let mut warnings = Vec::new();
         let mut names = BTreeSet::new();
-        let mut matched = BTreeSet::new();
+        // Coverage describes the page mapping; agreement warnings separately
+        // compare it with signed authority, including v1's empty action list.
+        let mut covered = BTreeSet::new();
         for value in &observation.registrations {
             match serde_json::from_value::<UiActionDeclaration>(value.clone()) {
                 Ok(action) => {
@@ -94,14 +96,15 @@ impl ViewCatalog {
                                 action.name
                             ),
                         });
-                        matched.remove(&action.name);
-                    } else if let Err(error) = result {
-                        warnings.push(ViewWarning {
-                            code: "declaration_mismatch".into(),
-                            message: error.to_string(),
-                        });
+                        covered.remove(&action.name);
                     } else {
-                        matched.insert(action.name);
+                        covered.insert(action.name.clone());
+                        if let Err(error) = result {
+                            warnings.push(ViewWarning {
+                                code: "declaration_mismatch".into(),
+                                message: error.to_string(),
+                            });
+                        }
                     }
                 }
                 Err(_) => warnings.push(ViewWarning {
@@ -125,7 +128,7 @@ impl ViewCatalog {
             if !control
                 .action
                 .as_ref()
-                .is_some_and(|action| matched.contains(action))
+                .is_some_and(|action| covered.contains(action))
             {
                 warnings.push(ViewWarning {
                     code: "undeclared_control".into(),
@@ -182,7 +185,7 @@ mod tests {
         let mut observed = observation();
         observed.registrations[0]["effect"] = json!("read");
         let catalog = ViewCatalog::from_observation(&[action()], observed).unwrap();
-        assert_eq!(catalog.warnings.len(), 2);
+        assert_eq!(catalog.warnings.len(), 1);
         assert_eq!(catalog.warnings[0].code, "declaration_mismatch");
         assert!(catalog.warnings[0].message.contains("effect"));
     }
@@ -216,8 +219,8 @@ mod tests {
         assert_eq!(catalog.registrations.len(), 1);
         assert_eq!(
             catalog.warnings.len(),
-            2,
-            "v1 has no signed UI actions; registrations cannot acquire authority"
+            1,
+            "v1 has no signed UI actions; registrations remain diagnostic and get agreement warnings"
         );
     }
     #[test]
@@ -231,5 +234,47 @@ mod tests {
         let mut observed = observation();
         observed.state = json!({"ok":true});
         assert!(ViewCatalog::from_observation(&[], observed).is_err());
+    }
+}
+
+#[cfg(test)]
+mod coverage_regressions {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn v1_coverage_distinguishes_unannotated_controls_from_signed_agreement() {
+        let observed = ViewObservation {
+            registrations: vec![
+                json!({"name":"add","description":"Add","inputSchema":{"type":"object"},"effect":"write"}),
+            ],
+            state: json!({"ok":true,"value":null}),
+            controls: vec![
+                ViewControl {
+                    control: "button#add".into(),
+                    action: Some("add".into()),
+                },
+                ViewControl {
+                    control: "button#missing".into(),
+                    action: None,
+                },
+            ],
+        };
+        let catalog = ViewCatalog::from_observation(&[], observed).unwrap();
+        assert!(catalog.actions.is_empty());
+        assert_eq!(
+            catalog
+                .warnings
+                .iter()
+                .filter(|w| w.code == "declaration_mismatch")
+                .count(),
+            1
+        );
+        let uncovered: Vec<_> = catalog
+            .warnings
+            .iter()
+            .filter(|w| w.code == "undeclared_control")
+            .collect();
+        assert_eq!(uncovered.len(), 1);
+        assert!(uncovered[0].message.contains("button#missing"));
     }
 }

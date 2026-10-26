@@ -169,11 +169,11 @@ Errors and missing state providers remain explicit results. No DOM field value
 is read for coverage. Supported form fields reuse A1's `controlsOf`; submit
 controls inherit their form's action. For JS actions annotate the visible
 control with `data-chariox-action="name"`; event-listener closures are opaque.
-Unsupported form controls and unannotated buttons remain uncovered.
+Unsupported form controls and unannotated buttons remain uncovered. Coverage traverses light DOM and open shadow roots; closed roots cannot be enumerated by the page SDK and are outside this diagnostic scan. Use explicit JS registrations for controls in shadow roots; A1's simple form registrations still use document markup.
 
 `chariox_app_runtime::view_catalog::ViewCatalog::from_observation` compares
 runtime registrations with A1's signed action declarations and reports
-`declaration_mismatch` and `undeclared_control`. `actions` is signed authority;
+`declaration_mismatch` for signed agreement and `undeclared_control` for a missing or ambiguous page-action mapping. These diagnostics are independent, so v1 still distinguishes a covered control from a deliberately undeclared button. `actions` is signed authority;
 `registrations` is diagnostic only. The current D1 active-release service reads
 v1 packages, which cannot declare signed `uiActions`: it therefore supplies an
 empty signed action list and reports registrations as mismatches. This does
@@ -183,7 +183,7 @@ not extend v1's manifest or admit its registrations as agent actions. Wiring
 `/app actions [--tab TARGET] [--json]` and `chariox app actions --session ROOM`
 share the same read. `--json` emits `catalog_json`, serialized once by the kernel; the client never reserializes it (number formatting and numeric object keys must survive). `/app actions
 toggle` opens the DEV-only TUI inspector using that same JSON; A/Esc closes it,
-R refreshes the bound Tab, and a Room/kernel change closes it. This shared
+R refreshes the bound Tab, F8 reaches the shared approval handler, and a Room/kernel change closes it. Human-readable labels escape terminal controls; `catalog_json` remains the unchanged machine-readable payload. This shared
 serialization proves inspector/read equivalence; equivalence with A2's agent
 catalog needs its integration drill. The web inspector remains a proposal until
 Miguel approves a prototype-copy mock; no web behavior ships in A4.
