@@ -482,7 +482,7 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       })
       if (waitingRoomSelectedSlice(options.state.sliceSelectionId, slices)) return { action: "none" }
       const account = selectedProviderAccount(remote.providerAccounts, options.state.providerId, options.state.accountProfileId)
-      if (account && account.auth_state !== "authenticated" && !waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) {
+      if (account && account.auth_state !== "authenticated" && account.auth_state !== "unknown" && !waitingRoomConfiguresNewManagedMachine(options.state.selectedMachineRef)) {
         return {
           action: "stage-command",
           command: providerAccountSignInCommand(account),
