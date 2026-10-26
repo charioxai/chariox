@@ -659,8 +659,10 @@ impl KernelRuntimeState {
                 .workflow_complete_prompt_with_activity_mutation_and_rollback(
                     session_id,
                     &reserved_prompt,
-                    Some(provider_run_id),
-                    output_follow_up_exhausted,
+                    super::workflow_completion_owned_state::EndedProviderTurn {
+                        provider_run_id: Some(provider_run_id),
+                        output_follow_up_exhausted,
+                    },
                     Some(&agent_id),
                     activity_mutation,
                     || {

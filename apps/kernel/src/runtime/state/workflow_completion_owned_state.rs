@@ -28,6 +28,14 @@ pub(super) fn set_before_workflow_activity_persistence_hook(hook: impl FnOnce() 
     });
 }
 
+/// The provider turn a workflow completion settles. The exhaustion fact is
+/// computed once, before the task ledger moves: ending the task as failed makes
+/// it look supervised to a second evaluation.
+pub(super) struct EndedProviderTurn<'a> {
+    pub(super) provider_run_id: Option<&'a str>,
+    pub(super) output_follow_up_exhausted: bool,
+}
+
 impl KernelRuntimeOwnedState {
     fn restore_workflow_run_after_failed_completion(
         &self,
@@ -188,22 +196,25 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
-        let output_follow_up_exhausted =
-            self.output_follow_up_exhausted(session_id, prompt, provider_run_id)?;
+        let turn = EndedProviderTurn {
+            provider_run_id,
+            output_follow_up_exhausted: self.output_follow_up_exhausted(
+                session_id,
+                prompt,
+                provider_run_id,
+            )?,
+        };
         let activity_mutation = self.begin_managed_activity_mutation();
         self.workflow_complete_prompt_with_activity_mutation_and_rollback(
             session_id,
             prompt,
-            provider_run_id,
-            output_follow_up_exhausted,
+            turn,
             None,
             activity_mutation,
             || {},
         )
     }
 
-    /// Evaluated once per settlement, before the task ledger moves: ending the
-    /// task as failed makes it look supervised to a second evaluation.
     pub(super) fn output_follow_up_exhausted(
         &self,
         session_id: &str,
@@ -230,12 +241,15 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
-        provider_run_id: Option<&str>,
-        output_follow_up_exhausted: bool,
+        turn: EndedProviderTurn<'_>,
         prompt_agent_id: Option<&str>,
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
         rollback_prompt: impl FnOnce(),
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let EndedProviderTurn {
+            provider_run_id,
+            output_follow_up_exhausted,
+        } = turn;
         let mut rollback_prompt = Some(rollback_prompt);
         let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
