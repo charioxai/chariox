@@ -414,6 +414,10 @@ impl KernelRuntimeState {
                             .kernel_browser_host
                             .revoke_agent(&operation.identity.home_agent_id);
                     } else {
+                        self.owned.retire_agent_move_provider_projection(
+                            &operation.identity.home_session_id,
+                            &operation.original_agent,
+                        )?;
                         self.with_app_side_effect(|app| {
                             let mut agent =
                                 app.agents().get_agent(&operation.identity.home_agent_id)?;

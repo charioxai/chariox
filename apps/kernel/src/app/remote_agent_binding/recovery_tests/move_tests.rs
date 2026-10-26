@@ -1423,6 +1423,68 @@ async fn mk03_forward_commit_retires_home_desktop_grant() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mk03_return_commit_retires_mirrored_worker_run() {
+    let (fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    let projected_id = {
+        let home = fixture.home.lock().await;
+        let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+        let remote = agent.remote_execution().unwrap();
+        let id = crate::provider::projected_leased_provider_run_id(
+            &remote.leased_agent_id,
+            "worker-run",
+        );
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session, "dev-stub", "dev-stub", "default", "default",
+        )
+        .with_agent_id(&fixture.agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "mirrored worker".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        home.update_provider_run_projection(run);
+        home.agents()
+            .set_remote_execution_active_worker_provider_run_id(
+                &fixture.agent_id,
+                Some("worker-run".into()),
+            )
+            .unwrap();
+        home.sessions
+            .set_active_provider_run(&session, Some(id.clone()))
+            .unwrap();
+        id
+    };
+    move_request(&fixture, &session, false).await;
+    let home = fixture.home.lock().await;
+    assert_eq!(
+        home.provider_run_projection_store()
+            .get(&projected_id)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+        "Return must retire its mirrored worker projection before publishing local execution"
+    );
+    assert!(home
+        .sessions
+        .get_session(&session)
+        .unwrap()
+        .active_provider_run_id()
+        .is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mk03_abort_captured_move_when_target_disappears() {
     let (mut fixture, session, _) = crash_fixture().await;
     interrupt_public_move(&fixture, &session, "captured").await;
