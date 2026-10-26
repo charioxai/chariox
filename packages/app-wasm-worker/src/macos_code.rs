@@ -80,6 +80,9 @@ impl JitCode {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), address.cast::<u8>(), bytes.len());
             pthread_jit_write_protect_np(1);
         }
+        // Apple Silicon MAP_JIT mappings keep RWX VM permissions and enforce
+        // W^X through the thread's JIT mode. mprotect, even to R, is refused.
+        #[cfg(not(target_arch = "aarch64"))]
         protect(address.cast(), length, libc::PROT_READ)?;
         self.mappings
             .lock()
@@ -122,18 +125,31 @@ impl CustomCodeMemory for JitCode {
                     .is_some_and(|end| end <= m.address + m.length)),
             "executable code is outside owned MAP_JIT memory"
         );
-        // Metadata stays read-only and non-executable. Only Wasmtime's aligned
-        // text section is published, without an RWX interval on any thread.
+        #[cfg(not(target_arch = "aarch64"))]
         protect(ptr, len, libc::PROT_READ | libc::PROT_EXEC)?;
-        unsafe { sys_icache_invalidate(ptr.cast_mut().cast(), len) };
+        // The raw image is immutable for its whole Wasmtime lifetime. On
+        // Apple Silicon its metadata shares the JIT region's execute mode;
+        // it is never used as writable guest data or exposed to guest code.
+        unsafe {
+            pthread_jit_write_protect_np(1);
+            sys_icache_invalidate(ptr.cast_mut().cast(), len);
+        }
         Ok(())
     }
 
     fn unpublish_executable(&self, ptr: *const u8, len: usize) -> wasmtime::Result<()> {
-        protect(ptr, len, libc::PROT_READ | libc::PROT_WRITE)
+        #[cfg(not(target_arch = "aarch64"))]
+        protect(ptr, len, libc::PROT_READ | libc::PROT_WRITE)?;
+        #[cfg(target_arch = "aarch64")]
+        let _ = (ptr, len);
+        // Do not put this thread in write mode while another module may still
+        // execute on it. The immutable allocation is unmapped when the final
+        // publisher/engine/code reference drops, after unwind deregistration.
+        Ok(())
     }
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 fn protect(ptr: *const u8, len: usize, permissions: i32) -> wasmtime::Result<()> {
     if unsafe { libc::mprotect(ptr.cast_mut().cast(), len, permissions) } != 0 {
         return Err(wasmtime::Error::msg(format!(
