@@ -1,5 +1,4 @@
-//! R6 adds broker-backed WASI bindings to this linker. This worker itself
-//! links only Chariox imports and grants no ambient host authority.
+//! Chariox App bindings; `wasi` adds only R1-allowlisted, scoped imports.
 wasmtime::component::bindgen!({
     path: "../app-wit/wit",
     inline: r#"

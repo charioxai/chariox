@@ -20,8 +20,30 @@ pub(super) struct Worker {
     pub(super) channel: Channel<UnixStream>,
     directory: PathBuf,
 }
+#[allow(
+    dead_code,
+    reason = "source, SDK and WASI drills share this subprocess harness"
+)]
 impl Worker {
     pub(super) async fn start(retries: Vec<&str>) -> Self {
+        Self::start_with(retries, None, 13, None).await
+    }
+    pub(super) async fn start_component(component: &std::path::Path, tools: usize) -> Self {
+        Self::start_with(vec![], Some(component), tools, None).await
+    }
+    pub(super) async fn start_installed(
+        component: &std::path::Path,
+        tools: usize,
+        root: &std::path::Path,
+    ) -> Self {
+        Self::start_with(vec![], Some(component), tools, Some(root)).await
+    }
+    async fn start_with(
+        retries: Vec<&str>,
+        source: Option<&std::path::Path>,
+        tools: usize,
+        installation_root: Option<&std::path::Path>,
+    ) -> Self {
         let root =
             PathBuf::from(std::env::var("CHARIOX_WORKER_DRILL_DIR").expect("run scripts/drill.sh"));
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -32,15 +54,21 @@ impl Worker {
             wall_ms()
         ));
         fs::create_dir_all(&directory).unwrap();
-        let core =
-            fs::read(std::env::var("CHARIOX_WORKER_DRILL_CORE").expect("build source guest first"))
+        let bytes = match source {
+            Some(source) => fs::read(source).unwrap(),
+            None => {
+                let core = fs::read(
+                    std::env::var("CHARIOX_WORKER_DRILL_CORE").expect("build source guest first"),
+                )
                 .unwrap();
-        let bytes = wit_component::ComponentEncoder::default()
-            .module(&core)
-            .unwrap()
-            .validate(true)
-            .encode()
-            .unwrap();
+                wit_component::ComponentEncoder::default()
+                    .module(&core)
+                    .unwrap()
+                    .validate(true)
+                    .encode()
+                    .unwrap()
+            }
+        };
         chariox_app_wit::check_component(&bytes, chariox_app_wit::APP_WORLD).unwrap();
         let component = directory.join("app.wasm");
         fs::write(&component, bytes).unwrap();
@@ -52,7 +80,7 @@ impl Worker {
         let mut manifest = fixture["shared"]["manifest"].clone();
         manifest["idempotentTools"] = json!(retries);
         let launch = directory.join("launch.json");
-        fs::write(&launch,json!({"component":component,"generation":"1","installation_id":"worker-drill","release_digest":format!("sha256:{}","0".repeat(64)),"manifest":manifest,"limits":{"memory_bytes":16<<20,"slice_ms":100,"call_ms":5000,"cancel_grace_ms":50}}).to_string()).unwrap();
+        fs::write(&launch,json!({"component":component,"generation":"1","installation_id":"worker-drill","release_digest":format!("sha256:{}","0".repeat(64)),"manifest":manifest,"installation_root":installation_root,"limits":{"memory_bytes":16<<20,"slice_ms":100,"call_ms":5000,"cancel_grace_ms":if source.is_some() {250}else{50}}}).to_string()).unwrap();
         let (supervisor, worker) = std::os::unix::net::UnixStream::pair().unwrap();
         let (mut control, ready) = std::os::unix::net::UnixStream::pair().unwrap();
         control
@@ -117,7 +145,7 @@ impl Worker {
             panic!("worker.ready expected")
         };
         assert_eq!(method, "worker.ready");
-        assert_eq!(params["tools"].as_array().unwrap().len(), 12);
+        assert_eq!(params["tools"].as_array().unwrap().len(), tools);
         worker.answer(id, Value::Null).await;
         worker
     }
