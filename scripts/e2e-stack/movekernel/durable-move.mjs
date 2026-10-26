@@ -19,6 +19,11 @@ async function currentRun(r, id, agentId) {
     assert.ok(runId, 'Real provider run identity');
     return variant(await r.client.send({GetProviderRun: {provider_run_id: runId}}), 'ProviderRun').provider_run;
 }
+async function captureTui(r, label) {
+    const ansi = out + '/' + label + '.ansi';
+    await writeFile(ansi, r.tui.output(), {mode: 0o600});
+    execFileSync('python3', [new URL('../context-switch/render-pty.py', import.meta.url).pathname, ansi], {stdio: 'ignore'});
+}
 async function turnProgress(r, label, snapshot) {
     const agentId = snapshot.session.focusedAgentId;
     const agent = snapshot.session.agents.find(a => a.id === agentId);
@@ -64,9 +69,7 @@ async function turn(r, text, label) {
                     if (entries(snapshot).filter(row => row.role === 'tool' && row.promptId === promptId).every(row => !row.blobCollapsed && !row.historyBlobLoading)) break;
                     await sleep(250);
                 }
-                const ansi = out + '/' + label + '.ansi';
-                await writeFile(ansi, r.tui.output(), {mode: 0o600});
-                execFileSync('python3', [new URL('../context-switch/render-pty.py', import.meta.url).pathname, ansi], {stdio: 'ignore'});
+                await captureTui(r, label);
                 return {snapshot, promptId};
             }
         } else settled = undefined;
@@ -155,6 +158,8 @@ try {
     assert.equal(movedAgent.remote_execution?.worker_kernel_id, target.status.daemon_id);
     assert.ok(movedAgent.remote_execution?.leased_agent_id, 'Move must continue through a leased agent');
     await record('leased-agent', {homeRoom: sessionId, homeAgent: agentId, targetKernel: target.status.daemon_id, leasedAgent: movedAgent.remote_execution.leased_agent_id});
+    await captureTui(source, 'moved-idle');
+    webProof.push(...await captureWeb(source, sessionId, agentId, 'moved-idle'));
     const primary = forward.repositories.find(r => r.role === 'primary').destinationPath;
     const notes = forward.repositories.find(r => r.role === 'supporting').destinationPath;
     assert.notEqual(primary, paths.primary);
@@ -173,6 +178,7 @@ try {
     await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true, nativeSessionId: targetRun.provider_session_id, providerWorkingDirectory: targetRun.working_directory, model: targetRun.model, effort: targetRun.variant});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'target'));
     const returned = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 2, false);
+    await captureTui(source, 'returned-idle');
     const home = returned.repositories.find(r => r.role === 'primary').destinationPath;
     const homeNotes = returned.repositories.find(r => r.role === 'supporting').destinationPath;
     assert.notEqual(home, paths.primary); assert.notEqual(home, primary);
