@@ -30,6 +30,13 @@ impl Fixture {
         std::fs::create_dir(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut config = DaemonConfig::for_tests().with_session_history_root(path.join("history"));
+        config.user_config.credential_vault.path = path.join("vault.json").display().to_string();
+        crate::secret::unlock_chariox_encrypted_vault(
+            path.join("vault.json"),
+            "dev-install-test",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
         config.user_config.state.path = Some(path.join("kernel.sqlite").display().to_string());
         config.user_config.history.operational.path =
             Some(path.join("operational.sqlite").display().to_string());
@@ -128,9 +135,12 @@ impl Fixture {
                 },
             )
             .unwrap();
+        self.upload_bytes("upload", &bytes).await
+    }
+    async fn upload_bytes(&self, request: &str, bytes: &[u8]) -> (String, String) {
         let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
         let begin = LocalDaemonRequest::BeginAppPackageUpload(BeginAppPackageUploadRequest {
-            request_id: "upload".into(),
+            request_id: request.into(),
             expected_size: bytes.len() as u64,
             sha256: digest.clone(),
         });
@@ -159,6 +169,7 @@ impl Fixture {
     }
     fn begin(&self, handle: String, digest: String) -> LocalDaemonRequest {
         LocalDaemonRequest::BeginAppInstall(BeginAppInstallRequest {
+            source: Default::default(),
             session_id: self.session.clone(),
             request_id: "install".into(),
             upload_handle: handle,
@@ -483,4 +494,122 @@ fn an_approved_install_waiting_to_start_reports_queued_not_awaiting_approval() {
         serde_json::to_value(AppInstallOperationPhase::Queued).unwrap(),
         "queued"
     );
+}
+
+// MP-08 / MP-10 / MP-11: the public upload/install path owns dev signing and its single capability interaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dev_upload_signs_locally_replays_the_uploaded_revision_and_declines_normally() {
+    use chariox_app_runtime::installation::channel::{AcquisitionSource, InstallationChannel};
+    let f = Fixture::new();
+    let (bytes, publisher) = fixture_event_package();
+    let policy = chariox_app_package::VerificationPolicy::new(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        vec![publisher],
+    );
+    let verified = chariox_app_package::verify(&bytes, &policy).unwrap();
+    let files = verified
+        .files()
+        .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+        .collect();
+    let bundle = chariox_app_package::dev_bundle::pack_dev_bundle(
+        &serde_json::to_value(verified.manifest()).unwrap(),
+        &files,
+        &chariox_app_package::Limits::default(),
+    )
+    .unwrap();
+    let (upload_handle, expected_package_digest) = f.upload_bytes("dev-upload", &bundle).await;
+    let begin = LocalDaemonRequest::BeginAppInstall(BeginAppInstallRequest {
+        source: AcquisitionSource::DevPush,
+        session_id: f.session.clone(),
+        request_id: "dev".into(),
+        upload_handle,
+        expected_package_digest: expected_package_digest.clone(),
+    });
+    assert_eq!(
+        status(f.request("alice", begin.clone()).await).phase,
+        AppInstallOperationPhase::Preparing
+    );
+    f.until(|| {
+        let operation = f
+            .control()
+            .0
+            .shared
+            .store
+            .first_app_install_status("alice", "dev")
+            .unwrap();
+        assert_ne!(
+            operation.phase,
+            InstallPhase::Failed,
+            "dev preparation failed: {:?}",
+            operation.failure
+        );
+        f.control()
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .any(|entry| matches!(entry.step, Step::Waiting { .. }))
+    })
+    .await;
+    let operation = f
+        .control()
+        .0
+        .shared
+        .store
+        .first_app_install_status("alice", "dev")
+        .unwrap();
+    assert_ne!(operation.package_digest, expected_package_digest);
+    let installation = f
+        .control()
+        .0
+        .shared
+        .store
+        .get_app_installation("alice", &operation.token.installation_id)
+        .unwrap();
+    assert_eq!(installation.channel, InstallationChannel::Dev);
+    assert_eq!(
+        installation.dev_room_id.as_deref(),
+        Some(f.session.as_str())
+    );
+    assert!(f
+        .control()
+        .0
+        .shared
+        .store
+        .list_app_publishers("alice")
+        .unwrap()
+        .is_empty());
+    let replay = status(f.request("alice", begin).await);
+    assert_eq!(replay.package_digest, operation.package_digest);
+    f.state
+        .resolve_terminal_runtime_interaction(
+            &f.session,
+            operation.interaction_id.as_deref().unwrap(),
+            "decline",
+            None,
+            Some("alice"),
+        )
+        .await
+        .unwrap();
+    f.until(|| {
+        f.control()
+            .0
+            .shared
+            .store
+            .first_app_install_status("alice", "dev")
+            .is_ok_and(|op| op.phase == InstallPhase::Cancelled)
+    })
+    .await;
+    assert!(f
+        .control()
+        .0
+        .shared
+        .store
+        .get_app_installation("alice", &operation.token.installation_id)
+        .unwrap()
+        .active
+        .is_none());
+    f.shutdown().await;
 }

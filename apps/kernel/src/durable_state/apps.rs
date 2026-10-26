@@ -169,6 +169,25 @@ impl DurableKernelStateStore {
         Ok(owned_installation(&registry, owner_id, installation_id)?)
     }
 
+    pub(crate) fn active_dev_app_installations(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DaemonError> {
+        let connection = self.lock_connection("durable_state.dev_app_installations")?;
+        let mut statement = connection.prepare("SELECT owner_id,dev_room_id,installation_id FROM app_installations WHERE channel='dev' AND active_json IS NOT NULL ORDER BY installation_id")
+            .map_err(|error| DaemonError::InternalInvariant {operation:"apps.dev_bindings",message:error.to_string()})?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|error| DaemonError::InternalInvariant {
+                operation: "apps.dev_bindings",
+                message: error.to_string(),
+            })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| DaemonError::InternalInvariant {
+                operation: "apps.dev_bindings",
+                message: error.to_string(),
+            })
+    }
+
     pub(crate) fn list_app_installations(
         &self,
         owner_id: &str,

@@ -198,6 +198,7 @@ impl KernelRuntimeState {
             let apps = page
                 .installations
                 .into_iter()
+                .filter(|installation| installation.visible_in_room(Some(agent.session_id())))
                 .map(|installation| {
                     let id = installation.installation_id.as_str();
                     let granted =

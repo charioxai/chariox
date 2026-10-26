@@ -91,7 +91,7 @@ impl AppControlService {
         }
         let prepared = self
             .preparation
-            .prepare(owner.clone(), upload_handle, permit)
+            .prepare(owner.clone(), upload_handle, permit, false)
             .await
             .map_err(FirstInstallControlError::Preparation)?;
         let permit = self

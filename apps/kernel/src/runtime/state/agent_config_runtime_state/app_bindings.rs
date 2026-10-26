@@ -135,10 +135,11 @@ impl KernelRuntimeState {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         let control = self.app_control().clone();
         let state = self.clone();
+        let room = agent.session_id().to_owned();
         let checked = tokio::task::spawn_blocking(move || {
             state.authorize_current_external_command()?;
             let _permit = permit;
-            let binding = store.check_app_binding(&owner, &installation_id);
+            let binding = store.check_app_binding_in_room(&owner, &installation_id, Some(&room));
             // MP-11 SB-03: writer completion cannot revive a stale provider.
             state.authorize_current_external_command()?;
             // Under the same slot: its tools are listed at once, even before
@@ -631,7 +632,11 @@ impl KernelRuntimeState {
             // and invocation recheck it through the existing App admission path.
             self.owned
                 .durable_state_store
-                .check_app_binding(agent.owner_user_id(), installation_id)
+                .check_app_binding_in_room(
+                    agent.owner_user_id(),
+                    installation_id,
+                    Some(agent.session_id()),
+                )
                 .map_err(|_| app_binding_error("App installation is not trusted and available"))?;
             // A binding that is still live needs no new decision and is not renewed.
             if agent.has_extension_grant(ExtensionKind::App, installation_id) {

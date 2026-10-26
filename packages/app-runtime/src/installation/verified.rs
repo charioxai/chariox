@@ -41,6 +41,7 @@ pub struct VerifiedInstallCandidate {
     release: ReleaseMetadata,
     trust: TrustedPublisherSnapshot,
     review: serde_json::Value,
+    authority: super::activation::AuthoritySet,
 }
 impl VerifiedInstallCandidate {
     pub fn from_verified(
@@ -57,13 +58,9 @@ impl VerifiedInstallCandidate {
         }
         let manifest = package.manifest();
         let declarations = package.declarations();
-        let capabilities_digest = json_digest(&json!({
-            "schema": "chariox.installation-capabilities.v2",
-            "capabilities": manifest.capabilities,
-            "actions": declarations.actions,
-            "toolActions": declarations.tools.iter().filter_map(|tool| tool.action.as_ref().map(|action|
-                json!({"tool": tool.name, "action": action}))).collect::<Vec<_>>()
-        }))?;
+        let authority =
+            super::activation::AuthoritySet::of(&manifest.capabilities, &declarations.actions);
+        let capabilities_digest = authority.digest();
         let catalog_digest = json_digest(&json!({
             "schema": "chariox.installation-catalog.v2", "declarations": declarations
         }))?;
@@ -101,18 +98,31 @@ impl VerifiedInstallCandidate {
             "keyFingerprint": digest(signer.public_key.as_bytes()), "trustRevision": trust.revision().to_string(),
             "packageDigest": release.package_digest, "capabilitiesDigest": release.capabilities_digest,
             "capabilities": manifest.capabilities,
+            "authoritySet": authority,
             "actions": declarations.actions.iter().map(|a| json!({"name":a.name,"criticalValidation":a.critical_validation,"effectRoutes":a.effect_routes})).collect::<Vec<_>>()
         });
         Ok(Self {
             release,
             trust: trust.clone(),
             review,
+            authority,
         })
     }
     /// Human review data derived from the exact verified package. Descriptions
     /// are display data.
     pub fn review_metadata(&self) -> &serde_json::Value {
         &self.review
+    }
+    pub fn signer_principal(&self) -> chariox_app_package::v2::SignerPrincipal {
+        let signer = self.trust.publisher();
+        if signer.publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+            chariox_app_package::v2::SignerPrincipal::Dev
+        } else {
+            chariox_app_package::v2::SignerPrincipal::Publisher {
+                publisher_id: signer.publisher_id.clone(),
+                key_id: signer.key_id.clone(),
+            }
+        }
     }
     pub fn release_metadata(&self) -> &ReleaseMetadata {
         &self.release

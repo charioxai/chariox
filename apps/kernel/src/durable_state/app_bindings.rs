@@ -22,6 +22,7 @@ pub(crate) enum AppBindingError {
 pub(super) struct AppBindingRequest {
     owner: String,
     installation_id: String,
+    room_id: Option<String>,
     response: mpsc::Sender<Result<ActiveGeneration, VerifiedStageError>>,
 }
 
@@ -32,6 +33,14 @@ impl DurableKernelStateStore {
         &self,
         trusted_owner: &str,
         installation_id: &str,
+    ) -> Result<ActiveGeneration, AppBindingError> {
+        self.check_app_binding_in_room(trusted_owner, installation_id, None)
+    }
+    pub(crate) fn check_app_binding_in_room(
+        &self,
+        trusted_owner: &str,
+        installation_id: &str,
+        room: Option<&str>,
     ) -> Result<ActiveGeneration, AppBindingError> {
         for value in [trusted_owner, installation_id] {
             if value.is_empty()
@@ -50,6 +59,7 @@ impl DurableKernelStateStore {
                 AppBindingRequest {
                     owner: trusted_owner.into(),
                     installation_id: installation_id.into(),
+                    room_id: room.map(str::to_owned),
                     response,
                 },
             )))?;
@@ -64,7 +74,12 @@ impl DurableKernelStateStore {
 }
 
 pub(super) fn execute(connection: &mut Connection, request: AppBindingRequest) {
-    let result = apply(connection, &request.owner, &request.installation_id);
+    let result = apply(
+        connection,
+        &request.owner,
+        &request.installation_id,
+        request.room_id.as_deref(),
+    );
     let _ = request.response.send(result);
 }
 
@@ -72,6 +87,7 @@ fn apply(
     connection: &mut Connection,
     owner: &str,
     installation_id: &str,
+    room: Option<&str>,
 ) -> Result<ActiveGeneration, VerifiedStageError> {
     let binding = InstallationRegistry::new(connection).active_trust(owner, installation_id)?;
     let trust = PublisherTrustRegistry::new(connection).trusted_publisher(
@@ -79,6 +95,12 @@ fn apply(
         binding.publisher_id(),
         binding.key_id(),
     )?;
+    if !InstallationRegistry::new(connection)
+        .get(installation_id)?
+        .visible_in_room(room)
+    {
+        return Err(InstallationError::NotFound.into());
+    }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // The lookups above use the sole writer; require_active repeats the exact
     // installation, retained binding and enrollment checks under this transaction.

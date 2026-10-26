@@ -13,7 +13,7 @@ import { AppFileSource, checkCancelled, chunkBytes, InstallCancelled, InstallFil
 type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 export type InstallProgress = { phase: "hashing" | "uploading"; bytes: number; total: number }
 type Attempt = {
-  path: string; session: string; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
+  path: string; session: string; source?: "dev_push" | "register"; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
   digest?: string; size?: number; handle?: string; beginSent: boolean; status?: AppInstallOperationSummary; closed: boolean;
   /** The kernel took the upload's bytes into the operation and the upload was aborted: never abort it again. */
   released?: boolean;
@@ -47,26 +47,26 @@ export class AppFileInstaller {
   constructor(private send: Send, private progress: (value: InstallProgress) => void = () => {},
     private cwd: string = terminalCwd(), private followPollMs = 1_000) {}
 
-  install(selected: string, session: string): Promise<AppInstallOperationSummary> {
-    return this.start(selected, session)
+  install(selected: string, session: string, source?: "dev_push" | "register"): Promise<AppInstallOperationSummary> {
+    return this.start(selected, session, undefined, source)
   }
 
   /** Same transfer and operation as install; the kernel replaces the release at the generation read first. */
-  update(installation: string, selected: string, session: string): Promise<AppInstallOperationSummary> {
+  update(installation: string, selected: string, session: string, source?: "dev_push" | "register"): Promise<AppInstallOperationSummary> {
     if (!installation || Buffer.byteLength(installation) > 128) return Promise.reject(new Error("Invalid App installation ID"))
-    return this.start(selected, session, installation)
+    return this.start(selected, session, installation, source)
   }
 
-  private start(selected: string, session: string, installation?: string): Promise<AppInstallOperationSummary> {
+  private start(selected: string, session: string, installation?: string, source?: "dev_push" | "register"): Promise<AppInstallOperationSummary> {
     if (this.disposed) return Promise.reject(new Error("This terminal is closing"))
     if (this.running) return Promise.reject(new Error("An App upload is already running. Use /app cancel to stop it."))
     if (!session || Buffer.byteLength(session) > 128) return Promise.reject(new Error(`Attach to a session before ${installation ? "updating" : "installing"} an App`))
     const path = resolve(this.cwd, selected)
     let attempt = this.attempt
     if (!attempt || attempt.closed) {
-      attempt = { path, session, ...(installation ? { update: { installation } } : {}), uploadRequest: `app-upload-${randomUUID()}`, request: `app-${installation ? "update" : "install"}-${randomUUID()}`, cancelled: false, beginSent: false, closed: false }
+      attempt = { path, session, ...(source ? {source} : {}), ...(installation ? { update: { installation } } : {}), uploadRequest: `app-upload-${randomUUID()}`, request: `app-${installation ? "update" : "install"}-${randomUUID()}`, cancelled: false, beginSent: false, closed: false }
       this.attempt = attempt
-    } else if (attempt.path !== path || attempt.session !== session || attempt.update?.installation !== installation) {
+    } else if (attempt.path !== path || attempt.session !== session || attempt.update?.installation !== installation || attempt.source !== source) {
       return Promise.reject(new Error("Another App installation or update is retained. Use /app operation or /app cancel before selecting another file."))
     }
     const operation = this.transfer(attempt).catch(async (error: unknown) => {
@@ -232,7 +232,7 @@ export class AppFileInstaller {
       checkCancelled(cancelled)
       attempt.beginSent = true
       begunHere = true
-      const begin = { sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }
+      const begin = { ...(attempt.source ? {source: attempt.source} : {}), sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }
       const status = operation(await this.request(attempt.update && generation ? beginAppUpdateRequest({ ...begin, installationId: attempt.update.installation, expectedGeneration: generation }) : beginAppInstallRequest(begin), cancelled), attempt.request)
       attempt.status = status
       checkCancelled(cancelled)
@@ -355,6 +355,9 @@ const installFailures: Record<string, string> = {
   app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
   app_install_approval_expired: "The approval request expired.",
   app_install_insufficient_storage: "The kernel has insufficient App storage.",
+  app_dev_unlock_kernel_vault: "Unlock the kernel Vault before starting the dev build. Its signing key stays in that Vault.",
+  app_register_publisher_conflict: "This App ID is already bound to another publisher. Use the original publisher or an explicit new App ID; existing data was kept.",
+  app_register_new_version_required: "This version is already registered with different content. Bump app.json version before registering it.",
   app_update_schema_downgrade: "This release's data schema is older than the installed App's; App data is never migrated to an older schema.",
 }
 

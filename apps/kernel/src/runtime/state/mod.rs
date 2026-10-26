@@ -44,6 +44,7 @@ mod app_automation_owned_state;
 mod app_connection_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_control_requests;
+mod app_dev_runtime;
 mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
@@ -207,6 +208,7 @@ pub(crate) struct KernelRuntimeState {
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
+    dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
@@ -973,6 +975,7 @@ impl KernelRuntimeState {
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
+                dev_app_bindings: Default::default(),
                 critical_approval_passkeys:
                     critical_approval_passkey::CriticalApprovalPasskeys::new(
                         &config_projection.snapshot().user_config.credential_vault,

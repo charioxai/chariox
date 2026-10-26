@@ -172,7 +172,7 @@ test("workflow extension inspection shows a missing App with recovery and no inv
   const harness = createHarness({
     workflow: workflow({ nodes: [node({ agent_id: "agent-a" })] }),
     sessionAgents: [agent({ extension_grants: [{ kind: "app", name: "installed" }] })],
-    getAppInstallation: async () => ({ installation_id: "installed", app_id: "Todo", generation: "2",
+    getAppInstallation: async () => ({ channel: "release", dev_room_id: null, installation_id: "installed", app_id: "Todo", generation: "2",
       active_release: null, pending_generation: null, admission_paused: false, data_kept: true }),
     appendNotice: (text) => notices.push(text),
   })

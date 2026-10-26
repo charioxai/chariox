@@ -928,6 +928,7 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
         .generation;
     let update = dispatch(
         LocalDaemonRequest::BeginAppUpdate(crate::local::BeginAppUpdateRequest {
+            source: Default::default(),
             session_id: session.clone(),
             request_id: "missing-binding-reinstall".into(),
             installation_id: "installed".into(),
