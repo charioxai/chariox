@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use wasmtime::ResourceLimiter;
 
+// Leave room in the 1 GiB native address space for a moving memory's old and
+// new mappings, compiler/code, stacks, and the component's other memories.
+pub const MAX_MEMORY_BYTES: usize = 128 << 20;
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
@@ -22,8 +26,8 @@ impl Default for Limits {
 impl Limits {
     pub fn validate(&self) -> wasmtime::Result<()> {
         wasmtime::ensure!(
-            (1 << 20..=1_usize << 32).contains(&self.memory_bytes),
-            "memory limit must be between 1 MiB and 4 GiB"
+            (1 << 20..=MAX_MEMORY_BYTES).contains(&self.memory_bytes),
+            "memory limit must be between 1 MiB and 128 MiB"
         );
         wasmtime::ensure!(
             (1..=30_000).contains(&self.slice_ms),

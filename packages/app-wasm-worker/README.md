@@ -89,6 +89,8 @@ request an ordinary RX mapping. AOT provenance remains R4's authority.
 Hard OS limits cover the whole process, including compiler, runtime and all
 threads: on Linux, 1 GiB address space; on both systems, 8 MiB per regular file,
 64 descriptors, zero core dump size. Tighter inherited limits are preserved.
+Launch admission accepts 1–128 MiB of aggregate guest linear memory on both
+platforms, leaving native room for moving-memory copies, compilation and stacks.
 Memory mappings fail with ENOMEM; oversized regular-file output stops with
 SIGXFSZ/EFBIG. These are
 independent of `APP_MEMORY_LIMIT`, `APP_CPU_SLICE` and `INVALID_OUTPUT` returned
