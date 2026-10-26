@@ -1,0 +1,173 @@
+// Apps v2 A1: what an App view declares for agents. The page registers actions
+// (`chariox.action`, or a `<form data-chariox-action>`), publishes a bounded state
+// snapshot (`chariox.view.state`) and announces changes (`chariox.view.changed`).
+// The kernel's later A2 bridge reads and drives the page only through
+// `__charioxViewAgent`; this module grants no authority, because the signed
+// declarations decide what a registration may be (`check_agreement` in
+// packages/app-package). Self-contained: it is stringified into the page bridge.
+export function createViewActions() {
+  const NAME = /^[a-z][a-z0-9_]{0,63}$/;
+  const EFFECTS = ['read', 'write', 'approval'];
+  const FIELDS = new Set(['name', 'description', 'inputSchema', 'outputSchema', 'effect', 'approvalReason']);
+  const MAX_STATE_BYTES = 64 * 1024;
+  const MAX_RESULT_BYTES = 256 * 1024;
+  const MAX_CHANGE_BYTES = 16 * 1024;
+  const MAX_BUFFERED_CHANGES = 256;
+  const MAX_WAIT_MS = 30_000;
+  // Fields the product protects (Vault-filled targets) are never agent form input.
+  const PROTECTED = '[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]';
+  const SKIPPED_INPUTS = /^(?:submit|button|reset|image|file|hidden|password)$/;
+
+  const registered = new Map();
+  let stateProvider = null;
+  let latest = 0;
+  const log = [];
+  const waiters = new Set();
+
+  const fail = (code, message) => ({ ok: false, code, message: String(message).slice(0, 1024) });
+  const failure = error => fail(typeof error?.code === 'string' ? error.code : 'action_failed', error?.message ?? error);
+  // JSON-only, size-bounded values: what crosses to the kernel is a copy.
+  const bounded = (value, limit, code, what) => {
+    let text;
+    try { text = JSON.stringify(value ?? null) ?? 'null'; } catch { return fail('not_json', `${what} is not JSON`); }
+    const bytes = new TextEncoder().encode(text).length;
+    return bytes > limit ? fail(code, `${what} is ${bytes} bytes; the limit is ${limit}`) : { ok: true, value: JSON.parse(text) };
+  };
+
+  function describe(declaration) {
+    if (!declaration || typeof declaration !== 'object' || Array.isArray(declaration)) throw new TypeError('chariox.action needs a declaration object');
+    for (const key of Object.keys(declaration)) if (!FIELDS.has(key)) throw new TypeError(`chariox.action: unknown field "${key}"`);
+    if (!NAME.test(declaration.name)) throw new TypeError('chariox.action: name must be lowercase letters, digits and underscores, starting with a letter');
+    if (!EFFECTS.includes(declaration.effect)) throw new TypeError(`chariox.action: effect must be one of ${EFFECTS.join(', ')}`);
+    if ((declaration.effect === 'approval') !== (declaration.approvalReason !== undefined)) throw new TypeError('chariox.action: approvalReason is required for, and only for, approval actions');
+    return JSON.parse(JSON.stringify(declaration));
+  }
+
+  function action(declaration, handler) {
+    const descriptor = describe(declaration);
+    if (typeof handler !== 'function') throw new TypeError('chariox.action needs a handler function');
+    if (registered.has(descriptor.name)) throw new Error(`chariox.action: "${descriptor.name}" is already registered`);
+    registered.set(descriptor.name, { descriptor, handler });
+    // The user path calls the very function an agent runs.
+    return handler;
+  }
+
+  // Forms: only the simple controls map to a schema; anything richer is a
+  // `chariox.action`, whose schema the developer writes.
+  const controlsOf = form => [...form.elements].filter(control =>
+    /^(?:INPUT|SELECT|TEXTAREA)$/.test(control.tagName) && control.name && !control.disabled
+    && !(control.tagName === 'INPUT' && SKIPPED_INPUTS.test(control.type))
+    && !(control.tagName === 'SELECT' && control.multiple)
+    && !control.closest?.(PROTECTED));
+  function fieldsOf(form) {
+    const fields = new Map();
+    for (const control of controlsOf(form)) {
+      const known = fields.get(control.name);
+      if (known?.radio && control.type === 'radio') { known.schema.enum.push(control.value); known.required ||= control.required; continue; }
+      if (known) continue;
+      const kind = control.tagName === 'INPUT' ? control.type : control.tagName.toLowerCase();
+      const schema = kind === 'checkbox' ? { type: 'boolean' }
+        : kind === 'number' || kind === 'range' ? { type: 'number' }
+        : kind === 'radio' ? { type: 'string', enum: [control.value] }
+        : kind === 'select' ? { type: 'string', enum: [...control.options].filter(option => !option.disabled).map(option => option.value) }
+        : { type: 'string' };
+      fields.set(control.name, { control, kind, schema, radio: kind === 'radio', required: control.required });
+    }
+    return fields;
+  }
+  function describeForm(form) {
+    const fields = fieldsOf(form);
+    const required = [...fields].filter(([, field]) => field.required).map(([name]) => name);
+    const descriptor = {
+      name: form.getAttribute('data-chariox-action'),
+      description: form.getAttribute('data-chariox-description') ?? '',
+      inputSchema: {
+        type: 'object',
+        properties: Object.fromEntries([...fields].map(([name, field]) => [name, field.schema])),
+        ...(required.length ? { required } : {}),
+        additionalProperties: false,
+      },
+      effect: form.getAttribute('data-chariox-effect'),
+    };
+    const reason = form.getAttribute('data-chariox-approval-reason');
+    if (reason !== null) descriptor.approvalReason = reason;
+    return descriptor;
+  }
+  const forms = name => (typeof document === 'undefined' ? [] : [...document.querySelectorAll('form[data-chariox-action]')])
+    .filter(form => name === undefined || form.getAttribute('data-chariox-action') === name);
+
+  function submitForm(form, params) {
+    const fields = fieldsOf(form);
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return fail('invalid_params', 'params must be an object');
+    const changed = [];
+    for (const [name, value] of Object.entries(params)) {
+      const field = fields.get(name);
+      if (!field) return fail('invalid_params', `the form has no field "${name}"`);
+      const expected = field.schema.type === 'boolean' ? 'boolean' : field.schema.type === 'number' ? 'number' : 'string';
+      if (typeof value !== expected) return fail('invalid_params', `"${name}" must be a ${expected}`);
+      if (field.schema.enum && !field.schema.enum.includes(value)) return fail('invalid_params', `"${name}" must be one of ${field.schema.enum.join(', ')}`);
+      changed.push([name, field, value]);
+    }
+    // Fields the agent leaves out keep what the user already entered.
+    for (const [name, field, value] of changed) {
+      const control = field.radio ? controlsOf(form).find(c => c.name === name && c.value === value) : field.control;
+      if (field.kind === 'checkbox' || field.radio) control.checked = field.radio ? true : value;
+      else control.value = String(value);
+      control.dispatchEvent(new Event('input', { bubbles: true }));
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (!form.checkValidity()) return fail('invalid_form', `the form rejects these fields: ${controlsOf(form).filter(c => !c.checkValidity()).map(c => c.name).join(', ')}`);
+    form.requestSubmit();
+    // A form has no return value; the agent reads the state it changed.
+    return { ok: true, value: { submitted: true } };
+  }
+
+  const view = Object.freeze({
+    state(provider) {
+      if (typeof provider !== 'function') throw new TypeError('chariox.view.state needs a function returning the snapshot');
+      stateProvider = provider;
+    },
+    changed(delta) {
+      const checked = bounded(delta, MAX_CHANGE_BYTES, 'change_too_large', 'the change');
+      if (!checked.ok) throw new RangeError(`chariox.view.changed: ${checked.message}`);
+      log.push({ seq: ++latest, delta: checked.value });
+      if (log.length > MAX_BUFFERED_CHANGES) log.shift();
+      for (const wake of [...waiters]) wake();
+    },
+  });
+
+  // The kernel's side. Every answer is `{ok: true, value}` or `{ok: false, code, message}`.
+  const agent = Object.freeze({
+    /** Declaration-shaped descriptors, compared by the kernel with the signed ones. */
+    registrations() {
+      return [...[...registered.values()].map(({ descriptor }) => JSON.parse(JSON.stringify(descriptor))), ...forms().map(describeForm)];
+    },
+    async invoke(name, params) {
+      const entry = registered.get(name);
+      const matching = forms(name);
+      if (matching.length + (entry ? 1 : 0) > 1) return fail('duplicate_action', `"${name}" is registered more than once`);
+      if (entry) {
+        try { return bounded(await entry.handler(params ?? {}), MAX_RESULT_BYTES, 'result_too_large', 'the result'); } catch (error) { return failure(error); }
+      }
+      return matching.length ? submitForm(matching[0], params ?? {}) : fail('unknown_action', `the view has no action "${name}"`);
+    },
+    async state() {
+      if (!stateProvider) return fail('state_unavailable', 'the view did not call chariox.view.state');
+      try { return bounded(await stateProvider(), MAX_STATE_BYTES, 'state_too_large', 'the state'); } catch (error) { return failure(error); }
+    },
+    /** Changes after `since`; with `waitMs`, waits for the first one. `dropped` means some were evicted and the state must be re-read. */
+    async changes(since = 0, waitMs = 0) {
+      if (latest <= since && waitMs > 0) {
+        await new Promise(resolve => {
+          const done = () => { clearTimeout(timer); waiters.delete(done); resolve(); };
+          const timer = setTimeout(done, Math.min(waitMs, MAX_WAIT_MS));
+          waiters.add(done);
+        });
+      }
+      const oldest = log.length ? log[0].seq : latest + 1;
+      return { ok: true, value: { latest, dropped: since + 1 < oldest, changes: log.filter(change => change.seq > since) } };
+    },
+  });
+
+  return { action, view, agent };
+}
