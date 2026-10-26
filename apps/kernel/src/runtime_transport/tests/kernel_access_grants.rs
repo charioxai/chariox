@@ -620,6 +620,9 @@ impl Kernel {
             .to_owned()
     }
     async fn access_popup(&mut self, suffix: &str) -> Value {
+        self.access_popup_for_holder(suffix, None).await
+    }
+    async fn access_popup_for_holder(&mut self, suffix: &str, holder_pid: Option<u32>) -> Value {
         timeout(Duration::from_secs(10), async {
             while let Some(message) = self.popups.next().await {
                 if let Ok(Message::Text(text)) = message {
@@ -630,6 +633,9 @@ impl Kernel {
                             if let Some(_id) = prompt["interaction_id"]
                                 .as_str()
                                 .filter(|id| id.ends_with(suffix))
+                                .filter(|_| {
+                                    holder_pid.is_none_or(|pid| prompt["requester"]["pid"] == pid)
+                                })
                             {
                                 assert_eq!(
                                     prompt["session_id"],
@@ -1217,6 +1223,68 @@ async fn grant_until_exit(kernel: &mut Kernel, holder: &mut Client) -> Value {
     let result = holder.result();
     assert!(result["error"].is_null(), "{result}");
     result["response"]["KernelAccessGranted"]["grant"].clone()
+}
+
+// MP-08 / MP-10 / MP-11: the holder can outlive the CLI that asked on its behalf.
+// Approving that abandoned popup must not strand the grant lock or another decision.
+#[tokio::test]
+async fn kernel_access_abandoned_requester_approval_keeps_kernel_responsive() {
+    let mut kernel = Kernel::start().await;
+    let mut abandoned = Client::start(&kernel.root);
+    abandoned.send(serde_json::json!({"RequestKernelAccess":{
+        "holder_pid":std::process::id(), "term":"until_holder_exits"
+    }}));
+    let first = kernel.access_popup("-grant").await;
+    drop(abandoned);
+
+    let mut live = Client::start(&kernel.root);
+    live.send(serde_json::json!({"RequestKernelAccess":{
+        "holder_pid":0, "term":"until_holder_exits"
+    }}));
+    let second = kernel
+        .access_popup_for_holder("-grant", Some(live.child.id()))
+        .await;
+    timeout(Duration::from_secs(5), async {
+        let approved = kernel
+            .answer_with(
+                first["interaction_id"].as_str().unwrap(),
+                Some(PASSKEY),
+                Some("until_exit".into()),
+            )
+            .await;
+        assert!(approved["error"].is_null(), "{approved}");
+        let list = kernel
+            .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+            .await;
+        assert_eq!(
+            list["response"]["KernelAccessGrantsListed"]["grants"],
+            serde_json::json!([]),
+            "{list}"
+        );
+        let approved = kernel
+            .answer_with(
+                second["interaction_id"].as_str().unwrap(),
+                Some(PASSKEY),
+                Some("until_exit".into()),
+            )
+            .await;
+        assert!(approved["error"].is_null(), "{approved}");
+        let result = live.result();
+        assert!(result["error"].is_null(), "{result}");
+        let list = kernel
+            .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+            .await;
+        assert_eq!(
+            list["response"]["KernelAccessGrantsListed"]["grants"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "{list}"
+        );
+    })
+    .await
+    .expect("abandoned approval must leave access list and the live approval responsive");
 }
 
 // EA2-01 / EA2-02: the until-exit term has no deadline, is listed as such, and
