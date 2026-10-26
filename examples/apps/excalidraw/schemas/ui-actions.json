@@ -1,0 +1,316 @@
+{
+  "uiActions": [
+    {
+      "name": "add_elements",
+      "description": "Add shapes, text or arrows to the canvas. Labels are bound text elements.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "type": {
+                  "enum": [
+                    "rectangle",
+                    "ellipse",
+                    "diamond",
+                    "text",
+                    "arrow"
+                  ]
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                },
+                "width": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000
+                },
+                "height": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "label": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "endX": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                },
+                "endY": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "type",
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "elements"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "update_elements",
+      "description": "Move or resize existing elements by ID. Bound text and arrow connections follow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          },
+          "dx": {
+            "type": "number",
+            "minimum": -100000,
+            "maximum": 100000
+          },
+          "dy": {
+            "type": "number",
+            "minimum": -100000,
+            "maximum": 100000
+          },
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 10000
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "delete_elements",
+      "description": "Delete elements and repair their bound labels and arrow connections.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "group_elements",
+      "description": "Group elements so they can be selected and moved together.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "connect_elements",
+      "description": "Connect two shapes with a bound, optionally labelled arrow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "select_elements",
+      "description": "Select elements on the visible canvas.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "scene_summary",
+      "description": "Read actual canvas elements, IDs, geometry, labels, groups and bindings. Page with offset/limit.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "effect": "read"
+    },
+    {
+      "name": "save_file",
+      "description": "Save the current diagram to a named file in this App's private data.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 64
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "open_file",
+      "description": "Open a named private diagram, or request a user-selected .excalidraw file when no name is given.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 64
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    },
+    {
+      "name": "export_file",
+      "description": "Export the current diagram as PNG, SVG or JSON through the kernel file broker. Returns an export grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "enum": [
+              "png",
+              "svg",
+              "json"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "format"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write"
+    }
+  ]
+}

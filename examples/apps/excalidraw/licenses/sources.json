@@ -1,0 +1,21 @@
+{
+  "excalidraw": {
+    "version": "0.18.1",
+    "sourceRevision": "a2ec2889babf7d2295469c6d90ebe77fae57df84",
+    "source": "https://github.com/excalidraw/excalidraw/tree/a2ec2889babf7d2295469c6d90ebe77fae57df84",
+    "npmIntegrity": "sha512-6i5Gt7IDTOH//qa0Z315Ly5iVRhjWpu2whrlQFqkuwrkKUWgRsMk0P5qdE7bpyDpai7jeLeWYkyj1eVAfni1lw=="
+  },
+  "replacementLiberation": {
+    "version": "2.1.5",
+    "sourceRevision": "4b0192046158094654e865245832c66d2104219e",
+    "distribution": "https://deb.debian.org/debian/pool/main/f/fonts-liberation2/fonts-liberation2_2.1.5-1_all.deb",
+    "sha256": "35ffaa54f117e633e89a5da89af235a073b34dbe582726fbf6989568f7fd9bda",
+    "conversion": "fontTools 4.67.0, TTFont(source); flavor=woff2; save(output)",
+    "license": "OFL-1.1"
+  },
+  "licenseSelections": {
+    "(MPL-2.0 OR Apache-2.0)": "Apache-2.0",
+    "(MIT AND Zlib)": "MIT AND Zlib"
+  },
+  "supplementalNotes": "Radix package archives omit LICENSE; retain the pinned WorkOS MIT text for these MIT-labelled releases. react-remove-scroll-bar registry gitHead is unavailable; retain upstream author's MIT notice at the pinned source revision. Fastdom/Strictdom retain the complete MIT text from their published README."
+}

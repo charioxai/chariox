@@ -1,0 +1,122 @@
+{
+  "tools": [
+    {
+      "name": "load_scene",
+      "description": "Load the durable scene and its optimistic version.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_scene",
+      "description": "Save a scene with an optimistic version check.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "scene": {
+            "type": "object",
+            "required": [
+              "type",
+              "version",
+              "elements",
+              "appState",
+              "files"
+            ],
+            "properties": {
+              "type": {
+                "const": "excalidraw"
+              },
+              "version": {
+                "const": 2
+              },
+              "elements": {
+                "type": "array",
+                "maxItems": 10000
+              },
+              "appState": {
+                "type": "object"
+              },
+              "files": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": true
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "scene",
+          "version"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Write a named private diagram or an export, optionally offering an export grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 80
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 196608
+          },
+          "offer": {
+            "type": "boolean"
+          },
+          "base64": {
+            "type": "string",
+            "maxLength": 196608
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "Read a private diagram by name or import a user-selected grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "maxLength": 80
+          },
+          "grantId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "pick_file",
+      "description": "Request a user-selected diagram through the broker.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

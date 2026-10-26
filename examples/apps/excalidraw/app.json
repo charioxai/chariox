@@ -1,0 +1,36 @@
+{
+  "schema": "chariox.app.v2",
+  "appId": "com.chariox.excalidraw",
+  "version": "1.0.0",
+  "publisher": {
+    "id": "com.chariox",
+    "keyId": "developer-1",
+    "name": "Chariox"
+  },
+  "appContractVersion": 2,
+  "resourcePolicy": "chariox.app.resources.v1",
+  "world": "chariox:app/app@1.0.0",
+  "requiredFeatures": [
+    "wasm-component",
+    "ui-actions"
+  ],
+  "runtime": {
+    "engine": "wasm",
+    "component": "runtime/app.wasm"
+  },
+  "build": {
+    "language": "rust",
+    "toolchain": "rust 1.99.1; wit-bindgen 0.63.0",
+    "sdkVersion": "0.1.0"
+  },
+  "ui": {
+    "entry": "ui/index.html"
+  },
+  "tools": "schemas/tools.json",
+  "capabilities": {
+    "externalFiles": [
+      "user_selected"
+    ]
+  },
+  "uiActions": "schemas/ui-actions.json"
+}

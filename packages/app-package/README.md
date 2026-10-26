@@ -14,6 +14,13 @@ TypeScript CLI dispatch to the same `chariox-app-package` executable. Developer
 commands preserve the caller's working directory, do not connect to a kernel,
 and never start an App, install dependencies or run package scripts.
 
+`pack` and `validate` recognize both v1 and portable `chariox.app.v2` manifests.
+V2 uses its own verifier and signing subject, including signed UI declarations
+and component admission. The same held-directory, key-inode exclusion and
+no-overwrite rules apply. `create`, `manifest` and `inspect` retain their v1
+contracts; v2 sources use the SDK templates, as in
+[the Excalidraw reference App](../../examples/apps/excalidraw/README.md).
+
 Build the small helper explicitly when working from source:
 
 ```sh
@@ -76,6 +83,8 @@ The shared CLI supplies its actual protocol constant for create/manifest/pack/
 validate; it rejects a user override. The standalone tool requires
 `--kernel-protocol N` explicitly for callers selecting another compatibility
 contract. This number is not a claim that the complete App runtime is available.
+For v2 pack/validate, compatibility is checked using required features and WIT
+worlds; the common CLI still requires a positive protocol argument.
 `manifest` also supplies the supported SDK/App/resource contracts and accepts
 optional runtime/UI entries, declarations and repeated `--network METHODS=ORIGIN`.
 Capabilities start empty; declaring one does not grant permission. A richer
