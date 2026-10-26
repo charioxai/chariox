@@ -43,10 +43,12 @@ export function createAppActionsController(deps: {
       else await refresh()
       return true
     },
-    handleKey(event: { name: string; ctrl?: boolean; meta?: boolean; preventDefault?(): void }) {
+    handleKey(event: { name: string; ctrl?: boolean; meta?: boolean; eventType?: string; preventDefault?(): void; stopPropagation?(): void }) {
       current()
       if (!open || event.name === "f8") return false
       event.preventDefault?.()
+      event.stopPropagation?.()
+      if (event.eventType === "release" || event.eventType === "repeat") return true
       if (event.name === "escape" || event.name === "a") hide()
       else if (event.name === "pageup" || event.name === "pagedown") deps.scroll(event.name === "pageup" ? -1 : 1)
       else if (event.name === "r") void refresh().catch(error => { hide(); deps.notify(error instanceof Error ? error.message : "App inspection failed; toggle it again") })

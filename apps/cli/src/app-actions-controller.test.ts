@@ -52,3 +52,36 @@ test("DEV inspector lets F8 reach the shared kernel approval handler",async () =
   assert.equal(h.controller.handleKey({name:"f8"}),false)
   assert.equal(h.controller.ownsInput(),true)
 })
+
+
+test("DEV inspector consumes release and repeat events without refreshing, scrolling or closing", async () => {
+  const requests: unknown[] = [], scrolls: number[] = []
+  let hidden = 0, prevented = 0, stopped = 0
+  const controller = createAppActionsController({
+    client: () => client, session: () => "room", show: () => {},
+    hide: () => { hidden++ }, scroll: direction => { scrolls.push(direction) },
+    notify: message => assert.fail(message),
+  })
+  const client = { send: async (request: unknown) => { requests.push(request); return {AppViewInspected:view} } }
+  await controller.handle(["actions", "toggle"])
+  for (const eventType of ["release", "repeat"] as const) {
+    for (const name of ["r", "a", "escape", "pageup", "pagedown"]) {
+      assert.equal(controller.handleKey({name, eventType,
+        preventDefault: () => { prevented++ }, stopPropagation: () => { stopped++ },
+      }), true)
+      assert.equal(controller.ownsInput(), true)
+    }
+  }
+  assert.equal(requests.length, 1)
+  assert.deepEqual(scrolls, [])
+  assert.equal(hidden, 0)
+  assert.equal(prevented, 10)
+  assert.equal(stopped, 10)
+  assert.equal(controller.handleKey({name: "r", eventType: "press",
+    preventDefault: () => { prevented++ }, stopPropagation: () => { stopped++ },
+  }), true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(requests, [{InspectAppView:{session_id:"room"}}, {InspectAppView:{session_id:"room",target_id:"tab"}}])
+  assert.equal(prevented, 11)
+  assert.equal(stopped, 11)
+})
