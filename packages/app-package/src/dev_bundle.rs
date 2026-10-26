@@ -150,7 +150,14 @@ mod tests {
             .as_object()
             .unwrap()
             .iter()
-            .map(|(name, value)| (name.clone(), value.as_str().unwrap().as_bytes().to_vec()))
+            .map(|(name, value)| {
+                let text = value.as_str().unwrap();
+                let bytes = match text.strip_prefix("wit:") {
+                    Some(world) => v2::tests::components::build(world, false),
+                    None => text.as_bytes().to_vec(),
+                };
+                (name.clone(), bytes)
+            })
             .collect();
         let key = SigningKey::from_bytes(&[37; 32]);
         let unsigned = pack_dev_bundle(&shared["manifest"], &files, &Limits::default()).unwrap();
