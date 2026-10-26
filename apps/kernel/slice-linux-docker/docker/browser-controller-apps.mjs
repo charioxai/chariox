@@ -304,7 +304,7 @@ export class AppTabs {
     if (shown) {
       const [sessionId, open] = shown;
       if (open.retiring) {
-        await open.retiring;
+        await open.retiring.catch(() => {});
         return this.open(params);
       }
       open.lastActivity = this.now();
