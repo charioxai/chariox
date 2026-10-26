@@ -744,6 +744,9 @@ fn outline_turn_from_events_with_lifecycle(
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms, lifecycle_events);
+    let failure = (lifecycle == SessionHistoryOutlineTurnLifecycle::Failed)
+        .then(|| outline_turn_failure(lifecycle_events))
+        .flatten();
     let summary_index = events
         .iter()
         .rposition(|event| event.kind == HistoryEventKind::ProviderOutput && has_content(event));
@@ -800,6 +803,7 @@ fn outline_turn_from_events_with_lifecycle(
         external_provider_turn_id: external_identity.map(|identity| identity.provider_turn_id),
         started_at_ms: prompt.timestamp_ms,
         lifecycle,
+        failure,
         completed_at_ms,
         user_prompt,
         entries,
@@ -918,6 +922,15 @@ fn outline_turn_lifecycle(
         return SessionHistoryOutlineTurnLifecycle::Cancelled;
     }
     SessionHistoryOutlineTurnLifecycle::Completed
+}
+
+fn outline_turn_failure(events: &[HistoryEvent]) -> Option<crate::provider::ProviderFailure> {
+    events.iter().find_map(|event| {
+        let failure = event
+            .metadata
+            .get(crate::history::PROMPT_FAILURE_METADATA_KEY)?;
+        serde_json::from_value(failure.clone()).ok()
+    })
 }
 
 fn outline_turn_completed_at_ms(

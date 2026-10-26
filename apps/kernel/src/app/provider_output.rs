@@ -1066,7 +1066,13 @@ impl<'a> ProviderOutputPumpContext<'a> {
         };
         let diagnostic =
             format!("Structured provider output polling failed after repeated failures: {error}");
+        let adapter_key = self
+            .provider_store
+            .get_run(provider_run_id)?
+            .adapter_key()
+            .to_string();
         let termination = crate::provider::ProviderRunTermination::explicit_provider_error(
+            &adapter_key,
             &diagnostic,
             crate::session::unix_epoch_ms(),
         );

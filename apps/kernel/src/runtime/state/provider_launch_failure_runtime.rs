@@ -205,6 +205,10 @@ impl KernelRuntimeState {
                             agent_id,
                             started.run.id(),
                             None,
+                            crate::provider::ProviderFailure::classify(
+                                started.run.adapter_key(),
+                                &diagnostic,
+                            ),
                         )
                         .await
                     {

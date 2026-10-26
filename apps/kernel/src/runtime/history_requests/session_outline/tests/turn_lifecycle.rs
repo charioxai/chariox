@@ -37,6 +37,14 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
                     crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY.into(),
                     serde_json::json!("failed"),
                 ),
+                (
+                    crate::history::PROMPT_FAILURE_METADATA_KEY.into(),
+                    serde_json::json!({
+                        "cause": "overloaded",
+                        "retryable": true,
+                        "message": "Selected model is at capacity. Please try a different model.",
+                    }),
+                ),
             ]),
             context,
         );
@@ -72,6 +80,14 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
     );
     assert_eq!(turn.completed_at_ms, Some(9_876));
     assert!(turn.summary.is_none());
+    assert_eq!(
+        serde_json::to_value(turn).expect("serialize turn")["failure"],
+        serde_json::json!({
+            "cause": "overloaded",
+            "retryable": true,
+            "message": "Selected model is at capacity. Please try a different model.",
+        })
+    );
 }
 
 #[test]
