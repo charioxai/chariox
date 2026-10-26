@@ -44,9 +44,10 @@ impl Worker {
         chariox_app_wit::check_component(&bytes, chariox_app_wit::APP_WORLD).unwrap();
         let component = directory.join("app.wasm");
         fs::write(&component, bytes).unwrap();
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../../app-package/tests/vectors/v2/package.json"
-        ))
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../app-package/tests/vectors/v2/package.json"
+        )))
         .unwrap();
         let mut manifest = fixture["shared"]["manifest"].clone();
         manifest["idempotentTools"] = json!(retries);
