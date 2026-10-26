@@ -431,6 +431,8 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("ws://{}", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
+    let missing_index = Arc::new(AtomicBool::new(false));
+    let server_missing_index = missing_index.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = stop.clone();
     let artifact = profile.join(ARTIFACT);
@@ -466,7 +468,10 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
                     "account/read" => {
                         serde_json::json!({"account":{"type":"chatgpt","email":"checkpoint@example.invalid"},"requiresOpenaiAuth":true})
                     }
-                    "thread/read" if !server_artifact.exists() => {
+                    "thread/read"
+                        if !server_artifact.exists()
+                            || server_missing_index.load(Ordering::SeqCst) =>
+                    {
                         socket.send(Message::Text(serde_json::json!({"id":request["id"],"error":{"code":-32600,"message":format!("thread not loaded: {SESSION}")}}).to_string().into())).unwrap();
                         continue;
                     }
@@ -574,6 +579,22 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
         .unwrap()
         .starts_with(&returned.contents));
     checkpoint = returned;
+    let mut unindexed = checkpoint.clone();
+    unindexed.contents = std::fs::read(&artifact).unwrap();
+    unindexed.contents.extend_from_slice(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"later remote turn\"}}\n");
+    unindexed.binding.artifact_sha256 = digest(&unindexed.contents);
+    missing_index.store(true, Ordering::SeqCst);
+    codex::import_for_move(&unindexed, &run)
+        .expect("an unindexed home rollout must preserve and extend its older native history");
+    let after_unindexed_probe = std::fs::read(&artifact).unwrap();
+    assert!(after_unindexed_probe.starts_with(&unindexed.contents));
+    codex::import_for_move(&unindexed, &run)
+        .expect("unindexed Move replay must preserve native appends after the imported checkpoint");
+    assert!(std::fs::read(&artifact)
+        .unwrap()
+        .starts_with(&after_unindexed_probe));
+    missing_index.store(false, Ordering::SeqCst);
+    checkpoint = unindexed;
     let mut wrong_account = checkpoint.clone();
     wrong_account.binding.account_sha256 = "0".repeat(64);
     assert!(matches!(
@@ -589,6 +610,13 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
         checkpoint.import(&run),
         Err(NativeCheckpointFailure::TargetConflict)
     ));
+    assert!(
+        matches!(
+            codex::import_for_move(&checkpoint, &run),
+            Err(NativeCheckpointFailure::TargetConflict)
+        ),
+        "Move must not extend a home rollout with an incomplete final record"
+    );
     let mut rewritten = checkpoint.contents.clone();
     rewritten[0] ^= 1;
     std::fs::write(&artifact, &rewritten).unwrap();

@@ -219,16 +219,7 @@ fn import_checkpoint(
                 .and_then(|p| p.strip_prefix(root).ok())
                 .and_then(Path::to_str)
                 .ok_or(Failure::TargetConflict)?;
-            match verify_required_artifact(&directory, relative, &checkpoint.binding) {
-                Ok(()) => {}
-                Err(Failure::TargetConflict) if allow_extension => {
-                    // A returned thread extends the stopped home thread. Preserve
-                    // every home byte and refuse any divergent native history.
-                    directory.extend(relative, &checkpoint.contents)?;
-                    verify_required_artifact(&directory, relative, &checkpoint.binding)?;
-                }
-                Err(error) => return Err(error),
-            }
+            prepare_existing_artifact(&directory, relative, checkpoint, allow_extension)?;
             true
         }
         Err(crate::DaemonError::ProviderProtocol {
@@ -243,7 +234,12 @@ fn import_checkpoint(
         Err(_) => return Err(Failure::ResumeFailed),
     };
     if !already_published {
-        directory.publish(&checkpoint.relative_path, &checkpoint.contents)?;
+        match directory.publish(&checkpoint.relative_path, &checkpoint.contents) {
+            Err(Failure::TargetConflict) if allow_extension => {
+                prepare_existing_artifact(&directory, &checkpoint.relative_path, checkpoint, true)?;
+            }
+            result => result?,
+        }
     }
     // Check native continuity before normal startup installs this run's tools
     // and interaction context. Process-level MCP entries must not run in a probe.
@@ -280,6 +276,24 @@ fn import_checkpoint(
             Some(checkpoint.binding.clone()),
         ),
     )
+}
+
+#[cfg(unix)]
+fn prepare_existing_artifact(
+    directory: &super::files::Directory,
+    relative: &str,
+    checkpoint: &ProviderNativeCheckpoint,
+    allow_extension: bool,
+) -> Result<(), Failure> {
+    match verify_required_artifact(directory, relative, &checkpoint.binding) {
+        Err(Failure::TargetConflict) if allow_extension => {
+            // A returned thread extends the stopped home thread. Preserve
+            // every home byte and refuse any divergent native history.
+            directory.extend(relative, &checkpoint.contents)?;
+            verify_required_artifact(directory, relative, &checkpoint.binding)
+        }
+        result => result,
+    }
 }
 
 fn resume_probe_failure(
