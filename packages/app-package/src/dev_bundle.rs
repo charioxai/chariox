@@ -167,11 +167,18 @@ mod tests {
                 v2::RequiredFeature::WasmComponent,
                 v2::RequiredFeature::UiActions,
             ]),
-            vec![v2::SupportedWorld {
-                name: "chariox:app/app".into(),
-                major: 1,
-                minor: 0,
-            }],
+            vec![
+                v2::SupportedWorld {
+                    name: "chariox:app/app".into(),
+                    major: 1,
+                    minor: 0,
+                },
+                v2::SupportedWorld {
+                    name: "chariox:app/migration".into(),
+                    major: 1,
+                    minor: 0,
+                },
+            ],
             vec![TrustedPublisher {
                 publisher_id: "local_dev".into(),
                 key_id: "kernel-dev".into(),
