@@ -29,11 +29,17 @@ impl Drop for Rig {
 }
 
 fn rig() -> Rig {
+    rig_with_installation(true)
+}
+
+fn rig_with_installation(install_fixture: bool) -> Rig {
     let root =
         std::env::temp_dir().join(format!("chariox-view-agent-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
-    crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+    if install_fixture {
+        crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+    }
     let session = app
         .sessions_mut()
         .create_session(
@@ -517,3 +523,6 @@ async fn action_approvals_keep_their_choice_action_and_generation_scope() {
         "approval_denied"
     );
 }
+
+#[path = "installed.rs"]
+mod installed;
