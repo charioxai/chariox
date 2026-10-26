@@ -350,25 +350,41 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             continue;
         };
         idle = Duration::ZERO;
-        if pump.with(|state| state.stopped) || !lease_alive(&route).await {
+        if pump.with(|state| state.stopped) || (_barrier.is_none() && !lease_alive(&route).await) {
             return;
         }
         let at = std::time::Instant::now();
         pump.with(|state| state.sent_frame(sequence, Instant::now()));
         last_sent = sequence;
-        if route
-            .outgoing_tx
-            .send_display_event(RelayEnvelope::DaemonEvent {
+        if !enqueue_frame(
+            &route.outgoing_tx,
+            RelayEnvelope::DaemonEvent {
                 subscription_id: route.relay_id.clone(),
                 event_id: sequence,
                 encrypted_event,
-            })
-            .await
-            .is_err()
+            },
+            _barrier.is_some(),
+        )
+        .await
         {
+            pump.with(|state| state.failed = true);
             return;
         }
         crate::transport::kernel_browser_display::timing("event_queue_credit", at);
+    }
+}
+
+// Observation writers must never wait indefinitely for a congested relay.
+async fn enqueue_frame(
+    sender: &RelayOutgoingSender,
+    envelope: RelayEnvelope,
+    protected: bool,
+) -> bool {
+    let send = sender.send_display_event(envelope);
+    if protected {
+        matches!(timeout(Duration::from_millis(50), send).await, Ok(Ok(())))
+    } else {
+        send.await.is_ok()
     }
 }
 
@@ -404,6 +420,9 @@ async fn capture_room_window(
     };
     // Buffered replies may have crossed a join, resume or revocation after
     // their peer wait completed. Admission belongs to dispatch as well.
+    if !lease_alive(route).await {
+        return Ok(None);
+    }
     let barrier = state
         .validate_room_display_frame(&route.caller.caller, &route.display_id, &next.value)
         .await?;
@@ -459,6 +478,33 @@ async fn capture_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn room_window_congested_enqueue_releases_observation_writer() {
+        let (sender, _priority, _events) = RelayOutgoingSender::channel(1);
+        let envelope = || RelayEnvelope::DaemonEvent {
+            subscription_id: "supplementary-display".into(),
+            event_id: 1,
+            encrypted_event: chariox_relay::protocol::EncryptedRelayPayload {
+                sender_public_key: "test".into(),
+                nonce: "test".into(),
+                ciphertext: "x".repeat(16 * 1024),
+            },
+        };
+        sender.send_display_event(envelope()).await.unwrap();
+        let barrier = Arc::new(tokio::sync::RwLock::new(()));
+        let read = barrier.clone().read_owned().await;
+        let task = tokio::spawn(async move {
+            let _read = read;
+            enqueue_frame(&sender, envelope(), true).await
+        });
+        let write = timeout(Duration::from_millis(250), barrier.write_owned()).await;
+        assert!(
+            write.is_ok(),
+            "a blocked relay must release the Room observation writer"
+        );
+        assert!(!task.await.unwrap());
+    }
 
     // MP-08/MP-10/MP-11: real gate state and opt-in trace. The evidence parser
     // distinguishes closure transitions from repeated closed polling.

@@ -137,23 +137,6 @@ impl KernelRuntimeState {
             return Err(stale());
         }
         let lease = current.lock().await.clone();
-        let barrier = self
-            .owned
-            .room_secret_observations
-            .barrier(&lease.session_id)?
-            .read_owned()
-            .await;
-        if lease.binding != captured.binding
-            || lease.used.elapsed() >= Duration::from_secs(60)
-            || self.room_display_audience_epoch(&lease.session_id) != captured.audience_epoch
-            || self
-                .owned
-                .room_secret_observations
-                .revision(&lease.session_id)?
-                != captured.protection_revision
-        {
-            return Err(stale());
-        }
         let _admission = self
             .admit_room_display(
                 caller,
@@ -165,12 +148,27 @@ impl KernelRuntimeState {
                 None,
             )
             .await?;
-        // Admission can yield to a resume or close. Recheck the identity after
-        // it completes; the observation barrier remains held through egress.
+        // Do not wait for control operations while owning the observation
+        // barrier. A busy lease retires this credit; recovery takes a key.
         let latest = self.home_display_lease(id)?;
-        if !Arc::ptr_eq(&latest, &current)
-            || latest.lock().await.binding != captured.binding
+        if !Arc::ptr_eq(&latest, &current) {
+            return Err(stale());
+        }
+        let barrier = self
+            .owned
+            .room_secret_observations
+            .barrier(&lease.session_id)?
+            .read_owned()
+            .await;
+        let latest = latest.try_lock().map_err(|_| stale())?;
+        if latest.binding != captured.binding
+            || latest.used.elapsed() >= Duration::from_secs(60)
             || self.room_display_audience_epoch(&lease.session_id) != captured.audience_epoch
+            || self
+                .owned
+                .room_secret_observations
+                .revision(&lease.session_id)?
+                != captured.protection_revision
         {
             return Err(stale());
         }
@@ -246,7 +244,7 @@ impl KernelRuntimeState {
         let _barrier = self
             .validate_room_display_frame(caller, id, &captured)
             .await?;
-        lease.lock().await.used = Instant::now();
+        lease.try_lock().map_err(|_| stale())?.used = Instant::now();
         Ok(Some(captured))
     }
 }
