@@ -44,6 +44,49 @@ pub(super) fn blocked_task(
 }
 
 #[tokio::test]
+async fn sudo_goal_resume_refuses_unsettled_goal_before_passkey() {
+    let f = fixture_with_options(None, true);
+    let task = blocked_task(&f, true);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .sync_external_active_prompt(
+            &session,
+            &task.agent_id,
+            Some(PromptQueueItem::new(
+                &task.prompt_id,
+                &f.request.attachment_id,
+                &task.agent_id,
+                "Blocked goal still finishing",
+                PromptStatus::Running,
+            )),
+        );
+    let mut request = f.request.clone();
+    request.prompt = format!(
+        "/sudo /goal resume {} {}",
+        task.goal.as_ref().unwrap().id,
+        task.revision
+    );
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        f.state
+            .submit_sudo_prompt(request, "local", "sudo-terminal"),
+    )
+    .await
+    .expect("unsettled goal must be refused before requesting a passkey")
+    .unwrap_err();
+    assert!(error.to_string().contains("settle"), "{error}");
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+    assert!(f.state.list_sudo_turns("local").is_empty());
+}
+
+#[tokio::test]
 async fn sudo_goal_resume_reauthorizes_existing_goal() {
     let f = fixture_with_options(None, true);
     let original = blocked_task(&f, true);

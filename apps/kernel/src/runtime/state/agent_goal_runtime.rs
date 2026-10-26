@@ -492,6 +492,51 @@ impl KernelRuntimeState {
         Ok(Some(request))
     }
 
+    pub(super) fn validate_sudo_goal_resume(
+        &self,
+        request: &crate::local::SubmitPromptRequest,
+    ) -> Result<(), DaemonError> {
+        let id = request
+            .prompt
+            .strip_prefix("/goal resume ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .ok_or_else(|| ledger::error("goal resume needs a goal id"))?;
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), request.target_agent_id.as_deref())?
+            .into_iter()
+            .find(|task| task.goal.as_ref().is_some_and(|goal| goal.id == id))
+            .ok_or_else(|| ledger::error("goal unavailable in this room"))?;
+        self.ensure_goal_resume_ready(&session, &task)
+    }
+
+    fn ensure_goal_resume_ready(
+        &self,
+        session: &crate::session::RuntimeSession,
+        task: &AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        if self.owned.goal_has_native_approval(task) {
+            return Err(ledger::error(
+                "answer the pending native approval before resuming this goal",
+            ));
+        }
+        if goal_resume_has_unsettled_turn(
+            task,
+            self.owned
+                .prompt_state_owner
+                .active_prompt_for_agent(session, &task.agent_id)
+                .as_ref()
+                .map(|p| p.id()),
+        ) {
+            return Err(ledger::error(
+                "wait for the stopped goal turn to settle before resuming",
+            ));
+        }
+        Ok(())
+    }
+
     /// Owner controls travel as a terminal command on the existing prompt route.
     /// The client includes the displayed task revision, fencing stale views.
     pub(crate) async fn control_goal_prompt(
@@ -554,24 +599,8 @@ impl KernelRuntimeState {
             .into_iter()
             .find(|t| t.goal.as_ref().is_some_and(|g| g.id == id))
             .ok_or_else(|| ledger::error("goal unavailable in this room"))?;
-        if action == "resume" && self.owned.goal_has_native_approval(&task) {
-            return Err(ledger::error(
-                "answer the pending native approval before resuming this goal",
-            ));
-        }
-        if action == "resume"
-            && goal_resume_has_unsettled_turn(
-                &task,
-                self.owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, &task.agent_id)
-                    .as_ref()
-                    .map(|p| p.id()),
-            )
-        {
-            return Err(ledger::error(
-                "wait for the stopped goal turn to settle before resuming",
-            ));
+        if action == "resume" {
+            self.ensure_goal_resume_ready(&session, &task)?;
         }
         let looked_up = std::time::Instant::now();
         let Outcome::Task(next) =
