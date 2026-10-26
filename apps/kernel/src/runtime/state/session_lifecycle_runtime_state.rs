@@ -876,19 +876,24 @@ impl KernelRuntimeState {
         // already-admitted snapshot cannot revive the run after it is ended.
         // Local deletion retains its app-lock-independent owned-state path.
         let destroyed = if agent.remote_execution().is_some() {
-            self.with_app_side_effect(|app| {
-                self.authorize_current_external_command()?;
+            let state = self.clone();
+            let agent_id = agent_id.to_owned();
+            let caller_user_id = caller_user_id.to_owned();
+            // A private connector owns a current-thread runtime. Its reader and
+            // writer must keep polling while synchronous cleanup waits for ACKs.
+            self.with_app_side_effect_blocking(move |app| {
+                state.authorize_current_external_command()?;
                 crate::app::KernelSessionService::new(app)
                     .destroy_agent_worker_execution_authorized(&agent, &|| {
-                        self.authorize_current_external_command()
+                        state.authorize_current_external_command()
                     })
                     .map_err(|error| DaemonError::AgentWorkerCleanup {
-                        agent_id: agent_id.to_string(),
+                        agent_id: agent_id.clone(),
                         source: Box::new(error),
                     })?;
                 // Worker cleanup has committed. Finish home deletion under the
                 // same app lock so a queued projection cannot revive the run.
-                self.owned.destroy_agent(agent_id, caller_user_id)
+                state.owned.destroy_agent(&agent_id, &caller_user_id)
             })
             .await?
         } else {
