@@ -23,6 +23,7 @@ fn main() {
     fs::create_dir_all(&root).unwrap();
     let outside = root.join("outside");
     fs::write(&outside, b"not an App file").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     // Offline compilation may start platform runtime threads. The contained
     // child must only read these trusted bytes before entering its boundary,
     // just as a supervisor prepares the production AOT input.
@@ -69,6 +70,7 @@ fn main() {
                 .args(["--child", scenario, mode])
                 .env("PROBE_OUTSIDE", &outside)
                 .env("PROBE_AOT", &aot)
+                .env("PROBE_LISTENER", listener.local_addr().unwrap().to_string())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -163,8 +165,12 @@ fn child(scenario: &str, mode: &str) {
                 assert!(matches!(errno, Some(libc::EPERM) | Some(libc::EACCES)));
             }
             let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-            assert_eq!(socket < 0, green, "native socket authority");
-            if green {
+            // Seatbelt mediates network use, not allocation of an unconnected
+            // socket. Linux seccomp also refuses the socket syscall itself.
+            if cfg!(target_os = "linux") || !green {
+                assert_eq!(socket < 0, green, "native socket allocation");
+            }
+            if green && cfg!(target_os = "linux") {
                 assert_eq!(
                     std::io::Error::last_os_error().raw_os_error(),
                     Some(libc::EPERM)
@@ -175,6 +181,12 @@ fn child(scenario: &str, mode: &str) {
                     libc::close(socket);
                 }
             }
+            let connected = std::net::TcpStream::connect(std::env::var("PROBE_LISTENER").unwrap());
+            assert_eq!(
+                connected.is_err(),
+                green,
+                "native network connection: {connected:?}"
+            );
             let spawned = Command::new(executable).arg("--spawn-probe").status();
             assert_eq!(spawned.is_err(), green, "native process spawn: {spawned:?}");
             if green {
