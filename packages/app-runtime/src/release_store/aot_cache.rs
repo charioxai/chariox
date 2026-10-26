@@ -319,7 +319,9 @@ fn lock(root: &Dir, name: &str, wait: std::time::Duration) -> Result<File> {
     };
     let deadline = std::time::Instant::now() + wait;
     while !crate::private_fs::try_lock_file(&lock)? {
-        if std::time::Instant::now() >= deadline { return Err(AotError::Busy); }
+        if std::time::Instant::now() >= deadline {
+            return Err(AotError::Busy);
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     Ok(lock)

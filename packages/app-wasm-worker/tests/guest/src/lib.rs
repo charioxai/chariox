@@ -9,6 +9,7 @@ wit_bindgen::generate!({
             import chariox:app/http@1.0.0;
             import chariox:app/events@1.0.0;
             import chariox:app/log@1.0.0;
+            import wasi:filesystem/preopens@0.2.0;
             export chariox:app/handlers@1.0.0;
         }
     "#,
@@ -105,6 +106,33 @@ impl Guest for App {
 async fn run(name: String, input: String) -> Result<String, AppError> {
     let input: Value = serde_json::from_str(&input).map_err(|_| fail("INVALID_ARGUMENT"))?;
     match name.as_str() {
+        "echo" if input["portable"] == "migration-state" => Ok(state::get("migrated".into())
+            .await?
+            .map_or("null".into(), |record| record.value)),
+        "echo" if input["portable"] == "files-write" || input["portable"] == "files-read" => {
+            use wasi::filesystem0_2_0::types::{
+                DescriptorFlags as D, OpenFlags as O, PathFlags as P,
+            };
+            let mut values = serde_json::Map::new();
+            for (dir, name) in wasi::filesystem0_2_0::preopens::get_directories() {
+                let flags = if input["portable"] == "files-write" {
+                    O::CREATE
+                } else {
+                    O::empty()
+                };
+                let value = match dir.open_at(P::empty(), "marker", flags, D::READ | D::WRITE) {
+                    Ok(file) => {
+                        if input["portable"] == "files-write" {
+                            file.write(b"r6-user-data", 0).unwrap();
+                        }
+                        Some(String::from_utf8(file.read(100, 0).unwrap().0).unwrap())
+                    }
+                    Err(_) => None,
+                };
+                values.insert(name, json!(value));
+            }
+            Ok(Value::Object(values).to_string())
+        }
         "echo" => Ok(input.to_string()),
         "shared" => {
             let count = COUNTER.with(|counter| {

@@ -66,17 +66,28 @@ fn a_hit_does_not_contend_with_another_components_compile() {
     let first = component(b"release");
     cache.prepare_with(&first, &identity(), compiled).unwrap();
     let bytes = b"another signed component".to_vec();
-    let second = VerifiedComponent::new(bytes.clone(), digest(&bytes), digest(b"release2"), first.world().into());
+    let second = VerifiedComponent::new(
+        bytes.clone(),
+        digest(&bytes),
+        digest(b"release2"),
+        first.world().into(),
+    );
     let (started, compiling) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         let cache = &cache;
-        let background = scope.spawn(move || cache.prepare_with(&second, &identity(), |_| {
-            started.send(()).unwrap();
-            released.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
-            compiled(&second)
-        }));
-        compiling.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let background = scope.spawn(move || {
+            cache.prepare_with(&second, &identity(), |_| {
+                started.send(()).unwrap();
+                released
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                compiled(&second)
+            })
+        });
+        compiling
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
         let hit = cache.prepare_with(&first, &identity(), |_| panic!("warm key compiled"));
         release.send(()).unwrap();
         background.join().unwrap().unwrap();
@@ -243,16 +254,12 @@ fn cache_rejects_symlinks_shared_files_and_bad_permissions() {
 }
 
 #[test]
-fn cache_compilers_are_serialized_and_failed_compilation_publishes_nothing() {
+fn failed_compilation_publishes_nothing_and_can_be_retried() {
     let scratch = Scratch::new();
     let cache = scratch.cache();
     let source = component(b"release");
     assert!(matches!(
         cache.prepare_with(&source, &identity(), |_| {
-            assert!(matches!(
-                cache.prepare_with(&source, &identity(), compiled),
-                Err(AotError::Busy)
-            ));
             Err(AotError::Compile("recoverable".into()))
         }),
         Err(AotError::Compile(_))

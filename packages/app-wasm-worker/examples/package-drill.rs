@@ -19,6 +19,13 @@ fn main() {
         "publisher":{"id":publisher.publisher_id,"keyId":publisher.key_id,"name":"R4 source App drill"},
         "publicKey":STANDARD.encode(publisher.public_key.as_bytes()),
     })).unwrap()).unwrap();
+    if let Ok(path) = std::env::var("CHARIOX_INSTALL_MIGRATION_CORE") {
+        let migration = std::fs::read(path).unwrap();
+        for (name, version, schema) in [("update", "2.0.0", 1), ("failed-update", "3.0.0", 2)] {
+            let (bytes, _) = package::package_version(&core, Some(&migration), version, schema);
+            std::fs::write(output.join(format!("{name}.cxapp")), bytes).unwrap();
+        }
+    }
     println!("Source App package and public publisher enrollment written");
 }
 

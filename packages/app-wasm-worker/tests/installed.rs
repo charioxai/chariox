@@ -160,6 +160,12 @@ impl Drop for Installed {
     }
 }
 async fn echo(prepared: PreparedWorker) {
+    assert_eq!(
+        invoke(prepared, "component").await,
+        json!({"portable":"component"})
+    );
+}
+async fn invoke(prepared: PreparedWorker, portable: &str) -> Value {
     let mut process = tokio::task::spawn_blocking(move || {
         WorkerProcess::spawn_blocking(prepared, WorkerLimits::default())
     })
@@ -174,7 +180,7 @@ async fn echo(prepared: PreparedWorker) {
         panic!("worker.ready required")
     };
     assert_eq!(method, "worker.ready");
-    assert_eq!(params["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(params["tools"].as_array().unwrap().len(), 13);
     // Real kernel ordering: keep worker.ready pending while precommit health
     // runs. The ready response grants activation only after health succeeds.
     channel
@@ -218,7 +224,7 @@ async fn echo(prepared: PreparedWorker) {
                 generation: "1".into(),
                 id: "echo".into(),
                 method: "tools.invoke".into(),
-                params: json!({"name":"echo","input":{"portable":"component"}}),
+                params: json!({"name":"echo","input":{"portable":portable}}),
                 deadline_ms: chariox_app_wasm_worker::ipc::wall_ms() + 5000,
                 context: Some(json!({"actor":{"kind":"human","id":"drill"}})),
             },
@@ -235,12 +241,13 @@ async fn echo(prepared: PreparedWorker) {
         panic!("source App result required")
     };
     assert_eq!(id, "echo");
-    assert_eq!(result.result, json!({"portable":"component"}));
+    let output = result.result;
     drop(channel);
     tokio::task::spawn_blocking(move || process.shutdown_blocking())
         .await
         .unwrap()
         .unwrap();
+    output
 }
 fn worker() -> &'static Path {
     static WORKER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -408,4 +415,15 @@ fn writable_runtime_is_refused_before_compilation() {
         WasmRuntime::open(&path).is_err(),
         "owner-writable runtime must be refused"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires real source App; use install-drill.sh"]
+async fn supervised_installation_root_preopens_only_its_data_and_tmp() {
+    let installed = Installed::new();
+    let written = invoke(installed.prepare(worker()).unwrap(), "files-write").await;
+    assert_eq!(written, json!({"data":"r6-user-data","tmp":"r6-user-data"}));
+    let read = invoke(installed.prepare(worker()).unwrap(), "files-read").await;
+    assert_eq!(read, written);
+    println!("DRILL native supervised preopens data/tmp persist across restart: PASS");
 }

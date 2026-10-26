@@ -21,6 +21,7 @@ use std::{
 
 mod compile;
 mod domain;
+mod snapshot;
 pub mod storage;
 
 pub struct WasmRuntime {
@@ -105,6 +106,24 @@ impl PreparedWorker {
         binding: &StageTrustBinding,
         database: &Path,
     ) -> Result<Self, WorkerError> {
+        Self::prepare_wasm_update(
+            runtime,
+            release,
+            binding,
+            database,
+            None,
+            Some(binding.token().generation),
+        )
+    }
+
+    pub fn prepare_wasm_update(
+        runtime: WasmRuntime,
+        release: VerifiedReleaseLease,
+        binding: &StageTrustBinding,
+        database: &Path,
+        migrate_from: Option<u32>,
+        committed: Option<u64>,
+    ) -> Result<Self, WorkerError> {
         if release.package_digest() != binding.package_digest() {
             return Err(WorkerError::Identity);
         }
@@ -113,10 +132,34 @@ impl PreparedWorker {
             .wasm()
             .ok_or(WorkerError::Preparation)?
             .clone();
-        if manifest.migrations.is_some() {
-            // R6 owns migration-world execution. Never pretend an App-world
-            // startup has migrated user data.
-            return Err(WorkerError::Storage("app_wasm_migration_unavailable"));
+        let mut migrations = Vec::new();
+        let mut migration_bytes = Vec::new();
+        if let Some(start) = migrate_from {
+            let mut from = start;
+            for step in manifest
+                .migrations
+                .iter()
+                .flat_map(|m| &m.steps)
+                .filter(|s| s.from >= start)
+            {
+                if step.from != from {
+                    return Err(WorkerError::Preparation);
+                }
+                let component = release
+                    .verified_migration(&step.entry)
+                    .map_err(|_| WorkerError::Preparation)?;
+                migrations.push(super::wasm_config::WasmMigration {
+                    from: step.from,
+                    to: step.to,
+                    bytes: component.bytes().len(),
+                    digest: component.digest().into(),
+                });
+                migration_bytes.extend_from_slice(component.bytes());
+                from = step.to;
+            }
+            if migrations.is_empty() {
+                return Err(WorkerError::Preparation);
+            }
         }
         let component = release
             .verified_component()
@@ -126,24 +169,13 @@ impl PreparedWorker {
         let generation = binding.token().generation.to_string();
         let installation = binding.token().installation_id.clone();
         let release_digest = release.package_digest().to_owned();
-        let root_name = crate::release_store::root_for_database(database)
-            .map_err(|_| WorkerError::Preparation)?;
-        let root_name = root_name
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or(WorkerError::Preparation)?;
+        let root_path = storage::root(database)?;
         let root = Dir::open_or_create_private_child(
-            database.parent().ok_or(WorkerError::Preparation)?,
-            OsStr::new(&root_name.replace("app-releases-", "app-wasm-state-")),
+            root_path.parent().ok_or(WorkerError::Preparation)?,
+            root_path.file_name().ok_or(WorkerError::Preparation)?,
         )
         .map_err(|_| WorkerError::Preparation)?;
-        let data_name = format!(
-            "{:x}",
-            Sha256::digest(
-                serde_json::to_vec(&(binding.owner_id(), &installation))
-                    .map_err(|_| WorkerError::Preparation)?
-            )
-        );
+        let data_name = storage::installation(binding.owner_id(), &installation);
         let installation_root = match root.create_child(OsStr::new(&data_name)) {
             Ok(data) => data,
             Err(crate::private_fs::FsError::Io(error))
@@ -184,11 +216,7 @@ impl PreparedWorker {
         installation_root
             .sync()
             .map_err(|_| WorkerError::Preparation)?;
-        let installation_path = database
-            .parent()
-            .ok_or(WorkerError::Preparation)?
-            .join(root_name.replace("app-releases-", "app-wasm-state-"))
-            .join(&data_name);
+        let installation_path = root_path.join(&data_name);
         let launch = WasmLaunch {
             generation: generation.clone(),
             installation_id: installation.clone(),
@@ -202,6 +230,7 @@ impl PreparedWorker {
             ),
             cache_key: artifact.key,
             cache_public_key: cache.public_key(),
+            migrations,
         };
         let encoded = serde_json::to_vec(&launch).map_err(|_| WorkerError::Preparation)?;
         if !data.try_lock().map_err(|_| WorkerError::Preparation)? {
@@ -211,6 +240,7 @@ impl PreparedWorker {
         root.sync().map_err(|_| WorkerError::Preparation)?;
         let config = input_file(&root, &encoded)?;
         let source = input_file(&root, component.bytes())?;
+        let migration_source = input_file(&root, &migration_bytes)?;
         eprintln!(
             "App WASM {} generation {} AOT cache {}",
             installation,
@@ -227,7 +257,7 @@ impl PreparedWorker {
             release_digest,
         };
         record.encode()?;
-        Ok(Self {
+        let prepared = Self {
             program: CString::new(executable_path(8).as_os_str().as_encoded_bytes())
                 .map_err(|_| WorkerError::Preparation)?,
             arguments: vec![CString::new("serve-supervised").unwrap()],
@@ -242,12 +272,18 @@ impl PreparedWorker {
                         .executable
                         .try_clone()
                         .map_err(|_| WorkerError::Preparation)?,
+                    migration_source,
                 ],
                 data,
                 runtime,
                 release,
             )),
-        })
+        };
+        let (prepared, result) = prepared.visit_private_data(|data| {
+            snapshot::prepare(&installation_root, &installation_path, data, committed)
+        })?;
+        result?;
+        Ok(prepared)
     }
 }
 

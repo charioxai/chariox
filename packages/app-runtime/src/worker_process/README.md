@@ -112,13 +112,24 @@ compilation and launch. `PreparedWorker::prepare_wasm` leases the verified
 release and separately authenticated native cache. The common ready/continue
 monitor retains process and broker ownership. FD5 is private launch JSON, FD6
 the verified portable component, FD7 the read-only signed cache entry and FD8
-the executable inode through exec. Launch inputs are sealed memfds on Linux.
+the executable inode through exec. FD9 contains the signed portable migration
+components selected by the supervisor. Launch inputs are sealed memfds on Linux.
 
 `WasmLaunch.installation_root` is an optional supervisor-owned path. The
 launcher creates private existing `data` and `tmp` children first. Only `data`
-is the broker/snapshot directory. R6 connects this field in `supervised::serve`
-to `InstallationDirectories::open` and `AppWorker::with_directories`; R4 itself
-exposes no WASI preopens. It is an internal kernel/worker ABI.
+is the broker/snapshot directory. `supervised::serve` connects this field to
+`InstallationDirectories::open` and `AppWorker::with_directories`. Staged updates
+checkpoint private data outside both preopens; retries and rollback restore it
+before guest entry. The writer's committed data generation retires the checkpoint
+only after activation commits. Explicit data deletion removes the installation
+root under the same data lock. This is an internal kernel/worker ABI.
+
+`prepare_wasm_update` selects a contiguous signed migration chain from the
+writer's rewound schema. Each retained component is reread and digest checked;
+FD9 and the supervisor configuration pin those bytes through launch. The native
+worker runs R6's state-only `MigrationWorker` before App registration and records
+`migration.step` only after success. The existing staged broker, state journal,
+health/activation fence and failed-update recovery remain authoritative.
 
 R5 replaces `wasm/domain.rs::WasmDomain::verify_before_continue` with OS
 containment, contains `wasm/compile.rs::run`, and connects native runtime

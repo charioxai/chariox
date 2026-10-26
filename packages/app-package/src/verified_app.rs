@@ -178,7 +178,9 @@ pub fn inspect_manifest(bytes: &[u8], limits: &crate::Limits) -> crate::Result<R
             manifest.validate(limits)?;
             Ok(ReleaseManifest::Wasm(manifest))
         }
-        Some(crate::APP_SCHEMA) => Ok(ReleaseManifest::Node(crate::inspect_untrusted(bytes, limits)?.manifest)),
+        Some(crate::APP_SCHEMA) => Ok(ReleaseManifest::Node(
+            crate::inspect_untrusted(bytes, limits)?.manifest,
+        )),
         _ => Err(crate::PackageError::new(
             crate::ErrorCode::IncompatibleContract,
             "unsupported App package schema; rebuild as chariox.app.v2",
@@ -209,11 +211,13 @@ pub fn verify_app<'a>(
                 v2::RequiredFeature::DirectedEvents,
             ]
             .into(),
-            vec![v2::SupportedWorld {
-                name: "chariox:app/app".into(),
-                major: 1,
-                minor: 0,
-            }],
+            ["chariox:app/app", "chariox:app/migration"]
+                .map(|name| v2::SupportedWorld {
+                    name: name.into(),
+                    major: 1,
+                    minor: 0,
+                })
+                .into(),
             policy.trusted_publishers.clone(),
         );
         v2_policy.limits = policy.limits.clone();

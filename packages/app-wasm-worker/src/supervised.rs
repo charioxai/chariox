@@ -10,6 +10,8 @@ use chariox_app_runtime::{
 use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, os::fd::FromRawFd};
 
+mod migrations;
+
 fn descriptor(number: i32) -> wasmtime::Result<File> {
     let copy = unsafe { libc::fcntl(number, libc::F_DUPFD_CLOEXEC, 8) };
     wasmtime::ensure!(copy >= 8, "supervisor descriptor {number} is missing");
@@ -40,6 +42,7 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
         "backend requires App world"
     );
     let bytes = read(6, chariox_app_wit::MAX_COMPONENT_BYTES)?;
+    let migration_source = descriptor(9)?;
     wasmtime::ensure!(
         format!("sha256:{:x}", Sha256::digest(&bytes)) == launch.cache_key.component_digest,
         "trusted component digest mismatch"
@@ -67,12 +70,17 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
     // native code or caller path is accepted here.
     let component =
         unsafe { wasmtime::component::Component::deserialize(engine.engine(), artifact.bytes())? };
-    let worker = AppWorker::new(
+    let mut worker = AppWorker::new(
         engine,
         component,
         crate::limits::Limits::default(),
         RetryPolicy::from_manifest(&launch.manifest),
     )?;
+    if let Some(root) = &launch.installation_root {
+        worker = worker.with_directories(crate::wasi::InstallationDirectories::open(
+            std::path::Path::new(root),
+        )?);
+    }
     let stream = cli::inherited_stream(3)?;
     stream.set_nonblocking(true)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -82,6 +90,13 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
     runtime.block_on(async move {
         let mut transport =
             crate::ipc::Ipc::start(tokio::net::UnixStream::from_std(stream)?, launch.generation)?;
+        migrations::run(
+            &transport.ipc,
+            migration_source,
+            &launch.installation_id,
+            launch.migrations,
+        )
+        .await?;
         worker
             .run(transport.ipc.clone(), &mut transport.incoming)
             .await

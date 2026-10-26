@@ -666,6 +666,21 @@ fn package_policy_cannot_admit_unregistered_worlds_or_migrations() {
 }
 
 #[test]
+fn kernel_verifier_admits_the_registered_signed_migration_world() {
+    let mut fixture = base();
+    if let Some(actions) = fixture.manifest.ui_actions.take() {
+        fixture.files.remove(&actions);
+    }
+    fixture.manifest.required_features = fixture.manifest.derive_features();
+    let bytes = packed(&fixture, &[]);
+    let policy = crate::VerificationPolicy::new(619, policy().trusted_publishers);
+    assert!(matches!(
+        crate::verify_app(&bytes, &policy),
+        Ok(crate::VerifiedAppPackage::Wasm(_))
+    ));
+}
+
+#[test]
 fn idempotent_tool_policy_is_signed_and_defaults_to_no_retries() {
     let fixture = base();
     let original = serde_json::to_value(&fixture.manifest).unwrap();

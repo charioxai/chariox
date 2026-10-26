@@ -80,6 +80,7 @@ pub struct VerifiedReleaseLease {
     declarations: Declarations,
     ui_assets: ui_assets::Inventory,
     component: Option<(String, usize, String)>,
+    migrations: std::collections::BTreeMap<String, (usize, String)>,
 }
 impl VerifiedReleaseLease {
     pub fn package_digest(&self) -> &str {
@@ -106,12 +107,32 @@ impl VerifiedReleaseLease {
             .manifest
             .wasm()
             .ok_or(ReleaseStoreError::InvalidExisting)?;
-        let mut directory = self.payload.child(OsStr::new("runtime"))?;
-        let mut parts = path
-            .strip_prefix("runtime/")
-            .ok_or(ReleaseStoreError::UnsafeEntry)?
-            .split('/')
-            .peekable();
+        self.read_component(path, *size, digest, &manifest.world)
+    }
+
+    /// Only signed migration entries retained by this verified lease qualify.
+    pub fn verified_migration(&self, path: &str) -> Result<super::aot_cache::VerifiedComponent> {
+        let (size, digest) = self
+            .migrations
+            .get(path)
+            .ok_or(ReleaseStoreError::InvalidExisting)?;
+        self.read_component(
+            path,
+            *size,
+            digest,
+            chariox_app_package::v2::MIGRATION_WORLD,
+        )
+    }
+
+    fn read_component(
+        &self,
+        path: &str,
+        size: usize,
+        digest: &str,
+        world: &str,
+    ) -> Result<super::aot_cache::VerifiedComponent> {
+        let mut directory = self.payload.child(OsStr::new("."))?;
+        let mut parts = path.split('/').peekable();
         let name = loop {
             let part = parts.next().ok_or(ReleaseStoreError::UnsafeEntry)?;
             if parts.peek().is_none() {
@@ -120,19 +141,19 @@ impl VerifiedReleaseLease {
             directory = directory.child(OsStr::new(part))?;
         };
         let file = directory.read_file(OsStr::new(name), true)?;
-        if file.metadata()?.len() != *size as u64 {
+        if file.metadata()?.len() != size as u64 {
             return Err(ReleaseStoreError::InvalidExisting);
         }
         let mut bytes = Vec::new();
-        file.take(*size as u64 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() != *size || super::aot_cache::digest(&bytes) != *digest {
+        file.take(size as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() != size || super::aot_cache::digest(&bytes) != digest {
             return Err(ReleaseStoreError::InvalidExisting);
         }
         Ok(super::aot_cache::VerifiedComponent::new(
             bytes,
-            digest.clone(),
+            digest.to_owned(),
             self.package_digest.clone(),
-            manifest.world.clone(),
+            world.to_owned(),
         ))
     }
 }
@@ -176,6 +197,22 @@ pub(super) fn verified(
             ))
         })
         .transpose()?;
+    let migrations = manifest
+        .wasm()
+        .into_iter()
+        .flat_map(|m| &m.migrations)
+        .flat_map(|m| &m.steps)
+        .map(|step| {
+            let (_, bytes) = package
+                .files()
+                .find(|(path, _)| *path == step.entry)
+                .ok_or(ReleaseStoreError::InvalidExisting)?;
+            Ok((
+                step.entry.clone(),
+                (bytes.len(), super::aot_cache::digest(bytes)),
+            ))
+        })
+        .collect::<Result<_>>()?;
     Ok(VerifiedReleaseLease {
         _root: root,
         payload,
@@ -184,5 +221,6 @@ pub(super) fn verified(
         declarations: package.declarations().clone(),
         ui_assets: ui_assets::inventory(package),
         component,
+        migrations,
     })
 }

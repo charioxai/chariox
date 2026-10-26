@@ -82,7 +82,7 @@ process drills do not close Stage 1 or MP acceptance rows.
 
 ## R4 installed launch and AOT cache
 
-The kernel uses `serve-supervised`, with inherited FD5/6/7/8 as documented in
+The kernel uses `serve-supervised`, with inherited FD5/6/7/8/9 as documented in
 `app-runtime/src/worker_process/README.md`. `identity` reports the exact running
 worker build, engine, target and CPU policy; `precompile-stdio WORLD` compiles
 retained verified component bytes for the supervisor's protected cache. The
@@ -94,7 +94,7 @@ installed kernel launch accepts none of those caller-chosen paths.
 Run `scripts/install-drill.sh` through the compile slot for real signed-package
 installation, native echo/restart/cache-hit, eviction, damaged/stale input and
 offline rebuild process drills. These supplement client/kernel/provider drills
-and do not establish R5 containment, R6 WASI/migrations or Stage 1 acceptance.
+and do not establish R5 containment or full Stage 1 acceptance.
 
 The installed kernel keeps the `worker.ready` response pending until activation.
 The worker serves lifecycle calls while awaiting that response, so precommit
@@ -156,7 +156,12 @@ R4 must verify the signed migration artifact, fence old writers, checkpoint
 structured and private-file state, invoke the migration under the staged broker,
 and record `migration.step` only after success. This API does not activate a
 release, advance the kernel migration journal or claim that SQL rollback restores
-private files. No serialized migration-run request or launch mode is added here.
+private files. The installed `serve-supervised` path now consumes the supervisor-selected
+portable migration components on FD9, runs each through this state-only API and
+records `migration.step` before App registration. Private-file checkpoints cover
+`data` only; `tmp` remains outside snapshots. Interrupted preparation, failed
+health and migration failure return through the existing kernel rollback path.
+No client or relay serialized shape changes.
 
 ## Additional real-engine drills
 

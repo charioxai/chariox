@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WasmMigration {
+    pub from: u32,
+    pub to: u32,
+    pub bytes: usize,
+    pub digest: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WasmLaunch {
     pub generation: String,
     pub installation_id: String,
@@ -14,4 +23,7 @@ pub struct WasmLaunch {
     pub installation_root: Option<String>,
     pub cache_key: AotCacheKey,
     pub cache_public_key: [u8; 32],
+    /// Concatenated portable migration components arrive on supervisor FD9.
+    #[serde(default)]
+    pub migrations: Vec<WasmMigration>,
 }
