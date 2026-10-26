@@ -41,9 +41,9 @@ Candidates investigated:
 
 | Library | Upstream licence | Assessment |
 | --- | --- | --- |
-| [ExcelJS 4.4.0](https://github.com/exceljs/exceljs/blob/master/package.json) | MIT | Permissive candidate for separate XLSX work; requires a Univer conversion layer and independent formula/style/date round-trip evidence. |
+| [ExcelJS 4.4.0](https://github.com/exceljs/exceljs/blob/v4.4.0/package.json) | MIT | Permissive candidate for separate XLSX work; requires a Univer conversion layer and independent formula/style/date round-trip evidence. |
 | [SheetJS Community Edition](https://docs.sheetjs.com/docs/miscellany/license/) | Apache-2.0 | Permissive CE candidate, separate from SheetJS Pro; requires an independently pinned distribution, full dependency review and conversion/round-trip tests. |
-| [xlsx-populate 1.21.0](https://github.com/dtjohnson/xlsx-populate/blob/master/package.json) | MIT | Permissive browser/Node candidate, with the same unimplemented conversion and independent-reader obligations. |
+| [xlsx-populate 1.21.0](https://github.com/dtjohnson/xlsx-populate/blob/v1.21.0/package.json) | MIT | Permissive browser/Node candidate, with the same unimplemented conversion and independent-reader obligations. |
 
 **Choice: none.** Permissively licensed candidates exist; this App does not yet
 have a verified Excel/Univer mapping or an independent-reader XLSX round trip.
