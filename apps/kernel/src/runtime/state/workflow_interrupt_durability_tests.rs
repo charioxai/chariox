@@ -655,11 +655,12 @@ fn stop_after_restart_answers_the_stopped_run() {
         .build()
         .expect("restart test executor should start");
     let fixture = interrupt_fixture();
-    let (config, session_id, run_id, agent_id) = (
+    let (config, session_id, run_id, agent_id, target_unrelated_prompt_id) = (
         fixture.config.clone(),
         fixture.session_id.clone(),
         fixture.workflow_run_id.clone(),
         fixture.target_agent_id.clone(),
+        fixture.target_unrelated_prompt_id.clone(),
     );
     drop(fixture.runtime);
     let restored = runtime_state_from_app(
@@ -691,6 +692,29 @@ fn stop_after_restart_answers_the_stopped_run() {
         active.is_none_or(|prompt| prompt.workflow_run_id() != Some(run_id.as_str())),
         "the stopped run must not keep an active prompt"
     );
+    // The prompt queued behind the stopped run is next on this agent. With no provider left
+    // after the restart, Stop must have launched one to take it, or it would wait forever.
+    let successor_prompts = restored
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(
+        successor_prompts
+            .0
+            .iter()
+            .chain(successor_prompts.1.front())
+            .any(|prompt| prompt.id() == target_unrelated_prompt_id),
+        "the unrelated prompt must still be the agent's next prompt"
+    );
+    let run = restored
+        .owned
+        .provider_store
+        .get_run_for_agent(&session_id, &agent_id)
+        .expect("the queued successor needs a provider run after the stop");
+    assert!(matches!(
+        run.state(),
+        crate::provider::ProviderRunState::Starting | crate::provider::ProviderRunState::Running
+    ));
 }
 
 async fn run_interrupt_append_failure_regression(pause: bool) {

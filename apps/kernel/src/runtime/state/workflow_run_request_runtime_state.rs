@@ -484,7 +484,9 @@ impl KernelRuntimeState {
             return Ok(());
         };
         self.release_cancelled_local_prompt_after_restart(session_id, agent_id, &prompt, None)
-            .await
+            .await?;
+        // Without a provider run the release has nothing to advance the queue with.
+        self.recover_queue_head_after_restart(session_id, agent_id)
     }
 
     pub(super) async fn execute_workflow_resume_run_request(
