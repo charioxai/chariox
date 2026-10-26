@@ -313,7 +313,16 @@ export async function run(operation, input, dependencies = {}) {
     if (checksums.length !== 1) fail('bundle_hash_missing', 'Bundle creation returned no unique SHA-256 record; inspect the terminal output.');
     const digest = checksums[0][1];
     await mkdir(dirname(local), { recursive: true });
-    await call(['files', 'get', ...common, '--overwrite', '--sha256', digest, remote, local]);
+    try {
+      await call(['files', 'get', ...common, '--overwrite', '--sha256', digest, remote, local]);
+    } catch (error) {
+      // Older CLIs reject --sha256 before making a request; keep their metadata-based verification.
+      if (error.code !== 'usage') throw error;
+      const before = variant(await request('StatKernelFile', { path: remote, with_sha256: true }, 'bundle-stat', false), 'KernelFileStat').stat;
+      if (before.sha256 !== digest) fail('bundle_hash_mismatch');
+      await call(['files', 'get', ...common, '--overwrite', remote, local]);
+      if (createHash('sha256').update(await readFile(local)).digest('hex') !== digest) fail('bundle_hash_mismatch');
+    }
     const git = dependencies.git || ((argv) => execute(argv, '', 'git', true));
     await git(['-C', repo, 'bundle', 'verify', local]);
     const heads = String(await git(['bundle', 'list-heads', local])).trim().split('\n');

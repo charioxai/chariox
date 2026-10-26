@@ -67,6 +67,45 @@ test('bundle resolves actual HEAD from a real bundle without an acceptance recei
   assert.equal(out.head, r.head);
   assert.equal(r.git(['-C', r.input.repository, 'rev-parse', 'refs/remotes/lanes/lane']).trim(), r.head);
 });
+
+for (const corruption of [undefined, 'stat', 'download']) {
+  test(`bundle falls back only for an older CLI usage refusal (${corruption ?? 'verified'})`, async t => {
+    const r = await bundleRig(t), calls = [];
+    const execute = async (argv, body) => {
+      if (argv[0] === 'request') {
+        calls.push('stat');
+        assert.deepEqual(JSON.parse(body), { StatKernelFile: { path: r.input.remoteBundle, with_sha256: true } });
+        const sha256 = corruption === 'stat' ? '0'.repeat(64) : createHash('sha256').update(await readFile(r.input.remoteBundle)).digest('hex');
+        return { KernelFileStat: { stat: { sha256 } } };
+      }
+      if (argv[0] === 'files') {
+        if (argv.includes('--sha256')) { calls.push('sha256'); throw new LaneError('usage'); }
+        calls.push('download');
+        await copyFile(r.input.remoteBundle, r.input.localBundle);
+        if (corruption === 'download') await writeFile(r.input.localBundle, 'changed in transit');
+        return {};
+      }
+      return r.execute(argv, body);
+    };
+    if (corruption) {
+      await assert.rejects(run('bundle', r.input, { ...r, execute }), { code: 'bundle_hash_mismatch' });
+      assert.throws(() => r.git(['-C', r.input.repository, 'show-ref', '--verify', 'refs/remotes/lanes/lane']));
+    } else {
+      assert.equal((await run('bundle', r.input, { ...r, execute })).head, r.head);
+      assert.equal(r.git(['-C', r.input.repository, 'rev-parse', 'refs/remotes/lanes/lane']).trim(), r.head);
+    }
+    assert.deepEqual(calls, corruption === 'stat' ? ['sha256', 'stat'] : ['sha256', 'stat', 'download']);
+  });
+}
+
+test('bundle propagates download authorization errors without a compatibility retry', async t => {
+  const r = await bundleRig(t);
+  const execute = async (argv, body) => {
+    if (argv[0] === 'files') throw new LaneError('kernel_access_required');
+    return r.execute(argv, body);
+  };
+  await assert.rejects(run('bundle', r.input, { ...r, execute }), { code: 'kernel_access_required' });
+});
 test('bundle rejects absent, non-HEAD and ambiguous tips before importing', async t => {
   const r = await bundleRig(t);
   for (const tips of ['', `${r.head} refs/heads/main\n`, `${r.head} HEAD\n${r.head} refs/heads/other\n`]) {

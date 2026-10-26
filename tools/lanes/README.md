@@ -6,10 +6,11 @@ to stderr and exits 1. `CHARIOX_BIN` selects the actual `chariox` executable.
 The normal product access grant must already cover the coordinator process.
 Provider login, credentials, transport and authority remain Chariox's job.
 
-Use the updated CLI from the minimal-primitives change (protocol 615 source),
-even with an older kernel. Older CLIs reject `files get --sha256` and still use
-removed file metadata requests internally. Install the CLI and these adapters
-together; upgrading the kernel itself can follow later.
+Prefer the updated CLI from the minimal-primitives change (protocol 615 source),
+even with an older kernel. An older CLI can still collect bundles when its
+kernel supports `StatKernelFile`: a `usage` refusal of `files get --sha256`
+selects that compatibility path. Kernels that removed file metadata requests
+require the updated CLI.
 
 Every operation requires `kernel` and a stable `taskId` (letters, numbers, `.`,
 `_`, `-`). A mutation's command id derives from this task id and its step.
@@ -69,8 +70,11 @@ tip from the verified bundle; a supplied expected head remains a strict guard.
 `bundle` runs `sha256sum` in the same terminal command that creates the bundle,
 then downloads with `files get --sha256 <hex>`. The CLI rejects changed bytes
 before importing them. A missing or ambiguous terminal checksum fails clearly.
+If an older CLI refuses that flag, `bundle` checks `StatKernelFile` against the
+terminal checksum, downloads without the flag, and checks the local bytes too.
 The tools use `events wait --timeout 0` for a nonblocking inbox read (exit 5 is
-an empty timeout); they use no kernel file metadata or deadline requests.
+an empty timeout); only the older-CLI compatibility path uses file metadata.
+Deadline timers belong to the coordinator.
 
 `bundle` includes source history so it also works with an empty local Git
 repository. A failed local ancestry check leaves only an incoming lane ref
