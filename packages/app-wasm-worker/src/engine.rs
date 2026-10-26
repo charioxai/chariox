@@ -4,7 +4,7 @@ pub fn engine() -> wasmtime::Result<Engine> {
     let mut config = Config::new();
     config.wasm_component_model_async(true);
     config.epoch_interruption(true);
-    // Native RLIMIT_AS bounds the whole worker, including compiler and stacks.
+    // Linux RLIMIT_AS bounds the whole worker, including compiler and stacks.
     // Avoid the default multi-GiB virtual reservation for each guest memory.
     config.memory_reservation(0);
     config.memory_reservation_for_growth(0);

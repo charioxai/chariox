@@ -7,7 +7,8 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
-/// Hard process ceilings, independent of guest linear-memory/epoch limits.
+/// Linux address-space ceiling, independent of guest linear-memory limits.
+/// Darwin cannot admit this cap below its existing dyld mappings.
 pub const ADDRESS_SPACE_BYTES: u64 = 1024 * 1024 * 1024;
 pub const CPU_SECONDS: u64 = 300;
 pub const FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -31,6 +32,10 @@ pub fn enter() -> io::Result<()> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn ceilings() -> io::Result<()> {
     for (name, resource, value) in [
+        // Darwin rejects a cap below its already-mapped shared region with
+        // EINVAL. RLIMIT_DATA has the same VM-map-size check, and RLIMIT_RSS is
+        // not a hard allocation limit. Do not claim a native memory cap there.
+        #[cfg(target_os = "linux")]
         ("RLIMIT_AS", libc::RLIMIT_AS, ADDRESS_SPACE_BYTES),
         ("RLIMIT_CPU", libc::RLIMIT_CPU, CPU_SECONDS),
         ("RLIMIT_FSIZE", libc::RLIMIT_FSIZE, FILE_BYTES),

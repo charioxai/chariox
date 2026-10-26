@@ -215,7 +215,11 @@ fn child(scenario: &str, mode: &str) {
                     rlim_cur: libc::RLIM_INFINITY,
                     rlim_max: libc::RLIM_INFINITY,
                 };
-                assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_AS, &unlimited) }, -1);
+                #[cfg(target_os = "linux")]
+                let resource = libc::RLIMIT_AS;
+                #[cfg(target_os = "macos")]
+                let resource = libc::RLIMIT_NOFILE;
+                assert_eq!(unsafe { libc::setrlimit(resource, &unlimited) }, -1);
             }
             let thread = std::thread::spawn(move || {
                 if green {
@@ -238,6 +242,7 @@ fn child(scenario: &str, mode: &str) {
             println!("file/socket/spawn/ptrace/W^X/pthread/inherited-IPC checked");
         }
         "memory" => {
+            let limited = green && cfg!(target_os = "linux");
             let length = 2usize << 30;
             let memory = unsafe {
                 libc::mmap(
@@ -251,10 +256,10 @@ fn child(scenario: &str, mode: &str) {
             };
             assert_eq!(
                 memory == libc::MAP_FAILED,
-                green,
+                limited,
                 "native address-space ceiling"
             );
-            if green {
+            if limited {
                 assert_eq!(
                     std::io::Error::last_os_error().raw_os_error(),
                     Some(libc::ENOMEM)
@@ -267,7 +272,13 @@ fn child(scenario: &str, mode: &str) {
             }
             println!(
                 "APP_NATIVE_MEMORY_LIMIT: mmap {}",
-                if green { "ENOMEM" } else { "allowed" }
+                if limited {
+                    "ENOMEM"
+                } else if green {
+                    "allowed (no native address-space cap on macOS)"
+                } else {
+                    "allowed"
+                }
             );
         }
         "cpu" => {
