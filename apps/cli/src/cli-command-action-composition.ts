@@ -449,6 +449,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSplitPaneFocusRepaint,
   } = deps
 
+  const focusedAgent = (): AgentInstance | undefined => isAttached()
+    ? sessionState().agents.find((agent: AgentInstance) => agent.id === focusedAgentId())
+    : undefined
   const openRoomViewer = async (target: { sessionId: string; agentId: string; sliceId: string }) => {
     const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
       ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
@@ -482,10 +485,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
-    currentProviderId: () => (isAttached()
-      ? sessionState().agents.find((agent: AgentInstance) => agent.id === focusedAgentId())?.provider
-      : undefined) ?? options.provider ?? "opencode",
-    currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
+    currentProviderId: () => focusedAgent()?.provider ?? options.provider ?? "opencode",
+    // The account belongs to the same agent as the provider: the waiting-room
+    // selection may name another provider's account.
+    currentAccountProfileId: () => focusedAgent()?.account_profile || currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
     submitGoalPrompt: async (text, targetAgentId) => {
