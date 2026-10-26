@@ -143,6 +143,18 @@ try {
     await delay(3000);
     assert.equal(await evaluate("[...document.querySelectorAll('[data-sonner-toast]')].some(e=>e.innerText.includes('Done'))"), false, 'status toast expires without covering the toolbar');
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...bounds, button: 'left', clickCount: 1 });
+    const picks = calls.filter(call => call.method === 'pick_file').length;
+    const reads = calls.filter(call => call.method === 'read_file').length;
+    const openButton = await evaluate(`(() => { const el=[...document.querySelectorAll('[role="menuitem"]')].find(e=>e.textContent.trim()==='Open CSV…'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...openButton, button: 'left', clickCount: 1 });
+    for (let attempt=0; attempt<100 && calls.filter(call=>call.method==='pick_file').length===picks; attempt++) await delay(50);
+    assert.equal(calls.filter(call=>call.method==='pick_file').length, picks+1, 'human Open CSV reaches picker');
+    await delay(250);
+    const cancelled = await cdp('Page.captureScreenshot', { format: 'png' });
+    await writeFile(path.join(evidence, `cancelled-picker-dpr${dpr}.png`), Buffer.from(cancelled.data, 'base64'));
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-sonner-toast]')].some(e=>e.innerText.includes('Done'))"), false, 'cancelling the file picker does not announce success');
+    assert.equal(calls.filter(call => call.method === 'read_file').length, reads, 'cancelled picker imports no file');
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...bounds, button: 'left', clickCount: 1 });
     const exportButton = await evaluate(`(() => { const el=[...document.querySelectorAll('[role="menuitem"]')].find(e=>e.textContent.trim()==='Export CSV…'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...exportButton, button: 'left', clickCount: 1 });
     await delay(250);

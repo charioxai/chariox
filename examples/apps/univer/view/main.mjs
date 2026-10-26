@@ -27,7 +27,7 @@ async function start() {
   const open = async format => {
     if (summary().dirty && !await dialogs.replace()) return false;
     const { grants } = await actions.pick_file({ format });
-    if (!grants.length) return;
+    if (!grants.length) return false;
     await actions[format === 'csv' ? 'import_csv' : 'open_workbook']({ name: format === 'csv' ? 'import.csv' : 'import.univer.json', grantId: grants[0] });
   };
   const exportFile = async format => {
