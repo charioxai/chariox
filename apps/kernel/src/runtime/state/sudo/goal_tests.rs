@@ -85,6 +85,21 @@ async fn sudo_goal_resume_reauthorizes_existing_goal() {
     let turn = f.state.list_sudo_turns("local").pop().unwrap();
     assert_eq!(turn.task_id.as_deref(), Some(original.task_id.as_str()));
     assert_eq!(turn.provider_run_id.as_deref(), Some(f.run.id()));
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    let prompt = f
+        .state
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, f.request.target_agent_id.as_deref().unwrap())
+        .unwrap();
+    assert!(prompt
+        .hidden_system_context()
+        .contains("receipt of that owner action"));
     assert!(f.state.sudo_for_provider_run(f.run.id()).is_ok());
     f.state
         .revoke_sudo(Some("local"), Some(&turn.entry_id), "test_cleanup")
