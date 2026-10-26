@@ -25,6 +25,11 @@ const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
 const BINDING = "__charioxAppCall";
+const AGENT_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+const AGENT_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+const AGENT_DEADLINE_MS = 30_000;
+const AGENT_MAX_DEADLINE_MS = 120_000;
+const AGENT_MAX_WAIT_MS = 30_000;
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:", "font-src 'self'", "connect-src 'none'", "frame-src 'none'",
@@ -125,6 +130,41 @@ function assets(raw, entry) {
   return map;
 }
 
+// One `__charioxViewAgent` call as a page expression. Every value is JSON, so
+// nothing the kernel sends is ever code.
+function agentCall(params) {
+  if (typeof params.agent !== "string" || !AGENT_ID.test(params.agent)) throw invalid("invalid acting agent");
+  const deadline = params.deadline_ms ?? AGENT_DEADLINE_MS;
+  if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > AGENT_MAX_DEADLINE_MS) throw invalid("invalid deadline");
+  const call = (method, args, answer = "answer") => `(async () => { const view = globalThis.__charioxViewAgent;
+    if (!view) return { ok: false, code: "view_unavailable", message: "The view has not loaded the Chariox bridge" };
+    const answer = await view.${method}(${args.map((arg) => JSON.stringify(arg)).join(", ")});
+    return ${answer}; })()`;
+  let expression;
+  if (params.call === "state") {
+    expression = call("state", []);
+  } else if (params.call === "registrations") {
+    // The only call that answers with a bare list.
+    expression = call("registrations", [], "{ ok: true, value: answer }");
+  } else if (params.call === "invoke") {
+    if (typeof params.name !== "string" || !AGENT_NAME.test(params.name)) throw invalid("invalid action name");
+    const input = params.input ?? {};
+    if (typeof input !== "object" || input === null || Array.isArray(input)
+      || Buffer.byteLength(JSON.stringify(input)) > MAX_CALL_BYTES) throw invalid("invalid action input");
+    expression = call("invoke", [params.name, input]);
+  } else if (params.call === "changes") {
+    const since = params.since ?? 0;
+    const wait = params.wait_ms ?? 0;
+    if (!Number.isSafeInteger(since) || since < 0 || !Number.isSafeInteger(wait) || wait < 0 || wait > AGENT_MAX_WAIT_MS) {
+      throw invalid("invalid change cursor");
+    }
+    expression = call("changes", [since, wait]);
+  } else {
+    throw invalid("unknown view agent call");
+  }
+  return { agent: params.agent, expression, deadline };
+}
+
 export class AppTabs {
   // MP-08/MP-10/MP-11: only managed App pages have draft state. Finish a
   // captured edit's disk commit before showing it as recoverable to viewers.
@@ -167,6 +207,48 @@ export class AppTabs {
   noteAgent(targetId, agent) {
     const app = [...this.apps.values()].find(open => open.targetId === targetId);
     app?.agents.add(agent);
+  }
+
+  // Apps v2 A2: the kernel's agent reads and drives the page through
+  // `__charioxViewAgent` and nothing else. The call is the agent's input to the
+  // Tab, recorded before the page can run: whatever the handler asks of the
+  // kernel (`chariox.call`) is attributed to that agent, like its clicks. The
+  // kernel queues calls per view and checks the agent's grant and the signed
+  // declarations first. A handler that outlives its deadline keeps running
+  // (a page cannot be interrupted from here), so the view refuses new calls
+  // until it settles instead of letting two handlers interleave.
+  async agent(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    const { agent, expression, deadline } = agentCall(params);
+    if (app.agentRunning) {
+      return { ok: false, code: "view_busy", message: "An earlier action in this view is still running; retry when it has finished" };
+    }
+    this.noteAgent(app.targetId, agent);
+    const connection = this.connection;
+    const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)
+      .finally(() => { if (app.agentRunning === running) app.agentRunning = null; });
+    app.agentRunning = running;
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve("late"), deadline);
+      timer.unref?.();
+    });
+    try {
+      const reply = await Promise.race([running, late]);
+      if (reply === "late") return { ok: false, code: "deadline", message: `The action did not finish within ${deadline} ms` };
+      if (reply.exceptionDetails) return { ok: false, code: "view_error", message: String(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text).slice(0, 1024) };
+      const answer = reply.result?.value;
+      if (typeof answer?.ok !== "boolean") return { ok: false, code: "view_error", message: "The view answered in an unknown shape" };
+      return answer;
+    } catch {
+      // The document went away mid-call (reload, navigation, closed Tab).
+      return { ok: false, code: "view_reloaded", message: "The view reloaded while the action ran" };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // undefined: the person; null: unknown, refused.
