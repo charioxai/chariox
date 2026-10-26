@@ -213,6 +213,7 @@ dependencies = [
  "chariox-app-runtime",
  "chariox-app-wit",
  "futures",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
