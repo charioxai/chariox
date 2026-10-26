@@ -144,7 +144,8 @@ fn a12_continue_keeps_live_sources_and_wait_checks_coverage_and_interval() {
         serde_json::json!({"status":"waiting","reason":"depends on delegate","registration_ids":["reg"],"deadline_ms":9_000_000}),
     );
     assert_eq!(t.state, ExecutionState::Waiting);
-    assert_eq!(t.wait.unwrap().deadline_ms, 60_004);
+    assert_eq!(t.wait.as_ref().unwrap().deadline_ms, 9_000_000);
+    assert_eq!(t.goal.unwrap().next_check_in_ms, Some(60_004));
     let f = Fixture::new();
     goal(&f, 60);
     f.register();
