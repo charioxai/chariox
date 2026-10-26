@@ -28,6 +28,35 @@ test -z "$(git status --porcelain)" || { echo 'Run the committed candidate from 
     rustc --version
     printf 'CHARIOX_HOME=%s\n' "$CHARIOX_HOME"
 } > "$evidence/source.txt"
+# Probe each syscall in a disposable child before spending time on compilation.
+# These are diagnostics only: the signed worker still has to install its policy.
+python3 - > "$evidence/rlimit-self-check.log" <<'PY'
+import ctypes, os, resource
+libc = ctypes.CDLL(None, use_errno=True)
+class Limit(ctypes.Structure):
+    _fields_ = [('soft', ctypes.c_uint64), ('hard', ctypes.c_uint64)]
+for name, requested in [('RLIMIT_AS', 1 << 30), ('RLIMIT_CPU', 300),
+                        ('RLIMIT_FSIZE', 8 << 20), ('RLIMIT_NOFILE', 64),
+                        ('RLIMIT_CORE', 0)]:
+    pid = os.fork()
+    if pid == 0:
+        operation = f'getrlimit({name})'
+        try:
+            kind = getattr(resource, name)
+            old_soft, old_hard = resource.getrlimit(kind)
+            bounded = lambda value, old: value if old == resource.RLIM_INFINITY else min(value, old)
+            soft = bounded(bounded(requested, old_soft), old_hard)
+            hard = bounded(requested + (name == 'RLIMIT_CPU'), old_hard)
+            operation = f'setrlimit({name}, soft={soft}, hard={hard})'
+            result = libc.setrlimit(kind, ctypes.byref(Limit(soft, hard)))
+            errno = ctypes.get_errno() if result else 0
+            print(f'{operation}: {"FAIL" if result else "OK"} errno={errno} {os.strerror(errno)}', flush=True)
+        except (OSError, ValueError) as error:
+            print(f'{operation}: FAIL errno={getattr(error, "errno", None)} {error}', flush=True)
+        os._exit(0)
+    os.waitpid(pid, 0)
+PY
+cat "$evidence/rlimit-self-check.log"
 rustup target list --installed | grep -qx wasm32-unknown-unknown || {
     echo 'Install the Rust wasm32-unknown-unknown target, then rerun.' >&2; exit 2;
 }

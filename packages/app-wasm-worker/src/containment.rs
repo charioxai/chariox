@@ -30,19 +30,19 @@ pub fn enter() -> io::Result<()> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn ceilings() -> io::Result<()> {
-    for (resource, value) in [
-        (libc::RLIMIT_AS, ADDRESS_SPACE_BYTES),
-        (libc::RLIMIT_CPU, CPU_SECONDS),
-        (libc::RLIMIT_FSIZE, FILE_BYTES),
-        (libc::RLIMIT_NOFILE, DESCRIPTORS),
-        (libc::RLIMIT_CORE, 0),
+    for (name, resource, value) in [
+        ("RLIMIT_AS", libc::RLIMIT_AS, ADDRESS_SPACE_BYTES),
+        ("RLIMIT_CPU", libc::RLIMIT_CPU, CPU_SECONDS),
+        ("RLIMIT_FSIZE", libc::RLIMIT_FSIZE, FILE_BYTES),
+        ("RLIMIT_NOFILE", libc::RLIMIT_NOFILE, DESCRIPTORS),
+        ("RLIMIT_CORE", libc::RLIMIT_CORE, 0),
     ] {
         let mut old = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
         if unsafe { libc::getrlimit(resource, &mut old) } != 0 {
-            return Err(io::Error::last_os_error());
+            return Err(syscall_error(&format!("getrlimit({name})")));
         }
         let hard = (value + u64::from(resource == libc::RLIMIT_CPU)) as libc::rlim_t;
         let value = (value as libc::rlim_t).min(old.rlim_cur).min(old.rlim_max);
@@ -51,8 +51,17 @@ fn ceilings() -> io::Result<()> {
             rlim_max: hard.min(old.rlim_max),
         };
         if unsafe { libc::setrlimit(resource, &limit) } != 0 {
-            return Err(io::Error::last_os_error());
+            return Err(syscall_error(&format!(
+                "setrlimit({name}, soft={}, hard={})",
+                limit.rlim_cur, limit.rlim_max
+            )));
         }
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn syscall_error(operation: &str) -> io::Error {
+    let error = io::Error::last_os_error();
+    io::Error::new(error.kind(), format!("{operation}: {error}"))
 }

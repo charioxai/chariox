@@ -53,8 +53,10 @@ pub(super) fn enter() -> io::Result<()> {
             size_of::<u32>(),
         )
     } != 0
-        || flags & 0x10001 != 0x10001
     {
+        return Err(super::syscall_error("csops(CS_OPS_STATUS)"));
+    }
+    if flags & 0x10001 != 0x10001 {
         return Err(io::Error::other(
             "APP_SANDBOX_SIGNATURE: valid hardened-runtime worker required",
         ));
@@ -67,6 +69,7 @@ pub(super) fn enter() -> io::Result<()> {
     let result = unsafe {
         sandbox_init_with_parameters(profile.as_ptr(), 0, parameters.as_ptr(), &mut error)
     };
+    let failure = (result != 0).then(|| super::syscall_error("sandbox_init_with_parameters"));
     if !error.is_null() {
         // A compiler diagnostic may contain host paths. Report only a stable
         // failure and let the standalone drill identify profile compatibility.
@@ -74,7 +77,10 @@ pub(super) fn enter() -> io::Result<()> {
             sandbox_free_error(error);
         }
     }
-    if result != 0 || unsafe { sandbox_check(libc::getpid(), std::ptr::null(), 0) } != 1 {
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    if unsafe { sandbox_check(libc::getpid(), std::ptr::null(), 0) } != 1 {
         return Err(io::Error::other(
             "APP_SANDBOX_PROFILE: Seatbelt installation failed",
         ));
@@ -87,7 +93,7 @@ fn close_extra_descriptors() -> io::Result<()> {
     // before any thread or signing API can create another one.
     let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
     let size = size_of::<libc::proc_taskinfo>() as c_int;
-    if unsafe {
+    let actual = unsafe {
         libc::proc_pidinfo(
             libc::getpid(),
             libc::PROC_PIDTASKINFO,
@@ -95,12 +101,15 @@ fn close_extra_descriptors() -> io::Result<()> {
             task.as_mut_ptr().cast(),
             size,
         )
-    } != size
-        || unsafe { task.assume_init() }.pti_threadnum != 1
-    {
-        return Err(io::Error::other(
-            "APP_SANDBOX_ORDER: containment must precede threads",
-        ));
+    };
+    if actual != size {
+        return Err(super::syscall_error("proc_pidinfo(PROC_PIDTASKINFO)"));
+    }
+    let threads = unsafe { task.assume_init() }.pti_threadnum;
+    if threads != 1 {
+        return Err(io::Error::other(format!(
+            "APP_SANDBOX_ORDER: containment must precede threads (found {threads})"
+        )));
     }
     let size = unsafe {
         libc::proc_pidinfo(
@@ -112,9 +121,7 @@ fn close_extra_descriptors() -> io::Result<()> {
         )
     };
     if !(1..=1024 * 1024).contains(&size) {
-        return Err(io::Error::other(
-            "APP_SANDBOX_FDS: descriptor enumeration failed",
-        ));
+        return Err(super::syscall_error("proc_pidinfo(PROC_PIDLISTFDS, size)"));
     }
     let count = size as usize / size_of::<libc::proc_fdinfo>() + 32;
     let mut descriptors: Vec<libc::proc_fdinfo> =
@@ -128,14 +135,17 @@ fn close_extra_descriptors() -> io::Result<()> {
             (count * size_of::<libc::proc_fdinfo>()) as c_int,
         )
     };
-    if actual <= 0 || actual as usize >= count * size_of::<libc::proc_fdinfo>() {
+    if actual <= 0 {
+        return Err(super::syscall_error("proc_pidinfo(PROC_PIDLISTFDS, list)"));
+    }
+    if actual as usize >= count * size_of::<libc::proc_fdinfo>() {
         return Err(io::Error::other(
             "APP_SANDBOX_FDS: descriptor enumeration incomplete",
         ));
     }
     for descriptor in &descriptors[..actual as usize / size_of::<libc::proc_fdinfo>()] {
         if descriptor.proc_fd > 4 && unsafe { libc::close(descriptor.proc_fd) } != 0 {
-            return Err(io::Error::last_os_error());
+            return Err(super::syscall_error("close(inherited descriptor)"));
         }
     }
     Ok(())
