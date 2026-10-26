@@ -148,16 +148,22 @@ impl KernelRuntimeState {
         }
         let config = self.owned.config_projection.snapshot();
         let result = tokio::task::spawn_blocking(move || {
-            // Refresh also probes usage. Record that attempt so a cold launch
-            // cannot repeat authentication when optional usage APIs are absent.
-            let _usage_refresh = registry.acquire_usage_refresh_attempt(
+            // The lease makes prompts sharing a profile run one check and keeps
+            // the cold launch's own usage refresh from repeating it. When it is
+            // not granted, another check already recorded what admission reads.
+            let Some(_attempt) = registry.acquire_usage_refresh_attempt(
                 &owner,
                 provider,
                 &profile.profile_id,
                 crate::session::unix_epoch_ms(),
                 crate::account_profile::PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS,
-            )?;
-            crate::local::provider_requests::refresh_provider_account_profile_explicitly(
+            )?
+            else {
+                return Ok(());
+            };
+            // Authentication only: the explicit refresh would restart the Codex
+            // server that owns a pending device login and fail on optional usage.
+            crate::local::provider_requests::refresh_provider_account_auth_with_config(
                 &registry,
                 &owner,
                 provider,
