@@ -52,10 +52,15 @@ fn main() {
         "without-landlock",
         "cpu-budget",
         "icache",
+        "unsigned-code",
     ] {
         if matches!(scenario, "memory" | "without-landlock" | "icache") && cfg!(target_os = "macos")
         {
             println!("NATIVE {scenario}: NOT RUN (Linux-only native probe)");
+            continue;
+        }
+        if scenario == "unsigned-code" && !cfg!(target_os = "macos") {
+            println!("NATIVE unsigned-code: NOT RUN (macOS code-signing probe)");
             continue;
         }
         for mode in ["red", "green"] {
@@ -110,6 +115,7 @@ fn main() {
             let expected_signal = match (scenario, mode) {
                 ("cpu", "green") => Some(libc::SIGXCPU),
                 ("file", "green") => Some(libc::SIGXFSZ),
+                ("unsigned-code", "green") if cfg!(target_os = "macos") => Some(libc::SIGKILL),
                 _ => None,
             };
             let passed = if let Some(signal) = expected_signal {
@@ -261,13 +267,10 @@ fn child(scenario: &str, mode: &str) {
                 assert_eq!(protect < 0, green, "native RWX transition");
             }
             let rx = unsafe { libc::mprotect(rw, 4096, libc::PROT_READ | libc::PROT_EXEC) };
-            // Linux enforces W^X. Hardened macOS permits only signed/JIT code,
-            // and the separate AOT probe must prove Wasmtime compatibility.
-            if cfg!(target_os = "macos") && green {
-                assert_eq!(rx, -1);
-            } else {
-                assert_eq!(rx, 0);
-            }
+            // Darwin validates code lazily when it executes, rather than
+            // refusing this transition. The unsigned-code child probes that
+            // enforcement; the AOT child separately proves admitted JIT code.
+            assert_eq!(rx, 0);
             unsafe {
                 libc::munmap(rw, 4096);
             }
@@ -398,6 +401,44 @@ fn child(scenario: &str, mode: &str) {
         }
         "file" => {
             std::io::stdout().write_all(&[b'x'; 8192]).unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        "unsigned-code" => {
+            #[cfg(target_arch = "aarch64")]
+            let instructions: &[u8] = &[0x40, 0x05, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6];
+            #[cfg(target_arch = "x86_64")]
+            let instructions: &[u8] = &[0xb8, 42, 0, 0, 0, 0xc3];
+            let memory = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    4096,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANON,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(memory, libc::MAP_FAILED);
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    instructions.as_ptr(),
+                    memory.cast::<u8>(),
+                    instructions.len(),
+                );
+                assert_eq!(
+                    libc::mprotect(memory, 4096, libc::PROT_READ | libc::PROT_EXEC),
+                    0
+                );
+                unsafe extern "C" {
+                    fn sys_icache_invalidate(start: *mut libc::c_void, length: usize);
+                }
+                sys_icache_invalidate(memory, instructions.len());
+                // A hardened process must be killed here: this is anonymous
+                // unsigned code, deliberately outside any MAP_JIT allocation.
+                let call: unsafe extern "C" fn() -> u32 = std::mem::transmute(memory);
+                assert_eq!(call(), 42);
+                libc::munmap(memory, 4096);
+            }
         }
         "aot" => {
             let engine = chariox_app_wasm_worker::worker::WorkerEngine::new().unwrap();
