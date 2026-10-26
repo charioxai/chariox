@@ -432,7 +432,11 @@ fn a12_wait_deadlines_default_max_and_owner_interval_remain_finite() {
             &f,
             serde_json::json!({"status":"waiting","reason":"source required","registration_ids":["reg"],"deadline_ms":9_000_000}),
         );
-        assert_eq!(t.wait.as_ref().unwrap().deadline_ms, 4 + interval);
+        assert_eq!(t.wait.as_ref().unwrap().deadline_ms, 9_000_000);
+        assert_eq!(
+            t.goal.as_ref().unwrap().next_check_in_ms,
+            Some(4 + interval)
+        );
         f.apply(Operation::ControlGoal {
             task: "p".into(),
             owner: "owner".into(),
@@ -441,7 +445,8 @@ fn a12_wait_deadlines_default_max_and_owner_interval_remain_finite() {
             value: Some("1".into()),
             now: 10,
         });
-        assert_eq!(f.task().wait.unwrap().deadline_ms, 60_010);
+        assert_eq!(f.task().wait.as_ref().unwrap().deadline_ms, 9_000_000);
+        assert_eq!(f.task().goal.unwrap().next_check_in_ms, Some(60_010));
     }
 }
 
@@ -1152,7 +1157,6 @@ fn a12_repeated_continue_keeps_the_agents_covered_wait() {
             now,
         });
     };
-    yield_on("p", 2);
     f.settle("p", true);
     let first = check(&f, assessment("continue"));
     assert_eq!(first.state, ExecutionState::Working);
@@ -1165,12 +1169,33 @@ fn a12_repeated_continue_keeps_the_agents_covered_wait() {
     assert_eq!(t.no_progress_wakes, first.no_progress_wakes);
     let wait = t.wait.clone().unwrap();
     assert_eq!(wait.registration_ids, vec!["reg".to_string()]);
-    assert_eq!(
-        t.goal.as_ref().unwrap().next_check_in_ms,
-        Some(wait.deadline_ms)
-    );
-    assert!(wait.deadline_ms <= 3 + 60_000);
+    assert_eq!(t.goal.as_ref().unwrap().next_check_in_ms, Some(4 + 60_000));
+    assert_eq!(wait.deadline_ms, 9_000_000);
     assert_eq!(f.task(), t);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a covered initial wait needs no extra work turn.
+#[test]
+fn a12_first_continue_honours_an_already_accepted_live_wait() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "p".into(),
+        registrations: vec!["reg".into()],
+        cursor: 0,
+        deadline: 9_000_000,
+        reason: "required build remains live".into(),
+        now: 2,
+    });
+    f.settle("p", true);
+    let t = check(&f, assessment("continue"));
+    assert_eq!(t.state, ExecutionState::Waiting);
+    assert_eq!(t.no_progress_wakes, 0);
+    assert!(t.pending_prompt_id.is_none());
+    assert_eq!(t.goal.as_ref().unwrap().next_check_in_ms, Some(60_004));
 }
 
 // The kept wait never bypasses the guard: at the limit a covered wait still blocks.

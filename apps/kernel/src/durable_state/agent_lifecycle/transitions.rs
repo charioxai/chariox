@@ -462,13 +462,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             {
                 return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
-            // A goal checks in at its owner's interval. Any other admitted
-            // deadline is honoured: shortening it would spend no-progress
-            // wakes before a long timer is due, and the sweep still checks
-            // source liveness.
-            let deadline = t.goal.as_ref().map_or(deadline, |g| {
-                deadline.min(now.saturating_add(g.check_in_minutes as u64 * 60_000))
-            });
+            // Goal check-ins have a separate clock. Preserve the admitted wait
+            // deadline so an early check-in cannot turn a live source into a timeout.
             t.wait = Some(AgentWait {
                 registration_ids: ids,
                 deadline_ms: deadline,

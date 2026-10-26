@@ -10,7 +10,24 @@ use serde::{Deserialize, Serialize};
 pub(crate) const CHECK_BOUND_MS: u64 = 60_000;
 const EVALUATING_REASON: &str = "Evaluating original goal objective";
 const VAULT_WAIT_REASON: &str = "Waiting for the Vault unlock";
+pub(super) const CHECK_IN_OCCURRENCE_PREFIX: &str = "goal-check-in-";
 pub(crate) const RESULT_LIMIT: usize = 8_192;
+
+pub(super) fn is_check_in_event(task: &AgentTaskExecution, event: &InboxEvent) -> bool {
+    task.goal.is_some()
+        && event.kind == "deadline_reached"
+        && event.source_id == task.task_id
+        && event.occurrence_id.starts_with(CHECK_IN_OCCURRENCE_PREFIX)
+}
+
+fn schedule_wait_check_in(task: &mut AgentTaskExecution, now: u64) {
+    if let (Some(goal), Some(wait)) = (&mut task.goal, &task.wait) {
+        goal.next_check_in_ms = Some(
+            wait.deadline_ms
+                .min(now.saturating_add(u64::from(goal.check_in_minutes) * 60_000)),
+        );
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentGoal {
@@ -325,18 +342,16 @@ pub(super) fn evaluate(
             // again on live sources covering every obligation: honour that wait.
             if t.no_progress_wakes >= NO_PROGRESS_LIMIT && covered_wait(tx, &t, now)? {
                 blocked(&mut t, "Goal check-ins made no progress; owner must inspect and explicitly resume");
-            } else if t.no_progress_wakes > 0 && covered_wait(tx, &t, now)? {
+            } else if covered_wait(tx, &t, now)? {
                 t.reason = reason;
                 t.state = ExecutionState::Waiting;
-                let deadline = t.wait.as_ref().map(|w| w.deadline_ms);
-                if let Some(g) = &mut t.goal { g.next_check_in_ms = deadline; }
+                schedule_wait_check_in(&mut t, now);
             } else {
                 again = continue_work(&mut t, &reason);
             }
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
-            let interval = t.goal.as_ref().map_or(10, |g| g.check_in_minutes) as u64 * 60_000;
-            let deadline = deadline_ms.min(now.saturating_add(interval))
+            let deadline = deadline_ms
                 .min(t.wait.as_ref().map_or(u64::MAX, |w| w.deadline_ms))
                 .min(wakes::source_deadline(tx, &t, &registration_ids)?.unwrap_or(u64::MAX));
             let regs = registrations(tx, &t.task_id)?;
@@ -364,7 +379,7 @@ pub(super) fn evaluate(
                 });
                 t.reason = reason;
                 t.state = ExecutionState::Waiting;
-                if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
+                schedule_wait_check_in(&mut t, now);
             }
         }
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),

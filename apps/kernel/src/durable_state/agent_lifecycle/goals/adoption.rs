@@ -82,7 +82,7 @@ pub(in crate::durable_state::agent_lifecycle) fn adopt(
         long_wait_notified: false,
         last_checked_at_ms: now,
     });
-    t.goal.as_mut().unwrap().next_check_in_ms = Some(due);
+    super::schedule_wait_check_in(&mut t, now);
     t.revision += 1;
     migration::audit(
         tx,
