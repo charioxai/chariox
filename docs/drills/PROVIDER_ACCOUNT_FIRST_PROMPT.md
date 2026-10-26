@@ -2,8 +2,10 @@
 
 `apps-provider-logins/UNKNOWN-FIRST-PROMPT` exercises a newly linked native
 account whose saved authentication observation is `unknown`. The first prompt
-must run the same official status check as Refresh, persist the observation and
-continue through normal account admission. A logged-out account gets the typed
+must run the official native status check (authentication only: no usage probe and
+no Codex account-server restart, so a pending device login survives), persist the
+observation and continue through normal account admission. Prompts sharing the
+profile share one check through the usage-refresh attempt lease. A logged-out account gets the typed
 unauthenticated refusal. Known states do not trigger this first-use refresh.
 Existing Vault-backed Claude first-use verification retains its own authority.
 
@@ -14,8 +16,10 @@ cargo test -p chariox-kernel --lib provider_prompt_runtime::unknown_account
 ```
 
 Use the lane's cargo slot and disk-backed TMPDIR on shared builders. The fake
-official Claude executable covers success, logout, second-prompt reuse and
-authenticated/expired/error/not-configured observations without real credentials.
+official Claude executable covers success, logout, second-prompt reuse, a failing
+optional `/usage`, concurrent first prompts and authenticated/expired/error/
+not-configured observations; the fake Codex app-server also covers a pending
+device login. No real credentials are involved.
 
 The real drill is `scripts/e2e-stack/unknown-account-first-prompt.mjs`. It uses
 the shared context-switch stack harness and its exact-source binary manifests.
