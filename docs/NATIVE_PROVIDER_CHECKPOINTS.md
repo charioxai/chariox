@@ -92,12 +92,18 @@ finish before the home operation commits and retires its source. A readiness
 probe admits no user turn. The next real provider launch retains the complete
 checkpoint binding until native continuity is accepted.
 
-Return captures the current target Project again. It creates another Project
-identity and another unused root, including a separate product-materialized
-provider profile where native history could otherwise conflict. The original
-home checkout and previous materializations remain available; Return never
-resets, merges, or overwrites them. Home Room identity, history, and authority
-stay at home. Only its agent's execution workspace changes.
+Return captures the current target Project again and creates a new Project
+identity and unused workspace root. It reuses the original home account
+profile. Native import extends the stopped home rollout only when every old
+byte is a complete-record prefix of the incoming history; divergent history
+is preserved and refused. Resolve that divergence before retrying, or cancel
+the pending Move before a target lease is bound. Ordinary checkpoint import
+remains strict and accepts only its required original prefix plus native
+appends from the readiness probe, including an unindexed rollout.
+
+The original home checkout and previous workspace materializations remain
+available. Return never resets or merges them. Home Room identity, history
+and authority stay at home. Only the agent's execution workspace changes.
 
 Private journals recover independently of periodic Room snapshots. An
 acknowledged worker backing restores idle with its original lease timestamps
