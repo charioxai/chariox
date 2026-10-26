@@ -5204,6 +5204,16 @@ ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
 including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
 for edge cases, resource ownership and the proposal approval requirement.
 
+### MP-08 / MP-10 / MP-11: parked-task Stop reply (643 / peer 239)
+
+`CancelActivePrompt` keeps its request shape. When the targeted agent has no active
+prompt but owns a parked task (a Waiting task whose provider turn has ended), the
+kernel cancels that task and answers `AgentTaskUpdated { session_id, task }` instead
+of `PromptCancelled`. A request that names `expected_prompt_id` never cancels a
+parked task. Clients treat `AgentTaskUpdated` as a successful Stop only with
+protocol 643 or newer; older kernels keep answering `PromptCancelled` or an error.
+The relay peer protocol is unchanged.
+
 ### Staging new UI union (599/205)
 
 MP-08 / MP-09 / MP-10 / MP-11: this union combines Room stars (588/194),

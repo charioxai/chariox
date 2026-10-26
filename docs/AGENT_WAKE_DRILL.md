@@ -146,3 +146,26 @@ worker and cancel it; confirm physical source settlement, not just acceptance of
 the cancellation request. Preserve screenshots, timings, first-reply verdicts,
 source identities and cleanup outside the repository. These focused checks do not
 replace the complete ordinary/managed acceptance matrix.
+
+## MP-08 / MP-10 / MP-11: shared Stop after a provider turn ends
+
+Use local protocol 643 or newer, a matching built TUI, real home/leased worker
+kernels, the hosted relay and an authenticated official provider. In an actual
+repository with a test watcher, ask the agent to start one `chariox.events.process`
+watcher and yield on that source with a finite deadline. Retain the Waiting task,
+its open process obligation and the watcher's exact PID before the fault.
+
+Kill only that run's owned provider descendants, reconnect the TUI to the same
+agent, and enter `@ stop`. This exercises the shared shell Stop handler. Capture
+its `cancelled task <task_id>` result: a successful ledger transition accompanied
+by `unexpected response variant: expected PromptCancelled` is a failure. Verify
+the same task becomes Cancelled, its process source physically exits and no
+open/settling obligation remains. Run the repository tests once in an ordinary
+prompt afterward and retain their real result. Repeat the active-prompt Stop
+regression, which must still accept `PromptCancelled`. A prompt-specific Stop
+must never cancel another parked task.
+
+Retain the base's failing shared-command result and the candidate's passing
+result, source identities, screenshots, process receipts and cleanup outside the
+repository. Protocol 626 adds `AgentTaskUpdated` as the parked-task reply to
+`CancelActivePrompt`; the request and relay peer shapes are unchanged.
