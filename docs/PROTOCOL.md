@@ -741,7 +741,8 @@ MP-08 / MP-10 / MP-11: 611/217 binds the leased prompt completion to its exact p
 (see the leased prompt rules above). 590 stays reciprocal for upgrade and rollback; 373 is
 the oldest unpinned intermediate removed to make room. The worker also refuses every client
 request (attach, prompt, mutation, read) on the hidden backing session of a leased agent with
-`leased_backing_session_refused`, naming the home session; peer requests from the home are unaffected.
+`leased_backing_session_refused`, naming the home session, including a local terminal that carries
+no user (the local membership exemption does not cover it); peer requests from the home are unaffected.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
