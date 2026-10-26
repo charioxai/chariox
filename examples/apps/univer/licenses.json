@@ -1,0 +1,1196 @@
+{
+  "format": 1,
+  "nodeLockSha256": "b889967990435445ea79f30912d618943c4aa8078e211c5fc756f06ac7f23ff2",
+  "backendLockSha256": "0eae38a0f16e2bbf258b3bc864c38955a6e31518573c88800524f1d6d208ee55",
+  "packages": [
+    {
+      "id": "@esbuild/linux-x64@0.25.12",
+      "license": "MIT",
+      "sha256": "5578262df68f9cc77cdff806eceb99a3571799db99d6ed08637bd335321b8035",
+      "notices": [],
+      "assets": [],
+      "supplemental": {
+        "source": "https://raw.githubusercontent.com/evanw/esbuild/208f539945b145e7c9d6d844290f81c3fe5af320/LICENSE.md",
+        "path": "esbuild-linux-x640.25.12-LICENSE.txt",
+        "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+      }
+    },
+    {
+      "id": "@flatten-js/interval-tree@1.1.3",
+      "license": "MIT",
+      "sha256": "32c3cb1d699b30c9bf36ea866bdc6cf5887cab019a42b7c41b9cd308a091a54d",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@floating-ui/core@1.8.0",
+      "license": "MIT",
+      "sha256": "1395ee224300faa978e9a3493ec891c36dd3c8eacd70ce8d41dde5c694086d47",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@floating-ui/dom@1.8.0",
+      "license": "MIT",
+      "sha256": "fe0e2a4288c250ddda5575e05970080830914bdde25b61c1e68eba95fb8198e4",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@floating-ui/react-dom@2.1.9",
+      "license": "MIT",
+      "sha256": "cf23ee0570c094f6561cc4df16478e2e3954bc194ab71173e3f9d339a63fc058",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@floating-ui/utils@0.2.12",
+      "license": "MIT",
+      "sha256": "66b348726e498b600cc7f112e80c7c80b171ed568284b85fe66a0f3272cf08c2",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@grpc/grpc-js@1.14.6",
+      "license": "Apache-2.0",
+      "sha256": "c643da7ec2f17ad984a24047cbb7e453e54aed2c542f2b0a35f32ffc15b8285d",
+      "notices": [
+        "LICENSE",
+        "proto/protoc-gen-validate/LICENSE",
+        "proto/xds/LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@grpc/proto-loader@0.8.1",
+      "license": "Apache-2.0",
+      "sha256": "7337031a4dadb7c13750512bd396854fe488340fbc074ad5e601dfdb5dca6a6a",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@js-sdsl/ordered-map@4.4.2",
+      "license": "MIT",
+      "sha256": "b882c86b7a1291084f9f6a95d433532b42a643b12f20aab4e57926fe0f56aded",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/aspromise@1.1.2",
+      "license": "BSD-3-Clause",
+      "sha256": "a5f249218f4e2b0b6702abcc3f865577b4c8d9087f5e2278ca7fa84c54159d58",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/base64@1.1.2",
+      "license": "BSD-3-Clause",
+      "sha256": "0ecef4acd2474ef972a7c8712ef74edfa61846ab5452a4e3ef8ef9f272e4d121",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/codegen@2.0.5",
+      "license": "BSD-3-Clause",
+      "sha256": "96e46edb19b3e500ad41f323f5e487af68450a747a11ebbbf26e7be1351b786f",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/eventemitter@1.1.1",
+      "license": "BSD-3-Clause",
+      "sha256": "d4fea5d412516e145c8c32d14330168fdcc2e7ad8ac5b4e88a2c430234f0791e",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/fetch@1.1.1",
+      "license": "BSD-3-Clause",
+      "sha256": "048b611c4df531db4b0881fad60985444d993133cd4b2fbbf377e32642becad3",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/float@1.0.2",
+      "license": "BSD-3-Clause",
+      "sha256": "e6f182142fea2529fcdd4ae6b1ed495aecd6fec37eddb332e42d0ff251db89d1",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/path@1.1.2",
+      "license": "BSD-3-Clause",
+      "sha256": "da14b52329a261da066ec81d342c7adeec3fe4c09aef0571885ac016e0aa2a99",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/pool@1.1.0",
+      "license": "BSD-3-Clause",
+      "sha256": "09307bb6c47418f6551f8aa8268b3b89ccda5b8951d4ce0e9182193e3d97c9a7",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@protobufjs/utf8@1.1.2",
+      "license": "BSD-3-Clause",
+      "sha256": "3a84090e9efa79074b494a7af28c82c22206030381b8af3de8b53fb54a11a80f",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/primitive@1.2.0",
+      "license": "MIT",
+      "sha256": "899c96dbae759f29369a84ceafa08c21570d431b5c9aab1d08d76f8b938a04b1",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-arrow@1.1.17",
+      "license": "MIT",
+      "sha256": "5433b5caac5f28b296b3e46e4e8e14ac9e7c5dd5d12a5b9f8ab79b2704b1a6ff",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-collection@1.2.0",
+      "license": "MIT",
+      "sha256": "29b94b28f65414759ae3915486d965465e048f6d62faa4162a86ec862928812b",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-compose-refs@1.1.5",
+      "license": "MIT",
+      "sha256": "5a8c99a025b44830a427914b33e80d60b2c1dfe92e57d3da354b3f4f2153909e",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-context@1.3.0",
+      "license": "MIT",
+      "sha256": "77374ef46b1c9feb0e67c75d333dfab059ff02090ca92a1c756b239c2daccc53",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-dialog@1.3.1",
+      "license": "MIT",
+      "sha256": "9c7a973472a622cdf0c52387d85e60dc11c591d84260dcedc313f1fa37890160",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-direction@1.2.0",
+      "license": "MIT",
+      "sha256": "486610987082716f87983ca6bd684fe6e64e80a63db805c0752e454998ec2d19",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-dismissable-layer@1.2.1",
+      "license": "MIT",
+      "sha256": "cd4a28e7f09ffbefbf452c9903ddbd97c15855a4d40f5475b9ea6b50374bfb65",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-dropdown-menu@2.2.1",
+      "license": "MIT",
+      "sha256": "57dbb0feddb2d0f9b854f73699dbed907eeb930ec25fa01dcba1c5e0633697cb",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-focus-guards@1.2.0",
+      "license": "MIT",
+      "sha256": "f42e0b9e61fb1009a1434fa31f31a67b0f9063c80d6f0042c454d6fa818fad4a",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-focus-scope@1.3.1",
+      "license": "MIT",
+      "sha256": "6cb37f7fce172f35f90ee9a1af37bdbbe591e95c423cb474f7b35ec9e603528c",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-hover-card@1.2.1",
+      "license": "MIT",
+      "sha256": "f1349d044e458ac2f1a1cbab15576e1effab3db8fb1174caf4dc6a9400917ce3",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-id@1.1.4",
+      "license": "MIT",
+      "sha256": "4aab2ab37d18584fffc5f0fddaae40cf10e1eb44f6107468c6e299a31f0dee40",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-menu@2.2.1",
+      "license": "MIT",
+      "sha256": "93493e4b994b22d4db63e2d056d47f36e5c7affaba61d1d7fcb143cc69f52a5c",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-popover@1.3.1",
+      "license": "MIT",
+      "sha256": "a78a4ce32bd02d517d0559b19a20411deaabe0066d4deeae3bdc902a8e77c931",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-popper@1.4.0",
+      "license": "MIT",
+      "sha256": "b8eefce484f156736cce1de04580af84633be4e641a371f1397851ee09165eb4",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-portal@1.2.0",
+      "license": "MIT",
+      "sha256": "b1e186976d25ef7ed381be127caa59f68b36190775618c4d72b618be6b2b7a27",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-presence@1.1.11",
+      "license": "MIT",
+      "sha256": "d77d1f00486d2ca4025b612fad53f8f6eff51e08edac1d79713ec4fdf774d6b4",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-primitive@2.2.0",
+      "license": "MIT",
+      "sha256": "42f4a0b86b11a7e066b8b52ba052986bae3d0bea788ce981d55ae08e930ef2a1",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-roving-focus@1.2.1",
+      "license": "MIT",
+      "sha256": "c93e7cd8a9969f17895ed7fb00d852682912274c93fc35db963937cb05e0b263",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-separator@1.2.0",
+      "license": "MIT",
+      "sha256": "75a4eadbe843a1b36fbd7ee4653793c511fe2cc4d55cb4571f28f95703570e9f",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-slot@1.5.0",
+      "license": "MIT",
+      "sha256": "2a7902b92f5f8bf56b4080c9af60cceaf4496a3fe6c0f8be36d3633c96323a15",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-use-callback-ref@1.1.5",
+      "license": "MIT",
+      "sha256": "0aebc36aa0df3312a57c81b5579319d0f40f56c6b2154b674b6d1b7b7deaf011",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-use-controllable-state@1.3.0",
+      "license": "MIT",
+      "sha256": "a874666d4704a419eae813d5d1cf480e18a4608357b89d09f15096c187c567fd",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-use-effect-event@0.0.5",
+      "license": "MIT",
+      "sha256": "57857e7d19ba59f7b7cc6031be66482c8803e0a6a45d8800a2a5aeb8832e4f2d",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-use-is-hydrated@0.1.3",
+      "license": "MIT",
+      "sha256": "35aa69bf785a4f6993e49251bace4a067ed3d1e63e9e33682f5ec37cbf7ea54b",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-use-layout-effect@1.1.4",
+      "license": "MIT",
+      "sha256": "4bb16496a3214c7d154153d0db1850c9dbf6f1368d1965300eb7f13adfa207b8",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-use-rect@1.1.4",
+      "license": "MIT",
+      "sha256": "14be19124d45d9f9c448b42685bba694fbe533a55eeb292b4034214cd2234e90",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/react-use-size@1.1.5",
+      "license": "MIT",
+      "sha256": "856aafcda6aa24d2da88de33900baf145b4ab4878cb730287da4c13cf980db59",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@radix-ui/rect@1.1.3",
+      "license": "MIT",
+      "sha256": "f79b1791c53c8dbec4bf1c1972b1169520a3c5a96d338c53564e5c0bf1a412fa",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@types/node@26.6.5",
+      "license": "MIT",
+      "sha256": "88beeb5302e68ffb89a2d2d4f23c1e68509579087c85da259c0ec2faf8a6b9df",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/core@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "b231217c13765271f5d4184180e1dd877b1c6ca71c722c6a0b8a0b225ba84798",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/design@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "963e726908e70e2e39f894d759b632145ebd47bb9149d924777eb63bdc0fac7f",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/docs-ui@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "01feea2ff20865e205786b02800669c4109ec90d96f4c8c6d3904a3df1abf42d",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/docs@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "abf5be8b2a5525d78400e3a55d94db5ac4bd7e9be79a1ce25a33e5eee4327933",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/drawing@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "efb13837feec0c68e5e7118db3b1a3cbade7ea559ccdc07916fb821188470acc",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/engine-formula@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "5f8680a8452ed50f5d859fc2f326564179e5e76555dfc8e45d2ecfd8d93cbc5f",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/engine-render@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "0f5ad42f8d41c9b6d15fceaaf1cc4c500aea57f0ed72e10cf9863a53cd2f0bdc",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/icons@1.46.0",
+      "license": "MIT",
+      "sha256": "11aff2663687084f69b7f1e25c589e12253b72d294850134e8255539eae9e1ca",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/network@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "a1245833598139879a51152e9d8e43acc77fbd1e0675602d30da628839f67147",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/preset-sheets-core@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "10883e431d5b14f751a42249ca0b4604308afa9295524523e78400b006b54048",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/preset-sheets-sort@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "c79f401fb092ff62efdbeba5906db179551d3c27ab40b8fe74164ea0ec8b349a",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/presets@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "115255966e3d2f74fcf137e40f78c3bfc0001a3e293358004601f2bc014f029c",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/protocol@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "f7742d9ea1dafd31d7be2c7e68ce3af7d47be9174adfe6409543b09a649eb329",
+      "notices": [
+        "lib/types/ts/universer/v1/license.d.ts"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/rpc@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "1c1fbfd8d077e572c04868ed6ce86c162f5877dc1279aa62b2912ed6374533bb",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets-formula-ui@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "c543dc5f034e203824f769e548293ced9345a528a26aebf812d665ac9153f06e",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets-formula@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "c765b61dbd699b29d745ff98034fec919bc25ab7d0c27bc4be8681af2f79b97e",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets-numfmt-ui@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "57f311a88963328b9187844066ac3c460bc53ec6f00dce37eedf58c010cdd1fa",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets-numfmt@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "adc6121e24b58c3e57520fdc7b8e3eac8052b4fb1706c451a3da0b7ea37bfa10",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets-sort-ui@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "49197bb292ac03d77f5b6dc22bdf873b7d6e01ababeae4b2eed1183513373747",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets-sort@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "832ccf148b0c6d44f5cc90f7f59fdf52f2448eca7f4a3453b78bfd5b43eacfee",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets-ui@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "3bd27044c388f048354e5cc6c787bb2cbf356a586733fd67a2ddce269f1bca0a",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/sheets@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "fd17b91830ccac15b71ad3ac42b3ac7975b655fa1e06fad7b48a6b02afe074b9",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/telemetry@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "9e12d442580020209331309012f05bc47f6e7cd9b4468175b73f1c60a83f5e64",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/themes@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "4fa1f01be43bf705e41864063e1688d002154d60d36a6dc81ab5aaedb7f5604d",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@univerjs/ui@1.2.0",
+      "license": "Apache-2.0",
+      "sha256": "9efa026b0d395315cbd4aa73fa6489c9e6c37c159666b065d5482bfd5b40a688",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "@wendellhu/redi@1.1.3",
+      "license": "MIT",
+      "sha256": "3387c30c708925444d2d909bd3390932fd81f9c6bdda68345fa2135b5404929b",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "ansi-regex@5.0.1",
+      "license": "MIT",
+      "sha256": "57aca710b8f2626705e886dddee7ebe29baee33da743d22f2e8527229fb4c709",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "ansi-styles@4.3.0",
+      "license": "MIT",
+      "sha256": "0d15248e0d5f83e2205a702a06fa5c03d57bda8430a067c4b7847381239a69b1",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "aria-hidden@1.2.6",
+      "license": "MIT",
+      "sha256": "aa8b6cfeb57b43d4893a533a22559a35cb0b4cfa7e3bbdf273b6c34ce1b27754",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "async-lock@1.4.1",
+      "license": "MIT",
+      "sha256": "9a312f16657b615289c7ee50b60f8f3fea25dc035b93410ca206093b71b4eee1",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "class-variance-authority@0.7.1",
+      "license": "Apache-2.0",
+      "sha256": "936c8758dfebf7d1923f88f068c58a622015e88a9c4b8c96e8b2ab33c6d0d1b0",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "cliui@8.0.1",
+      "license": "ISC",
+      "sha256": "0cf6ad0b94164d1472a785ee8510f366e96ea498a84a635f744d4b8d95c61fac",
+      "notices": [
+        "LICENSE.txt"
+      ],
+      "assets": []
+    },
+    {
+      "id": "clsx@2.1.1",
+      "license": "MIT",
+      "sha256": "336344e370f3cd575428e3494827d55aec566f56069de22400de1bae6aa1fe91",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "cmdk@1.1.1",
+      "license": "MIT",
+      "sha256": "e3351eae2028299b5590a2df277727f0f5d83fc6eb9f3cecc6ecf52578e0bb59",
+      "notices": [
+        "LICENSE.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "collapse-white-space@2.1.0",
+      "license": "MIT",
+      "sha256": "e24e12ca8ca90fae99b242556c7669e943be55d95885704b079cd907d463de1d",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "color-convert@2.0.1",
+      "license": "MIT",
+      "sha256": "cd63deed9f6a7084aac9d9522f8a19af47c4d30989ee1af27e16a5e446876ac3",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "color-name@1.1.4",
+      "license": "MIT",
+      "sha256": "feaa343ee2e34e79cbe5e8aa2bfe902609e6a23c6fd1ce49ed8bb1ccf51c72b3",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "decimal.js@10.6.0",
+      "license": "MIT",
+      "sha256": "f59b18da878ae1fa1c10e29a739458c1f319a7ab44a22bd3d47317d4ee753d34",
+      "notices": [
+        "LICENCE.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "detect-node-es@1.1.0",
+      "license": "MIT",
+      "sha256": "32e7ca57e6a99ef231f430013283f02cc0c191bb4e211d9a42447ba01c7ef643",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "emoji-regex@8.0.0",
+      "license": "MIT",
+      "sha256": "c06aa6ce645d9228b79eca35d084937e54f1a5c65ac97d386ae1fe65b50aa27c",
+      "notices": [
+        "LICENSE-MIT.txt"
+      ],
+      "assets": []
+    },
+    {
+      "id": "esbuild@0.25.12",
+      "license": "MIT",
+      "sha256": "5b52547e63ed237536b7c2422284762452d0f74efceffa20f995f24e93286afb",
+      "notices": [
+        "LICENSE.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "escalade@3.2.0",
+      "license": "MIT",
+      "sha256": "0de485e031f6942cd7ae73b777c345562a38ec425c1b60ea8bbf25f82cb302af",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "fast-diff@1.3.0",
+      "license": "Apache-2.0",
+      "sha256": "40db49d386f0045e6789e46577fd0cd3a70a3ce1a78c37cba69fe686ba12bf2b",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "franc-min@6.2.0",
+      "license": "MIT",
+      "sha256": "6ace9c83cfb975495e35f561062ee14f72115b78b820a84ef60ff007a64ddd41",
+      "notices": [],
+      "assets": [],
+      "supplemental": {
+        "source": "https://raw.githubusercontent.com/wooorm/franc/3f9f0b51a96c5df32a407dad865a3011ac0fa2d1/license",
+        "path": "franc-min6.2.0-LICENSE.txt",
+        "sha256": "f5e0c5c44706ddda7ac2f9096f848222f1e0e90f88643955041c2735be84592b"
+      }
+    },
+    {
+      "id": "get-caller-file@2.0.5",
+      "license": "ISC",
+      "sha256": "38d985354b58e2c28589a253bd37c75da15908d6e4bd5a15c58c09a2b393bbd2",
+      "notices": [
+        "LICENSE.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "get-nonce@1.0.1",
+      "license": "MIT",
+      "sha256": "874f8c39b8fd6df4e7da7bc26ff91b21583c5f8ae21d7eba115c7b344a00ae69",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "is-fullwidth-code-point@3.0.0",
+      "license": "MIT",
+      "sha256": "28d841ea658b1718da7172bfa10c45bf1a231f155a4b8834b8ab6cb913ee2096",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "js-tokens@4.0.0",
+      "license": "MIT",
+      "sha256": "a06ff9dfdc02872b3e4123a8a62021f9be422f4d4849cbb6727543f712c713d7",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "kdbush@4.1.0",
+      "license": "ISC",
+      "sha256": "eaeac0952c34e31a42f2ee2d8ab0de3e9cd82444269e5a78852b11315c1e7b97",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "lodash-es@4.18.1",
+      "license": "MIT",
+      "sha256": "14289df58d3298b801d7c90e0678fd844998574e759a170feed4d2944c36547f",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "lodash.camelcase@4.3.0",
+      "license": "MIT",
+      "sha256": "682438f1d3813f177e01e175e84b16e40fdb24912a435b5ddfde083ee3a47f7e",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "long@5.3.2",
+      "license": "Apache-2.0",
+      "sha256": "17344b23a40b683ce81df65bd1d1475efb468829640a6d8051440cdba8477c69",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "loose-envify@1.4.0",
+      "license": "MIT",
+      "sha256": "4c1b7196beda588c620852da45ac45ead80540199617b7f5bee4950e1f45a15c",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "n-gram@2.0.2",
+      "license": "MIT",
+      "sha256": "58b5f98bfd35c3c4e75876012678b13958b80563db93fb3e0f8a864be4bd6de9",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "ot-json1@1.0.2",
+      "license": "ISC",
+      "sha256": "e072466808cef67f96a020aed673a6bef91d2765b8175a198bea0072eb842588",
+      "notices": [
+        "README.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "ot-text-unicode@4.0.0",
+      "license": "ISC",
+      "sha256": "7a2ebcf0aa825459b8efe9ccc02a4d2fa3572da3b3225bc26d1107655d13feae",
+      "notices": [
+        "README.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "playwright-core@1.56.1",
+      "license": "Apache-2.0",
+      "sha256": "3cd9f2df61144933d6ace25effb1f7a629791839b66afc12505f27554cfbd04f",
+      "notices": [
+        "LICENSE",
+        "NOTICE"
+      ],
+      "assets": [
+        "lib/server/chromium/appIcon.png",
+        "lib/vite/recorder/assets/codicon-DCmgc-ay.ttf",
+        "lib/vite/recorder/playwright-logo.svg",
+        "lib/vite/traceViewer/codicon.DCmgc-ay.ttf",
+        "lib/vite/traceViewer/playwright-logo.svg"
+      ]
+    },
+    {
+      "id": "protobufjs@7.6.6",
+      "license": "BSD-3-Clause",
+      "sha256": "ca5d99c29e9124f0020f87723422cee180485899e0358de7fa6d91612619ad66",
+      "notices": [
+        "google/LICENSE",
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "quickselect@3.0.0",
+      "license": "ISC",
+      "sha256": "3e24f121d44bbad845a3420a9cab5747f37602661952501ba840340240b676ad",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "rbush@4.0.1",
+      "license": "MIT",
+      "sha256": "c5aa2669a6d3e739c9fa18f097a2f3eb9bbaa7540cd00f5fefbb10b4483a2d73",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "react-dom@18.3.1",
+      "license": "MIT",
+      "sha256": "70cfb8d0357303d2520dff2cc8963de3d8ee7d950a14cdd86db38e22c260efb0",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "react-remove-scroll-bar@2.3.8",
+      "license": "MIT",
+      "sha256": "c48166bc86d255b4a01aa935b64ca4df927be3ef1dd110d5dc71d4b8712beb83",
+      "notices": [],
+      "assets": [],
+      "supplemental": {
+        "source": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE",
+        "path": "react-remove-scroll-bar2.3.8-LICENSE.txt",
+        "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84"
+      }
+    },
+    {
+      "id": "react-remove-scroll@2.7.2",
+      "license": "MIT",
+      "sha256": "34508bc06a924dacfd8853d90e9151b08e5985f0ed1d0999983409ee20a1f7ba",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "react-style-singleton@2.2.3",
+      "license": "MIT",
+      "sha256": "ec3a945875ed9d3fb0789b1ec9e2a927d1e0d516104725c4c588737d340bd282",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "react@18.3.1",
+      "license": "MIT",
+      "sha256": "9c57c2da6961743714a006bae51e6168c9f51a08b1995ed885a491bb4d06628b",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "require-directory@2.1.1",
+      "license": "MIT",
+      "sha256": "451aa72413a588facf62fca4db071c5f6c98cc24d74cdec4dbd5631dd4f23913",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "rxjs@7.8.2",
+      "license": "Apache-2.0",
+      "sha256": "bf421623fafd15c322d5bd1439b2b30f742b334065a17180e895ada61e3c8301",
+      "notices": [
+        "LICENSE.txt"
+      ],
+      "assets": []
+    },
+    {
+      "id": "scheduler@0.23.2",
+      "license": "MIT",
+      "sha256": "1713cb06d19777e7f097ce2b6d6a3ddc9ea02e188464f6b5b5b07bdfb257bf0a",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "sonner@2.0.8",
+      "license": "MIT",
+      "sha256": "cd7b463d4b0542b711ea3d5262a8b81b70deab68ec35fae165293d244c26c494",
+      "notices": [
+        "LICENSE.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "string-width@4.2.3",
+      "license": "MIT",
+      "sha256": "36ec86d37af3e069acf1ef47de492b8a14da826e7b5c427c775f0a26c5515fac",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "strip-ansi@6.0.1",
+      "license": "MIT",
+      "sha256": "fc29470aeaea89871d68db95c56d5edde8ed4e9404a81a3c9dab85be900df640",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "trigram-utils@2.0.1",
+      "license": "MIT",
+      "sha256": "ca36b4c440ff3663d654301e2f8d15a6f00a6e9e4a47ad1a738ad8a189d9b99e",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "tslib@2.8.1",
+      "license": "0BSD",
+      "sha256": "0feb810b064fb6d6bf1869ac955eed4838a39ecc58652403eb3fdb1e5eb5f349",
+      "notices": [
+        "LICENSE.txt"
+      ],
+      "assets": []
+    },
+    {
+      "id": "undici-types@8.9.0",
+      "license": "MIT",
+      "sha256": "f8e57a25d4a396217dfafa91940e61d2a1cc849a04e17ebc149b23e8d4fed0d7",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "unicount@1.1.0",
+      "license": "ISC",
+      "sha256": "90823e2f5f93ab02af56271124199bf1dd3e5e56ef04a4a9931f339ef97be101",
+      "notices": [
+        "README.md"
+      ],
+      "assets": []
+    },
+    {
+      "id": "use-callback-ref@1.3.3",
+      "license": "MIT",
+      "sha256": "56e8999fb9cbcfa8b62710838885331530dfcc738a3a9fdc5c87823d761a50fd",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "use-sidecar@1.1.3",
+      "license": "MIT",
+      "sha256": "12a84cbb27c1f33080af182b9c134a450377d2b0d7724e9df11347f4468dca76",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "wrap-ansi@7.0.0",
+      "license": "MIT",
+      "sha256": "3d82f4b35472ba240195db88ca4f7d28ab98ebcf051945c00546611d91ad551b",
+      "notices": [
+        "license"
+      ],
+      "assets": []
+    },
+    {
+      "id": "y18n@5.0.8",
+      "license": "ISC",
+      "sha256": "07aba1ab96e69052d2964d615f27417d3a51bbfae3b849e93ee341b1ac862cd1",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    },
+    {
+      "id": "yargs-parser@21.1.1",
+      "license": "ISC",
+      "sha256": "16f2148e89f4ce9d25fb70277af03c126bdef915b42d3364d4d828a3e0743b53",
+      "notices": [
+        "LICENSE.txt"
+      ],
+      "assets": []
+    },
+    {
+      "id": "yargs@17.7.3",
+      "license": "MIT",
+      "sha256": "b3496db4c2ee2119a200e36456f25e3e508a6c6df5b160544e72ef2314812498",
+      "notices": [
+        "LICENSE"
+      ],
+      "assets": []
+    }
+  ]
+}

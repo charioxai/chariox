@@ -1,0 +1,97 @@
+{
+  "tools": [
+    {
+      "name": "load_workbook",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_workbook",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workbook": {
+            "type": "object"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "workbook",
+          "version"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_file",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+          },
+          "grantId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "write_file",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 196736
+          },
+          "offer": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "pick_file",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "enum": [
+              "csv",
+              "workbook"
+            ]
+          }
+        },
+        "required": [
+          "format"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

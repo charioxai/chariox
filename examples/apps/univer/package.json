@@ -1,0 +1,28 @@
+{
+  "name": "@chariox/univer-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "build:view": "node scripts/build-view.mjs",
+    "build:backend": "bash scripts/build-backend.sh",
+    "licenses": "node scripts/licenses.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "test:view": "node scripts/drill-view.mjs"
+  },
+  "dependencies": {
+    "@univerjs/core": "1.2.0",
+    "@univerjs/presets": "1.2.0",
+    "@univerjs/preset-sheets-core": "1.2.0",
+    "@univerjs/preset-sheets-sort": "1.2.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "playwright-core": "1.56.1"
+  }
+}
