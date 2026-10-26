@@ -294,15 +294,15 @@ impl SessionService {
 
     pub fn list_visible_projects(
         &self,
-        caller_user_id: &str,
         include_archived: bool,
+        is_member: impl Fn(&RuntimeSession) -> bool,
     ) -> Vec<RuntimeProject> {
         let visible_project_ids = self
             .store
             .list()
             .into_iter()
             .filter(|session| !session.is_hidden())
-            .filter(|session| session.has_member(caller_user_id))
+            .filter(|session| is_member(session))
             .map(|session| session.project_id().to_string())
             .collect::<BTreeSet<_>>();
         self.projects
