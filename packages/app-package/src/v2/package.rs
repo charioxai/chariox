@@ -312,6 +312,17 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &PolicyV2) -> Result<VerifiedPackageV
             )
         })
     };
+    if manifest.world != super::APP_WORLD {
+        return Err(PackageError::new(
+            ErrorCode::IncompatibleContract,
+            format!(
+                "component `{}` requires supported App world `{}`, got `{}`",
+                manifest.runtime.component,
+                super::APP_WORLD,
+                manifest.world,
+            ),
+        ));
+    }
     check_component(&manifest.runtime.component, &manifest.world)?;
     if let Some(migrations) = &manifest.migrations {
         let world = WorldId::parse(super::MIGRATION_WORLD)?;

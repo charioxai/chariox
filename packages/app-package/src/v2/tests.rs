@@ -593,6 +593,25 @@ fn signed_unknown_component_import_is_refused_before_install() {
 }
 
 #[test]
+fn signed_migration_world_cannot_be_used_as_the_app_backend() {
+    let mut fixture = base();
+    fixture.manifest.world = MIGRATION_WORLD.into();
+    fixture.files.insert(
+        fixture.manifest.runtime.component.clone(),
+        components::build(MIGRATION_WORLD, false),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("signed migration-only App backend was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    for expected in ["runtime/app.wasm", APP_WORLD, MIGRATION_WORLD] {
+        assert!(error.message.contains(expected), "{}", error.message);
+    }
+}
+
+#[test]
 fn signed_migrations_cannot_import_the_app_http_surface() {
     let mut fixture = base();
     fixture.files.insert(
