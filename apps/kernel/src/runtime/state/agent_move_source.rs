@@ -63,6 +63,13 @@ impl KernelRuntimeState {
             .owned
             .provider_store
             .get_latest_run_for_agent(session_id, agent_id);
+        if let Some(run) = latest
+            .as_ref()
+            .filter(|run| run.provider_session_id().is_some() || !run.resume_state().is_empty())
+        {
+            crate::provider::native_checkpoint_support(run.provider(), run.client_interface())
+                .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
+        }
         let pending_checkpoint = if latest.is_none()
             && agent
                 .provider_resume_state()

@@ -911,3 +911,71 @@ async fn mk03_captured_peer_disconnect_keeps_the_same_move() {
 async fn mk03_materialized_peer_disconnect_keeps_the_same_move() {
     captured_peer_failure_keeps_operation("materialized").await;
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: reject unsupported history before stopping its run.
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_unsupported_history_refuses_before_fencing_or_stopping() {
+    for (provider, interface) in [
+        ("claude", "chariox"),
+        ("opencode", "chariox"),
+        ("codex", "native_tui"),
+    ] {
+        let (fixture, session, _) = crash_fixture().await;
+        let run = {
+            let home = fixture.home.lock().await;
+            let run = home
+                .providers()
+                .launch_run_detached(
+                    crate::provider::LaunchProviderRequest::new(
+                        &session, "dev-stub", "dev-stub", "default", "default",
+                    )
+                    .with_agent_id(&fixture.agent_id),
+                )
+                .unwrap();
+            let mut value = serde_json::to_value(&run).unwrap();
+            value["provider"] = serde_json::json!(provider);
+            value["adapter_key"] = serde_json::json!(provider);
+            value["client_interface"] = serde_json::json!(interface);
+            let mut run: crate::provider::RuntimeProviderRun =
+                serde_json::from_value(value).unwrap();
+            run.set_provider_session_id(Some("native-history".into()));
+            home.providers().write().insert_run_for_test(run.clone());
+            run
+        };
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            fixture.home.clone(),
+            8,
+        );
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id: session.clone(),
+                agent_ref: fixture.agent_id.clone(),
+                machine_ref: fixture.presences[0].machine_id.clone(),
+            },
+        );
+        let envelope = crate::runtime::command::KernelCommand::from_local_request(
+            "unsupported-history",
+            None,
+            None,
+            &request,
+        );
+        let error = router.dispatch(envelope, request).await.unwrap_err();
+        assert!(
+            error.to_string().contains("native checkpoint support")
+                || error.to_string().contains("managed Chariox Codex"),
+            "{error}"
+        );
+        let home = fixture.home.lock().await;
+        assert_eq!(
+            home.providers().get_run(run.id()).unwrap().state(),
+            run.state(),
+            "unsupported history must retain its usable provider run"
+        );
+        assert!(
+            !home
+                .agent_moves
+                .dispatch_fenced(&session, &fixture.agent_id),
+            "preflight refusal must not fence the agent"
+        );
+    }
+}
