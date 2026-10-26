@@ -293,11 +293,8 @@ impl WaitingRoomSessionSummaryProjectionStore {
                 || archived_project_ids.contains(session.project_id.as_str())
         });
         enrich_waiting_room_agent_slice_placements(&mut sessions, slices);
-        let projects = waiting_room_public_project_summaries(
-            runtime_projects,
-            runtime_sessions,
-            caller,
-        );
+        let projects =
+            waiting_room_public_project_summaries(runtime_projects, runtime_sessions, caller);
         let snapshot = build_waiting_room_public_snapshot_from_summaries(
             sessions,
             projects,
@@ -835,8 +832,7 @@ fn refresh_waiting_room_projected_activity(
         else {
             continue;
         };
-        agent_summary.activity =
-            waiting_room_agent_activity_summary(session, agent, &member_id);
+        agent_summary.activity = waiting_room_agent_activity_summary(session, agent, &member_id);
     }
     let Some(external_working_agent_ids) = external_working_agent_ids else {
         return;
@@ -1261,8 +1257,8 @@ mod tests {
     use crate::runtime::waiting_room_public_projection::{
         build_waiting_room_public_snapshot, build_waiting_room_public_snapshot_from_cached_shared,
         enrich_waiting_room_agent_slice_placements, waiting_room_activity_revision,
-        waiting_room_session_summaries, waiting_room_structural_version,
-        WaitingRoomCaller, WaitingRoomSessionSummaryProjectionStore,
+        waiting_room_session_summaries, waiting_room_structural_version, WaitingRoomCaller,
+        WaitingRoomSessionSummaryProjectionStore,
     };
     use crate::session::{
         RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionStatus, WorkflowDefinition,
@@ -1377,11 +1373,8 @@ mod tests {
         }));
         session.set_agents(vec![agent]);
         let metaagent_events = MetaagentEventStore::default();
-        let mut summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            &local_caller(),
-        );
+        let mut summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         assert_eq!(summaries[0].activity.error_agent_count, 0);
         assert!(!summaries[0].agents[0].activity.error);
@@ -1627,11 +1620,8 @@ mod tests {
         session.add_attachment("cli-1".to_string());
 
         let metaagent_events = MetaagentEventStore::default();
-        let summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            &local_caller(),
-        );
+        let summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0];
@@ -1698,11 +1688,8 @@ mod tests {
             .read(metaagent.id(), &event.event_id)
             .expect("event should read");
 
-        let summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            &local_caller(),
-        );
+        let summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         let agents = &summaries[0].agents;
         let metaagent_summary = agents
@@ -1764,11 +1751,8 @@ mod tests {
         session.create_workflow(workflow);
 
         let metaagent_events = MetaagentEventStore::default();
-        let summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            &local_caller(),
-        );
+        let summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         assert_eq!(summaries[0].workflows.len(), 1);
         assert_eq!(
@@ -2277,11 +2261,8 @@ mod tests {
         );
 
         session.set_alias(Some("renamed".to_string()));
-        let structural_change = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            &local_caller(),
-        );
+        let structural_change =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
         assert_ne!(
             waiting_room_structural_version(&activity_only, &[], &[], false, None, None).unwrap(),
             waiting_room_structural_version(&structural_change, &[], &[], false, None, None)

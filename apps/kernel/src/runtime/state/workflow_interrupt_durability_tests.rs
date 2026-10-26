@@ -678,7 +678,11 @@ fn stop_after_restart_answers_the_stopped_run() {
         workflow_run.status(),
         crate::session::WorkflowRunStatus::Stopped
     );
-    let session = restored.owned.session_store.get_session(&session_id).unwrap();
+    let session = restored
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
     let active = restored
         .owned
         .prompt_state_owner
