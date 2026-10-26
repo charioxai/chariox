@@ -881,6 +881,15 @@ test("MP-10: a subscription whose observer instance was evicted resyncs (reset w
   assert.match(JSON.stringify(packet.nodes), /changed/);
 }));
 
+// MP-08/MP-10: a lazy image far below the view has no bytes yet, but it is an image: Chromium lays it out by its
+// width/height, never as its alt text. Its source travels as a key, so the viewer keeps it an image.
+test("MP-10: a lazy image that has not loaded yet still travels with its source key", () => mirrored(
+  `<p>top</p><div style="height:6000px"></div><img id="lazy" loading="lazy" src="/lazy.png" width="30" height="40" alt="A long alternative text">`, async ({ next, evaluate }) => {
+    assert.equal(await evaluate("document.getElementById('lazy').currentSrc"), "", "MP-10: the fixture image has not started loading");
+    const image = (await next()).nodes.find(row => row[2] === "img");
+    assert.match(image?.[4]?.res ?? "", /^r[0-9]+$/, "MP-10: the pending image has a source key");
+  }));
+
 test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
   `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {
     const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");

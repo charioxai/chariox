@@ -315,6 +315,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // The control shape recorded for the current serialized node identity.
     const controlShapes = new Map(), controlShape = node => node.localName === 'input' ? node.type : node.localName === 'select' ? node.multiple : undefined;
     const formControl = node => ['input', 'textarea', 'select'].includes(node.localName) || node.localName === 'option' && node.closest('select')?.multiple === true;
+    // A lazy image Chromium has not started loading has no currentSrc yet, but it is laid out as an image (by its
+    // width/height), never as its alt text: its src travels as the key until its bytes exist.
+    const imageSource = node => node.currentSrc || node.src;
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
       const [width, height] = layoutSize(node);
@@ -500,7 +503,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!mirrored(nested)) { open.add(id); try { yield* serializeTree(nested, id, depth + 1); } finally { open.delete(id); } }
         return id;
       }
-      if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
+      if (ns === HTML && tag === 'img' && imageSource(node)) { const key = resource(imageSource(node), base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === SVG && (tag === 'image' || tag === 'use')) { const key = tag === 'image' ? svgImageKey(node) : spriteKey(node); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === HTML && formControl(node)) record.form = formRecord(node);
       if (stateful(node)) stateRecord(node, record);
@@ -638,7 +641,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
     // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
     const spriteKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'), hash = href?.indexOf('#') ?? -1; return hash > 0 ? resource(href.slice(0, hash), node.baseURI, 'sprite') : null; };
-    const imageOp = (node, id, ops, key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null) => { if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
+    const imageOp = (node, id, ops, key = imageSource(node) ? resource(imageSource(node), node.baseURI, 'image') : null) => { if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
     // Morph (keystroke/typeahead bytes): a page that rebuilds a subtree with the
     // same shape (innerHTML of a suggestion list) keeps the viewer's nodes. A new
     // node of the same kind takes over a removed node's id; only attribute, text
