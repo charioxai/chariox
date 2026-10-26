@@ -320,3 +320,30 @@ function session(): RuntimeSession {
     },
   }
 }
+
+
+test("runtime session normalization preserves a failed turn's typed native cause", () => {
+  const failure = {
+    cause: "overloaded" as const,
+    retryable: true,
+    message: "Selected model is at capacity.",
+  }
+  const normalized = normalizeRuntimeSession({
+    ...session(),
+    agents: [{ id: "agent-1" }] as never,
+    agent_activity: {
+      "agent-1": {
+        status: "error",
+        prompt_status: "none",
+        busy: false,
+        unread_idle_output: false,
+        last_completed_turn: {
+          turn_id: "prompt-1", prompt_id: "prompt-1", provider_run_id: "run-1",
+          agent_id: "agent-1", completed_at_ms: 1234, settlement_status: "failed",
+          changed_paths: [], undo_available: false, failure,
+        },
+      },
+    },
+  })
+  assert.deepEqual(normalized.agent_activity?.["agent-1"]?.last_completed_turn?.failure, failure)
+})

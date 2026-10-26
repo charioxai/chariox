@@ -1,3 +1,5 @@
+import type { ProviderFailure } from "./kernel-types-runtime.js"
+
 export const LOCAL_DAEMON_PROTOCOL_VERSION = 636
 
 export type * from "./kernel-types-apps.js"
@@ -32,7 +34,7 @@ export type OutsideEvent = {
   summary: string; at_ms: number
   refs: { task_id?: string; run_id?: string; interaction_id?: string; terminal_id?: string }
 } & (
-  | { type: "agent"; value: { run_state?: "idle" | "working" | "error"; task_state?: "working" | "waiting" | "blocked" | "done" | "cancelled"; reason?: string } }
+  | { type: "agent"; value: { run_state?: "idle" | "working" | "error"; task_state?: "working" | "waiting" | "blocked" | "done" | "cancelled"; reason?: string; failure?: ProviderFailure } }
   | { type: "interaction"; value: { state: "pending" | "resolved"; pointer?: { approval_id: string; kind: string; kernel: string; one_line: string; link?: string; expires_at: number } } }
   | { type: "terminal"; value: { exit_code: number | null } }
   | { type: "steer"; value: { steer_id: string } }

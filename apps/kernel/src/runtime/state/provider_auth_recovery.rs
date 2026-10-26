@@ -217,6 +217,7 @@ impl KernelRuntimeState {
             };
             self.owned.clear_prompt_activity(run.id());
             let state = self.clone();
+            let failure = crate::provider::ProviderFailure::classify(run.adapter_key(), message);
             let run = run.clone();
             tokio::spawn(async move {
                 let _claim = claim;
@@ -267,6 +268,7 @@ impl KernelRuntimeState {
                             true,
                             Some(prompt.id()),
                             None,
+                            Some(failure),
                         )
                         .await;
                 }
@@ -451,6 +453,7 @@ impl KernelRuntimeState {
             "Provider could not resume the turn after login; retry on this machine.",
             true,
             Some(prompt.id()),
+            None,
             None,
         )
         .await

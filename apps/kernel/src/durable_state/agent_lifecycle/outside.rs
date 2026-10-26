@@ -148,6 +148,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 return Ok(Outcome::Saved);
             };
             for state in states {
+                let failure = state.failure.clone();
                 let event = OutsideEvent {
                     cursor: 0,
                     kernel: kernel.clone(),
@@ -158,13 +159,16 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                         run_state: Some(state.state),
                         task_state: None,
                         reason: None,
+                        failure: failure.clone(),
                     },
-                    summary: match state.state {
-                        crate::local::EventRunState::Working => "working",
-                        crate::local::EventRunState::Idle => "idle",
-                        crate::local::EventRunState::Error => "error",
-                    }
-                    .into(),
+                    summary: match (state.state, &failure) {
+                        (crate::local::EventRunState::Working, _) => "working".into(),
+                        (crate::local::EventRunState::Idle, _) => "idle".into(),
+                        (crate::local::EventRunState::Error, None) => "error".into(),
+                        (crate::local::EventRunState::Error, Some(failure)) => {
+                            format!("error: {}", failure.summary())
+                        }
+                    },
                     at_ms: outside_now_ms()?,
                     refs: Default::default(),
                 };

@@ -40,6 +40,7 @@ pub(super) struct KernelPromptOwnerCompletion {
     pub(super) next_queued_prompt: Option<PromptQueueItem>,
     pub(super) settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
     pub(super) provider_termination: Option<crate::provider::ProviderRunTermination>,
+    pub(super) failure: Option<crate::provider::ProviderFailure>,
 }
 
 impl<'a> KernelAgentService<'a> {
@@ -107,6 +108,32 @@ impl<'a> KernelAgentService<'a> {
             provider_run_id,
             next_queued_prompt,
         )?;
+        let failure = (settlement_status
+            == crate::git_observer::CompletedTurnSettlementStatus::Failed)
+            .then(|| {
+                provider_termination
+                    .as_ref()
+                    .and_then(|termination| termination.failure.clone())
+                    .or_else(|| {
+                        provider_run_id
+                            .and_then(|id| self.app.providers.get_run(id).ok())
+                            .and_then(|run| {
+                                run.terminal_diagnostic().map(|message| {
+                                    crate::provider::ProviderFailure::classify(
+                                        run.adapter_key(),
+                                        message,
+                                    )
+                                })
+                            })
+                    })
+                    .unwrap_or_else(|| {
+                        crate::provider::ProviderFailure::new(
+                            crate::provider::ProviderFailureCause::Other,
+                            false,
+                            "provider reported an error",
+                        )
+                    })
+            });
         let completion = match admission {
             KernelPromptCompletionAdmission::Remote { .. } => {
                 let mut completed = self.complete_remote_prompt_from_admission(admission)?;
@@ -114,17 +141,24 @@ impl<'a> KernelAgentService<'a> {
                     completed.provider_termination,
                     provider_termination.clone(),
                 );
-                completed.settlement_status = if completed.provider_termination.is_some() {
-                    crate::git_observer::CompletedTurnSettlementStatus::Failed
-                } else {
-                    settlement_status
-                };
+                completed.failure = provider_termination
+                    .as_ref()
+                    .and_then(|termination| termination.failure.clone())
+                    .or(completed.failure)
+                    .or(failure);
+                completed.settlement_status =
+                    if completed.provider_termination.is_some() || completed.failure.is_some() {
+                        crate::git_observer::CompletedTurnSettlementStatus::Failed
+                    } else {
+                        settlement_status
+                    };
                 self.finish_remote_prompt_completion(completed)?
             }
             KernelPromptCompletionAdmission::Local { .. } => {
                 let mut completed = self.complete_local_prompt_from_admission(admission)?;
                 completed.settlement_status = settlement_status;
                 completed.provider_termination = provider_termination;
+                completed.failure = failure;
                 self.finish_local_prompt_completion(completed)?
             }
         };
@@ -192,6 +226,7 @@ impl<'a> KernelAgentService<'a> {
             next_queued_prompt,
             settlement_status: crate::git_observer::CompletedTurnSettlementStatus::Completed,
             provider_termination: None,
+            failure: None,
         })
     }
 
@@ -205,6 +240,13 @@ impl<'a> KernelAgentService<'a> {
                 .get_run_for_agent(&completion.session_id, &completion.agent_id)
                 .map(|run| run.id().to_string())
         });
+        if completion.settlement_status
+            == crate::git_observer::CompletedTurnSettlementStatus::Failed
+        {
+            self.app
+                .agents
+                .set_agent_state(&completion.agent_id, crate::agent::AgentState::Error)?;
+        }
         let settled_at_ms = crate::session::unix_epoch_ms();
         let started_at_ms = completion_provider_run_id
             .as_deref()
@@ -225,6 +267,7 @@ impl<'a> KernelAgentService<'a> {
                 completion_provider_run_id.as_deref(),
                 settled_at_ms,
                 completion.settlement_status.as_str(),
+                completion.failure.as_ref(),
             );
         self.app
             .completed_git_turn_snapshot_store()
@@ -239,6 +282,7 @@ impl<'a> KernelAgentService<'a> {
                 started_at_ms,
                 completion.settlement_status,
                 completion.provider_termination.clone(),
+                completion.failure.clone(),
             );
         if !flow_control::prompt_completion_recorded(
             self.app,
