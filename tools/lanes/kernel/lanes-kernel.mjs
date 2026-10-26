@@ -310,11 +310,10 @@ function runHolder(seatName) {
       buffer += chunk;
       if (!buffer.includes('\n')) return;
       const request = JSON.parse(buffer.split('\n')[0]); buffer = '';
-      const stdout = request.logFile ? openSync(request.logFile, 'a') : 'pipe';
-      const stderr = request.stderrLogFile ? openSync(request.stderrLogFile, 'a') : stdout;
+      const log = request.logFile ? openSync(request.logFile, 'a') : 'pipe';
       let child;
-      try { child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', stdout, stderr] }); }
-      finally { for (const fd of new Set([stdout, stderr])) if (typeof fd === 'number') closeSync(fd); }
+      try { child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...env, ...request.env }, stdio: ['ignore', log, log] }); }
+      finally { if (typeof log === 'number') closeSync(log); }
       child.on('error', error => socket.end(JSON.stringify({ err: Buffer.from(String(error.message)).toString('base64'), exit: 127 }) + '\n'));
       // A detached command is acknowledged once it has really started; a failed spawn answers through the error above.
       if (request.detach) { child.on('spawn', () => { child.unref(); socket.end(JSON.stringify({ pid: child.pid, exit: 0 }) + '\n'); }); return; }
@@ -378,7 +377,9 @@ async function startLoopd() {
   if (existing) return { loopd: existing, started: false };
   if (!existsSync(loopdEntry)) throw new Error('no frozen adapters in run/; run: lanes-kernel.mjs loopd install');
   if (!holderPid()) throw new Error('the holder is not running; run start first');
-  const started = await execInHolder({ argv: [process.execPath, loopdEntry, 'serve'], cwd: STATE, detach: true, logFile: join(STATE, 'loopd.log'), stderrLogFile: join(STATE, 'loopd.stderr.log') });
+  // Redirect before Node starts, including when installation reuses an older, already-granted holder.
+  // exec preserves the acknowledged PID and the round.mjs identity used by loopdPid().
+  const started = await execInHolder({ argv: ['/bin/sh', '-c', 'exec "$1" "$2" serve 2>>"$3"', 'loopd', process.execPath, loopdEntry, join(STATE, 'loopd.stderr.log')], cwd: STATE, detach: true, logFile: join(STATE, 'loopd.log') });
   if (!Number.isSafeInteger(started.pid) || started.pid <= 1) throw new Error('loopd did not start');
   writeFileSync(loopdPidFile, String(started.pid));
   return { loopd: started.pid, started: true };

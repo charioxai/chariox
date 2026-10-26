@@ -10,14 +10,33 @@ import { once } from 'node:events';
 
 const script = new URL('./lanes-kernel.mjs', import.meta.url).pathname;
 
-async function holder(t, extraConfig = {}, seat, launchEnvironment) {
+async function holder(t, extraConfig = {}, seat, launchEnvironment, legacy = false) {
   const state = await mkdtemp(join(tmpdir(), 'lanes-kernel-')); t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, 'config.json'), JSON.stringify({ toolchain: state, ...extraConfig }));
   if (launchEnvironment) await writeFile(join(state, 'kernel-environment.json'), JSON.stringify(launchEnvironment));
   const env = { PATH: process.env.PATH, HOME: state, LANES_KERNEL_STATE: state };
-  const child = spawn(process.execPath, [script, 'holder', ...(seat ? [seat] : [])], { env, stdio: 'ignore' });
+  let holderScript = script;
+  if (legacy) {
+    holderScript = join(state, 'lanes-kernel.mjs');
+    await writeFile(holderScript, `import { createServer } from 'node:net';
+import { spawn } from 'node:child_process';
+import { openSync, writeFileSync } from 'node:fs';
+const state = process.env.LANES_KERNEL_STATE;
+createServer(socket => {
+ let buffer = '';
+ socket.on('data', chunk => {
+  buffer += chunk; if (!buffer.includes('\\n')) return;
+  const request = JSON.parse(buffer.split('\\n')[0]);
+  // The already-running holder knows only one combined log file.
+  const log = openSync(request.logFile, 'a');
+  const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...request.env }, stdio: ['ignore', log, log] });
+  child.on('spawn', () => socket.end(JSON.stringify({ pid: child.pid, exit: 0 }) + '\\n'));
+ });
+}).listen(state + '/holder.sock', () => writeFileSync(state + '/holder.pid', String(process.pid)));\n`);
+  }
+  const child = spawn(process.execPath, [holderScript, 'holder', ...(seat ? [seat] : [])], { env, stdio: 'ignore' });
   const exited = once(child, 'exit');
-  t.after(async () => { child.kill('SIGTERM'); await exited; });
+  t.after(async () => { if (Number.isSafeInteger(child.pid) && child.pid > 1 && child.exitCode === null) child.kill('SIGTERM'); await exited; });
   const pidFile = join(state, seat ? `${seat}-holder.pid` : 'holder.pid');
   for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise(resolve => setTimeout(resolve, 50));
   assert.ok(existsSync(pidFile), 'the holder is listening');
@@ -43,8 +62,8 @@ test('exec --detach fails with the reason when the command cannot start', async 
   assert.equal(result.stdout.includes('"pid"'), false);
 });
 
-test('loopd keeps Node warnings and stderr out of its JSON log', async t => {
-  const { state, env } = await holder(t);
+for (const legacy of [false, true]) test(`loopd keeps stderr out of its JSON log with ${legacy ? 'an existing' : 'a new'} holder`, async t => {
+  const { state, env } = await holder(t, {}, undefined, undefined, legacy);
   const entry = join(state, 'run/tools/lanes/coordinator/round.mjs');
   await mkdir(join(state, 'run/tools/lanes/coordinator'), { recursive: true });
   await writeFile(entry, `console.log(JSON.stringify({ kind: 'started' }));
