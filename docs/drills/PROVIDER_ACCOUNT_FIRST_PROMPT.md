@@ -29,6 +29,8 @@ slirp4netns/libslirp tools under `CTXVAL_LANE/ns-tools` for shaped hosted runs.
 - `CTXVAL_ORIGIN`: lane-owned hosted Cloud origin with a matching API contract.
 - `UIQA_EXPECT_UNVERIFIED=1`: base run must show the unverified refusal and leave
   the profile unknown. Omit it for the candidate run.
+- `UIQA_CREATE_IN_TUI=1`: create the candidate session through the real TUI's
+  normal `--create-session` entry; omission attaches a session prepared by API.
 
 Setup uses public LinkProviderAccountProfile/CreateSession requests; no refresh
 is sent. The action under test is the real compiled TUI's ordinary prompt path,

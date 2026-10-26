@@ -15,14 +15,18 @@ try {
   } }), 'ProviderAccountProfile').profile;
   if (profile.auth_state !== 'unknown') throw Error('Link must start with an unknown observation');
   run.profiles.codex = profile.profile_id;
-  // Setup uses the public kernel API; the action under test uses the real TUI.
-  const created = variant(await run.client.send({ CreateSession: {
-    workspace_id: run.tree, worktree_id: run.tree, alias: 'unknown-first-prompt',
-    agent_defaults: { provider: 'codex', account_profile: profile.profile_id,
-      model: 'gpt-6-luna', effort: 'low', permission_level: 'required' },
-  } }), 'SessionCreated');
+  // Base attachment isolates the prompt seam; candidate runs can create in TUI.
+  let sessionId;
+  if (process.env.UIQA_CREATE_IN_TUI !== '1') {
+    const created = variant(await run.client.send({ CreateSession: {
+      workspace_id: run.tree, worktree_id: run.tree, alias: 'unknown-first-prompt',
+      agent_defaults: { provider: 'codex', account_profile: profile.profile_id,
+        model: 'gpt-6-luna', effort: 'low', permission_level: 'required' },
+    } }), 'SessionCreated');
+    sessionId = created.session.id;
+  }
   if (process.env.CTXVAL_ORIGIN) remote = await shapedRemoteTui(run, { useTui: true });
-  await run.launch('codex', 'gpt-6-luna', created.session.id);
+  await run.launch('codex', 'gpt-6-luna', sessionId);
   const account = async () => variant(await run.client.send({ GetProviderAccountProfile: {
     provider: 'codex', account_profile: profile.profile_id,
   } }), 'ProviderAccountProfile').profile;

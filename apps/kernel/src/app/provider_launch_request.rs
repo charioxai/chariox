@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::account_profile::{
     ProviderAccountProfile, ProviderAccountProfileRegistry, ProviderAccountUsageAvailability,
+    PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS,
 };
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
@@ -12,8 +13,6 @@ use super::provider_launch_policy::{
     granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
     sanitize_resume_state_for_launch,
 };
-
-const PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS: u64 = 5 * 60 * 1_000;
 
 fn provider_usage_refresh_due_for_launch(
     usage: &crate::account_profile::ProviderAccountUsageSnapshot,
