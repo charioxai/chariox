@@ -160,12 +160,15 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
 - **Batch.** Every step is checked first (`plan_batch`), then run in order. It
   stops at the first error or approval and reports `completed` and `stopped`;
   there is no rollback.
-- **One queue per view.** `AppViews::agent_queue` serializes agent calls on a
-  view. The controller (`browser.app.agent`) adds a deadline and refuses
-  `view_busy` while a handler that missed its deadline still runs.
+- **One queue per view.** `AppViews::agent_queue` serializes the agent calls
+  that run App code (`invoke`, `state`, `batch`, the catalog's state read). The
+  change log runs none, so `changes` waits outside the queue. The controller
+  (`browser.app.agent`) adds a deadline (20 s; the transport waits that long on
+  top of its round trip) and refuses `view_busy` while a handler that missed its
+  deadline still runs.
 - **Actor attribution (answers A1 question 2).** The call is the agent's input
-  to the Tab: the controller records the agent (`noteAgent`) before the page can
-  run, so a `chariox.call` made by the handler, or by anything the handler
+  to the Tab: for `invoke` and `state` (which run App code) the controller
+  records the agent (`noteAgent`) before the page can run, so a `chariox.call` made by the handler, or by anything the handler
   starts, runs as that agent with that agent's App grant, like the agent's
   clicks. With two agents on one view, a stray call of either is refused
   (`APP_ACTOR_UNKNOWN`) until the view is reopened, as for input.
