@@ -440,3 +440,13 @@ test("workflow notification settings use the shared shell path", () => {
   assert.equal(sharedShellCommandForSlashCommand("/workflow notifications on retained-source"), "workflow notifications on retained-source")
   assert.equal(sharedShellCommandForSlashCommand("/workflow notifications-other on"), null)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: use goal-control confirmations under sudo.
+test("nested sudo goal controls use the goal command route", () => {
+  for (const prompt of ["resume", "edit Updated objective", "cancel", "pause", "interval 5"]) {
+    const raw = `/sudo /goal ${prompt}`
+    assert.deepEqual(parseSlashCommand(raw), { kind: "goal", raw, prompt })
+  }
+  assert.equal(parseSlashCommand("/sudo /goal List session count"), null)
+  assert.equal(parseSlashCommand("/sudo ordinary task"), null)
+})
