@@ -599,12 +599,13 @@ impl KernelRuntimeState {
                 let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
                 let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
                 Box::pin(
-                    self.dispatch_task_continuation(
+                    self.dispatch_task_continuation_with_context(
                         &next,
                         &attachment,
                         self.owned
                             .goal_continuation_context(&next)?
                             .unwrap_or_default(),
+                        sudo.map(|_| "The owner explicitly resumed this existing goal with /sudo /goal resume and authorized a fresh task-bound sudo window with a passkey. This kernel continuation is the receipt of that owner action; no separate inbox receipt is required. The existing live sudo window applies to this task and its correlated continuations. Use chariox_kernel_request for the remaining kernel operations while the window is live. The continuation itself does not mint authority, and cannot answer approvals. Never ask for or accept a passkey in agent output.".to_owned()),
                     ),
                 )
                 .await
