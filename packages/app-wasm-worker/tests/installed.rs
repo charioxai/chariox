@@ -175,6 +175,8 @@ async fn echo(prepared: PreparedWorker) {
     };
     assert_eq!(method, "worker.ready");
     assert_eq!(params["tools"].as_array().unwrap().len(), 12);
+    // Real kernel ordering: keep worker.ready pending while precommit health
+    // runs. The ready response grants activation only after health succeeds.
     channel
         .send(
             &Message::Request {

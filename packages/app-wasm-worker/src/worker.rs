@@ -210,28 +210,31 @@ impl AppWorker {
                     return Err(failure);
                 }
             };
-            match &registration {
+            let readiness = match &registration {
                 None => {
                     let scope = Scope::new(
                         "worker-ready".into(),
                         tokio::time::Instant::now() + Duration::from_secs(30),
                     );
-                    ipc.call(
-                        &scope,
-                        "worker.ready",
-                        serde_json::to_value(&store.data().registration)?,
-                    )
-                    .await
-                    .map_err(|error| {
-                        wasmtime::Error::msg(format!("{}: {}", error.code, error.message))
-                    })?;
+                    let params = serde_json::to_value(&store.data().registration)?;
+                    let ipc = ipc.clone();
                     registration = Some(store.data().registration.clone());
+                    Some(async move {
+                        ipc.call(&scope, "worker.ready", params)
+                            .await
+                            .map_err(|error| {
+                                wasmtime::Error::msg(format!("{}: {}", error.code, error.message))
+                            })
+                    })
                 }
-                Some(expected) => wasmtime::ensure!(
-                    expected == &store.data().registration,
-                    "App registration changed after instance restart"
-                ),
-            }
+                Some(expected) => {
+                    wasmtime::ensure!(
+                        expected == &store.data().registration,
+                        "App registration changed after instance restart"
+                    );
+                    None
+                }
+            };
             // Cancellation may arrive while the replacement is initializing.
             // Apply it before deciding whether any old invocation can replay.
             for _ in 0..crate::ipc::CAPACITY {
@@ -287,7 +290,7 @@ impl AppWorker {
             }
             let result = store
                 .run_concurrent(async |accessor| {
-                    serve(
+                    let dispatch = serve(
                         accessor,
                         &worker,
                         &ipc,
@@ -295,8 +298,19 @@ impl AppWorker {
                         &mut queued,
                         &mut accepted,
                         self.limits,
-                    )
-                    .await
+                    );
+                    tokio::pin!(dispatch);
+                    // The kernel holds the ready response until activation,
+                    // after its local health check. Serve lifecycle requests
+                    // while this request retains the activation budget.
+                    if let Some(readiness) = readiness {
+                        tokio::select! {
+                            result = &mut dispatch => result,
+                            ready = readiness => { ready?; dispatch.await }
+                        }
+                    } else {
+                        dispatch.await
+                    }
                 })
                 .await;
             let mut loss = match result {
