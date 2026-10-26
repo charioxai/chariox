@@ -1,6 +1,12 @@
 //! Agent decisions belong to their emitting turn or live provider run.
 use super::*;
 
+#[derive(Clone, Copy)]
+enum InteractionWithdrawal {
+    AgentStopped,
+    KernelShutdown,
+}
+
 impl KernelRuntimeOwnedState {
     pub(crate) fn capture_native_interaction_origin(
         &self,
@@ -271,6 +277,32 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.withdraw_agent_interactions_for(
+            session_id,
+            agent_id,
+            InteractionWithdrawal::AgentStopped,
+        )
+    }
+
+    /// A kernel exit retires turn-bound responders. Task-owned questions are
+    /// reattached by their durable wake driver when the kernel starts again.
+    pub(in crate::runtime::state) fn withdraw_agent_interactions_for_shutdown(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.withdraw_agent_interactions_for(
+            session_id,
+            None,
+            InteractionWithdrawal::KernelShutdown,
+        )
+    }
+
+    fn withdraw_agent_interactions_for(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        reason: InteractionWithdrawal,
+    ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
             .mutation
@@ -288,6 +320,10 @@ impl KernelRuntimeOwnedState {
                     .agent_lifetime
                     .as_ref()
                     .is_some_and(|lifetime| agent_id.is_none_or(|id| id == lifetime.agent_id))
+            })
+            .filter(|(_, pending)| {
+                !matches!(reason, InteractionWithdrawal::KernelShutdown)
+                    || pending.async_task_id.is_none()
             })
             .map(|(id, pending)| (id.clone(), pending.clone()))
             .collect::<Vec<_>>();

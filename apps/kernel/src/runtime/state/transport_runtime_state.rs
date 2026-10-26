@@ -441,7 +441,8 @@ impl KernelRuntimeState {
         let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
-            self.owned.withdraw_agent_interactions(session.id(), None)?;
+            self.owned
+                .withdraw_agent_interactions_for_shutdown(session.id())?;
         }
         {
             let publishers = self.app_control().publishers().clone();

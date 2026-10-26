@@ -377,3 +377,43 @@ async fn async_popup_task_cancel_withdraws_and_refuses_recovery_and_late_answers
         .iter()
         .all(|answer| answer["reply"].is_null()));
 }
+
+#[tokio::test]
+async fn async_popup_kernel_shutdown_preserves_the_task_question_for_restart() {
+    let f = fixture("async-popup-shutdown", true).await;
+    let task = f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({"timeout_sec":300})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let wake = f.store().agent_wake(id).unwrap().unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    f.runtime.shutdown_cleanup().await.unwrap();
+    assert_eq!(
+        f.wake_state(id),
+        "running",
+        "kernel shutdown is not an owner stop of the asking agent"
+    );
+    assert!(
+        answers(&f, id).is_empty(),
+        "shutdown must not manufacture a lost answer"
+    );
+    // Discard the process-local responder, then reattach through the same driver.
+    f.runtime.owned.pending_interactions.write().remove(id);
+    let driver = f
+        .runtime
+        .owned
+        .agent_wakes
+        .drivers
+        .get("interaction")
+        .unwrap();
+    assert_eq!(driver.recover(&wake), Recovery::Reattached);
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|q| q.id() == id));
+    f.runtime.owned.pending_interactions.write().remove(id);
+}
