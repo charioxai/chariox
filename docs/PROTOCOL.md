@@ -830,6 +830,12 @@ retains those registrations as a wait. Other unfinished work still requires
 normal completion or an explicit valid yield. The question survives native turn
 completion and kernel restart, including its original absolute deadline.
 
+A failed provider turn keeps the task blocked with the provider failure reason
+and its pending questions intact. The owner must reconcile and resume or cancel;
+a question does not convert a failed turn into a healthy wait. Answers remain
+in the durable inbox for reconciliation after owner resumption; automatic
+delivery cannot restart the blocked provider.
+
 The first admitted answer commits a `source_completed` inbox event with the
 resolution in `payload.public_answer`: `interaction_id`, `status`, `choice_id`,
 exact `reply`, authenticated `answered_by`, `user_id`, `agent_id`, `client_id`

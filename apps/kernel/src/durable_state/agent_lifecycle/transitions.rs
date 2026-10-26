@@ -478,9 +478,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             super::goals::clock(&mut t, crate::session::unix_epoch_ms());
             t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
-            if retain_question_wait(tx, &mut t, crate::session::unix_epoch_ms())? {
-                t.pending_prompt_id = None;
-            } else if is_plain(tx, &t)? {
+            if is_plain(tx, &t)? {
                 t.state = ExecutionState::Cancelled;
                 t.pending_prompt_id = None;
             } else {

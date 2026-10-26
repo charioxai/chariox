@@ -459,3 +459,95 @@ async fn async_popup_kernel_shutdown_preserves_the_task_question_for_restart() {
         .any(|q| q.id() == id));
     f.runtime.owned.pending_interactions.write().remove(id);
 }
+
+#[tokio::test]
+async fn async_popup_review_failed_turn_stays_blocked_with_question_pending() {
+    let f = fixture("async-review-failure", true).await;
+    let task = f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let reason =
+        "Provider run failed: connection closed. Owner must reconcile and resume or cancel";
+    crate::durable_state::agent_lifecycle::end_failed_turn(f.store(), &task, reason.into())
+        .unwrap();
+    let current = f
+        .store()
+        .agent_tasks(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == task.task_id)
+        .unwrap();
+    assert_eq!(current.state, ExecutionState::Blocked);
+    assert_eq!(current.reason, reason);
+    assert!(current.wait.is_none());
+    assert_eq!(f.wake_state(id), "running");
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|q| q.id() == id));
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    answer_through_router(&f, id, "local", "owner-after-failure")
+        .await
+        .unwrap();
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    let receipt = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.source_id == id)
+        .unwrap();
+    assert_eq!(
+        receipt.state, "expired",
+        "blocked tasks do not automatically restart a failed provider"
+    );
+    assert_eq!(
+        receipt.payload["public_answer"]["reply"],
+        "Exact reply: continue."
+    );
+    let blocked = f
+        .store()
+        .agent_tasks(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == task.task_id)
+        .unwrap();
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    assert_eq!(blocked.reason, reason);
+    f.store()
+        .agent_lifecycle(Operation::OwnerResponse {
+            task: task.task_id.clone(),
+            revision: blocked.blocked_revision,
+            resume: true,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Ack {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            sequence: receipt.sequence,
+            handled: true,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let resumed = f
+        .store()
+        .agent_tasks(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == task.task_id)
+        .unwrap();
+    assert!(resumed.obligations.iter().all(|o| o.status == "satisfied"));
+}
