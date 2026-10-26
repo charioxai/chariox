@@ -561,6 +561,15 @@ async fn action_approvals_keep_their_choice_action_and_generation_scope() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_a3_catalog_opens_granted_app_without_a_human_view() {
+    check_live_binding(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_page_panel_survives_agent_state_on_an_adopted_tab() {
+    check_live_binding(true).await;
+}
+
+async fn check_live_binding(panel: bool) {
     use crate::runtime::browser_controller_process::BrowserControllerProcessStore;
     use chariox_app_package::{verify, VerificationPolicy};
     use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
@@ -645,7 +654,47 @@ async fn mp08_a3_catalog_opens_granted_app_without_a_human_view() {
             view["state"].get("unavailable").is_none(),
             "the controller answered state: {listed}"
         );
+        if panel {
+            rig.runtime
+                .ensure_room_app_view(
+                    "alice",
+                    &rig.session,
+                    APP,
+                    crate::runtime::browser_controller_app_view::AppViewProjection::Human,
+                )
+                .await
+                .unwrap();
+            let views = rig.runtime.app_control().views();
+            assert!(views.request_panel(
+                &rig.session,
+                "actor-target",
+                crate::runtime::app_views::PanelRequest {
+                    placement: Some(crate::session::AppPanelPlacement::Bottom),
+                    size: Some(250),
+                }
+            ));
+            let before = views.layouts(&rig.session);
+            let state = rig
+                .runtime
+                .app_view_tool(&rig.run, &rig.agent, STATE, json!({"view": APP}))
+                .await
+                .unwrap();
+            assert_eq!(state, json!({"ready": true}));
+            assert_eq!(
+                views.layouts(&rig.session),
+                before,
+                "agent state preserves the adopted page's panel request"
+            );
+        }
+        let opens = || {
+            std::fs::read_to_string(rig.root.join("app-opens"))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        let before = opens();
         let repeated = rig.runtime.view_catalog(&rig.agent).await;
+        assert_eq!(opens(), before, "a live binding sends no second Open");
         assert_eq!(repeated["views"][0]["view"], view["view"]);
         assert_eq!(
             rig.runtime

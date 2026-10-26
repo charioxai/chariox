@@ -156,7 +156,15 @@ test('MP-08/MP-10 A3: an unprojected action is adopted as the same live document
   assert.equal(shown.ok, true);
   assert.equal(shown.result.target_id, app.target);
   assert.equal(await app.evaluate('window.adoptionMarker'), 'completed-document');
+  const geometry = await app.evaluate('({ dpr: devicePixelRatio, width: innerWidth, height: innerHeight, timeOrigin: performance.timeOrigin })');
+  assert.equal(geometry.dpr, 1, 'MP-10: headed adoption regression runs at DPR1');
   assert.deepEqual((await app.agent({ call: 'state' })).value, { todos: ['work without viewers'] });
+  assert.deepEqual((await app.agent({ call: 'state' })).value, { todos: ['work without viewers'] });
+  assert.deepEqual(await app.evaluate('({ dpr: devicePixelRatio, width: innerWidth, height: innerHeight, timeOrigin: performance.timeOrigin })'), geometry,
+    'repeated agent reads preserve the adopted document and geometry');
+  if (process.env.CHARIOX_APP_VIEW_EVIDENCE_ROOT) {
+    await writeFile(path.join(process.env.CHARIOX_APP_VIEW_EVIDENCE_ROOT, 'repeated-adopted-state.json'), JSON.stringify({ target: app.target, geometry, repeatedState: true }));
+  }
   assert.equal([...tabs.apps.values()].filter(tab => tab.installation === 'background-adoption').length, 1);
   assert.equal([...host.tabs.values()].some(tab => tab.target_id === app.target), true);
   if (process.env.CHARIOX_APP_VIEW_EVIDENCE_ROOT) {

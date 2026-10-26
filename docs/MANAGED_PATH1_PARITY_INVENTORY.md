@@ -82,7 +82,10 @@ never demote an adopted Tab or focus another Room's browser.
 Security anchors: `state/tool_dispatch/app/view_agent.rs` checks the current
 agent/App binding before opening and after asynchronous admission;
 view resolution also fences the binding owner and verifies stable installation
-handles through an idempotent Open before use, including the retirement/poll gap.
+handles through a read-only registrations check before reuse, including the
+retirement/poll gap. Live agent calls preserve page panel requests and avoid
+resending the release bundle; only missing or controller-retired bindings Open
+once, with the existing post-Open authority recheck.
 `browser_controller_app_view.rs` carries a typed human/agent projection;
 `state/room_browser_controller.rs` authenticates peer support before sending it.
 `browser-controller-apps.mjs` attributes background startup calls to the opening

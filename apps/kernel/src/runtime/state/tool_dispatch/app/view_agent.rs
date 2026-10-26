@@ -364,21 +364,50 @@ impl KernelRuntimeState {
                 Some(self.app_binding_epoch(agent.id(), target)),
             );
             authority.check()?;
-            // Opening changes controller state. Finish registration even if the
-            // grant is revoked meanwhile, so the pump can retire the idle Tab.
-            let opened = self
-                .ensure_room_app_view(
-                    agent.owner_user_id(),
-                    agent.session_id(),
-                    target,
-                    crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
-                        agent: agent.id().into(),
-                    },
-                )
-                .await
-                .map_err(|error| failure("view_unavailable", error.to_string()))?;
+            let existing = match self.bound_view(agent, target) {
+                Ok(context) => {
+                    // The drain can lag idle retirement. Registrations run no App
+                    // code and prove liveness without resetting an adopted layout.
+                    match self
+                        .controller_call(&context, ViewAgentCallKind::Registrations, None, None)
+                        .await
+                    {
+                        Ok(_) => Some(context.target),
+                        Err(error)
+                            if error.code == "view_retired"
+                                || (error.code == "view_unavailable"
+                                    && error.message.contains("unknown App tab")) =>
+                        {
+                            self.app_control()
+                                .views()
+                                .unbind(&context.session, &context.target);
+                            None
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) if error.code == "unknown_view" => None,
+                Err(error) => return Err(error),
+            };
+            opened_target = if let Some(target) = existing {
+                target
+            } else {
+                // Finish registration even if the grant is revoked during Open,
+                // so the pump can retire the Tab. Reopen a retired binding once.
+                let opened = self
+                    .ensure_room_app_view(
+                        agent.owner_user_id(),
+                        agent.session_id(),
+                        target,
+                        crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
+                            agent: agent.id().into(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| failure("view_unavailable", error.to_string()))?;
+                opened.target_id
+            };
             authority.check()?;
-            opened_target = opened.target_id;
             opened_target.as_str()
         } else {
             target

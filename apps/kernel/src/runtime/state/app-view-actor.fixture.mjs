@@ -2,10 +2,16 @@
 // renderer in a separate realm. The kernel and backend are exercised by Rust.
 import vm from 'node:vm';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const [directory, root] = process.argv.slice(2);
+const { AppTabs } = await import(pathToFileURL(join(directory, 'browser-controller-apps.mjs')));
+const originalOpen = AppTabs.prototype.open;
+AppTabs.prototype.open = function (params) {
+  appendFileSync(join(root, 'app-opens'), 'open\n');
+  return originalOpen.call(this, params);
+};
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, 'browser-controller.mjs')));
 let listener, bridge, context;
 const resume = () => new Promise(resolve => {
