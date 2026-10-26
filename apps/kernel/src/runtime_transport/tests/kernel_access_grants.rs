@@ -1393,7 +1393,9 @@ async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do
         "{read}"
     );
     assert_eq!(read["response"]["KernelFileChunk"]["eof"], true, "{read}");
-    let missing = holder.request(serde_json::json!({"StatKernelFile":{"path":"relative.txt"}}));
+    let missing = holder.request(
+        serde_json::json!({"ReadKernelFile":{"path":"relative.txt","offset":0,"length":1}}),
+    );
     assert_eq!(missing["error"]["code"], "file_path_invalid", "{missing}");
     assert!(
         missing["error"]["message"]

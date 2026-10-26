@@ -5,20 +5,16 @@
 //! is chunked, resumable and checked by sha256. Paths are absolute or `~/`.
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::local::{
-    KernelDirectoryEntry, KernelFileKind, KernelFileStat, ListKernelDirectoryRequest,
-    LocalDaemonResponse, ReadKernelFileRequest, StatKernelFileRequest, WriteKernelFileRequest,
-    KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
+    LocalDaemonResponse, ReadKernelFileRequest, WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES,
+    KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 
-/// Directory listings stop here and say so.
-const MAX_DIRECTORY_ENTRIES: usize = 2000;
 const PARTIAL_SUFFIX: &str = ".chariox-partial";
 
 /// Codes whose message this module writes itself, so the grant holder reads them in full.
@@ -51,7 +47,7 @@ fn io_failure(path: &Path, error: &std::io::Error) -> DaemonError {
         std::io::ErrorKind::NotFound => fail(
             "file_not_found",
             format!(
-                "{} does not exist; check the path with a directory listing.",
+                "{} does not exist; check the path in a terminal on that kernel.",
                 path.display()
             ),
         ),
@@ -96,28 +92,6 @@ fn partial_of(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn kind_of(file_type: std::fs::FileType) -> KernelFileKind {
-    if file_type.is_symlink() {
-        KernelFileKind::Symlink
-    } else if file_type.is_dir() {
-        KernelFileKind::Directory
-    } else if file_type.is_file() {
-        KernelFileKind::File
-    } else {
-        KernelFileKind::Other
-    }
-}
-
-fn modified_ms(metadata: &std::fs::Metadata) -> Option<u64> {
-    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    u64::try_from(modified.as_millis()).ok()
-}
-
-fn sha256_of(path: &Path) -> Result<String, DaemonError> {
-    let file = std::fs::File::open(path).map_err(|e| io_failure(path, &e))?;
-    sha256_of_open(&file, path)
-}
-
 /// Hashes the open file from its first byte, whatever its descriptor offset.
 fn sha256_of_open(file: &std::fs::File, path: &Path) -> Result<String, DaemonError> {
     use std::os::unix::fs::FileExt;
@@ -134,75 +108,6 @@ fn sha256_of_open(file: &std::fs::File, path: &Path) -> Result<String, DaemonErr
         hasher.update(&buffer[..read]);
         offset += read as u64;
     }
-}
-
-pub(crate) fn stat(request: &StatKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
-    let path = resolve(&request.path)?;
-    let partial_size = std::fs::metadata(partial_of(&path)).ok().map(|m| m.len());
-    let stat = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => {
-            let followed = std::fs::metadata(&path).unwrap_or_else(|_| metadata.clone());
-            let kind = kind_of(followed.file_type());
-            let hashed = request.with_sha256 && kind == KernelFileKind::File;
-            if hashed && followed.len() > KERNEL_FILE_MAX_BYTES {
-                return Err(too_large(followed.len()));
-            }
-            KernelFileStat {
-                path: path.display().to_string(),
-                exists: true,
-                kind: Some(kind),
-                size: Some(followed.len()),
-                modified_ms: modified_ms(&followed),
-                sha256: if hashed {
-                    Some(sha256_of(&path)?)
-                } else {
-                    None
-                },
-                partial_size,
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => KernelFileStat {
-            path: path.display().to_string(),
-            exists: false,
-            kind: None,
-            size: None,
-            modified_ms: None,
-            sha256: None,
-            partial_size,
-        },
-        Err(error) => return Err(io_failure(&path, &error)),
-    };
-    Ok(LocalDaemonResponse::KernelFileStat { stat })
-}
-
-pub(crate) fn list(
-    request: &ListKernelDirectoryRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let path = resolve(&request.path)?;
-    let mut entries = Vec::new();
-    let mut truncated = false;
-    for entry in std::fs::read_dir(&path).map_err(|e| io_failure(&path, &e))? {
-        let entry = entry.map_err(|e| io_failure(&path, &e))?;
-        if entries.len() == MAX_DIRECTORY_ENTRIES {
-            truncated = true;
-            break;
-        }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        entries.push(KernelDirectoryEntry {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            kind: kind_of(metadata.file_type()),
-            size: metadata.len(),
-            modified_ms: modified_ms(&metadata),
-        });
-    }
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(LocalDaemonResponse::KernelDirectoryListed {
-        path: path.display().to_string(),
-        entries,
-        truncated,
-    })
 }
 
 fn too_large(size: u64) -> DaemonError {
@@ -226,7 +131,7 @@ pub(crate) fn read(request: &ReadKernelFileRequest) -> Result<LocalDaemonRespons
         return Err(fail(
             "file_not_a_file",
             format!(
-                "{} is not a regular file; list a directory to see its files.",
+                "{} is not a regular file; list the directory in a terminal on that kernel.",
                 path.display()
             ),
         ));
@@ -577,14 +482,19 @@ mod tests {
             !target.exists(),
             "an unfinished upload is not presented as the file"
         );
-        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
-            path: target.display().to_string(),
-            with_sha256: false,
-        })
-        .unwrap() else {
+        // The resume probe: a zero-length read of the staging name answers with the bytes received.
+        let probe = ReadKernelFileRequest {
+            path: partial_of(&target).display().to_string(),
+            offset: 0,
+            length: 0,
+        };
+        let LocalDaemonResponse::KernelFileChunk {
+            size, data_base64, ..
+        } = read(&probe).unwrap()
+        else {
             panic!()
         };
-        assert_eq!((stat.exists, stat.partial_size), (false, Some(100)));
+        assert_eq!((size, data_base64.as_str()), (100, ""));
         assert_eq!(
             code(write(&chunk(&target, 50, &whole[50..150], 300, None)).unwrap_err()),
             "file_offset_mismatch"
@@ -822,35 +732,5 @@ mod tests {
         let error = write(&chunk(&target, 3, b"def", 6, None)).unwrap_err();
         assert_eq!(code(error), "file_staging_untrusted");
         assert_eq!(std::fs::read(&victim).unwrap(), b"abc");
-    }
-
-    #[test]
-    fn stat_hashes_on_request_and_a_listing_is_sorted() {
-        let dir = scratch();
-        std::fs::write(dir.join("b.txt"), b"abc").unwrap();
-        std::fs::create_dir(dir.join("a-dir")).unwrap();
-        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
-            path: dir.join("b.txt").display().to_string(),
-            with_sha256: true,
-        })
-        .unwrap() else {
-            panic!()
-        };
-        assert_eq!(
-            stat.sha256.as_deref(),
-            Some(format!("{:x}", Sha256::digest(b"abc")).as_str())
-        );
-        let LocalDaemonResponse::KernelDirectoryListed {
-            entries, truncated, ..
-        } = list(&ListKernelDirectoryRequest {
-            path: dir.display().to_string(),
-        })
-        .unwrap()
-        else {
-            panic!()
-        };
-        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!((names, truncated), (vec!["a-dir", "b.txt"], false));
-        assert_eq!(entries[0].kind, KernelFileKind::Directory);
     }
 }

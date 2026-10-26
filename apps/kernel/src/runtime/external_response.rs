@@ -214,8 +214,6 @@ response_policies! {
         AttachmentsHeartbeated,
         GatewayKernelJoined,
         GatewayKernelForgotten,
-        KernelFileStat,
-        KernelDirectoryListed,
         KernelFileChunk,
         KernelFileWritten,
         RoomBrowserArtifact,

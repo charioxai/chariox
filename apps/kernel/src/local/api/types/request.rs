@@ -24,8 +24,6 @@ pub enum LocalDaemonRequest {
     HeartbeatAttachments(HeartbeatAttachmentsRequest),
     JoinKernelLink(JoinKernelLinkRequest),
     ForgetGatewayKernel(ForgetGatewayKernelRequest),
-    StatKernelFile(StatKernelFileRequest),
-    ListKernelDirectory(ListKernelDirectoryRequest),
     ReadKernelFile(ReadKernelFileRequest),
     WriteKernelFile(WriteKernelFileRequest),
     KernelBrowser(KernelBrowserRequest),

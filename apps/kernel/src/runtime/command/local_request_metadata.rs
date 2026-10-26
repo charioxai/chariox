@@ -630,8 +630,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::HeartbeatAttachments(_) => "kernel_gateway.heartbeat",
         LocalDaemonRequest::JoinKernelLink(_) => "kernel_gateway.join",
         LocalDaemonRequest::ForgetGatewayKernel(_) => "kernel_gateway.forget",
-        LocalDaemonRequest::StatKernelFile(_) => "machine_file.stat",
-        LocalDaemonRequest::ListKernelDirectory(_) => "machine_file.list",
         LocalDaemonRequest::ReadKernelFile(_) => "machine_file.read",
         LocalDaemonRequest::WriteKernelFile(_) => "machine_file.write",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",

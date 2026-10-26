@@ -160,8 +160,6 @@ impl CommandRouter {
             LocalDaemonRequest::HeartbeatAttachments(_)
                 | LocalDaemonRequest::JoinKernelLink(_)
                 | LocalDaemonRequest::ForgetGatewayKernel(_)
-                | LocalDaemonRequest::StatKernelFile(_)
-                | LocalDaemonRequest::ListKernelDirectory(_)
                 | LocalDaemonRequest::ReadKernelFile(_)
                 | LocalDaemonRequest::WriteKernelFile(_)
         ) {
@@ -274,8 +272,6 @@ impl CommandRouter {
         let request = request.clone();
         // Hashing and copying a large file must not stall the request loop.
         let outcome = tokio::task::spawn_blocking(move || match &request {
-            LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
-            LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
             LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
             LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
             _ => unreachable!("filtered above"),

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { constants, createReadStream, type Stats } from "node:fs"
 import { resolve } from "node:path"
 import { link, lstat, open, rename, rm, stat, type FileHandle } from "node:fs/promises"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure } from "./agent-command-table.js"
 import { terminalCwd } from "./app-install-file.js"
 
@@ -10,16 +11,24 @@ const CHUNK_BYTES = 256 * 1024
 // The same name the kernel gives an unfinished upload, so a download resumes the way an upload does.
 const PARTIAL_SUFFIX = ".chariox-partial"
 
-export const FILES_VERBS = ["stat", "ls", "get", "put"] as const
+export const FILES_VERBS = ["get", "put"] as const
 export type FilesVerb = typeof FILES_VERBS[number]
 export type SendRequest = (body: Record<string, unknown>) => Promise<unknown>
 
-type RemoteStat = { path: string; exists: boolean; kind: string | null; size: number | null; sha256: string | null; partial_size: number | null }
+type Chunk = { data_base64: string; size: number }
 type Transfer = { path: string; size: number; sha256: string; bytes_sent_or_received: number; resumed_from: number; elapsed_ms: number }
 
-async function remoteStat(send: SendRequest, path: string, withSha256: boolean): Promise<RemoteStat> {
-  const response = await send({ StatKernelFile: { path, with_sha256: withSha256 } }) as { KernelFileStat: { stat: RemoteStat } }
-  return response.KernelFileStat.stat
+async function readRemote(send: SendRequest, path: string, offset: number, length: number): Promise<Chunk> {
+  return (await send({ ReadKernelFile: { path, offset, length } }) as { KernelFileChunk: Chunk }).KernelFileChunk
+}
+
+// A read of length 0 moves no bytes and reports the file's size, so on the unfinished upload's
+// name it says where the upload continues. No such file means it starts at 0.
+async function remotePartialSize(send: SendRequest, remotePath: string): Promise<number> {
+  try { return (await readRemote(send, remotePath + PARTIAL_SUFFIX, 0, 0)).size } catch (error) {
+    if (error instanceof LocalIpcError && error.code === "file_not_found") return 0
+    throw error
+  }
 }
 
 async function statLocal(path: string): Promise<Stats | null> {
@@ -82,27 +91,27 @@ async function hashOf(handle: FileHandle): Promise<string> {
   return hash.digest("hex")
 }
 
-async function getFile(send: SendRequest, remotePath: string, localPath: string, overwrite: boolean): Promise<Transfer> {
+async function getFile(send: SendRequest, remotePath: string, localPath: string, overwrite: boolean, expectedSha256: string | null): Promise<Transfer> {
   const started = Date.now()
   if (!overwrite && await statLocal(localPath)) throw new CommandFailure("file_exists", `${localPath} already exists; pass --overwrite to replace it`)
-  const source = await remoteStat(send, remotePath, true)
-  if (!source.exists) throw new CommandFailure("file_not_found", `${remotePath} does not exist on that kernel`)
-  if (source.kind !== "file" || source.size === null || source.sha256 === null) throw new CommandFailure("file_not_a_file", `${remotePath} is not a regular file; use files ls for a directory`)
-  const { size, sha256 } = source
+  const { size } = await readRemote(send, remotePath, 0, 0)
   const partialPath = localPath + PARTIAL_SUFFIX
   // Private while the bytes arrive; the published file gets its permissions below.
   const { handle: partial, resumedFrom } = await openStaging(partialPath, size)
+  let sha256: string
   try {
     for (let offset = resumedFrom; offset < size;) {
-      const response = await send({ ReadKernelFile: { path: remotePath, offset, length: Math.min(CHUNK_BYTES, size - offset) } }) as { KernelFileChunk: { data_base64: string } }
-      const bytes = Buffer.from(response.KernelFileChunk.data_base64, "base64")
+      const chunk = await readRemote(send, remotePath, offset, Math.min(CHUNK_BYTES, size - offset))
+      const bytes = Buffer.from(chunk.data_base64, "base64")
+      if (chunk.size !== size) throw new CommandFailure("file_io_failed", `${remotePath} changed from ${size} to ${chunk.size} bytes while it was downloaded; remove ${partialPath} and run the same command again`)
       if (bytes.length === 0) throw new CommandFailure("file_io_failed", `${remotePath} ended at ${offset} of ${size} bytes; run the same command again to continue`)
       await partial.writeFile(bytes)
       offset += bytes.length
     }
-    if (await hashOf(partial) !== sha256) {
+    sha256 = await hashOf(partial)
+    if (expectedSha256 !== null && sha256 !== expectedSha256) {
       await rm(partialPath)
-      throw new CommandFailure("file_hash_mismatch", `The download did not match the sha256 of ${remotePath}, so nothing was kept; run the same command again to download it afresh`)
+      throw new CommandFailure("file_hash_mismatch", `The download has sha256 ${sha256}, not the expected ${expectedSha256}, so nothing was kept; run the same command again to download it afresh`)
     }
     // Permissions are set on the file we hold, and what is published must still be that file.
     await partial.chmod(await publishedMode(localPath, overwrite))
@@ -121,9 +130,9 @@ async function putFile(send: SendRequest, localPath: string, remotePath: string,
   if (!local.isFile()) throw new CommandFailure("file_not_a_file", `${localPath} is not a regular file`)
   const { size } = local
   const sha256 = await sha256Of(localPath)
-  const target = await remoteStat(send, remotePath, false)
+  const partialSize = await remotePartialSize(send, remotePath)
   // The partial's bytes are not verified here: the target checks the whole file's sha256 and keeps nothing on a mismatch.
-  const resumedFrom = target.partial_size !== null && target.partial_size <= size ? target.partial_size : 0
+  const resumedFrom = partialSize <= size ? partialSize : 0
   const source = await open(localPath, "r")
   const buffer = Buffer.alloc(CHUNK_BYTES)
   let written!: { path: string; complete: boolean }
@@ -144,14 +153,12 @@ async function putFile(send: SendRequest, localPath: string, remotePath: string,
 export async function runFilesVerb(
   verb: FilesVerb,
   [first, second]: readonly string[],
-  flags: { sha256: boolean; overwrite: boolean },
+  flags: { sha256: string | null; overwrite: boolean },
   send: SendRequest,
 ): Promise<unknown> {
   switch (verb) {
-    case "stat": return remoteStat(send, first!, flags.sha256)
-    case "ls": return (await send({ ListKernelDirectory: { path: first! } }) as { KernelDirectoryListed: unknown }).KernelDirectoryListed
     // The launcher runs from the repository; a relative local path means the agent's directory.
-    case "get": return getFile(send, first!, resolve(terminalCwd(), second!), flags.overwrite)
+    case "get": return getFile(send, first!, resolve(terminalCwd(), second!), flags.overwrite, flags.sha256)
     case "put": return putFile(send, resolve(terminalCwd(), first!), second!, flags.overwrite)
   }
 }

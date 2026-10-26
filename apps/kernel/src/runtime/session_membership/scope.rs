@@ -643,8 +643,6 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::HeartbeatAttachments(_)
         | LocalDaemonRequest::JoinKernelLink(_)
         | LocalDaemonRequest::ForgetGatewayKernel(_)
-        | LocalDaemonRequest::StatKernelFile(_)
-        | LocalDaemonRequest::ListKernelDirectory(_)
         | LocalDaemonRequest::ReadKernelFile(_)
         | LocalDaemonRequest::WriteKernelFile(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)

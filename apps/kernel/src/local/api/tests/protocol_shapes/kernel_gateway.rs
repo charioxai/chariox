@@ -1,9 +1,8 @@
 use super::*;
 use crate::local::{
     ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
-    GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelDirectoryEntry,
-    KernelFileKind, KernelFileStat, ListGatewayKernelsRequest, ListKernelDirectoryRequest,
-    OnBehalfOf, ReadKernelFileRequest, StatKernelFileRequest, WriteKernelFileRequest,
+    GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest,
+    ListGatewayKernelsRequest, OnBehalfOf, ReadKernelFileRequest, WriteKernelFileRequest,
     KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 use crate::transport::kernel_protocol::{KernelEvent, KernelIncomingFrame, KernelOutgoingFrame};
@@ -62,20 +61,11 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
         lapsed: vec!["a2".into()],
     };
     let files = serde_json::json!({
-        "stat": LocalDaemonRequest::StatKernelFile(StatKernelFileRequest { path: "/srv/b.bundle".into(), with_sha256: true }),
-        "list": LocalDaemonRequest::ListKernelDirectory(ListKernelDirectoryRequest { path: "~/".into() }),
         "read": LocalDaemonRequest::ReadKernelFile(ReadKernelFileRequest { path: "/srv/b.bundle".into(), offset: 0, length: 4 }),
         "write": LocalDaemonRequest::WriteKernelFile(WriteKernelFileRequest {
             path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), total_size: 3,
             sha256: Some("ab".repeat(32)), overwrite: false,
         }),
-        "stat_answer": LocalDaemonResponse::KernelFileStat { stat: KernelFileStat {
-            path: "/srv/b.bundle".into(), exists: true, kind: Some(KernelFileKind::File), size: Some(3),
-            modified_ms: Some(5), sha256: None, partial_size: None,
-        } },
-        "listed": LocalDaemonResponse::KernelDirectoryListed { path: "/".into(), entries: vec![KernelDirectoryEntry {
-            name: "a".into(), kind: KernelFileKind::Directory, size: 0, modified_ms: None,
-        }], truncated: false },
         "chunk": LocalDaemonResponse::KernelFileChunk { path: "/srv/b.bundle".into(), offset: 0, data_base64: "AAEC".into(), size: 3, eof: true },
         "written": LocalDaemonResponse::KernelFileWritten { path: "/srv/b.bundle".into(), received: 3, complete: true, sha256: None },
         "caps": [KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES],
