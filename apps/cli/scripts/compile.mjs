@@ -15,6 +15,7 @@ import { access, readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { checkCompileRuntime } from "./compile-runtime.mjs"
 
 export const targets = {
   // The baseline build runs on x86-64 CPUs without AVX2, like the Rust binaries.
@@ -60,6 +61,7 @@ export function parseCompileArgs(argv) {
 const embeddedRoot = "/$bunfs/root/"
 
 export async function compileCli(options) {
+  await checkCompileRuntime()
   const target = targets[options.target]
   const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
   const repoRoot = path.resolve(appDir, "../..")
