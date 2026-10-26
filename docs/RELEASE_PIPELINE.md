@@ -1,4 +1,4 @@
-# Release pipeline — MP-07 / MP-11
+# Release pipeline — MP-08 / MP-09 / MP-10 / MP-11
 
 ## One product version, exact component identities
 
@@ -18,7 +18,7 @@ independent existing test-fixture compatibility pin). An OSS main push dispatche
 an `oss-main` event to Cloud; the receiver verifies that the supplied full commit
 belongs to OSS main. Both paths build a complete candidate with one version.
 A single concurrency group serializes staging and production, without cancelling
-an in-flight deployment. Lane branches and `[skip ci]` commits never publish.
+an in-flight deployment. Branch pushes and `[skip ci]` push commits never publish; staging unions require an explicit main workflow dispatch.
 
 ## Manifest and storage
 
@@ -54,26 +54,50 @@ Node memory and the coordinator's Cargo-slot wrapper. The installer defaults to
 a plan; registration and service start are separate operator actions.
 
 Builds use exact Git archives and the existing Cloud Dockerfiles/markers, cached
-Buildx builds, and digest-addressed GHCR outputs. Native compilation happens
-inside the shared build slot; binaries are copied before the slot is released.
+Buildx builds, and digest-addressed GHCR outputs. Unsigned preparation compiles inside the shared build slot and copies binaries
+before releasing it; CI consumes the Mac-signed handoff.
 Neither source tests nor a local container build establishes live acceptance.
 
-The staging deployment plan preserves the manual prep order: Cloud archive and
-web/services images; migration comparison/rehearsal; native bundle and relay;
-verification; Cloud activation; conditional relay/native activation; health,
-revision and fresh-target validation. The previous manifest is retained before
-activation. Downloaded artifacts are verified before use. Deployment submits
-prebuilt image digests to an existing OpenShip project, with its already configured
-runtime environment, and checks the scan contains those exact images without
-build instructions. Services-image migrations run through the target's configured
-OpenShip pre-deploy command; no database/provider credentials go to the runner.
+The staging workflow also accepts `workflow_dispatch` inputs `ref`, `oss_ref`
+and optional exact `oss_revision`. Run the workflow from main. Only main,
+`stagenew/*` and `staging/*` source branches are admitted, and an OSS revision
+must belong to the selected branch. Build inputs are checked out separately;
+workflow/deployment code remains main's. `chariox.release/v2` records each source
+ref plus full SHA and binds the generated deployment kit's SHA-256. Unknown/v1
+manifests fail closed; no previous automatic release was accepted under v1.
+A validated branch staging cannot be promoted, deployed or published to prod.
+A subsequent landing of the same source bytes still creates a main release.
 
-The older `deploy-cloud-staging-release.sh` rebuilds web from source, so the
-image-only adapter intentionally differs. The command diff retains the common
-phase order and names the transport changes. Target environment, migration,
-native activation and live-validation integrations must be rehearsed before
-enablement. OpenShip ready status alone never publishes a manifest: require a
-matching live receipt with observed pins. Local dry runs cannot mint acceptance.
+Cloud's `prepare-kit.mjs` invokes the manual stagenew kit builders for SQL
+rehearsal, relay/native activation and rollback. The exact previous validated
+manifest supplies each later migration/rollback base; initial bootstrap pins
+come from public operator configuration. The runner imports the exact native
+version/SHA handoff signed on the owner's Mac, verifies the approved public pin,
+inventory signature and every hash, and publishes artifact carriers without
+holding a signing key. The signed CLI must report the shared product version.
+The image builder bounds Node only in build stages and preserves the deployed
+runtime environment. Image/version labels and registry transport intentionally
+differ from saved manual image config IDs; those IDs are never called registry
+digests.
+
+Before activation the shipped staging integration verifies artifacts and target
+identity, invokes the existing retained-runtime automatic-shutdown preflight,
+and runs the installed target backup wrapper. It retains the manual recovery
+kit on the VPS, submits image-only input through the existing OpenShip adapter,
+uses the normal web Prisma startup path, conditionally activates native/relay,
+and runs the existing hosted smoke. Exact native rollback records are retained
+before activation; failures invoke those scripts plus the pinned Cloud recovery
+and never publish a manifest. A real live drill receipt with all checks remains
+required. The production target integration is separate and still needs its
+real rehearsal; staging-only recipes do not authorize production.
+
+Cloud `scripts/release/rehearse.mjs` verifies a retained manual kit and plans
+build/manifest/native/deploy work without SSH, pushes, deployment or secrets.
+It executes schema rehearsal only against its own disposable Postgres. A
+layout-only candidate comparison is explicitly labeled; absent final artifact
+bytes, registry digests or signed inputs stay unresolved. Inventories cannot
+receive acceptance or promotion. See Cloud `deploy/release/README.md` for the
+handoff format and operator target fields.
 
 ## Production, rollback and signing
 
@@ -93,7 +117,7 @@ backup/restore plan before destructive migrations. Retain previous images,
 archives, native bundles and signed release material; never prune shared caches.
 
 MP-07 managed kernel installation still uses the existing signed immutable
-release/atomic activation contract. CI produces unsigned kernel/relay/CLI inputs; the full managed release also
+release/atomic activation contract. The unsigned build tool prepares kernel/relay/CLI inputs for Mac signing; the full managed release also
 requires the existing supervisor/App helpers and builder attestation. The ordinary
 native bundle is never passed directly to a managed installer. Miguel's Mac
 verifies inputs and invokes the existing signing/packaging step. Only public signature inventories and signed output hashes return to the

@@ -2,11 +2,11 @@ import { spawnSync } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
 import { readFile, statfs } from 'node:fs/promises'
 
-export function run(command, args, { cwd, env = process.env, log, timeout = 60 * 60_000 } = {}) {
+export function run(command, args, { cwd, env = process.env, log, input, timeout = 60 * 60_000 } = {}) {
   const descriptor = log ? openSync(log, 'a', 0o600) : undefined
   try {
-    const result = spawnSync(command, args, { cwd, env, timeout, maxBuffer: 8 * 1024 * 1024,
-      stdio: descriptor === undefined ? ['ignore', 'pipe', 'pipe'] : ['ignore', descriptor, descriptor] })
+    const result = spawnSync(command, args, { cwd, env, input, timeout, maxBuffer: 8 * 1024 * 1024,
+      stdio: [input === undefined ? 'ignore' : 'pipe', descriptor ?? 'pipe', descriptor ?? 'pipe'] })
     if (result.error || result.status !== 0) throw Error(`command failed: ${command} (exit ${result.status ?? 'unsettled'}); inspect private build log`)
     return result.stdout?.toString().trim() ?? ''
   } finally { if (descriptor !== undefined) closeSync(descriptor) }

@@ -5,7 +5,7 @@ import { attest, canonical, checks, createManifest, hash, observedPins, promote,
 const sha = 'a'.repeat(64)
 const revision = 'b'.repeat(40)
 function candidate(version = '0.1.0') {
-  return createManifest({ version, cloud: { commit: revision, image: `ghcr.io/charioxai/chariox-cloud-web@sha256:${sha}`,
+  return createManifest({ version, kit_sha256: 'a'.repeat(64), signing: { status: 'signed', inventory_sha256: 'a'.repeat(64) }, source: Object.fromEntries(['cloud', 'oss', 'relay'].map(name => [name, { ref: 'refs/heads/main', commit: revision }])), cloud: { commit: revision, image: `ghcr.io/charioxai/chariox-cloud-web@sha256:${sha}`,
     services_image_sha256: sha, archive_sha256: sha, source_sha256: sha },
   oss: { commit: revision, image: `ghcr.io/charioxai/chariox-oss@sha256:${sha}`, bundle_sha256: sha },
   relay: { commit: revision, image: `ghcr.io/charioxai/chariox-relay@sha256:${sha}`, binary_sha256: sha } })
@@ -42,6 +42,12 @@ test('MP-07 / MP-11: reject unexpected fields that could carry runtime secrets',
   const value = candidate(); value.environment = {}
   assert.throws(() => validateManifest(value), /unexpected/)
 })
+test('MP-08 / MP-09 / MP-10 / MP-11: unsigned inputs or an unbound kit cannot receive acceptance', () => {
+  const unsigned = candidate(); unsigned.signing = { status: 'pending', inventory_sha256: null }
+  assert.throws(() => attest(unsigned, receipt(unsigned)), /signed native/)
+  const noKit = candidate(); noKit.kit_sha256 = null
+  assert.throws(() => attest(noKit, receipt(noKit)), /kit/)
+})
 test('MP-07 / MP-11: component repositories and public evidence URLs are constrained', () => {
   const value = candidate(); value.cloud.image = `ghcr.io/untrusted/other@sha256:${sha}`
   assert.throws(() => validateManifest(value), /repository/)
@@ -53,6 +59,13 @@ test('MP-07 / MP-11: semantic receipt equality does not depend on JSON key order
   const value = candidate(), r = receipt(value)
   r.observed = Object.fromEntries(Object.entries(r.observed).reverse())
   assert.equal(attest(value, r).state, 'validated')
+})
+test('MP-08 / MP-09 / MP-10 / MP-11: validated branch staging is refused by promotion', () => {
+  const value = candidate()
+  value.source = Object.fromEntries(['cloud', 'oss', 'relay'].map(name => [name, { ref: name === 'cloud' ? 'refs/heads/stagenew/web' : 'refs/heads/main', commit: revision }]))
+  const branch = createManifest(value)
+  const bytes = canonical(attest(branch, receipt(branch)))
+  assert.throws(() => promote(bytes, hash(bytes)), /main release/)
 })
 test('MP-07 / MP-11: reject invalid SemVer before any image is published', () => {
   for (const version of ['0.01.0', '0.1.0-01', '0.1.0-rc.01', '0.1.0-.', `0.1.0-${'a'.repeat(90)}`]) assert.throws(() => candidate(version), /version/)

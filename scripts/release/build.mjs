@@ -9,6 +9,10 @@ const toolsRoot = fileURLToPath(new URL('../..', import.meta.url))
 const components = ['cloud-web', 'cloud-services', 'oss', 'relay']
 const repositories = { 'cloud-web': 'chariox-cloud-web', 'cloud-services': 'chariox-cloud-services', oss: 'chariox-oss', relay: 'chariox-relay' }
 
+export function boundedDockerfile(source) {
+  return source.replace(/^(FROM[^\n]+\sAS\s+build)\s*$/gmi, '$1\nENV NODE_OPTIONS=--max-old-space-size=4096')
+}
+
 export function buildCommand({ component, source, output, version, revision, mode = 'plan' }) {
   if (!components.includes(component) || !['plan', 'local', 'push'].includes(mode)) throw Error('invalid component/mode')
   if (!/^[0-9a-f]{40}$/.test(revision) || !isVersion(version)) throw Error('exact revision and product version required')
@@ -54,7 +58,7 @@ export async function build(options) {
       const relative = `deploy/openship/Dockerfile${component === 'cloud-services' ? '.publication-services' : ''}`
       const dockerfile = await readFile(join(context, relative), 'utf8')
       // Bound every Node build process without modifying declared source bytes.
-      await writeFile(join(output, 'Dockerfile'), dockerfile.replace(/^(FROM[^\n]+)$/gm, '$1\nENV NODE_OPTIONS=--max-old-space-size=4096'))
+      await writeFile(join(output, 'Dockerfile'), boundedDockerfile(dockerfile))
       facts.source_dockerfile_sha256 = hash(dockerfile)
       facts.build_dockerfile_sha256 = await hashFile(join(output, 'Dockerfile'))
       // Prevent .dockerignore from changing the exact Git archive source.
@@ -79,6 +83,10 @@ export async function build(options) {
       if (await hashFile(join(native, name)) !== expected) throw Error('native artifact checksum mismatch')
       await copyFile(join(native, name), join(context, name))
       await copyFile(join(native, 'native.json'), join(context, 'native.json'))
+      if (receipt.signing === 'signed') {
+        await copyFile(join(native, 'native.json.sig'), join(context, 'native.json.sig'))
+        await copyFile(join(native, 'release-public.pem'), join(context, 'release-public.pem'))
+      }
       // Artifact carrier, not a replacement for MP-07 signed native activation.
       await copyFile(join(toolsRoot, 'deploy/release/Dockerfile.artifact'), join(output, 'Dockerfile'))
       Object.assign(facts, { bundle_sha256: receipt.bundle_sha256, binary_sha256: receipt.relay_sha256 })

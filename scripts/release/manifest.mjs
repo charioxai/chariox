@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
+import { validateSources, requireMainRelease } from './source.mjs'
 
 const sha256 = /^[0-9a-f]{64}$/
 const commit = /^[0-9a-f]{40}$/
@@ -34,14 +35,16 @@ function artifact(value, fields, label) {
 }
 
 export function validateManifest(value, { validated = false } = {}) {
-  keys(value, ['schema', 'version', 'state', 'cloud', 'oss', 'relay', 'signing', 'validation'], 'manifest')
-  requireValue(value.schema === 'chariox.release/v1', 'unsupported release schema')
+  keys(value, ['schema', 'version', 'state', 'source', 'cloud', 'oss', 'relay', 'signing', 'kit_sha256', 'validation'], 'manifest')
+  requireValue(value.schema === 'chariox.release/v2', 'unsupported release schema')
   requireValue(isVersion(value.version), 'expected pre-1.0 semantic version without v, fitting its image tag')
   requireValue(['candidate', 'validated'].includes(value.state), 'inventory is not deployable')
   artifact(value.cloud, ['commit', 'image', 'services_image_sha256', 'archive_sha256', 'source_sha256'], 'cloud')
   // services_image_sha256 is a registry manifest digest; its repository is fixed.
   artifact(value.oss, ['commit', 'image', 'bundle_sha256'], 'oss')
   artifact(value.relay, ['commit', 'image', 'binary_sha256'], 'relay')
+  validateSources(value.source, value)
+  requireValue(value.kit_sha256 === null || sha256.test(value.kit_sha256), 'invalid deployment kit hash')
   for (const [name, repository] of [['cloud', 'chariox-cloud-web'], ['oss', 'chariox-oss'], ['relay', 'chariox-relay']]) {
     requireValue(value[name].image.startsWith(`ghcr.io/charioxai/${repository}@sha256:`), `${name}: unexpected component repository`)
   }
@@ -72,6 +75,8 @@ export function validateObservation(observed, manifest) {
 }
 
 export function validateReceipt(receipt, candidate) {
+  requireValue(sha256.test(candidate.kit_sha256), 'deployment kit must be bound before validation')
+  requireValue(candidate.signing.status === 'signed', 'signed native inputs required before validation')
   keys(receipt, ['environment', 'manifest_sha256', 'recorded_at', 'checks', 'observed', 'evidence'], 'validation')
   requireValue(receipt.environment === 'staging', 'validation must come from staging')
   requireValue(receipt.manifest_sha256 === hash(canonical(candidate)), 'validation candidate hash mismatch')
@@ -95,12 +100,13 @@ export function attest(candidate, receipt) {
 export function promote(bytes, expectedHash) {
   requireValue(sha256.test(expectedHash) && hash(bytes) === expectedHash, 'approved manifest SHA-256 mismatch')
   validateManifest(JSON.parse(bytes), { validated: true })
+  requireMainRelease(JSON.parse(bytes))
   return bytes // byte-for-byte: do not rebuild, reserialize, retag or change version.
 }
 
 export function createManifest(input) {
-  const { version: releaseVersion, cloud, oss, relay, signing = { status: 'pending', inventory_sha256: null } } = input
-  return validateManifest({ schema: 'chariox.release/v1', version: releaseVersion, state: 'candidate', cloud, oss, relay, signing, validation: null })
+  const { version: releaseVersion, source, cloud, oss, relay, kit_sha256 = null, signing = { status: 'pending', inventory_sha256: null } } = input
+  return validateManifest({ schema: 'chariox.release/v2', version: releaseVersion, state: 'candidate', source, cloud, oss, relay, signing, kit_sha256, validation: null })
 }
 
 async function main(args) {
