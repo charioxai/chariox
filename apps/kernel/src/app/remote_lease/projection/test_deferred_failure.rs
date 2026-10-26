@@ -60,6 +60,7 @@ fn leased_deferred_commentary_replay_preserves_later_provider_failure() {
         &leased.backing_agent_id,
         Some(&run),
         Some(failure.clone()),
+        None,
     )
     .unwrap();
     app.providers_mut()
@@ -120,8 +121,12 @@ fn leased_failure_without_termination_keeps_its_native_cause() {
         .get_mut(&leased.id)
         .unwrap()
         .active_home_prompt_id = Some(active.id().into());
-    let message = "Codex error [usage_limit_exceeded]: You've hit your usage limit.";
-    let expected = crate::provider::ProviderFailure::classify("codex", message);
+    let message = format!(
+        "{}\n\nYou've hit your usage limit.\nTry again later.",
+        "Diagnostic context. ".repeat(20)
+    );
+    assert!(message.len() > 256);
+    let expected = crate::provider::ProviderFailure::classify("codex", &message);
     let providers = app.providers.clone();
     let active_turns = app.active_turns.clone();
     let activity = app.prompt_activity.clone();
@@ -138,7 +143,7 @@ fn leased_failure_without_termination_keeps_its_native_cause() {
         &run,
         Some(active.id()),
         None,
-        message,
+        &message,
     )
     .unwrap();
     let settled = app
@@ -147,6 +152,15 @@ fn leased_failure_without_termination_keeps_its_native_cause() {
         .unwrap();
     assert_eq!(settled.provider_termination, None);
     assert_eq!(settled.failure, Some(expected.clone()));
+    assert!(
+        app.providers
+            .get_run(&run)
+            .unwrap()
+            .terminal_diagnostic()
+            .unwrap()
+            .len()
+            <= 256
+    );
     let event = RemoteLeaseRuntime::new(&mut app)
         .drain_leased_runtime_projection_with_recovery(&leased.id, &run, false, true)
         .unwrap()

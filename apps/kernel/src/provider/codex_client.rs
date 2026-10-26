@@ -1160,9 +1160,7 @@ mod tests {
             Some(CodexNotification::TurnCompleted {
                 turn_id: "turn-1".to_string(),
                 status: "failed".to_string(),
-                error_message: Some(
-                    "Codex error [http_status_502]: stream closed".to_string()
-                ),
+                error_message: Some("Codex error [http_status_502]: stream closed".to_string()),
                 items: Vec::new(),
             })
         );
