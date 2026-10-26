@@ -144,7 +144,7 @@ pub(crate) use provider_processes::{
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
     DrainedLeasedProjection, LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteLeaseRuntime,
+    PreparedLeasedProviderRun, RemoteCompletionHarvest, RemoteLeaseRuntime,
 };
 #[cfg(test)]
 pub(crate) use remote_lease::{
@@ -155,6 +155,7 @@ pub struct DaemonApp {
     config: DaemonConfig,
     started_at_ms: u64,
     relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
+    slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     pub(crate) agents: AgentServiceStore,
     pub(crate) attachments: AttachmentServiceStore,
     pty: PtyManager,
@@ -470,6 +471,7 @@ impl DaemonApp {
                     DaemonConfig::relay_peer_public_key_entries(),
                 ),
             )),
+            slice_private_relay_connectors: Arc::default(),
             config,
         };
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -537,6 +539,13 @@ impl DaemonApp {
 
     pub(crate) fn relay_client_state(&self) -> Arc<tokio::sync::RwLock<RelayClientState>> {
         Arc::clone(&self.relay_client_state)
+    }
+
+    pub(crate) fn connected_relays(&self) -> crate::transport::relay_client::ConnectedRelays {
+        crate::transport::relay_client::ConnectedRelays {
+            primary: Arc::clone(&self.relay_client_state),
+            slice_private: Arc::clone(&self.slice_private_relay_connectors),
+        }
     }
 
     pub(crate) fn credential_enrollment_control(

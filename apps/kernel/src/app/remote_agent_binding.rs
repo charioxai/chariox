@@ -20,6 +20,7 @@ use super::remote_kernel_selection::{
     no_remote_kernel_available_message, select_remote_kernel,
 };
 
+mod cleanup;
 mod lease_context;
 mod slice_recovery;
 use slice_recovery::SliceBindingRecovery;
@@ -1418,90 +1419,9 @@ impl DaemonApp {
         authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
     ) -> Result<(), DaemonError> {
         authorize()?;
-        let relay_config = self.relay_config_for_remote_execution(remote_execution);
-        let target = ClientTarget {
-            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-            daemon_alias: None,
-        };
-        let use_connected_relay =
-            self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
-        let agent_cleanup = self.send_remote_binding_request_authorized(
-            &relay_config,
-            target.clone(),
-            RelayPeerRequest::DestroyLeasedAgent {
-                leased_agent_id: remote_execution.leased_agent_id.clone(),
-            },
-            use_connected_relay,
-            authorize,
-        );
-        self.reconcile_remote_cleanup_response(
-            remote_execution,
-            &remote_execution.leased_agent_id,
-            "leased_agent_not_found",
-            agent_cleanup,
-        )?;
-        let lease_cleanup = self.send_remote_binding_request_authorized(
-            &relay_config,
-            target,
-            RelayPeerRequest::DestroyExecutionLease {
-                lease_id: remote_execution.execution_lease_id.clone(),
-            },
-            use_connected_relay,
-            &|| Ok(()), // Cleanup of an already destroyed agent cannot depend on its grant.
-        );
-        self.reconcile_remote_cleanup_response(
-            remote_execution,
-            &remote_execution.execution_lease_id,
-            "execution_lease_not_found",
-            lease_cleanup,
-        )
-    }
-
-    fn reconcile_remote_cleanup_response(
-        &self,
-        binding: &RemoteAgentBinding,
-        resource_id: &str,
-        missing_code: &'static str,
-        response: Result<RelayPeerResponse, DaemonError>,
-    ) -> Result<(), DaemonError> {
-        match response {
-            Ok(RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id })
-                if missing_code == "leased_agent_not_found" && leased_agent_id == resource_id =>
-            {
-                Ok(())
-            }
-            Ok(RelayPeerResponse::ExecutionLeaseDestroyed { lease_id })
-                if missing_code == "execution_lease_not_found" && lease_id == resource_id =>
-            {
-                Ok(())
-            }
-            Err(DaemonError::RelayPeerCleanupAbsent {
-                worker_kernel_id,
-                resource_id: absent_id,
-                code,
-            }) if worker_kernel_id == binding.worker_kernel_id
-                && absent_id == resource_id
-                && code == missing_code =>
-            {
-                self.durable_state_store().append_event(
-                    "agent.worker_cleanup.already_absent",
-                    None,
-                    serde_json::json!({
-                        "worker_kernel_id": worker_kernel_id,
-                        "execution_lease_id": binding.execution_lease_id,
-                        "leased_agent_id": binding.leased_agent_id,
-                        "missing_resource_id": absent_id,
-                        "code": code,
-                    }),
-                )?;
-                Ok(())
-            }
-            Err(error) => Err(error),
-            Ok(other) => Err(DaemonError::LocalTransport {
-                operation: "destroy remote execution binding",
-                message: format!("unexpected peer cleanup response: {other:?}"),
-            }),
-        }
+        let plan = self.prepare_remote_execution_cleanup(remote_execution);
+        let result = self.block_on_relay_future(async { Ok(plan.execute(authorize).await) })?;
+        self.commit_remote_execution_cleanup(result)
     }
 
     fn ensure_remote_agent_skill_packages(

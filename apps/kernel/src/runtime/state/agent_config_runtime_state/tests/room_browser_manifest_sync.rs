@@ -117,29 +117,12 @@ async fn projected_remote_completion_admits_queued_prompt_before_ordered_deliver
         .leased_agent_operations
         .lock("leased-agent-1")
         .await;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        fixture.runtime.project_relay_remote_runtime_projection(
-            crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                home_session_id: fixture.session_id.to_string(),
-                home_agent_id: fixture.agent_id.to_string(),
-                provider_run_id: "provider-run-current".to_string(),
-                provider_run: None,
-                prompts: Vec::new(),
-                output_chunks: Vec::new(),
-                notices: Vec::new(),
-                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                    message_id: "queued-completion-ordering".to_string(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                    home_prompt_id: Some(completed_prompt_id),
-                    provider_termination: None,
-                }],
-            },
-        ),
+    project_completion_answering_harvest(
+        &mut fixture,
+        "queued-completion-ordering",
+        completed_prompt_id,
     )
     .await
-    .expect("projection must return without waiting on the leased-agent lane")
     .expect("worker completion projection should succeed");
     assert!(fixture.priority_rx.try_recv().is_err());
     let pre_ack_echo_count = fixture
@@ -351,6 +334,8 @@ async fn ordinary_completion_dispatches_workflow_head_after_projection() {
                 .await
         }
     });
+    // The completed turn's git observations are asked of the worker first.
+    answer_completion_harvest(&mut fixture).await;
     tokio::time::timeout(std::time::Duration::from_secs(2), &mut projection)
         .await
         .expect("completion projection should finish before workflow dispatch")
@@ -459,28 +444,13 @@ async fn rejected_ordered_queued_dispatch_uses_shared_sender_failure_semantics()
         .leased_agent_operations
         .lock("leased-agent-1")
         .await;
-    fixture
-        .runtime
-        .project_relay_remote_runtime_projection(
-            crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                home_session_id: fixture.session_id.to_string(),
-                home_agent_id: fixture.agent_id.to_string(),
-                provider_run_id: "provider-run-current".to_string(),
-                provider_run: None,
-                prompts: Vec::new(),
-                output_chunks: Vec::new(),
-                notices: Vec::new(),
-                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                    message_id: "reject-queued-dispatch".to_string(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                    home_prompt_id: Some(completed_prompt_id),
-                    provider_termination: None,
-                }],
-            },
-        )
-        .await
-        .expect("completion projection should return before delivery");
+    project_completion_answering_harvest(
+        &mut fixture,
+        "reject-queued-dispatch",
+        completed_prompt_id,
+    )
+    .await
+    .expect("completion projection should return before delivery");
     drop(held_lane);
     let (request_id, request) = next_peer_request(&mut fixture).await;
     assert!(matches!(
@@ -710,29 +680,74 @@ async fn queue_workflow_successor_after_ordinary_prompt(
         .expect("ordinary prompt and workflow successor should queue")
 }
 
-async fn project_ordinary_completion(fixture: &RoomManifestFixture, prompt_id: String) {
-    fixture
-        .runtime
-        .project_relay_remote_runtime_projection(
-            crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
-            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
-                home_session_id: fixture.session_id.to_string(),
-                home_agent_id: fixture.agent_id.to_string(),
-                provider_run_id: "provider-run-current".to_string(),
-                provider_run: None,
-                prompts: Vec::new(),
-                output_chunks: Vec::new(),
-                notices: Vec::new(),
-                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
-                    message_id: "ordinary-completion-for-workflow-successor".to_string(),
-                    completed_at_ms: crate::session::unix_epoch_ms(),
-                    home_prompt_id: Some(prompt_id),
-                    provider_termination: None,
-                }],
-            },
-        )
+async fn project_ordinary_completion(fixture: &mut RoomManifestFixture, prompt_id: String) {
+    project_completion_answering_harvest(
+        fixture,
+        "ordinary-completion-for-workflow-successor",
+        prompt_id,
+    )
+    .await
+    .expect("ordinary completion should promote the queued workflow prompt");
+}
+
+/// Plays the worker for a projected completion: the home first asks it for the
+/// completed turn's git observations, and only then goes on.
+async fn project_completion_answering_harvest(
+    fixture: &mut RoomManifestFixture,
+    message_id: &str,
+    prompt_id: String,
+) -> Result<(), crate::error::DaemonError> {
+    let projection = tokio::spawn({
+        let runtime = fixture.runtime.clone();
+        let session_id = fixture.session_id.clone();
+        let agent_id = fixture.agent_id.clone();
+        let message_id = message_id.to_string();
+        async move {
+            runtime
+                .project_relay_remote_runtime_projection(
+                    crate::runtime::relay_peer_authority::test_projection_authority("worker-1"),
+                    crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                        home_session_id: session_id,
+                        home_agent_id: agent_id,
+                        provider_run_id: "provider-run-current".to_string(),
+                        provider_run: None,
+                        prompts: Vec::new(),
+                        output_chunks: Vec::new(),
+                        notices: Vec::new(),
+                        completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            message_id,
+                            completed_at_ms: crate::session::unix_epoch_ms(),
+                            home_prompt_id: Some(prompt_id),
+                            provider_termination: None,
+                        }],
+                    },
+                )
+                .await
+        }
+    });
+    answer_completion_harvest(fixture).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), projection)
         .await
-        .expect("ordinary completion should promote the queued workflow prompt");
+        .expect("projection must return without waiting on the leased-agent lane")
+        .expect("projection task should join")
+}
+
+async fn answer_completion_harvest(fixture: &mut RoomManifestFixture) {
+    let (request_id, request) = next_peer_request(fixture).await;
+    assert!(matches!(
+        request,
+        crate::transport::relay_peer::RelayPeerRequest::ObserveLeasedGitAfter { .. }
+    ));
+    acknowledge_peer_response(
+        fixture,
+        request_id,
+        crate::transport::relay_peer::RelayPeerResponse::LeasedGitObserved {
+            provider_run_id: "provider-run-current".to_string(),
+            git_observations: Vec::new(),
+            workspace_live_sync_change: None,
+        },
+    )
+    .await;
 }
 
 async fn active_prompt_for(
@@ -813,7 +828,7 @@ async fn ordinary_completion_restores_persisted_workflow_ids_before_ordered_disp
         .lock("leased-agent-1")
         .await;
 
-    project_ordinary_completion(&fixture, ordinary_prompt_id).await;
+    project_ordinary_completion(&mut fixture, ordinary_prompt_id).await;
     assert!(
         fixture.priority_rx.try_recv().is_err(),
         "workflow prompt transport must wait for the existing leased-agent lane"
@@ -918,7 +933,7 @@ async fn rejected_promoted_workflow_head_is_not_reported_as_delivered() {
     let successor = queue_workflow_successor_after_ordinary_prompt(&fixture).await;
     let workflow_id = successor.workflow_id;
     let ordinary_prompt_id = successor.ordinary_prompt_id;
-    project_ordinary_completion(&fixture, ordinary_prompt_id).await;
+    project_ordinary_completion(&mut fixture, ordinary_prompt_id).await;
     let home_prompt_id = active_prompt_for(&fixture)
         .await
         .expect("workflow successor should be active before remote submission")

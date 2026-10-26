@@ -35,6 +35,7 @@ use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
 mod browser_input_order;
+mod connected_relays;
 mod connection_config;
 mod connection_state;
 mod connector;
@@ -56,6 +57,11 @@ mod request_errors;
 mod request_timing;
 mod sender_identity;
 mod subscriptions;
+#[cfg(test)]
+pub(crate) use connected_relays::ConnectedWorkerRig;
+pub(crate) use connected_relays::{
+    ConnectedRelays, SlicePrivateRelayConnector, SlicePrivateRelayConnectors,
+};
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
     publish_offline_and_set_disconnected, set_connected, spawn_cloud_presence_publish,

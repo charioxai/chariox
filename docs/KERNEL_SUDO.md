@@ -68,7 +68,10 @@ are unavailable to this bridge.
 
 Every attached terminal shows a sudo row with the remaining time, the absolute
 expiry and `[Extend]` / `[Revoke]`; the row reads the kernel's deadline from the
-session snapshot, so reconnecting terminals show the same window.
+session snapshot, so reconnecting terminals show the same window. The terminal
+runs with the mouse off by default, so `F9` (fn+F9 on Mac) moves the keyboard
+into the row: Left/Right pick Extend or Revoke, Up/Down pick the window, Enter
+runs it and Esc gives the keyboard back.
 
 - `/sudo status` lists live windows; `/sudo extend [sudo:<id>]` opens one fresh
   passkey popup for the same work and sets the expiry to the verification time plus the chosen
@@ -147,6 +150,14 @@ never see the tool. The fence lives in worker memory: a worker restart drops it,
 and the next renewal for that window ends it at home (`worker_restarted`).
 Workers older than peer protocol 83 are refused, `/sudo` entered on a worker
 for a leased backing agent is refused, and shell CLI elevation stays local-only.
+
+Forgetting a machine (`/machine forget`) revokes its trust (G06). Every leased
+agent on it loses its window with outcome `machine_forgotten`, its running turn
+ends failed with the reason (the task waits for the owner to resume or cancel
+it), a notice tells every terminal, and the worker is told to release the lease.
+Later forwarded calls and prompt dispatches through that lease are refused with
+the same reason ("machine ... was forgotten by the owner"); approving the machine
+again and rebinding the agent is the way back.
 
 ## Vault generation and protected login (A06)
 

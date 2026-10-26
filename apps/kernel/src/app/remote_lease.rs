@@ -26,6 +26,7 @@ mod relay_context;
 mod skill_sync;
 mod turn_capacity;
 
+pub(crate) use projection::RemoteCompletionHarvest;
 pub(crate) use projection_delivery::{DrainedLeasedProjection, LeasedProjectionDelivery};
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;

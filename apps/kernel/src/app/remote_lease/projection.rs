@@ -4,12 +4,9 @@ use crate::execution_lease::LeasedAgent;
 use crate::history::SessionHistoryEntryKind;
 use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
-use crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout;
 use crate::transport::relay_peer::{
-    RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
-    RelayProjectedOutputChunk, RelayProjectedPrompt,
+    RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
 };
-use chariox_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
 
@@ -27,9 +24,6 @@ mod test_provider_runs;
 #[cfg(test)]
 mod test_run_identity;
 
-const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(60);
-
 #[derive(Default)]
 pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
@@ -38,6 +32,14 @@ pub(crate) struct RemoteRuntimeProjectionOutcome {
     /// rerun only local turns, so the home settles it without one.
     pub(crate) provider_failed: bool,
     pub(crate) remote_dispatches: Vec<crate::app::KernelRemotePromptDispatchIntent>,
+    /// The completed turn's worker still holds git observations; the caller
+    /// collects them once the app lock is released.
+    pub(crate) completion_harvest: Option<RemoteCompletionHarvest>,
+}
+
+pub(crate) struct RemoteCompletionHarvest {
+    pub(crate) remote_execution: crate::agent::RemoteAgentBinding,
+    pub(crate) provider_run_id: String,
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
@@ -1235,9 +1237,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok()
             .and_then(|agent| agent.remote_execution().cloned());
         if saw_completion {
-            if let Some(remote_execution) = remote_execution.as_ref() {
-                self.harvest_remote_completion_observations(remote_execution, provider_run_id);
-            }
+            outcome.completion_harvest =
+                remote_execution
+                    .clone()
+                    .map(|remote_execution| RemoteCompletionHarvest {
+                        remote_execution,
+                        provider_run_id: provider_run_id.to_string(),
+                    });
         }
         if let Some(active_prompt) = active_prompt {
             let workflow_output_ready = active_prompt.workflow_run_id().is_some()
@@ -1609,74 +1615,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             crate::transport::flow_control::note_prompt_started(self.app, provider_run_id);
         }
         Ok(())
-    }
-
-    fn harvest_remote_completion_observations(
-        &mut self,
-        remote_execution: &crate::agent::RemoteAgentBinding,
-        provider_run_id: &str,
-    ) {
-        let relay_config = self.app.relay_config_for_remote_execution(remote_execution);
-        let response = self.app.block_on_relay_future(
-            send_peer_request_via_temporary_connection_with_timeout(
-                &relay_config,
-                ClientTarget {
-                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                    daemon_alias: None,
-                },
-                RelayPeerRequest::ObserveLeasedGitAfter {
-                    leased_agent_id: remote_execution.leased_agent_id.clone(),
-                    provider_run_id: provider_run_id.to_string(),
-                },
-                REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT,
-            ),
-        );
-        match response {
-            Ok(RelayPeerResponse::LeasedGitObserved {
-                git_observations,
-                workspace_live_sync_change,
-                ..
-            }) => {
-                if let Err(error) = crate::git_observer::append_observations(
-                    &self.app.operational_history_store(),
-                    git_observations,
-                ) {
-                    crate::logging::warn_with_fields(
-                        "daemon.git_observer",
-                        "failed to append projected remote git observations",
-                        serde_json::json!({
-                            "worker_kernel_id": remote_execution.worker_kernel_id,
-                            "leased_agent_id": remote_execution.leased_agent_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-                if let Some(change) = workspace_live_sync_change {
-                    self.app.fanout_remote_workspace_live_sync_change(
-                        change,
-                        Some(&remote_execution.worker_kernel_id),
-                    );
-                }
-            }
-            Ok(other) => crate::logging::warn_with_fields(
-                "daemon.remote_prompt_dispatch",
-                "unexpected projected remote completion harvest response",
-                serde_json::json!({
-                    "worker_kernel_id": remote_execution.worker_kernel_id,
-                    "leased_agent_id": remote_execution.leased_agent_id,
-                    "response": format!("{other:?}"),
-                }),
-            ),
-            Err(error) => crate::logging::warn_with_fields(
-                "daemon.remote_prompt_dispatch",
-                "failed to harvest projected remote completion observations",
-                serde_json::json!({
-                    "worker_kernel_id": remote_execution.worker_kernel_id,
-                    "leased_agent_id": remote_execution.leased_agent_id,
-                    "error": error.to_string(),
-                }),
-            ),
-        }
     }
 }
 

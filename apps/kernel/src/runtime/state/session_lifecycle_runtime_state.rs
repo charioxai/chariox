@@ -876,19 +876,24 @@ impl KernelRuntimeState {
         // already-admitted snapshot cannot revive the run after it is ended.
         // Local deletion retains its app-lock-independent owned-state path.
         let destroyed = if agent.remote_execution().is_some() {
-            self.with_app_side_effect(|app| {
-                self.authorize_current_external_command()?;
+            let state = self.clone();
+            let agent_id = agent_id.to_owned();
+            let caller_user_id = caller_user_id.to_owned();
+            // A private connector owns a current-thread runtime. Its reader and
+            // writer must keep polling while synchronous cleanup waits for ACKs.
+            self.with_app_side_effect_blocking(move |app| {
+                state.authorize_current_external_command()?;
                 crate::app::KernelSessionService::new(app)
                     .destroy_agent_worker_execution_authorized(&agent, &|| {
-                        self.authorize_current_external_command()
+                        state.authorize_current_external_command()
                     })
                     .map_err(|error| DaemonError::AgentWorkerCleanup {
-                        agent_id: agent_id.to_string(),
+                        agent_id: agent_id.clone(),
                         source: Box::new(error),
                     })?;
                 // Worker cleanup has committed. Finish home deletion under the
                 // same app lock so a queued projection cannot revive the run.
-                self.owned.destroy_agent(agent_id, caller_user_id)
+                state.owned.destroy_agent(&agent_id, &caller_user_id)
             })
             .await?
         } else {
@@ -928,15 +933,19 @@ impl KernelRuntimeState {
     /// terminals it hosts. A worker that cannot be reached keeps its lease
     /// until the lease expires; the failure is logged, never raised, because
     /// the Room is already gone.
-    async fn release_worker_leases(&self, agents: Vec<crate::agent::AgentInstance>) {
+    pub(super) async fn release_worker_leases(&self, agents: Vec<crate::agent::AgentInstance>) {
         for agent in agents {
+            let Some(binding) = agent.remote_execution() else {
+                continue;
+            };
+            let plan = self
+                .with_app_side_effect(|app| app.prepare_remote_execution_cleanup(binding))
+                .await;
+            let result = plan
+                .execute(&|| self.authorize_current_external_command())
+                .await;
             let released = self
-                .with_app_side_effect(|app| {
-                    crate::app::KernelSessionService::new(app)
-                        .destroy_agent_worker_execution_authorized(&agent, &|| {
-                            self.authorize_current_external_command()
-                        })
-                })
+                .with_app_side_effect(|app| app.commit_remote_execution_cleanup(result))
                 .await;
             if let Err(error) = released {
                 crate::logging::error_with_fields(
@@ -949,6 +958,16 @@ impl KernelRuntimeState {
                 );
             }
         }
+    }
+
+    /// The owner must not wait for an unreachable worker: its lease is
+    /// released in the background and a failure is only logged.
+    pub(super) fn release_worker_leases_in_background(
+        &self,
+        agents: Vec<crate::agent::AgentInstance>,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move { state.release_worker_leases(agents).await });
     }
 
     fn remove_destroyed_agent_provider_processes(&self, provider_run_ids: Vec<String>) {

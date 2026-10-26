@@ -131,6 +131,13 @@ impl DaemonConfig {
         Ok(saved)
     }
 
+    /// The owner removed this machine from the registry; its trust is revoked.
+    pub fn machine_forgotten(machine_id: &str) -> bool {
+        Self::machine_registry_entries()
+            .iter()
+            .any(|entry| entry.forgotten && entry.machine_id == machine_id)
+    }
+
     pub fn resolve_registered_machine_ref(machine_ref: &str) -> Option<String> {
         let machine_ref = machine_ref.trim();
         if machine_ref.is_empty() {

@@ -22,6 +22,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
+mod harvest_route;
+
 #[derive(Clone)]
 struct ClaimTestRelayLifecycleProbe {
     started: std::time::Instant,

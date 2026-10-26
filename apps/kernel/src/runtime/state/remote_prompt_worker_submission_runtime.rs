@@ -903,6 +903,7 @@ impl KernelRuntimeState {
                     &closure_prompt_id,
                     "leased_agent_lane_acquired",
                 );
+                super::worker_lease_trust::ensure_worker_machine_trusted(&remote_execution)?;
                 if !remote_execution.relay_peer_protocol_compatible() {
                     return Err(DaemonError::LocalTransport {
                         operation: "dispatch remote agent prompt",
@@ -945,7 +946,6 @@ impl KernelRuntimeState {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                     daemon_alias: None,
                 };
-                let relay_state = callback_state.connected_relay_state_for_config(&config).await;
                 let session = callback_state.owned.session_store.get_session(agent.session_id())?;
                 let fresh_workflow = callback_state.owned.prompt_state_owner
                     .active_prompt_for_agent(&session, agent.id())
@@ -978,65 +978,21 @@ impl KernelRuntimeState {
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };
-                match relay_state {
-                    Some(relay_state) => {
-                        #[cfg(test)]
-                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
-                            &closure_prompt_id,
-                            "connected_relay_selected",
-                        );
-                        mark_transport_started.store(true, Ordering::Relaxed);
-                        #[cfg(test)]
-                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
-                            &closure_prompt_id,
-                            "connected_peer_enqueue_started",
-                        );
-                        let waiter = crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout(
-                            &config,
-                            &relay_state,
-                            target,
-                            request,
-                            response_timeout,
-                        )
-                        .await?;
-                        #[cfg(test)]
-                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
-                            &closure_prompt_id,
-                            "connected_peer_enqueued",
-                        );
-                        Ok(waiter)
-                    }
-                    None => {
-                        #[cfg(test)]
-                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
-                            &closure_prompt_id,
-                            "temporary_relay_selected",
-                        );
-                        mark_transport_started.store(true, Ordering::Relaxed);
-                        // Temporary sockets have no shared FIFO sender with manifest updates, so
-                        // keep this fallback serialized through its response.
-                        #[cfg(test)]
-                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
-                            &closure_prompt_id,
-                            "temporary_peer_request_started",
-                        );
-                        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                            &config,
-                            target,
-                            request,
-                            response_timeout,
-                        )
-                        .await?;
-                        #[cfg(test)]
-                        super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
-                            &closure_prompt_id,
-                            "temporary_peer_request_returned",
-                        );
-                        Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(
-                            response,
-                        ))
-                    }
-                }
+                mark_transport_started.store(true, Ordering::Relaxed);
+                #[cfg(test)]
+                super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                    &closure_prompt_id,
+                    "worker_request_enqueue_started",
+                );
+                let waiter = callback_state
+                    .enqueue_leased_worker_request(&config, target, request, response_timeout)
+                    .await?;
+                #[cfg(test)]
+                super::remote_prompt_dispatch_execution_runtime::record_remote_prompt_dispatch_test_stage(
+                    &closure_prompt_id,
+                    "worker_request_enqueued",
+                );
+                Ok(waiter)
             },
         )
         .await;

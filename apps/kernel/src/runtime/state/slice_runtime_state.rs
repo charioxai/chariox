@@ -519,7 +519,7 @@ impl KernelRuntimeState {
                 })?;
             connectors.insert(
                 slice_id.to_string(),
-                SlicePrivateRelayConnector {
+                crate::transport::relay_client::SlicePrivateRelayConnector {
                     relay_url: relay_url.clone(),
                     state: Arc::clone(&state),
                     shutdown_tx,

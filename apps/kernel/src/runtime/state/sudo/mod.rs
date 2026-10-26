@@ -30,6 +30,10 @@ pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod forgotten_machine_tests;
+#[cfg(test)]
+mod leased_route_tests;
+#[cfg(test)]
 mod operation_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
@@ -51,6 +55,8 @@ mod tests;
 mod vault_tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod worker_cleanup_tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;
 

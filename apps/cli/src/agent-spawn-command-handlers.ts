@@ -45,6 +45,7 @@ export type AgentSpawnCommandHandlerDeps = {
     workspaceMount: string
     workerKernelRef?: string | null
   }) => Promise<SliceRecord>
+  getSlice?: (sliceRef: string) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   applySessionState: (session: RuntimeSession) => void
   refreshAgentPanes: (session: RuntimeSession) => Promise<void>
@@ -139,20 +140,21 @@ export async function handleAgentSpawnCommand(
         )
         return
       }
-      const payload = await deps.spawnAgents(Array.from({ length: count }, () => ({
-        accountProfile: currentAccountProfileId(deps),
-      })))
+      // Session defaults name the provider, model and account together; the
+      // focused agent may use another provider, so launch what was spawned.
+      const payload = await deps.spawnAgents(Array.from({ length: count }, () => ({})))
       deps.applySessionState(payload.session)
       await deps.refreshAgentPanes(payload.session)
-      const provider = deps.currentProviderId()
-      const model = deps.currentModelId()
-      const variant = deps.currentVariantId()
+      const spawned = payload.agents[0]
+      const provider = spawned?.provider || deps.currentProviderId()
+      const model = spawned?.model || deps.currentModelId()
+      const variant = spawned?.effort || deps.currentVariantId()
       const launched = await deps.launchAgentProviderRuns(
         provider,
         model,
         variant,
         payload.agents.map((agent) => agent.id),
-        currentAccountProfileId(deps),
+        spawned?.account_profile || accountProfileForProvider(deps, provider),
       )
       deps.setProviderRunState(launched.runs.at(-1) ?? null)
       const refreshedSession = await deps.refreshSessionState(payload.session.id)
@@ -197,7 +199,10 @@ export async function handleAgentSpawnCommand(
     const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId, remoteRef)
     const payload = await spawnAndLaunchAgent(deps, {
       provider,
-      accountProfile: parsed.accountProfile ?? currentAccountProfileId(deps),
+      // Without a model the kernel takes the session defaults' provider, so the
+      // account comes from them too; the focused agent's account would belong
+      // to its own provider.
+      accountProfile: parsed.accountProfile ?? (model ? currentAccountProfileId(deps) : null),
       alias,
       model: model ?? null,
       effort,
@@ -280,10 +285,12 @@ async function prepareSliceForSpawn(
   }
   const createMode = sliceCreateMode(sliceSelection, sliceDisplayMode)
   if (!createMode) {
-    if (!deps.startSlice) {
+    if (!deps.getSlice || !deps.startSlice) {
       throw new Error("slice reuse is unavailable in this build")
     }
-    const slice = await deps.startSlice(sliceSelection)
+    // Starting a running slice re-provisions it under its agents.
+    const existing = await deps.getSlice(sliceSelection)
+    const slice = existing.status === "running" ? existing : await deps.startSlice(sliceSelection)
     validateReusableSliceForSpawn(slice, {
       requestedRef: sliceSelection,
       workspaceId: deps.currentWorkspaceTarget(),
@@ -436,7 +443,7 @@ async function spawnAndLaunchAgent(
   const launchProvider = payload.agent.provider || options.provider || deps.currentProviderId()
   const launchModel = payload.agent.model || options.model || deps.currentModelId()
   const launchEffort = payload.agent.effort || options.effort || deps.currentVariantId()
-  const launchAccountProfile = payload.agent.account_profile || options.accountProfile || currentAccountProfileId(deps)
+  const launchAccountProfile = payload.agent.account_profile || options.accountProfile || accountProfileForProvider(deps, launchProvider)
   const run = await deps.launchAgentProviderRun(
     launchProvider,
     launchModel,
@@ -458,4 +465,9 @@ async function spawnAndLaunchAgent(
 
 function currentAccountProfileId(deps: AgentSpawnCommandHandlerDeps): string {
   return deps.currentAccountProfileId?.() || "default"
+}
+
+// The current account belongs to the focused agent's provider only.
+function accountProfileForProvider(deps: AgentSpawnCommandHandlerDeps, provider: string): string {
+  return provider === deps.currentProviderId() ? currentAccountProfileId(deps) : "default"
 }
