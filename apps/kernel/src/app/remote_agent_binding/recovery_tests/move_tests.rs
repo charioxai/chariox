@@ -1405,7 +1405,7 @@ async fn queued_mid_move(abort: bool) {
     let promoted = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let (empty, remote, local_started) = {
-                let mut home = fixture.home.lock().await;
+                let home = fixture.home.lock().await;
                 let room = home.sessions().get_session(&session).unwrap();
                 let empty = home
                     .prompt_state_owner()
