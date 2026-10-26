@@ -93,6 +93,10 @@ proof!(
 );
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Both variants are bounded preparation proofs; keep their similarly sized manifests inline"
+)]
 pub enum VerifiedAppPackage<'a> {
     Node(VerifiedPackage<'a>),
     Wasm(v2::VerifiedPackageV2<'a>),
