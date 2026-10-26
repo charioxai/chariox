@@ -938,6 +938,7 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
+        abort_pending: false,
         session_id: "session-1".to_string(),
         agent_ref: "agent-1".to_string(),
     });

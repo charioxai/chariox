@@ -5,6 +5,36 @@ use crate::agent::AgentInstance;
 use crate::agent_move::{error as move_error, MoveBacking};
 
 impl DaemonApp {
+    pub(crate) fn abort_agent_move_target(
+        &mut self,
+        identity: &crate::agent_move::AgentMoveIdentity,
+    ) -> Result<(), DaemonError> {
+        // Lease creation and this tombstone share the app authority mutex.
+        // A lost lease reply must never let cancellation restore two executors.
+        if self.execution_leases.values().any(|lease| {
+            lease.home_kernel_id == identity.home_kernel_id
+                && lease.home_session_id == identity.home_session_id
+                && lease.home_agent_id == identity.home_agent_id
+        }) {
+            return Err(move_error(
+                "The target already holds a Move lease; finish the operation before returning",
+            ));
+        }
+        let Some(mut target) = self.agent_moves.target(&identity.operation_id) else {
+            return Ok(());
+        };
+        if target.capture.identity != *identity {
+            return Err(move_error("Move target generation changed"));
+        }
+        if target.active || target.backing.is_some() || target.backing_agent_id.is_some() {
+            return Err(move_error(
+                "The target already holds a Move lease; finish the operation before returning",
+            ));
+        }
+        target.retired = true;
+        self.agent_moves.save_target(target)
+    }
+
     pub(crate) fn retain_agent_move_backing(
         &self,
         operation: &str,

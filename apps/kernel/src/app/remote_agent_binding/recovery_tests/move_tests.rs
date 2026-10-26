@@ -130,6 +130,7 @@ async fn mk03_public_move_materializes_current_project_and_return_uses_fresh_roo
     std::fs::write(original.join("input"), "divergent home work\n").unwrap();
     let request =
         crate::local::LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+            abort_pending: false,
             session_id: session_id.clone(),
             agent_ref: fixture.agent_id.clone(),
         });
@@ -195,6 +196,7 @@ async fn move_request(
         )
     } else {
         crate::local::LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+            abort_pending: false,
             session_id: session.into(),
             agent_ref: fixture.agent_id.clone(),
         })
@@ -281,6 +283,7 @@ async fn crash_boundary(phase: &'static str, forward: bool) {
         )
     } else {
         crate::local::LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+            abort_pending: false,
             session_id: session.clone(),
             agent_ref: fixture.agent_id.clone(),
         })
@@ -503,6 +506,7 @@ async fn crash_role_boundary(phase: &'static str, forward: bool, worker: bool) {
         )
     } else {
         crate::local::LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+            abort_pending: false,
             session_id: session.clone(),
             agent_ref: fixture.agent_id.clone(),
         })
@@ -978,4 +982,337 @@ async fn mk03_unsupported_history_refuses_before_fencing_or_stopping() {
             "preflight refusal must not fence the agent"
         );
     }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: source failure must release both admission fences.
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_return_snapshot_failure_restores_remote_source_admission() {
+    let (fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    let (remote, backing_id, backing_session, source_path) = {
+        let home = fixture.home.lock().await;
+        let remote = home
+            .agents()
+            .get_agent(&fixture.agent_id)
+            .unwrap()
+            .remote_execution()
+            .unwrap()
+            .clone();
+        let worker = fixture.workers[0].lock().await;
+        let backing = worker.leased_agents.get(&remote.leased_agent_id).unwrap();
+        let agent = worker
+            .agents()
+            .get_agent(&backing.backing_agent_id)
+            .unwrap();
+        (
+            remote,
+            agent.id().to_string(),
+            agent.session_id().to_string(),
+            PathBuf::from(agent.worktree_id().unwrap()),
+        )
+    };
+    let outside = fixture.workspace_root.join("return-outside");
+    std::fs::write(&outside, "preserve outside").unwrap();
+    std::os::unix::fs::symlink(&outside, source_path.join("bad-link")).unwrap();
+    let error = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id}})).await.unwrap_err();
+    assert!(error.to_string().contains("symbolic links"), "{error}");
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "rolled_back"
+    );
+    let home = fixture.home.lock().await;
+    assert_eq!(
+        home.agents()
+            .get_agent(&fixture.agent_id)
+            .unwrap()
+            .remote_execution(),
+        Some(&remote)
+    );
+    assert!(!home
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+    let worker = fixture.workers[0].lock().await;
+    assert!(!worker
+        .agent_moves
+        .dispatch_fenced(&backing_session, &backing_id));
+    worker
+        .providers()
+        .launch_run_detached(
+            crate::provider::LaunchProviderRequest::new(
+                &backing_session,
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(&backing_id),
+        )
+        .expect("source admission must be restored after failed Return");
+}
+
+async fn dispatch_move_value(
+    fixture: &Fixture,
+    value: serde_json::Value,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(value).unwrap();
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk03-review",
+        None,
+        None,
+        &request,
+    );
+    crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8)
+        .dispatch(command, request)
+        .await
+}
+
+// A worker retains post-turn resume state, but no provider process, across restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_return_after_target_resume_state_and_restart_keeps_source_usable() {
+    let (mut fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    {
+        let operation = move_journal(&fixture, &session).await;
+        let home = fixture.home.lock().await;
+        let remote = home
+            .agents()
+            .get_agent(&fixture.agent_id)
+            .unwrap()
+            .remote_execution()
+            .unwrap()
+            .clone();
+        let worker = fixture.workers[0].lock().await;
+        let backing = worker.leased_agents.get(&remote.leased_agent_id).unwrap();
+        let mut agent = worker
+            .agents()
+            .get_agent(&backing.backing_agent_id)
+            .unwrap();
+        agent.set_provider_resume_state(
+            crate::provider::ProviderResumeState::from_codex_thread_id(
+                "00000000-0000-0000-0000-000000000008",
+            ),
+        );
+        worker.agents().restore_agent(agent);
+        worker
+            .retain_agent_move_backing(
+                operation["identity"]["operation_id"].as_str().unwrap(),
+                &remote.leased_agent_id,
+            )
+            .unwrap();
+    }
+    reboot_worker(&mut fixture).await;
+    let error = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id}})).await.unwrap_err();
+    assert!(error.to_string().contains("after restart"), "{error}");
+    let home = fixture.home.lock().await;
+    assert!(
+        !home
+            .agent_moves
+            .dispatch_fenced(&session, &fixture.agent_id),
+        "a restarted source must remain able to resume the missing provider run"
+    );
+}
+
+async fn interrupt_public_move(fixture: &Fixture, session: &str, phase: &str) {
+    let journal = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(journal.join("crash-after-phase-for-test"), phase).unwrap();
+    let home = fixture.home.clone();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session.into(),
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let crashed = tokio::spawn(async move {
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk03-abort-boundary",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(
+        crashed.is_err_and(|error| error.is_panic()),
+        "Move must reach its requested durable boundary"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_captured_move_releases_source_and_allows_new_generation() {
+    let (fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "captured").await;
+    let reply = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.expect("explicit abort must release a captured operation before the target has a lease");
+    assert!(serde_json::to_value(reply)
+        .unwrap()
+        .get("AgentMoveAborted")
+        .is_some());
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "rolled_back"
+    );
+    assert!(!fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+    move_request(&fixture, &session, true).await;
+    assert_eq!(
+        move_journal(&fixture, &session).await["identity"]["generation"],
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_refuses_after_target_lease_binding() {
+    let (fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "bound").await;
+    let error = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.unwrap_err();
+    assert!(error.to_string().contains("lease"), "{error}");
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "bound"
+    );
+    move_request(&fixture, &session, true).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: compatibility is checked on the encrypted peer path.
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_peer_probe_refuses_native_incompatibility_before_staging() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    use std::os::unix::fs::PermissionsExt;
+    let (fixture, session, _) = crash_fixture().await;
+    let config = fixture.home.lock().await.config.clone();
+    let target = fixture.workers[0].lock().await.config.clone();
+    let thumb = crate::runtime::terminal_pairings::public_key_thumbprint;
+    let identity = serde_json::json!({"operation_id":"compatibility-probe", "generation":1,
+        "home_kernel_id":config.daemon_id, "home_session_id":session, "home_agent_id":fixture.agent_id,
+        "owner_user_id":"local", "source_kernel_id":config.daemon_id,"target_kernel_id":target.daemon_id,
+        "home_key_thumbprint":thumb(&config.relay_public_key), "source_key_thumbprint":thumb(&config.relay_public_key),
+        "target_key_thumbprint":thumb(&target.relay_public_key), "target_public_key":target.relay_public_key});
+    let version = fixture.workspace_root.join("version-probe");
+    std::fs::write(&version, "#!/bin/sh\nprintf 'codex-cli 0.0.0\\n'\n").unwrap();
+    std::fs::set_permissions(&version, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("CHARIOX_CODEX_BIN", &version);
+    for (provider, interface, os, cli, reason) in [
+        (
+            "claude",
+            "chariox",
+            "linux",
+            "codex-cli 0.159.3",
+            "native checkpoint support",
+        ),
+        (
+            "codex",
+            "native_tui",
+            "linux",
+            "codex-cli 0.159.3",
+            "managed Chariox Codex",
+        ),
+        (
+            "codex",
+            "chariox",
+            "darwin",
+            "codex-cli 0.159.3",
+            "operating-system pair",
+        ),
+        (
+            "codex",
+            "chariox",
+            "linux",
+            "codex-cli 0.0.0",
+            "CLI version",
+        ),
+        (
+            "codex",
+            "chariox",
+            "linux",
+            "codex-cli 0.159.3",
+            "CLI version",
+        ),
+    ] {
+        let request = serde_json::from_value(serde_json::json!({"action":"probe", "identity":identity,
+            "native":{"provider":provider, "interface":interface, "source_os":os, "cli_version":cli, "account_sha256":"0".repeat(64)}})).unwrap();
+        let error = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+            &config, ClientTarget {daemon_id:Some(target.daemon_id.clone()), daemon_alias:None},
+            crate::transport::relay_peer::RelayPeerRequest::AgentMove {request}, Duration::from_secs(15),
+        ).await.unwrap_err();
+        assert!(error.to_string().contains(reason), "{error}");
+        assert!(fixture.workers[0]
+            .lock()
+            .await
+            .agent_moves
+            .target("compatibility-probe")
+            .is_none());
+        assert!(!fixture
+            .home
+            .lock()
+            .await
+            .agent_moves
+            .dispatch_fenced(&session, &fixture.agent_id));
+    }
+    std::env::remove_var("CHARIOX_CODEX_BIN");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_checks_actual_target_lease_and_rejects_delayed_creation() {
+    let (fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "materialized").await;
+    let operation = move_journal(&fixture, &session).await;
+    let identity: crate::agent_move::AgentMoveIdentity =
+        serde_json::from_value(operation["identity"].clone()).unwrap();
+    let lease = {
+        let mut worker = fixture.workers[0].lock().await;
+        crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .create_execution_lease(
+                &identity.home_kernel_id,
+                &session,
+                &fixture.agent_id,
+                false,
+                &identity.owner_user_id,
+            )
+            .unwrap()
+    };
+    let abort = serde_json::json!({"MoveAgentToLocal":{"session_id":session,"agent_ref":fixture.agent_id,"abort_pending":true}});
+    let error = dispatch_move_value(&fixture, abort.clone())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("lease"), "{error}");
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "materialized"
+    );
+    {
+        let mut worker = fixture.workers[0].lock().await;
+        crate::app::RemoteLeaseRuntime::new(&mut worker)
+            .destroy_execution_lease(&lease.id)
+            .unwrap();
+    }
+    dispatch_move_value(&fixture, abort).await.unwrap();
+    let mut worker = fixture.workers[0].lock().await;
+    let error = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_execution_lease(
+            &identity.home_kernel_id,
+            &session,
+            &fixture.agent_id,
+            false,
+            &identity.owner_user_id,
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("cancelled"),
+        "a delayed lease request must respect cancellation: {error}"
+    );
 }

@@ -198,6 +198,24 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 machine_id: self.app.config.host_machine_id.clone(),
             });
         }
+        if self
+            .app
+            .agent_moves
+            .targets()
+            .into_iter()
+            .filter(|target| {
+                let identity = &target.capture.identity;
+                identity.home_kernel_id == home_kernel_id
+                    && identity.home_session_id == home_session_id
+                    && identity.home_agent_id == home_agent_id
+            })
+            .max_by_key(|target| target.capture.identity.generation)
+            .is_some_and(|target| target.retired)
+        {
+            return Err(crate::agent_move::error(
+                "This Move target was cancelled; start a new generation before acquiring a lease",
+            ));
+        }
         let lease_id = loop {
             self.app.next_execution_lease_number =
                 self.app.next_execution_lease_number.wrapping_add(1);

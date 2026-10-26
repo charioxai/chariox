@@ -119,6 +119,7 @@ async fn revoked_control(operation: Operation, discovery: bool) {
     let request = match operation {
         Operation::MoveLocal => {
             LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+                abort_pending: false,
                 session_id: session.id().into(),
                 agent_ref: agent.id().into(),
             })

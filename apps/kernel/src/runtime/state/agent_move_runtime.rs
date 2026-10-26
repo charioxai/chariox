@@ -152,12 +152,37 @@ impl KernelRuntimeState {
                 source_remote,
                 phase: HomeMovePhase::Fenced,
             };
+            let native = if let Some(remote) = &operation.source_remote {
+                let context = crate::transport::relay_peer::RemoteSkillSyncContext {
+                    home_kernel_id: operation.identity.home_kernel_id.clone(),
+                    home_session_id: operation.identity.home_session_id.clone(),
+                    home_agent_id: operation.identity.home_agent_id.clone(),
+                    leased_agent_id: remote.leased_agent_id.clone(),
+                };
+                let response = self
+                    .move_peer_source(
+                        &operation,
+                        Request::ProbeSource {
+                            identity: operation.identity.clone(),
+                            context,
+                        },
+                    )
+                    .await?;
+                let Response::SourceCompatible { native } = response else {
+                    return Err(move_error("Source does not support durable Return; upgrade both kernels before retrying"));
+                };
+                native
+            } else {
+                self.probe_agent_move_source(session_id, operation.original_agent.id())
+                    .await?
+            };
             if operation.target_ref.is_some() {
                 let reply = self
                     .move_peer_target(
                         &operation,
                         Request::Probe {
                             identity: operation.identity.clone(),
+                            native,
                         },
                     )
                     .await?;
@@ -165,17 +190,8 @@ impl KernelRuntimeState {
                     return Err(move_error("Target does not support durable Move; upgrade both kernels before retrying"));
                 }
             } else {
-                let reply = self
-                    .move_peer_source(
-                        &operation,
-                        Request::ProbeSource {
-                            identity: operation.identity.clone(),
-                        },
-                    )
+                self.probe_agent_move_target(native, Some(&operation.original_agent))
                     .await?;
-                if reply != Response::Compatible {
-                    return Err(move_error("Source does not support durable Return; upgrade both kernels before retrying"));
-                }
             }
             self.owned.agent_moves.save_home(operation)?
         };
@@ -186,15 +202,9 @@ impl KernelRuntimeState {
                 if matches!(
                     operation.phase,
                     HomeMovePhase::Fenced | HomeMovePhase::SourceStopped
-                ) && operation.source_remote.is_none()
-                    && !self
-                        .owned
-                        .agent_moves
-                        .source(&operation_id)
-                        .is_some_and(|source| source.capture.is_some())
-                {
-                    // Only a local source with no capture can be rolled back safely.
-                    // A peer may have captured or imported state before its reply was lost.
+                ) {
+                    // The source decides under its operation lock whether capture occurred,
+                    // including when its preparation reply was lost over the relay.
                     let current = self
                         .owned
                         .agent_store
@@ -203,8 +213,11 @@ impl KernelRuntimeState {
                         operation.target_ref.is_some()
                             && binding.worker_kernel_id == operation.identity.target_kernel_id
                     });
-                    if !bound {
-                        self.release_agent_move_source(&operation, false).await?;
+                    if !bound
+                        && self
+                            .release_agent_move_source(&operation, false, false)
+                            .await?
+                    {
                         operation.phase = HomeMovePhase::RolledBack {
                             reason: cause.to_string(),
                         };
@@ -414,7 +427,8 @@ impl KernelRuntimeState {
                         target.active = true;
                         self.owned.agent_moves.save_target(target)?;
                     }
-                    self.release_agent_move_source(&operation, true).await?;
+                    self.release_agent_move_source(&operation, true, false)
+                        .await?;
                     if let Some(source) = &operation.source_remote {
                         self.with_app_side_effect(|app| {
                             app.destroy_remote_execution_binding(source, &|| Ok(()))

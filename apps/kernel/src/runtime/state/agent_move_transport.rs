@@ -128,7 +128,8 @@ impl KernelRuntimeState {
         &self,
         operation: &HomeMoveOperation,
         retired: bool,
-    ) -> Result<(), DaemonError> {
+        allow_capture: bool,
+    ) -> Result<bool, DaemonError> {
         let request = if retired {
             Request::RetireSource {
                 identity: operation.identity.clone(),
@@ -136,10 +137,14 @@ impl KernelRuntimeState {
         } else {
             Request::ReleaseSource {
                 identity: operation.identity.clone(),
+                allow_capture,
             }
         };
         if operation.source_remote.is_some() {
             let response = self.move_peer_source(operation, request).await?;
+            if response == Response::SourceCaptured {
+                return Ok(false);
+            }
             if response
                 != if retired {
                     Response::SourceRetired
@@ -159,11 +164,14 @@ impl KernelRuntimeState {
             if retired {
                 source.retired = true;
             } else {
+                if source.capture.is_some() && !allow_capture {
+                    return Ok(false);
+                }
                 source.released = true;
             }
             self.owned.agent_moves.save_source(source)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(super) async fn move_peer_target(

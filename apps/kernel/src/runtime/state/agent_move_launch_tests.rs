@@ -269,18 +269,6 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .await
         .is_err());
     target.active = false;
-    target.retired = true;
-    runtime
-        .owned
-        .agent_moves
-        .save_target(target.clone())
-        .unwrap();
-    assert!(runtime
-        .prepare_provider_launch_request_with_vault(request.clone(), "retired Return")
-        .await
-        .is_err());
-    target.retired = false;
-    runtime.owned.agent_moves.save_target(target).unwrap();
     let mut uncaptured = operation.clone();
     uncaptured.phase = HomeMovePhase::Fenced;
     runtime.owned.agent_moves.save_home(uncaptured).unwrap();

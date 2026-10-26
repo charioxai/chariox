@@ -488,7 +488,7 @@ fn epoch_to_ms(value: u64) -> u64 {
     }
 }
 
-fn codex_version() -> Result<String, DaemonError> {
+pub(crate) fn codex_version() -> Result<String, DaemonError> {
     let executable = resolve_codex_executable()?;
     let output = crate::provider::managed_isolated_utility_command(
         executable.display().to_string(),

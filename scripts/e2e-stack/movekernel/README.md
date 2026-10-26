@@ -18,7 +18,7 @@ The origin must have normal validation device approval and support the current k
 
 The divergence check observes only archive filenames in its own configured transfer store, then occupies the generated destination before import. It never calls private import helpers or constructs admission tickets. The target must refuse publication and preserve the existing inode, Git state and file tree. Runtime processes and disposable state are cleaned up; value-free JSON results and real TUI review captures remain in the evidence directory.
 
-`durable-move.mjs` uses the same environment with a protocol608/214 kernel and
+`durable-move.mjs` uses the same environment with a protocol625/229 kernel and
 its real built TUI. It runs three short official Codex gpt-6-luna/low turns,
 Moves forward, Returns, and restarts the home kernel after each source capture.
 The same Room recalls the original marker and the intervening target turn;
@@ -31,3 +31,10 @@ Cleanup retains only static native-probe stage metadata from kernel logs, then
 removes the disposable state. Hosted Web captures prove existing Room visibility
 at DPR 1 and 2; they do not prove the separately scoped Move route picker or
 `via <target>` label.
+
+MP-08 / MP-09 / MP-10 / MP-11: local protocol625 adds cancellation through
+`MoveAgentToLocal: {session_id, agent_ref, abort_pending: true}`. This restores
+the existing source route and returns `AgentMoveAborted`; it does not Return a
+remote agent. Cancellation is refused once the move may hold a target lease.
+Preflight checks source eligibility and native provider/interface/platform/CLI
+compatibility before fencing. Return also checks its original home account.

@@ -25,9 +25,11 @@ impl std::fmt::Debug for AgentMoveChunk {
 pub enum AgentMovePeerRequest {
     Probe {
         identity: AgentMoveIdentity,
+        native: Option<crate::provider::NativeMoveCompatibility>,
     },
     ProbeSource {
         identity: AgentMoveIdentity,
+        context: RemoteSkillSyncContext,
     },
     PrepareSource {
         identity: AgentMoveIdentity,
@@ -37,6 +39,9 @@ pub enum AgentMovePeerRequest {
         identity: AgentMoveIdentity,
         kind: AgentMoveArtifactKind,
         offset: u64,
+    },
+    AbortTarget {
+        identity: AgentMoveIdentity,
     },
     BeginTarget {
         capture: Box<AgentMoveCapture>,
@@ -61,14 +66,15 @@ pub enum AgentMovePeerRequest {
     },
     ReleaseSource {
         identity: AgentMoveIdentity,
+        allow_capture: bool,
     },
 }
 
 impl AgentMovePeerRequest {
     pub fn identity(&self) -> &AgentMoveIdentity {
         match self {
-            Self::Probe { identity }
-            | Self::ProbeSource { identity }
+            Self::Probe { identity, .. }
+            | Self::ProbeSource { identity, .. }
             | Self::PrepareSource { identity, .. }
             | Self::ReadChunk { identity, .. }
             | Self::WriteChunk { identity, .. }
@@ -76,15 +82,16 @@ impl AgentMovePeerRequest {
             | Self::AttachTarget { identity, .. }
             | Self::ActivateTarget { identity }
             | Self::RetireSource { identity }
-            | Self::ReleaseSource { identity } => identity,
+            | Self::ReleaseSource { identity, .. }
+            | Self::AbortTarget { identity } => identity,
             Self::BeginTarget { capture } => &capture.identity,
         }
     }
     pub(crate) fn leased_agent_id(&self) -> Option<&str> {
         match self {
-            Self::PrepareSource { context, .. } | Self::AttachTarget { context, .. } => {
-                Some(&context.leased_agent_id)
-            }
+            Self::ProbeSource { context, .. }
+            | Self::PrepareSource { context, .. }
+            | Self::AttachTarget { context, .. } => Some(&context.leased_agent_id),
             _ => None,
         }
     }
@@ -94,6 +101,11 @@ impl AgentMovePeerRequest {
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentMovePeerResponse {
     Compatible,
+    SourceCompatible {
+        native: Option<crate::provider::NativeMoveCompatibility>,
+    },
+    SourceCaptured,
+    TargetAborted,
     SourcePrepared {
         capture: Box<AgentMoveCapture>,
     },
@@ -116,6 +128,35 @@ pub enum AgentMovePeerResponse {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn mk03_preflight_and_abort_625_229_shape_and_hash() {
+        let bytes = include_bytes!("protocol-625-229.json");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(bytes)),
+            "f08a5308e62c20c5292743554ee0e3368c2c82abf02bd98e349cd58628ada5ee"
+        );
+        let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(
+            fixture["local_protocol"],
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            fixture["peer_protocol"],
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        );
+        let request: crate::local::LocalDaemonRequest =
+            serde_json::from_value(fixture["abort"].clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), fixture["abort"]);
+        for value in fixture["peer_requests"].as_array().unwrap() {
+            let request: AgentMovePeerRequest = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), *value);
+        }
+        for value in fixture["peer_responses"].as_array().unwrap() {
+            let response: AgentMovePeerResponse = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(response).unwrap(), *value);
+        }
+    }
 
     #[test]
     fn mk03_private_move_peer_214_shape_and_hash() {

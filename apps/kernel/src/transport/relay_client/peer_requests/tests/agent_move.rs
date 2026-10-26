@@ -48,7 +48,10 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
             &home.relay_private_key,
             &target.relay_public_key,
             RelayPeerRequest::AgentMove {
-                request: crate::agent_move::peer::AgentMovePeerRequest::Probe { identity: claims },
+                request: crate::agent_move::peer::AgentMovePeerRequest::Probe {
+                    identity: claims,
+                    native: None,
+                },
             },
         )
         .await;

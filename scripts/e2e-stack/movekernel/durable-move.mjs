@@ -9,6 +9,7 @@ import { root, out, kernel, binary, sha, record, runtime, enroll, project, selec
 import { fixture } from './workspace-fixture.mjs';
 import { captureWeb } from './workspace-web.mjs';
 import { completedWorkspaceTool } from './workspace-proof.mjs';
+import { exerciseReturnFailures } from './move-failures.mjs';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const entries = s => s.agentPanes?.[s.session.focusedAgentId] ?? [];
 const variant = (reply, key) => { assert.ok(reply[key], `Expected ${key}: ${Object.keys(reply)}`); return reply[key]; };
@@ -99,9 +100,9 @@ async function assertTuiRoute(r, agentId, remoteKernelId, label) {
     await captureTui(r, label + '-stale-route');
     assert.equal(observed, remoteKernelId, 'Attached TUI must apply the recovered execution route');
 }
-async function turn(r, text, label) {
-    const before = new Set(entries(await r.tui.send('snapshot')).map(row => row.id));
-    await r.tui.send('submit_prompt', {prompt: text});
+async function turn(r, text, label, options = {}) {
+    const before = options.before ?? new Set(entries(await r.tui.send('snapshot')).map(row => row.id));
+    if (!options.submitted) await r.tui.send('submit_prompt', {prompt: text});
     let settled;
     for (let n = 0; n < 720; n++) {
         let snapshot = await r.tui.send('snapshot');
@@ -184,7 +185,7 @@ await mkdir(root, {recursive: false, mode: 0o700});
 await mkdir(out, {recursive: true, mode: 0o700});
 let failed;
 try {
-    assert.equal(Number(execFileSync(kernel, ['--print-local-daemon-protocol-version'], {encoding: 'utf8'}).trim()), 608);
+    assert.equal(Number(execFileSync(kernel, ['--print-local-daemon-protocol-version'], {encoding: 'utf8'}).trim()), Number(process.env.CHARIOX_WORKSPACE_PROTOCOL ?? 625));
     await record('identity', {head: process.env.CHARIOX_WORKSPACE_KERNEL_HEAD, kernelSha256: sha(await readFile(kernel)), tuiSha256: sha(await readFile(binary)), driverSha256: sha(await readFile(new URL(import.meta.url))), runtimeDriverSha256: sha(await readFile(new URL('./workspace-runtime.mjs', import.meta.url))), provider: 'codex', model: 'gpt-6-luna', effort: 'low'});
     await launchBrowser();
     const source = await runtime('source'), target = await runtime('target');
@@ -245,7 +246,10 @@ try {
     assert.ok(completedWorkspaceTool(entries(remoteTurn.snapshot), remoteTurn.promptId, primary), 'Target tool must execute in the receipt primary');
     await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true, nativeSessionId: targetRun.provider_session_id, providerWorkingDirectory: targetRun.working_directory, model: targetRun.model, effort: targetRun.variant, sameAuthenticatedAccount: true, receiptWorktreeSelected: true});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'target'));
-    const returned = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 2, false);
+    const failureProof = process.env.CHARIOX_MOVE_FAILURE_CASES === '1'
+        ? await exerciseReturnFailures({source, target, sessionId, agentId, primary, approval, nativeId, marker, turn, currentRun, journal})
+        : {generation: 2, extraTurns: 0};
+    const returned = await moveWithRestart(source, target, sessionId, agentId, paths.primary, failureProof.generation, false);
     await assertTuiRoute(source, agentId, null, 'returned-idle');
     await captureTui(source, 'returned-idle');
     webProof.push(...await captureWeb(source, sessionId, agentId, 'returned-idle'));
@@ -279,7 +283,7 @@ try {
     assert.equal(await accountIdentity(returnedRun), sourceAccount, 'Return must preserve the authenticated account');
     await record('return-verified', {nativeSessionId: returnedRun.provider_session_id, providerWorkingDirectory: returnedRun.working_directory, model: returnedRun.model, effort: returnedRun.variant, sameAuthenticatedAccount: true, receiptWorktreeSelected: true});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'returned'));
-    await record('summary', {result: webProof.every(value => value.result === 'PASS') ? 'PASS' : 'PARTIAL', nativeResult: 'PASS', web: webProof.map(({result, dpr}) => ({result, dpr})), forwardRestart: true, returnRestart: true, sameNativeId: true, sameHomeRoom: homeTurn.snapshot.session.id === sessionId, sameHomeAgent: homeTurn.snapshot.session.focusedAgentId === agentId, preservedDivergentHome: true, freshReturn: home, realProviderTurns: 3, hostedWss: true});
+    await record('summary', {result: webProof.every(value => value.result === 'PASS') ? 'PASS' : 'PARTIAL', nativeResult: 'PASS', web: webProof.map(({result, dpr}) => ({result, dpr})), forwardRestart: true, returnRestart: true, sameNativeId: true, sameHomeRoom: homeTurn.snapshot.session.id === sessionId, sameHomeAgent: homeTurn.snapshot.session.focusedAgentId === agentId, preservedDivergentHome: true, freshReturn: home, realProviderTurns: 3 + failureProof.extraTurns, returnFailureCases: failureProof.extraTurns > 0, hostedWss: true});
 } catch (error) {
     failed = error; await record('summary', {result: 'FAIL', error: String(error), stack: error.stack});
 } finally { await close(); release(); }

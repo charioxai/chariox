@@ -183,6 +183,8 @@ impl AgentMoveStore {
                 old.identity != source.identity
                     || old.session_id != source.session_id
                     || old.agent_id != source.agent_id
+                    || (old.released && !source.released)
+                    || (old.retired && !source.retired)
             })
         {
             return Err(error(
@@ -224,7 +226,9 @@ impl AgentMoveStore {
             .targets
             .get(&target.capture.identity.operation_id)
             .is_some_and(|old| {
-                old.capture != target.capture || old.destination_root != target.destination_root
+                old.capture != target.capture
+                    || old.destination_root != target.destination_root
+                    || (old.retired && !target.retired)
             })
         {
             return Err(error(

@@ -1,0 +1,131 @@
+{
+  "local_protocol": 625,
+  "peer_protocol": 229,
+  "abort": {
+    "MoveAgentToLocal": {
+      "session_id": "room",
+      "agent_ref": "agent",
+      "abort_pending": true
+    }
+  },
+  "peer_requests": [
+    {
+      "action": "probe",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "native": {
+        "provider": "codex",
+        "interface": "chariox",
+        "source_os": "linux",
+        "cli_version": "codex-cli 0.159.3",
+        "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "action": "probe_source",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "context": {
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "leased_agent_id": "leased"
+      }
+    },
+    {
+      "action": "release_source",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "allow_capture": false
+    },
+    {
+      "action": "release_source",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "allow_capture": true
+    },
+    {
+      "action": "abort_target",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      }
+    }
+  ],
+  "peer_responses": [
+    {
+      "result": "source_compatible",
+      "native": {
+        "provider": "codex",
+        "interface": "chariox",
+        "source_os": "linux",
+        "cli_version": "codex-cli 0.159.3",
+        "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "result": "source_captured"
+    },
+    {
+      "result": "target_aborted"
+    }
+  ]
+}

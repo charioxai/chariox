@@ -54,7 +54,7 @@ pub(super) fn valid_relative_path(path: &str, id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
 }
 
-fn auth(client: &CodexClient, profile: &str) -> Result<ProviderAuthStatus, Failure> {
+pub(super) fn auth(client: &CodexClient, profile: &str) -> Result<ProviderAuthStatus, Failure> {
     let auth = client
         .auth_status(profile)
         .map_err(|_| Failure::AccountUnavailable)?;

@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use super::{ProviderClientInterface, RuntimeProviderRun};
 
 mod codex;
+mod preflight;
+pub use preflight::NativeMoveCompatibility;
 #[cfg(unix)]
 mod files;
 #[cfg(test)]

@@ -50,9 +50,17 @@ impl KernelRuntimeState {
         {
             return Err(move_error("Move target public identity is invalid"));
         }
+        let source_probe = matches!(&request, Request::ProbeSource { .. });
         match request {
-            Request::Probe { .. } | Request::ProbeSource { .. } => Ok(Response::Compatible),
-            Request::PrepareSource { context, .. } => {
+            Request::Probe { native, .. } => {
+                self.probe_agent_move_target(native, None).await?;
+                Ok(Response::Compatible)
+            }
+            Request::AbortTarget { .. } => {
+                self.abort_agent_move_target(&identity).await?;
+                Ok(Response::TargetAborted)
+            }
+            Request::ProbeSource { context, .. } | Request::PrepareSource { context, .. } => {
                 let source = self
                     .with_app_side_effect(|app| {
                         let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
@@ -70,6 +78,15 @@ impl KernelRuntimeState {
                     || source.home_agent_id != identity.home_agent_id
                 {
                     return Err(move_error("Move source does not match the home lease"));
+                }
+                if source_probe {
+                    let native = self
+                        .probe_agent_move_source(
+                            &source.backing_session_id,
+                            &source.backing_agent_id,
+                        )
+                        .await?;
+                    return Ok(Response::SourceCompatible { native });
                 }
                 let capture = self
                     .prepare_agent_move_source(
@@ -182,6 +199,19 @@ impl KernelRuntimeState {
             Request::RetireSource { .. } | Request::ReleaseSource { .. } => {
                 let Some(mut source) = self.owned.agent_moves.source(&identity.operation_id) else {
                     if matches!(request, Request::ReleaseSource { .. }) {
+                        // A delayed Prepare must not recreate a fence after cancellation.
+                        self.owned
+                            .agent_moves
+                            .save_source(crate::agent_move::MoveSource {
+                                identity: identity.clone(),
+                                session_id: identity.home_session_id.clone(),
+                                agent_id: identity.home_agent_id.clone(),
+                                provider_run_id: None,
+                                stopped: false,
+                                released: true,
+                                capture: None,
+                                retired: false,
+                            })?;
                         return Ok(Response::SourceReleased);
                     }
                     return Err(move_error("Move source is not prepared"));
@@ -190,6 +220,16 @@ impl KernelRuntimeState {
                     return Err(move_error("Move source generation changed"));
                 }
                 let retired = matches!(request, Request::RetireSource { .. });
+                if matches!(
+                    request,
+                    Request::ReleaseSource {
+                        allow_capture: false,
+                        ..
+                    }
+                ) && source.capture.is_some()
+                {
+                    return Ok(Response::SourceCaptured);
+                }
                 if retired {
                     source.retired = true;
                 } else {
@@ -239,6 +279,11 @@ impl KernelRuntimeState {
             .agent_moves
             .target(&identity.operation_id)
             .ok_or_else(|| move_error("Move target is not prepared"))?;
+        if target.retired {
+            return Err(move_error(
+                "This Move target was cancelled; start a new generation",
+            ));
+        }
         if target.capture.identity != *identity {
             return Err(move_error("Move target generation changed"));
         }

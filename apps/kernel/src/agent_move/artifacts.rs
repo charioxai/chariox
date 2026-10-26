@@ -155,6 +155,11 @@ impl AgentMoveStore {
         workspace_parent: &Path,
     ) -> Result<MoveTarget, DaemonError> {
         if let Some(target) = self.target(&capture.identity.operation_id) {
+            if target.retired {
+                return Err(error(
+                    "This Move target was cancelled; start a new generation",
+                ));
+            }
             if target.capture != capture {
                 return Err(error(
                     "Move generation already has a different target capture",
@@ -235,6 +240,11 @@ impl AgentMoveStore {
         let target = self
             .target(operation)
             .ok_or_else(|| error("Prepare the move target before uploading artifacts"))?;
+        if target.retired {
+            return Err(error(
+                "This Move target was cancelled; start a new generation",
+            ));
+        }
         let descriptor = kind.descriptor(&target.capture)?;
         let end = offset
             .checked_add(bytes.len() as u64)
@@ -334,6 +344,11 @@ impl AgentMoveStore {
         let mut target = self
             .target(operation)
             .ok_or_else(|| error("Move target is not prepared"))?;
+        if target.retired {
+            return Err(error(
+                "This Move target was cancelled; start a new generation",
+            ));
+        }
         if let Some(receipt) = target.receipt {
             return Ok(receipt);
         }

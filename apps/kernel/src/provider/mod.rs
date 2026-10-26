@@ -15,8 +15,8 @@ pub(crate) use checkpoint::{
     supported_interface as native_checkpoint_support, MAX_NATIVE_CHECKPOINT_BYTES,
 };
 pub use checkpoint::{
-    NativeCheckpointBinding, NativeCheckpointFailure, ProviderNativeCheckpoint,
-    RequiredNativeSession,
+    NativeCheckpointBinding, NativeCheckpointFailure, NativeMoveCompatibility,
+    ProviderNativeCheckpoint, RequiredNativeSession,
 };
 mod codex;
 mod codex_client;

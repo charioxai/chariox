@@ -34,6 +34,7 @@ impl KernelRuntimeState {
                 return Ok(capture);
             }
         }
+        self.probe_agent_move_source(session_id, agent_id).await?;
         if let Some(process) = self
             .owned
             .durable_state_store

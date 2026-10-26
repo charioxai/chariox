@@ -9,6 +9,7 @@ use super::resolve_codex_executable;
 
 mod approval_bodies;
 mod auth;
+pub(crate) use auth::codex_version;
 mod catalog;
 mod health;
 mod interrupt_cleanup;
