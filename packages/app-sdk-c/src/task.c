@@ -74,15 +74,19 @@ cx_read_status cx_reader_next(cx_reader *r, const uint8_t **bytes, size_t *count
   app_waitable_status_t s = r->ready ? r->status : chariox_app_files_stream_u8_read(r->handle, r->bytes, r->capacity);
   r->ready = false;
   if (s == APP_WAITABLE_STATUS_BLOCKED) { r->blocked = true; app_waitable_join(r->handle, r->task->set); return CX_READ_WAIT; }
-  if (APP_WAITABLE_STATE(s) == APP_WAITABLE_COMPLETED) {
-    *count = APP_WAITABLE_COUNT(s); *bytes = r->bytes;
-    if (*count <= r->capacity) return CX_READ_DATA;
-    r->failed = true;
-    cx_task_fail(r->task, "SDK_STATE", "stream returned more bytes than requested"); cx_reader_close(r); return CX_READ_ERROR;
-  }
   bool ended = APP_WAITABLE_STATE(s) == APP_WAITABLE_DROPPED;
+  if (APP_WAITABLE_STATE(s) == APP_WAITABLE_COMPLETED || ended) {
+    size_t n = APP_WAITABLE_COUNT(s);
+    if (n > r->capacity) {
+      r->failed = true;
+      cx_task_fail(r->task, "SDK_STATE", "stream returned more bytes than requested"); cx_reader_close(r); return CX_READ_ERROR;
+    }
+    if (ended) cx_reader_close(r);
+    if (!n && ended) return CX_READ_END;
+    *count = n; *bytes = r->bytes; return CX_READ_DATA;
+  }
   cx_reader_close(r);
-  r->failed = !ended;
-  if (!ended) cx_task_fail(r->task, "CANCELLED", "stream read was cancelled");
-  return ended ? CX_READ_END : CX_READ_ERROR;
+  r->failed = true;
+  cx_task_fail(r->task, "CANCELLED", "stream read was cancelled");
+  return CX_READ_ERROR;
 }

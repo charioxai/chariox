@@ -5,6 +5,7 @@ void *test_context;
 unsigned test_returns, test_destroys, test_cancel_calls, test_import_drops, test_stream_drops;
 bool test_return_error, test_cancel_immediate, test_read_immediate, test_cancel_reason_race;
 app_subtask_status_t test_cancel_status;
+app_waitable_status_t test_read_status;
 app_waitable_set_t test_joined[TEST_HANDLES];
 bool test_future_active[TEST_HANDLES], test_stream_active[TEST_HANDLES];
 app_string_t *test_future_buffers[TEST_HANDLES];
@@ -42,7 +43,7 @@ void exports_chariox_app_handlers_future_string_drop_readable(uint32_t h) {
 }
 app_waitable_status_t chariox_app_files_stream_u8_read(uint32_t h, uint8_t *buf, size_t size) {
   assert(size >= 3); test_stream_buffer = buf;
-  if (test_read_immediate) { memcpy(buf, "abc", 3); return (3 << 4) | APP_WAITABLE_COMPLETED; }
+  if (test_read_immediate) { memcpy(buf, "abc", 3); return test_read_status; }
   test_stream_active[h] = true; return APP_WAITABLE_STATUS_BLOCKED;
 }
 app_waitable_status_t chariox_app_files_stream_u8_cancel_read(uint32_t h) {
@@ -88,5 +89,6 @@ void test_reset(void) {
   test_returns = test_destroys = test_cancel_calls = test_import_drops = test_stream_drops = 0;
   test_return_error = test_cancel_immediate = test_read_immediate = test_cancel_reason_race = false;
   test_cancel_status = APP_SUBTASK_RETURNED_CANCELLED;
+  test_read_status = (3 << 4) | APP_WAITABLE_COMPLETED;
   test_result[0] = test_error[0] = test_message[0] = 0;
 }

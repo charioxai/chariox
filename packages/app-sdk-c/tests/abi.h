@@ -9,6 +9,7 @@ extern void *test_context;
 extern unsigned test_returns, test_destroys, test_cancel_calls, test_import_drops, test_stream_drops;
 extern bool test_return_error, test_cancel_immediate, test_read_immediate, test_cancel_reason_race;
 extern app_subtask_status_t test_cancel_status;
+extern app_waitable_status_t test_read_status;
 extern app_waitable_set_t test_joined[TEST_HANDLES];
 extern bool test_future_active[TEST_HANDLES], test_stream_active[TEST_HANDLES];
 extern app_string_t *test_future_buffers[TEST_HANDLES];
