@@ -11,7 +11,7 @@ const matrixEntry = platform => workflow.match(new RegExp(`- platform: ${platfor
 test('the Linux release kernel is built with native-display and its build libraries', () => {
   assert.match(matrixEntry('linux-x64'), /kernel_features: --features chariox-kernel\/native-display\n/);
   assert.match(workflow, /cargo build --release --locked \$\{\{ matrix\.kernel_features \}\} -p chariox-kernel /);
-  const install = workflow.match(/- name: Install native display build dependencies\n\s+if: matrix\.platform == 'linux-x64'\n\s+run: sudo apt-get install -y (.+)\n/);
+  const install = workflow.match(/- name: Install native display build dependencies\n\s+if: matrix\.platform == 'linux-x64'\n\s+run: \|\n\s+sudo apt-get update\n\s+sudo apt-get install -y (.+)\n/);
   assert.ok(install, 'the Linux build job installs the native display build libraries');
   const ciPackages = ci.match(/run: sudo apt-get install -y xvfb (libx11-dev .+)\n/)?.[1];
   assert.equal(install[1], ciPackages, 'release and CI compile native-display against the same libraries');
@@ -19,4 +19,9 @@ test('the Linux release kernel is built with native-display and its build librar
 
 test('macOS release kernels stay featureless', () => {
   assert.doesNotMatch(matrixEntry('darwin-arm64'), /kernel_features/);
+});
+
+// MP-08/MP-10: exercise the actual ELF on a base image with no display stack.
+test('the Linux release job executes the bundled kernel on minimal Ubuntu', () => {
+  assert.match(workflow, /docker run --rm -v "\$PWD\/unsigned\/bin:\/bundle:ro" ubuntu:22\.04 \/bundle\/chariox-kernel --help/);
 });

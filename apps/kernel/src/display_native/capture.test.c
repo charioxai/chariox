@@ -15,23 +15,30 @@ static int counted_compare(const void *a,const void *b,size_t n){
 #undef memcmp
 
 /* The raster is supplied directly, without launching an X server. */
-Atom XInternAtom(Display *d,const char *name,Bool only){(void)d;(void)only;return !strcmp(name,"_GTK_FRAME_EXTENTS")?2:!strcmp(name,"_NET_WM_STATE")?3:!strcmp(name,"_NET_WM_STATE_FULLSCREEN")?4:1;}
-int XGetWindowProperty(Display *d,Window w,Atom p,long off,long len,Bool del,Atom requested,
+Atom test_XInternAtom(Display *d,const char *name,Bool only){(void)d;(void)only;return !strcmp(name,"_GTK_FRAME_EXTENTS")?2:!strcmp(name,"_NET_WM_STATE")?3:!strcmp(name,"_NET_WM_STATE_FULLSCREEN")?4:1;}
+int test_XGetWindowProperty(Display *d,Window w,Atom p,long off,long len,Bool del,Atom requested,
     Atom *actual,int *format,unsigned long *count,unsigned long *remaining,unsigned char **data){
     (void)d;(void)w;(void)off;(void)len;(void)del;(void)requested;
     if(p==2||p==3){*actual=None;*format=0;*count=*remaining=0;*data=NULL;return Success;}
     *actual=XA_CARDINAL;*format=32;*count=1;*remaining=0;
     unsigned long *pid=malloc(sizeof(*pid));*pid=42;*data=(unsigned char*)pid;return Success;
 }
-Status XGetWindowAttributes(Display *d,Window w,XWindowAttributes *attributes){
+Status test_XGetWindowAttributes(Display *d,Window w,XWindowAttributes *attributes){
     (void)d;(void)w;memset(attributes,0,sizeof(*attributes));
     attributes->width=1280;attributes->height=800;attributes->map_state=IsViewable;return 1;
 }
-Bool XCheckIfEvent(Display *d,XEvent *e,Bool (*p)(Display*,XEvent*,XPointer),XPointer a){(void)d;(void)e;(void)p;(void)a;return False;}
-Bool XShmGetImage(Display *d,Drawable a,XImage *image,int x,int y,unsigned long plane){
+Bool test_XCheckIfEvent(Display *d,XEvent *e,Bool (*p)(Display*,XEvent*,XPointer),XPointer a){(void)d;(void)e;(void)p;(void)a;return False;}
+Bool test_XShmGetImage(Display *d,Drawable a,XImage *image,int x,int y,unsigned long plane){
     (void)d;(void)a;(void)image;(void)x;(void)y;(void)plane;return True;
 }
 int main(void){
+    pthread_once(&x11_once,x11_load);assert(x11_ready);
+    cx_XInternAtom=test_XInternAtom;
+    cx_XGetWindowProperty=test_XGetWindowProperty;
+    cx_XGetWindowAttributes=test_XGetWindowAttributes;
+    cx_XCheckIfEvent=test_XCheckIfEvent;
+    cx_XShmGetImage=test_XShmGetImage;
+
     const int w=1280,h=800;const size_t size=(size_t)w*h*4;row_bytes=w*4;
     uint8_t *raw=malloc(size),*a=malloc(size),*b=malloc(size),*c=malloc(size);
     assert(raw&&a&&b&&c);memset(raw,255,size);

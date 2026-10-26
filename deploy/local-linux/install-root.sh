@@ -366,7 +366,7 @@ install_all() {
     if [[ "$after" == "$before" ]]; then say "unchanged runtime $after (re-verified)"; else say "enrolled runtime $after (was $before)"; fi
   fi
 
-  act "verify system Python browser dependencies" \
+  act "verify native display and system browser dependencies" \
     bash "$here/install-browser-dependencies.sh"
 
   # Preserve the host-wide admission inode shared with older root kernels.

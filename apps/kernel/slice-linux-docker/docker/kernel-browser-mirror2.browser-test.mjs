@@ -890,6 +890,23 @@ test("MP-10: a lazy image that has not loaded yet still travels with its source 
     assert.match(image?.[4]?.res ?? "", /^r[0-9]+$/, "MP-10: the pending image has a source key");
   }));
 
+// MP-08/MP-10: currentSrc changes on load without a src/srcset mutation.
+for (const picture of [false, true]) test(`MP-10: a lazy ${picture ? 'picture' : 'srcset image'} updates its key to the selected resource`, () => mirrored(
+  `<p>top</p><div style="height:6000px"></div>${picture ? '<picture><source srcset="/candidate.svg">' : ''}<img id="lazy" loading="lazy" src="/fallback.svg" ${picture ? '' : 'srcset="/candidate.svg 1x, /retina.svg 2x"'} width="30" height="40" alt="lazy">${picture ? '</picture>' : ''}`, async ({ next, evaluate }) => {
+    assert.equal(await evaluate("document.getElementById('lazy').currentSrc"), "");
+    const snapshot = await next(), image = rows(snapshot.nodes).find(row => row.attrs?.id === 'lazy');
+    let key = image.res, delivered = [...snapshot.resources];
+    await evaluate("document.getElementById('lazy').scrollIntoView(); true");
+    for (let i = 0; i < 20; i++) {
+      const packet = await next(500);
+      for (const op of packet.ops) if (op.op === 'res' && op.id === image.id) key = op.res;
+      delivered.push(...packet.resources);
+      if (delivered.some(resource => resource.key === key && Buffer.from(resource.data_base64, 'base64').toString().includes('#c0ffee'))) break;
+    }
+    assert.match(await evaluate("document.getElementById('lazy').currentSrc"), /candidate\.svg$/);
+    assert(delivered.some(resource => resource.key === key && Buffer.from(resource.data_base64, 'base64').toString().includes('#c0ffee')), 'MP-10: the mirrored image key has the selected candidate bytes');
+  }, { '/candidate.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#c0ffee" d="M0 0h30v40H0z"/></svg>' } }));
+
 test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
   `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {
     const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");

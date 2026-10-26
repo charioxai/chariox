@@ -106,7 +106,9 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install native display build dependencies
         if: matrix.platform == 'linux-x64'
-        run: sudo apt-get install -y libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
       - name: Build the kernel, relay and helpers
         run: |
           bins=(chariox-kernel chariox-relay chariox-app-package ${{ matrix.libexec }})
@@ -114,6 +116,9 @@ jobs:
           mkdir -p unsigned/bin unsigned/libexec
           cp target/release/{chariox-kernel,chariox-relay,chariox-app-package} unsigned/bin/
           for name in ${{ matrix.libexec }}; do cp "target/release/$name" unsigned/libexec/; done
+      - name: Check Linux kernel startup without display libraries
+        if: matrix.platform == 'linux-x64'
+        run: docker run --rm -v "$PWD/unsigned/bin:/bundle:ro" ubuntu:22.04 /bundle/chariox-kernel --help
       - name: Compile the CLI/TUI into one executable
         run: |
           pnpm install --frozen-lockfile
