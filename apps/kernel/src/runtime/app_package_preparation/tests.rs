@@ -181,7 +181,7 @@ fn prepare(
         owner.into(),
         handle.into(),
         Arc::new(Semaphore::new(8)).try_acquire_owned().unwrap(),
-        false,
+        PreparationSource::Publisher,
     ))
 }
 
@@ -298,7 +298,7 @@ fn interrupted_publication_retry_and_revocation_before_writer_stage_are_safe() {
                         Ok(())
                     }
                 },
-                false
+                PreparationSource::Publisher
             )
             .err(),
         Some(PreparationError::PublicationInterrupted)

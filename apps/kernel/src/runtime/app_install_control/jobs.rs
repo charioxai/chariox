@@ -167,7 +167,9 @@ pub(super) async fn run(
                 } else {
                     shared
                         .preparation
-                        .prepare(key.0.clone(), upload_handle.clone(), preparing, input.source == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush)
+                        .prepare(key.0.clone(), upload_handle.clone(), preparing, if input.source == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush {
+                            crate::runtime::app_package_preparation::PreparationSource::Dev {expected_upload_digest: operation.package_digest.clone()}
+                        } else { crate::runtime::app_package_preparation::PreparationSource::Publisher })
                         .await
                 }
                 .map_err(preparation)?;

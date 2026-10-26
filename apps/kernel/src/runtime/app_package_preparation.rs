@@ -21,6 +21,11 @@ use crate::durable_state::{app_publishers::AppPublisherError, DurableKernelState
 const MAX_STAGE_BYTES: u64 = 512 * 1024 * 1024;
 const HOST_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+pub(crate) enum PreparationSource {
+    Publisher,
+    Dev { expected_upload_digest: String },
+}
+
 /// Safe classifications, not raw I/O messages or paths. PublicationInterrupted
 /// means retrying the same upload is safe: publication may already be visible,
 /// and ReleaseStore revalidates/seals/syncs it before acknowledging reuse.
@@ -130,7 +135,7 @@ impl AppPackagePreparation {
         trusted_owner: String,
         upload_handle: String,
         admission: OwnedSemaphorePermit,
-        dev: bool,
+        source: PreparationSource,
     ) -> Result<PreparedAppPackage> {
         let service = self.clone();
         admitted_blocking(Arc::clone(&self.preparation), admission, move || {
@@ -139,7 +144,7 @@ impl AppPackagePreparation {
                 &upload_handle,
                 crate::session::unix_epoch_ms(),
                 |_| Ok(()),
-                dev,
+                source,
             )
         })
         .await
@@ -151,7 +156,7 @@ impl AppPackagePreparation {
         handle: &str,
         now_ms: u64,
         checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
-        dev: bool,
+        source: PreparationSource,
     ) -> Result<PreparedAppPackage> {
         // Finalize authenticates the owner/handle, rejects partial or expired
         // uploads, rehashes the exact file and retains its existing upload lease.
@@ -178,7 +183,13 @@ impl AppPackagePreparation {
         if bytes.len() != capacity {
             return Err(PreparationError::UploadDigestMismatch);
         }
-        if dev {
+        if let PreparationSource::Dev {
+            expected_upload_digest,
+        } = source
+        {
+            if upload.status().sha256 != expected_upload_digest {
+                return Err(PreparationError::UploadDigestMismatch);
+            }
             let secrets = crate::secret::RuntimeSecretService::with_vault_config(
                 Vec::new(),
                 &self.vault_config,

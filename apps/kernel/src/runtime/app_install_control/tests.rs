@@ -501,22 +501,7 @@ fn an_approved_install_waiting_to_start_reports_queued_not_awaiting_approval() {
 async fn dev_upload_signs_locally_replays_the_uploaded_revision_and_declines_normally() {
     use chariox_app_runtime::installation::channel::{AcquisitionSource, InstallationChannel};
     let f = Fixture::new();
-    let (bytes, publisher) = fixture_event_package();
-    let policy = chariox_app_package::VerificationPolicy::new(
-        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
-        vec![publisher],
-    );
-    let verified = chariox_app_package::verify(&bytes, &policy).unwrap();
-    let files = verified
-        .files()
-        .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
-        .collect();
-    let bundle = chariox_app_package::dev_bundle::pack_dev_bundle(
-        &serde_json::to_value(verified.manifest()).unwrap(),
-        &files,
-        &chariox_app_package::Limits::default(),
-    )
-    .unwrap();
+    let bundle = unsigned_dev_bundle();
     let (upload_handle, expected_package_digest) = f.upload_bytes("dev-upload", &bundle).await;
     let begin = LocalDaemonRequest::BeginAppInstall(BeginAppInstallRequest {
         source: AcquisitionSource::DevPush,
@@ -611,5 +596,81 @@ async fn dev_upload_signs_locally_replays_the_uploaded_revision_and_declines_nor
         .unwrap()
         .active
         .is_none());
+    f.shutdown().await;
+}
+
+fn unsigned_dev_bundle() -> Vec<u8> {
+    let (bytes, publisher) = fixture_event_package();
+    let policy = chariox_app_package::VerificationPolicy::new(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        vec![publisher],
+    );
+    let verified = chariox_app_package::verify(&bytes, &policy).unwrap();
+    let files = verified
+        .files()
+        .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+        .collect();
+    chariox_app_package::dev_bundle::pack_dev_bundle(
+        &serde_json::to_value(verified.manifest()).unwrap(),
+        &files,
+        &chariox_app_package::Limits::default(),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dev_upload_rejects_a_claimed_digest_that_does_not_name_the_upload() {
+    let f = Fixture::new();
+    let bundle = unsigned_dev_bundle();
+    let (upload_handle, _) = f.upload_bytes("wrong-digest-upload", &bundle).await;
+    let begin = LocalDaemonRequest::BeginAppInstall(BeginAppInstallRequest {
+        source: chariox_app_runtime::installation::channel::AcquisitionSource::DevPush,
+        session_id: f.session.clone(),
+        request_id: "wrong-digest".into(),
+        upload_handle,
+        expected_package_digest: format!("sha256:{}", "f".repeat(64)),
+    });
+    status(f.request("alice", begin).await);
+    f.until(|| {
+        matches!(
+            f.control()
+                .0
+                .shared
+                .store
+                .first_app_install_status("alice", "wrong-digest")
+                .unwrap()
+                .phase,
+            InstallPhase::Failed | InstallPhase::AwaitingApproval
+        )
+    })
+    .await;
+    let operation = f
+        .control()
+        .0
+        .shared
+        .store
+        .first_app_install_status("alice", "wrong-digest")
+        .unwrap();
+    assert_eq!(
+        operation.failure.as_deref(),
+        Some("app_install_upload_digest_mismatch")
+    );
+    assert!(operation.interaction_id.is_none());
+    assert!(f
+        .control()
+        .0
+        .shared
+        .store
+        .list_app_installations("alice", None, 100)
+        .unwrap()
+        .installations
+        .is_empty());
+    assert!(f
+        .control()
+        .0
+        .shared
+        .store
+        .trusted_app_publisher("alice", "local_dev", "kernel-dev")
+        .is_err());
     f.shutdown().await;
 }

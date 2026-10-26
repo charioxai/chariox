@@ -91,7 +91,12 @@ impl AppControlService {
         }
         let prepared = self
             .preparation
-            .prepare(owner.clone(), upload_handle, permit, false)
+            .prepare(
+                owner.clone(),
+                upload_handle,
+                permit,
+                crate::runtime::app_package_preparation::PreparationSource::Publisher,
+            )
             .await
             .map_err(FirstInstallControlError::Preparation)?;
         let permit = self
