@@ -237,6 +237,7 @@ class DevRun {
   private async followPush(request: string, previous: boolean, first?: Record<string, unknown>): Promise<AppInstallOperationSummary | undefined> {
     let response = first ?? await this.deps.send(beginAppDevPushRequest({ sessionId: this.session, requestId: request, directory: this.root }))
     let announced = false
+    let polling = false
     while (!this.stopped) {
       const error = response.AppDevPushFailed as { message: string } | undefined
       if (error) {
@@ -247,7 +248,7 @@ class DevRun {
       if (failure) {
         // Status admission can be busy after the push was already accepted.
         // Keep that identity until the next save can settle it.
-        const uncertain = failure.code === "busy" || failure.code === "storage_unavailable"
+        const uncertain = polling && (failure.code === "busy" || failure.code === "storage_unavailable")
         if (!uncertain) this.pushRequest = undefined
         throw new Error(`Kernel dev push failed (${failure.code ?? "failed"}); ${uncertain ? "the next save will continue this request before pushing the latest source" : "save again to retry"}.`)
       }
@@ -263,6 +264,7 @@ class DevRun {
       }
       try { await delay(this.deps.pollMs ?? 500, undefined, { signal: this.abort.signal }) } catch { return undefined }
       if (this.stopped) return undefined
+      polling = true
       response = await this.deps.send(getAppDevPushRequest({ sessionId: this.session, requestId: request }))
     }
     return undefined

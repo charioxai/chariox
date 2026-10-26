@@ -95,7 +95,8 @@ test("a lost begin response is replayed before submitting the next saved revisio
   assert.ok(notices.some(text=>text.startsWith("Previous build:")))
 })
 
-test("busy status admission keeps the accepted push identity for the next save",async t=>{
+for (const code of ["busy", "storage_unavailable"]) {
+ test(`${code} status admission keeps the accepted push identity for the next save`,async t=>{
   const root=await realpath(await mkdtemp(join(tmpdir(),"app-push-busy-")))
   await mkdir(join(root,"bundle"));await writeFile(join(root,"app.json"),"{}")
   t.after(()=>rm(root,{recursive:true,force:true}))
@@ -108,13 +109,14 @@ test("busy status admission keeps the accepted push identity for the next save",
       const id=(request.BeginAppDevPush as any)?.request_id
       if(id){ids.push(id);return ids.length===1?{AppDevPushBuilding:{request_id:id}}:committed(id)}
       assert.ok(request.GetAppDevPush)
-      assert.equal(busy,true);busy=false;return{AppRequestFailed:{code:"busy"}}
+      assert.equal(busy,true);busy=false;return{AppRequestFailed:{code}}
     },
   })
   t.after(()=>loop.dispose())
   await loop.start(root);await loop.settled();change("app.ts");await loop.settled()
   assert.equal(ids.length,3);assert.equal(ids[0],ids[1]);assert.notEqual(ids[1],ids[2])
 })
+}
 
 test("a failed build found after a lost response still pushes the newest save", async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "app-push-failed-replay-")))
@@ -141,3 +143,29 @@ test("a failed build found after a lost response still pushes the newest save", 
   assert.ok(notices.some(text => text.startsWith("Previous build:") && text.includes("syntax error")))
   assert.ok(notices.some(text => text.includes("generation 2")))
 })
+
+// MP-08 / MP-10 / MP-11: a rejected begin never owns a source revision.
+for (const code of ["busy", "storage_unavailable"]) {
+  test(`a begin rejected as ${code} is not replayed on the next save`, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "app-push-rejected-")))
+    await mkdir(join(root, "bundle")); await writeFile(join(root, "app.json"), "{}")
+    t.after(() => rm(root, { recursive: true, force: true }))
+    let change!: (file: string | null) => void
+    const ids: string[] = [], notices: string[] = []
+    const loop = new AppDevLoop({ currentSession: () => "room", notice: text => notices.push(text), debounceMs: 1, pollMs: 1,
+      installer: {} as AppDevDeps["installer"], watch: (_root, callback) => { change = callback; return { close() {} } },
+      send: async request => {
+        const id = (request.BeginAppDevPush as any)?.request_id
+        assert.ok(id); ids.push(id)
+        if (ids.length === 1) return { AppRequestFailed: { code } }
+        return { AppInstallOperationStatus: { operation: { request_id: id, phase: "committed", installation_id: "dev", generation: "1", package_digest: "sha256:" + "a".repeat(64), interaction_id: null, failure: null } } }
+      },
+    })
+    t.after(() => loop.dispose())
+    await loop.start(root); await loop.settled()
+    change("app.ts"); await loop.settled()
+    assert.equal(ids.length, 2, "one accepted begin for one save")
+    assert.notEqual(ids[0], ids[1])
+    assert.ok(notices.some(text => text.includes(code) && text.includes("save again to retry")))
+  })
+}
