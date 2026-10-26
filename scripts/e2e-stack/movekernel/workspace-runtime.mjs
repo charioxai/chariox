@@ -310,4 +310,5 @@ async function launchBrowser() {
     const { chromium } = await import('/w/valenv/tools/node_modules/playwright-core/index.mjs');
     browser = await chromium.launch({ headless: true, executablePath: '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 }
-export { root, out, kernel, binary, origin, relay, sha, record, runtime, enroll, project, selection, copy, launchTarget, launchBrowser, close, release, restart, cli };
+async function webContext(options) { assert.ok(browser, "Launch the viewer before opening a Web context"); return browser.newContext(options); }
+export { webContext, root, out, kernel, binary, origin, relay, sha, record, runtime, enroll, project, selection, copy, launchTarget, launchBrowser, close, release, restart, cli };

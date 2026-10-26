@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js';
 import { root, out, kernel, binary, sha, record, runtime, enroll, project, selection, launchBrowser, close, release, restart } from './workspace-runtime.mjs';
 import { fixture } from './workspace-fixture.mjs';
+import { captureWeb } from './workspace-web.mjs';
 import { completedWorkspaceTool } from './workspace-proof.mjs';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const entries = s => s.agentPanes?.[s.session.focusedAgentId] ?? [];
@@ -147,6 +148,7 @@ try {
     const sourceState = await state(source, sessionId), sourceAgent = sourceState.session.agents.find(a => a.id === agentId);
     await record('source-layout', {roomWorkspace: sourceState.session.workspace_id, roomWorktree: sourceState.session.worktree_id, agentWorkspace: sourceAgent.workspace_id, agentWorktree: sourceAgent.worktree_id, providerWorkingDirectory: sourceRun.working_directory, projectMembers: [paths.workspace, paths.notes]});
     assert.ok(nativeId);
+    const webProof = await captureWeb(source, sessionId, agentId, 'source');
     const forward = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 1, true);
     const movedState = await state(source, sessionId);
     const movedAgent = movedState.session.agents.find(a => a.id === agentId);
@@ -164,6 +166,7 @@ try {
     assert.ok(entries(remoteTurn.snapshot).some(row => row.role === 'assistant' && row.text?.includes(marker)), 'Native target must recall previous context');
     assert.ok(completedWorkspaceTool(entries(remoteTurn.snapshot), remoteTurn.promptId, primary), 'Target tool must execute in the receipt primary');
     await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true});
+    webProof.push(...await captureWeb(source, sessionId, agentId, 'target'));
     const returned = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 2, false);
     const home = returned.repositories.find(r => r.role === 'primary').destinationPath;
     const homeNotes = returned.repositories.find(r => r.role === 'supporting').destinationPath;
@@ -175,7 +178,8 @@ try {
     assert.ok(entries(homeTurn.snapshot).some(row => row.role === 'assistant' && row.text?.includes(marker) && row.text?.includes(primary)), 'Returned native context must retain the target turn');
     assert.ok(completedWorkspaceTool(entries(homeTurn.snapshot), homeTurn.promptId, home));
     assert.equal((await currentRun(source, sessionId, agentId)).provider_session_id, nativeId);
-    await record('summary', {result: 'PASS', forwardRestart: true, returnRestart: true, sameNativeId: true, sameHomeRoom: homeTurn.snapshot.session.id === sessionId, sameHomeAgent: homeTurn.snapshot.session.focusedAgentId === agentId, preservedDivergentHome: true, freshReturn: home, realProviderTurns: 3, hostedWss: true});
+    webProof.push(...await captureWeb(source, sessionId, agentId, 'returned'));
+    await record('summary', {result: webProof.every(value => value.result === 'PASS') ? 'PASS' : 'PARTIAL', nativeResult: 'PASS', web: webProof.map(({result, dpr}) => ({result, dpr})), forwardRestart: true, returnRestart: true, sameNativeId: true, sameHomeRoom: homeTurn.snapshot.session.id === sessionId, sameHomeAgent: homeTurn.snapshot.session.focusedAgentId === agentId, preservedDivergentHome: true, freshReturn: home, realProviderTurns: 3, hostedWss: true});
 } catch (error) {
     failed = error; await record('summary', {result: 'FAIL', error: String(error), stack: error.stack});
 } finally { await close(); release(); }
