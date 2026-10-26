@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::{fs::File, io::Read};
 
 mod document;
+mod save;
 mod snapshot;
 
 struct Sheets;
@@ -37,7 +38,11 @@ async fn write_bytes(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
 }
 
 fn read_document(name: &str) -> Result<String, AppError> {
-    let file = File::open(format!("data/{name}")).map_err(|_| {
+    read_document_at(std::path::Path::new("data"), name)
+}
+
+fn read_document_at(data: &std::path::Path, name: &str) -> Result<String, AppError> {
+    let file = File::open(data.join(name)).map_err(|_| {
         error(
             "FILE_NOT_FOUND",
             "pick a file or export it to App data first",
@@ -134,64 +139,51 @@ async fn stage_export(name: &str, input: &Value) -> Result<u64, AppError> {
 
 async fn dispatch(name: &str, input: Value) -> Result<Value, AppError> {
     match name {
-        "load_workbook" => match state::get("workbook".into()).await? {
-            None => Ok(json!({"text":null,"version":null})),
-            Some(record) => {
-                let book: Value = serde_json::from_str(&record.value).map_err(|_| {
-                    error(
-                        "INVALID_STATE",
-                        "saved workbook is invalid JSON; open an exported copy",
-                    )
-                })?;
-                let book = snapshot::read(book)?;
-                let mut result = text_chunk(&book.to_string(), &input)?;
-                result["version"] = json!(record.version.to_string());
-                Ok(result)
+        "load_workbook" => {
+            save::sweep_uploads(std::path::Path::new("data"));
+            match state::get("workbook".into()).await? {
+                None => Ok(json!({"text":null,"version":null})),
+                Some(record) => {
+                    let book: Value = serde_json::from_str(&record.value).map_err(|_| {
+                        error(
+                            "INVALID_STATE",
+                            "saved workbook is invalid JSON; open an exported copy",
+                        )
+                    })?;
+                    let book = snapshot::read(book)?;
+                    let mut result = text_chunk(&book.to_string(), &input)?;
+                    result["version"] = json!(record.version.to_string());
+                    Ok(result)
+                }
             }
-        },
+        }
         "save_workbook" => {
             let name = document::filename(&input["name"]).map_err(invalid)?;
             if !name.ends_with(".univer.json") {
                 return Err(invalid("save a .univer.json workbook"));
             }
-            let text = read_document(&name)?;
-            let wrapper: Value = serde_json::from_str(&text)
-                .map_err(|_| invalid("file must be a native workbook"))?;
-            let book = &wrapper["workbook"];
-            document::workbook(book).map_err(invalid)?;
-            let version = match &input["version"] {
-                Value::Null => None,
-                Value::String(text) => Some(
-                    text.parse::<u64>()
-                        .map_err(|_| invalid("version must be a decimal string or null"))?,
-                ),
-                _ => return Err(invalid("version must be a decimal string or null")),
-            };
-            // Reject an already stale view before writing any files; the
-            // transaction rechecks after I/O to cover concurrent writers.
-            if state::get("workbook".into())
-                .await?
-                .map(|record| record.version)
-                != version
-            {
-                return Err(error(
-                    "STATE_CONFLICT",
-                    "workbook changed; export your edits before reopening the saved copy",
-                ));
-            }
-            let pointer = snapshot::write(book).await?;
-            let tx = state::Transaction {
-                schema_version: 0,
-                checks: vec![state::Check {
-                    key: "workbook".into(),
-                    version,
-                }],
-                writes: vec![state::Write::Put(("workbook".into(), pointer.to_string()))],
-                occurrences: vec![],
-                wakes: vec![],
-            };
-            let receipt = state::transact(tx).await?;
-            Ok(json!({"version":receipt.revision.to_string()}))
+            let revision = save::workbook(
+                std::path::Path::new("data"),
+                &name,
+                &input["version"],
+                async || chariox_app_sdk::get_json("workbook").await,
+                snapshot::write,
+                async |pointer, version| {
+                    let tx = state::Transaction {
+                        schema_version: 0,
+                        checks: vec![state::Check {
+                            key: "workbook".into(),
+                            version,
+                        }],
+                        writes: vec![state::Write::Put(("workbook".into(), pointer.to_string()))],
+                        occurrences: vec![],
+                        wakes: vec![],
+                    };
+                    Ok(state::transact(tx).await?.revision)
+                },
+            )
+            .await?;
+            Ok(json!({"version":revision.to_string()}))
         }
         "write_file" => {
             let name = document::filename(&input["name"]).map_err(invalid)?;

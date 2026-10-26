@@ -15,6 +15,20 @@ fn filename(hash: &str) -> String {
     format!("saved-{hash}.json")
 }
 
+pub fn remove_unless_current(data: &std::path::Path, candidate: &Value, current: &Value) {
+    if candidate["format"] != FORMAT || candidate["sha256"] == current["sha256"] {
+        return;
+    }
+    if let Some(hash) = candidate["sha256"].as_str().filter(|hash| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    }) {
+        let _ = std::fs::remove_file(data.join(filename(hash)));
+    }
+}
+
 pub async fn write(book: &Value) -> Result<Value, AppError> {
     let bytes = book.to_string().into_bytes();
     let hash = digest(&bytes);

@@ -24,9 +24,14 @@ the next save. Each snapshot file fits the existing 512 KiB file broker limit.
 The view transfers files and snapshots in bounded text chunks, avoiding the
 existing App-call byte and node limits. Exports stage files only
 inside the same R6 WASI data preopen, then commit through
-`files.atomic-replace`. Old snapshot and upload files remain
-within the installation's existing 512 MiB data quota;
-a full volume fails the save explicitly and retains the previous saved pointer.
+`files.atomic-replace`. Save keeps exactly one saved snapshot: after the pointer
+commits it best-effort removes the superseded snapshot, and a failed CAS removes
+its uncommitted snapshot unless another writer committed the same hash. Save
+consumes its upload even on failure. On save/load, bounded best-effort maintenance
+removes abandoned view uploads (including partial staging files) older than one
+day; recent uploads and named imports/exports are kept. These files share the
+installation's existing 512 MiB data quota; a full volume fails the save explicitly
+and retains the previous saved pointer.
 Rust is used because the worker's WASI `data` preopen can read an imported file
 without introducing a new host read API or a Node backend. `files.import`,
 `files.atomic-replace`, `files.export` and `host.pick-file` retain the kernel's
