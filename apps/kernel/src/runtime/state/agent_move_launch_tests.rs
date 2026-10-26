@@ -487,4 +487,14 @@ fn mk03_chunk_admission_preserves_prefix_and_allows_retry_without_free_space() {
         .unwrap();
     assert_eq!(files.len(), 1);
     assert_eq!(std::fs::read(files[0].path()).unwrap(), [1]);
+    let store = crate::agent_move::AgentMoveStore::open(root.path().join("journal")).unwrap();
+    store
+        .write_chunk(&identity.operation_id, kind, 0, &[1, 2])
+        .expect("retry after a partial write must repair the interrupted chunk");
+    assert_eq!(std::fs::read(files[0].path()).unwrap(), [1, 2]);
+    std::fs::write(files[0].path(), [0, 0]).unwrap();
+    store
+        .write_chunk(&identity.operation_id, kind, 0, &[1, 2])
+        .expect("unpublished staging with crash-corrupted data must be rewritable");
+    assert_eq!(std::fs::read(files[0].path()).unwrap(), [1, 2]);
 }

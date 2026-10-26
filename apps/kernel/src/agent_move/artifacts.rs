@@ -264,26 +264,30 @@ impl AgentMoveStore {
         let mut file = options.open(path).map_err(|_| {
             error("Cannot stage move chunk; check free space and state permissions")
         })?;
-        let length = file
+        let mut length = file
             .metadata()
             .map_err(|_| error("Cannot inspect move staging"))?
             .len();
         if offset < length {
-            if end > length {
-                return Err(error(
-                    "Move chunk overlaps unfinished staging; retry the same complete chunk",
-                ));
+            if end <= length {
+                let mut existing = vec![0; bytes.len()];
+                file.seek(SeekFrom::Start(offset))
+                    .and_then(|_| file.read_exact(&mut existing))
+                    .map_err(|_| error("Cannot verify a retried move chunk"))?;
+                if existing == bytes {
+                    file.sync_all()
+                        .map_err(|_| error("Cannot sync move artifact; check free space"))?;
+                    return Ok(());
+                }
             }
-            let mut existing = vec![0; bytes.len()];
-            file.seek(SeekFrom::Start(offset))
-                .and_then(|_| file.read_exact(&mut existing))
-                .map_err(|_| error("Cannot verify a retried move chunk"))?;
-            if existing != bytes {
-                return Err(error(
-                    "Move chunk differs from the captured artifact; retry the original generation",
-                ));
+            if target.receipt.is_some() {
+                return Err(error("A published Move artifact differs from its capture; restore the original generation"));
             }
-            return Ok(());
+            // A short write or crash may leave an unacknowledged suffix, including
+            // zero-filled bytes. Rewind it; publication still verifies the full digest.
+            file.set_len(offset)
+                .map_err(|_| error("Cannot repair interrupted move staging; check free space"))?;
+            length = offset;
         }
         if target.receipt.is_some() || offset != length {
             return Err(error(
@@ -299,10 +303,8 @@ impl AgentMoveStore {
         file.seek(SeekFrom::Start(offset))
             .and_then(|_| file.write_all(bytes))
             .map_err(|_| error("Cannot write move chunk; check free space"))?;
-        if end == descriptor.size_bytes {
-            file.sync_all()
-                .map_err(|_| error("Cannot sync move artifact; check free space"))?;
-        }
+        file.sync_all()
+            .map_err(|_| error("Cannot sync move artifact; check free space"))?;
         Ok(())
     }
 
