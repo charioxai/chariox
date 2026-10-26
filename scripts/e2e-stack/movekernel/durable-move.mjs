@@ -19,11 +19,38 @@ async function currentRun(r, id, agentId) {
     assert.ok(runId, 'Real provider run identity');
     return variant(await r.client.send({GetProviderRun: {provider_run_id: runId}}), 'ProviderRun').provider_run;
 }
-async function accountIdentity(r, profile) {
-    const auth = variant(await r.client.send({GetProviderAuthStatus: {provider: 'codex', account_profile: profile}}), 'ProviderAuthStatus').status;
-    assert.equal(auth.auth_state, 'authenticated', 'Moved account must remain authenticated');
-    assert.ok(auth.identity_summary?.trim(), 'Account identity must be available');
-    return sha(Buffer.from('codex:authenticated:' + auth.identity_summary.trim().toLowerCase()));
+async function accountIdentity(run) {
+    assert.ok(run.structured_endpoint, 'Actual provider endpoint is required for account proof');
+    const endpoint = new URL(run.structured_endpoint);
+    assert.equal(endpoint.protocol, 'ws:');
+    assert.equal(endpoint.hostname, '127.0.0.1');
+    const socket = new WebSocket(endpoint);
+    function request(id, method, params) {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { socket.removeEventListener('message', receive); reject(Error('Official account metadata deadline')); }, 15000);
+            function receive(event) {
+                const reply = JSON.parse(event.data);
+                if (reply.id !== id) return;
+                clearTimeout(timer); socket.removeEventListener('message', receive);
+                if (reply.error) reject(Error('Official account metadata request failed'));
+                else resolve(reply.result);
+            }
+            socket.addEventListener('message', receive);
+            socket.send(JSON.stringify({id, method, params}));
+        });
+    }
+    try {
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(Error('Official account endpoint connection deadline')), 15000);
+            socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, {once: true});
+            socket.addEventListener('error', () => { clearTimeout(timer); reject(Error('Official account endpoint connection failed')); }, {once: true});
+        });
+        await request(0, 'initialize', {clientInfo: {name: 'chariox-movekernel-account-proof', version: '0.1.0'}, capabilities: {experimentalApi: true}});
+        socket.send(JSON.stringify({method: 'initialized', params: {}}));
+        const auth = await request(1, 'account/read', {});
+        assert.ok(auth.account?.email?.trim(), 'Actual provider must report its authenticated identity');
+        return sha(Buffer.from('codex:authenticated:' + auth.account.email.trim().toLowerCase()));
+    } finally { socket.close(); }
 }
 async function captureTui(r, label) {
     const ansi = out + '/' + label + '.ansi';
@@ -159,7 +186,7 @@ try {
     assert.ok(nativeId);
     assert.equal(sourceRun.model, 'gpt-6-luna');
     assert.equal(sourceRun.variant, 'low');
-    const sourceAccount = await accountIdentity(source, sourceRun.account_profile);
+    const sourceAccount = await accountIdentity(sourceRun);
     const webProof = await captureWeb(source, sessionId, agentId, 'source');
     const forward = await moveWithRestart(source, target, sessionId, agentId, paths.primary, 1, true);
     const movedState = await state(source, sessionId);
@@ -184,7 +211,12 @@ try {
     assert.equal(targetRun.working_directory, primary, 'Leased provider must use the receipt primary');
     assert.equal(targetRun.model, sourceRun.model, 'Move must preserve the provider model');
     assert.equal(targetRun.variant, sourceRun.variant, 'Move must preserve the provider effort');
-    assert.equal(await accountIdentity(target, targetRun.account_profile), sourceAccount, 'Move must preserve the authenticated account');
+    const leasedPrefix = 'leased:' + movedAgent.remote_execution.leased_agent_id + ':';
+    assert.ok(targetRun.id.startsWith(leasedPrefix), 'Projected run must belong to the selected leased agent');
+    const workerRun = variant(await target.client.send({GetProviderRun: {provider_run_id: targetRun.id.slice(leasedPrefix.length)}}), 'ProviderRun').provider_run;
+    assert.equal(workerRun.provider_session_id, nativeId);
+    assert.equal(workerRun.working_directory, primary);
+    assert.equal(await accountIdentity(workerRun), sourceAccount, 'Move must preserve the actual provider account');
     assert.ok(entries(remoteTurn.snapshot).some(row => row.role === 'assistant' && row.text?.includes(marker)), 'Native target must recall previous context');
     assert.ok(completedWorkspaceTool(entries(remoteTurn.snapshot), remoteTurn.promptId, primary), 'Target tool must execute in the receipt primary');
     await record('forward-verified', {sameRoom: remoteTurn.snapshot.session.id === sessionId, primary, directoryWorkspace: notes, markerRecalled: true, completedWorkspaceTool: true, nativeSessionId: targetRun.provider_session_id, providerWorkingDirectory: targetRun.working_directory, model: targetRun.model, effort: targetRun.variant, sameAuthenticatedAccount: true, receiptWorktreeSelected: true});
@@ -210,7 +242,7 @@ try {
     assert.equal(returnedRun.working_directory, home);
     assert.equal(returnedRun.model, sourceRun.model);
     assert.equal(returnedRun.variant, sourceRun.variant);
-    assert.equal(await accountIdentity(source, returnedRun.account_profile), sourceAccount, 'Return must preserve the authenticated account');
+    assert.equal(await accountIdentity(returnedRun), sourceAccount, 'Return must preserve the authenticated account');
     await record('return-verified', {nativeSessionId: returnedRun.provider_session_id, providerWorkingDirectory: returnedRun.working_directory, model: returnedRun.model, effort: returnedRun.variant, sameAuthenticatedAccount: true, receiptWorktreeSelected: true});
     webProof.push(...await captureWeb(source, sessionId, agentId, 'returned'));
     await record('summary', {result: webProof.every(value => value.result === 'PASS') ? 'PASS' : 'PARTIAL', nativeResult: 'PASS', web: webProof.map(({result, dpr}) => ({result, dpr})), forwardRestart: true, returnRestart: true, sameNativeId: true, sameHomeRoom: homeTurn.snapshot.session.id === sessionId, sameHomeAgent: homeTurn.snapshot.session.focusedAgentId === agentId, preservedDivergentHome: true, freshReturn: home, realProviderTurns: 3, hostedWss: true});
