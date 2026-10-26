@@ -243,7 +243,6 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::SubscribeEvents(_)
             | LocalDaemonRequest::UnsubscribeEvents(_)
             | LocalDaemonRequest::GetEventSubscription(_)
-            | LocalDaemonRequest::ListEvents(_)
             | LocalDaemonRequest::WaitEvents(_)
             | LocalDaemonRequest::AckEvents(_)
             | LocalDaemonRequest::ListGatewayKernels(_)

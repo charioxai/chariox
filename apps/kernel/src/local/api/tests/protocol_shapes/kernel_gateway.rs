@@ -118,7 +118,7 @@ fn outside_event_requests_are_typed() {
         serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"room","agent_id":"agent"}]}}),
         serde_json::json!({"UnsubscribeEvents":{"all":true}}),
         serde_json::json!({"GetEventSubscription":{}}),
-        serde_json::json!({"ListEvents":{"since":4,"limit":100}}),
+        serde_json::json!({"WaitEvents":{"since":4,"timeout_ms":0,"limit":100}}),
         serde_json::json!({"WaitEvents":{"since":4,"timeout_ms":540000,"limit":100}}),
         serde_json::json!({"AckEvents":{"cursor":4}}),
     ] {
@@ -126,6 +126,16 @@ fn outside_event_requests_are_typed() {
             serde_json::from_value(value.clone())
                 .unwrap_or_else(|error| panic!("outside event request {value}: {error}"));
         assert_eq!(serde_json::to_value(request).unwrap(), value);
+    }
+}
+
+// EA2-76: requests taken out of the protocol are unknown, not ignored.
+#[test]
+fn removed_requests_are_unknown() {
+    for name in ["ListEvents", "StatKernelFile", "ListKernelDirectory"] {
+        let parsed = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({name: {}}));
+        let error = parsed.expect_err(name).to_string();
+        assert!(error.contains("unknown variant"), "{name}: {error}");
     }
 }
 

@@ -5,7 +5,6 @@ pub enum LocalDaemonRequest {
     SubscribeEvents(SubscribeEventsRequest),
     UnsubscribeEvents(UnsubscribeEventsRequest),
     GetEventSubscription(GetEventSubscriptionRequest),
-    ListEvents(ListEventsRequest),
     WaitEvents(WaitEventsRequest),
     AckEvents(AckEventsRequest),
     AddSshMachine(AddSshMachineRequest),

@@ -76,7 +76,7 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
         } = dispatch(
             &router,
             &grant,
-            request(serde_json::json!({"ListEvents":{}})),
+            request(serde_json::json!({"WaitEvents":{"timeout_ms":0}})),
         )
         .await
         else {
@@ -117,7 +117,6 @@ fn outside_event_requests() -> Vec<serde_json::Value> {
         serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"any"}]}}),
         serde_json::json!({"WaitEvents":{"timeout_ms":1}}),
         serde_json::json!({"AckEvents":{"cursor":0}}),
-        serde_json::json!({"ListEvents":{}}),
         serde_json::json!({"GetEventSubscription":{}}),
         serde_json::json!({"UnsubscribeEvents":{"all":true}}),
     ]
@@ -229,7 +228,6 @@ fn outside_router_denies_session_agents_and_foreign_sessions() {
             .is_err());
         for value in [
             serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":session.id()}]}}),
-            serde_json::json!({"ListEvents":{}}),
             serde_json::json!({"WaitEvents":{"timeout_ms":1}}),
             serde_json::json!({"AckEvents":{"cursor":0}}),
             serde_json::json!({"UnsubscribeEvents":{"all":true}}),
@@ -377,7 +375,7 @@ fn outside_router_critical_approvals_are_only_section_eight_pointers() {
         let response = dispatch(
             &router,
             &grant,
-            request(serde_json::json!({"ListEvents":{}})),
+            request(serde_json::json!({"WaitEvents":{"timeout_ms":0}})),
         )
         .await;
         let wire = serde_json::to_string(&response).unwrap();
@@ -417,7 +415,7 @@ fn outside_router_acked_cancellation_still_returns_the_ending_receipt() {
         let LocalDaemonResponse::EventsListed { next_cursor, .. } = dispatch(
             &router,
             &grant,
-            request(serde_json::json!({"ListEvents":{}})),
+            request(serde_json::json!({"WaitEvents":{"timeout_ms":0}})),
         )
         .await
         else {
@@ -628,7 +626,7 @@ fn outside_router_a_removed_agent_leaves_the_other_targets_flowing() {
         let LocalDaemonResponse::EventsListed { events, .. } = dispatch(
             &router,
             &grant,
-            request(serde_json::json!({"ListEvents":{}})),
+            request(serde_json::json!({"WaitEvents":{"timeout_ms":0}})),
         )
         .await
         else {
@@ -647,5 +645,72 @@ fn outside_router_a_removed_agent_leaves_the_other_targets_flowing() {
                 ..
             }
         ) && event.agent_id.as_deref() == Some(kept.id())));
+    });
+}
+
+// EA2-76: `events wait --timeout 0` is the one-shot read, and an expired cursor still arrives.
+#[test]
+fn outside_router_wait_with_no_timeout_reads_once_and_reports_an_expired_cursor() {
+    run("outside-wait-zero", async {
+        let worktree = crate::test_support::TestWorktree::new("outside-wait-zero");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let grant = router
+            .runtime_state()
+            .insert_access_grant_for_test(session.id());
+        dispatch(&router,&grant,request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":session.id()}]}}))).await;
+        let wait =
+            |since: u64| request(serde_json::json!({"WaitEvents":{"since":since,"timeout_ms":0}}));
+        let started = std::time::Instant::now();
+        let LocalDaemonResponse::EventsListed {
+            events, timed_out, ..
+        } = dispatch(&router, &grant, wait(0)).await
+        else {
+            panic!("expected events")
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout 0 returns at once"
+        );
+        assert!(events.is_empty() && timed_out);
+        let runtime_state = router.runtime_state();
+        let store = runtime_state.outside_store();
+        for n in 0..8 {
+            store
+                .outside_publish(
+                    session.id(),
+                    None,
+                    OutsideEventValue::Steer {
+                        steer_id: format!("steer-{n}"),
+                    },
+                    "steer delivered",
+                    EventRefs::default(),
+                )
+                .unwrap();
+        }
+        store
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Bound {
+                    id: grant.clone(),
+                    limit: 4,
+                },
+            )
+            .unwrap();
+        let LocalDaemonResponse::EventsCursorExpired { oldest_cursor } =
+            dispatch(&router, &grant, wait(0)).await
+        else {
+            panic!("an old cursor must say it expired")
+        };
+        let LocalDaemonResponse::EventsListed {
+            events, timed_out, ..
+        } = dispatch(&router, &grant, wait(oldest_cursor - 1)).await
+        else {
+            panic!("expected events")
+        };
+        assert!(!events.is_empty() && !timed_out);
     });
 }

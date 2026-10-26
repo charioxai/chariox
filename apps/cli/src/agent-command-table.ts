@@ -63,8 +63,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "events subscribe", flags: [{ ...KERNEL, required: true }, SESSION, { name: "--agent", value: "AGENT_ID" }, SOCKET], summary: "follow a session or one agent in the durable event inbox" },
   { name: "events unsubscribe", flags: [KERNEL, { name: "--session", value: "SESSION_ID" }, { name: "--agent", value: "AGENT_ID" }, { name: "--all" }, SOCKET], summary: "remove targets, or end the subscription with --all" },
   { name: "events subscription", flags: [SOCKET], summary: "show followed targets and per-kernel health" },
-  { name: "events list", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, SOCKET], summary: "read pending records, oldest first; save next_cursor" },
-  { name: "events wait", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records (default 540 s, at most 900 s); exit 5 on timeout" },
+  { name: "events wait", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records, oldest first; save next_cursor (default 540 s, at most 900 s; --timeout 0 reads what is pending now); exit 5 on timeout" },
   { name: "events watch", flags: [{ name: "--since", value: "CURSOR" }, SOCKET], summary: "print one JSON line per record until interrupted or the subscription ends" },
   { name: "events ack", flags: [SOCKET], args: ["CURSOR"], summary: "acknowledge all records through CURSOR" },
 
@@ -176,7 +175,7 @@ export function guideText(): string {
     "   They need a session: take one from ListSessions or make one with CreateSession (see Requests below).",
     "",
     "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540",
-    "in the foreground or your harness background option, or poll chariox events list. Keep next_cursor.",
+    "in the foreground or your harness background option, or poll chariox events wait --timeout 0. Keep next_cursor.",
     "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
     "Show approval pointers to the user verbatim. A subscription lasts until its grant ends or you cancel it.",
     "Commands:",

@@ -22,12 +22,6 @@
       "GetEventSubscription": {}
     },
     {
-      "ListEvents": {
-        "since": 1,
-        "limit": 100
-      }
-    },
-    {
       "WaitEvents": {
         "since": 1,
         "limit": 100,

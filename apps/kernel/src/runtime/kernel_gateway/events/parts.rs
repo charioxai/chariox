@@ -238,8 +238,9 @@ impl KernelGateway {
                 kernel,
                 origin,
                 &event_command_id(),
-                &LocalDaemonRequest::ListEvents(ListEventsRequest {
+                &LocalDaemonRequest::WaitEvents(WaitEventsRequest {
                     since: Some(since),
+                    timeout_ms: 0,
                     limit: 1000,
                 }),
                 Duration::from_secs(1),

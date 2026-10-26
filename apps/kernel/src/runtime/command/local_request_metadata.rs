@@ -623,7 +623,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SubscribeEvents(_) => "events.subscribe",
         LocalDaemonRequest::UnsubscribeEvents(_) => "events.unsubscribe",
         LocalDaemonRequest::GetEventSubscription(_) => "events.subscription",
-        LocalDaemonRequest::ListEvents(_) => "events.list",
         LocalDaemonRequest::WaitEvents(_) => "events.wait",
         LocalDaemonRequest::AckEvents(_) => "events.ack",
         LocalDaemonRequest::ListGatewayKernels(_) => "kernel_gateway.list",

@@ -298,7 +298,7 @@ test("stat and ls are gone: the CLI points at the terminal", async () => {
     }
     assert.equal(kernel.frames.length, 0)
     const guide = await chariox(["guide"])
-    assert.doesNotMatch(guide.stdout, /files (stat|ls)|stat\|ls/)
+    assert.doesNotMatch(guide.stdout, /files (stat|ls)|stat\|ls|events list/)
     assert.match(guide.stdout, /Listing, stat, hashing and small reads go through a terminal/)
   })
 })
