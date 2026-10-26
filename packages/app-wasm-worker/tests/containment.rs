@@ -40,9 +40,19 @@ fn main() {
     .unwrap();
     let executable = std::env::current_exe().unwrap();
     let mut failures = 0;
-    for scenario in ["authority", "memory", "cpu", "file", "aot"] {
-        if scenario == "memory" && cfg!(target_os = "macos") {
-            println!("NATIVE memory: NOT RUN (native address-space cap is Linux-only)");
+    for scenario in [
+        "authority",
+        "memory",
+        "cpu",
+        "file",
+        "aot",
+        "without-landlock",
+        "cpu-budget",
+        "icache",
+    ] {
+        if matches!(scenario, "memory" | "without-landlock" | "icache") && cfg!(target_os = "macos")
+        {
+            println!("NATIVE {scenario}: NOT RUN (Linux-only native probe)");
             continue;
         }
         for mode in ["red", "green"] {
@@ -68,6 +78,10 @@ fn main() {
                 command.pre_exec(move || {
                     if mode == "red" {
                         return Ok(());
+                    }
+                    #[cfg(target_os = "linux")]
+                    if scenario == "without-landlock" {
+                        without_landlock()?;
                     }
                     let (resource, value) = match scenario {
                         "cpu" => (libc::RLIMIT_CPU, 1),
@@ -116,6 +130,7 @@ fn main() {
 fn child(scenario: &str, mode: &str) {
     let outside = std::env::var("PROBE_OUTSIDE").unwrap();
     let executable = std::env::current_exe().unwrap();
+    let original_cpu_budget = cpu_budget();
     let (mut reader, mut writer) = UnixStream::pair().unwrap();
     // The worker must discard even an accidentally inherited outside-file FD.
     // A path-only policy would leave this descriptor usable.
@@ -135,7 +150,7 @@ fn child(scenario: &str, mode: &str) {
         chariox_app_wasm_worker::containment::enter().unwrap();
     }
     match scenario {
-        "authority" => {
+        "authority" | "without-landlock" => {
             assert_eq!(
                 unsafe { libc::fcntl(80, libc::F_GETFD) } < 0,
                 green,
@@ -303,6 +318,54 @@ fn child(scenario: &str, mode: &str) {
                 std::hint::spin_loop();
             }
         }
+        "cpu-budget" => {
+            assert_eq!(
+                cpu_budget(),
+                original_cpu_budget,
+                "introduced a lifetime CPU budget"
+            );
+            println!("healthy generation retains its inherited CPU lifetime budget");
+        }
+        #[cfg(target_os = "linux")]
+        "icache" => {
+            for command in [64u64, 32] {
+                let result = unsafe { libc::syscall(libc::SYS_membarrier, command, 0u64) };
+                if green && cfg!(target_arch = "x86_64") {
+                    assert_eq!(result, -1);
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::EPERM)
+                    );
+                } else {
+                    assert_eq!(
+                        result,
+                        0,
+                        "private icache membarrier: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+            }
+            if green {
+                for (command, flags) in [
+                    (0u64, 0u64),
+                    (1, 0),
+                    (32, 1),
+                    (64, 1),
+                    (32 | (1 << 32), 0),
+                    (64, 1 << 32),
+                ] {
+                    assert_eq!(
+                        unsafe { libc::syscall(libc::SYS_membarrier, command, flags) },
+                        -1
+                    );
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::EPERM)
+                    );
+                }
+            }
+            println!("private icache commands and rejected command/flag variants checked");
+        }
         "file" => {
             std::io::stdout().write_all(&[b'x'; 8192]).unwrap();
         }
@@ -327,4 +390,36 @@ fn child(scenario: &str, mode: &str) {
         }
         _ => panic!("unknown native probe"),
     }
+}
+
+fn cpu_budget() -> (libc::rlim_t, libc::rlim_t) {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CPU, &mut limit) }, 0);
+    (limit.rlim_cur, limit.rlim_max)
+}
+
+#[cfg(target_os = "linux")]
+fn without_landlock() -> std::io::Result<()> {
+    // Emulate a host without Landlock through a real inherited seccomp filter.
+    // The worker must still establish its full policy and deny every escape.
+    let instruction = |code, k, jt, jf| libc::sock_filter { code, k, jt, jf };
+    let mut filter = [
+        instruction(0x20, 0, 0, 0),
+        instruction(0x15, libc::SYS_landlock_create_ruleset as u32, 0, 1),
+        instruction(0x06, 0x00050000 | libc::ENOSYS as u32, 0, 0),
+        instruction(0x06, 0x7fff0000, 0, 0),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0
+        || unsafe { libc::syscall(libc::SYS_seccomp, 1, 0, &program) } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
