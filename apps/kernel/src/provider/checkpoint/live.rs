@@ -136,6 +136,13 @@ fn live_codex_native_checkpoint_driver() {
             let request = request
                 .with_provider_account_env(launch.pty_env)
                 .with_native_checkpoint(checkpoint.clone());
+            let prepared = checkpoint
+                .import_for_move(&request)
+                .expect("prepare Move and retire its native writer before service launch");
+            assert_eq!(
+                prepared.codex_thread_id(),
+                Some(checkpoint.provider_session_id())
+            );
             let mut service = crate::provider::ProviderProcessService::new();
             let mut pty = crate::pty::PtyManager::new();
             let run = service

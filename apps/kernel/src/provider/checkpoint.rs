@@ -191,7 +191,11 @@ impl ProviderNativeCheckpoint {
                 structured_endpoint: Some(endpoint),
             },
         );
-        self.import(&run)
+        let imported = self.import(&run);
+        // A resumed thread keeps its native writer even after its socket closes.
+        // Retire the utility before the real provider opens the same session.
+        super::invalidate_codex_account_endpoint(&request.owner_user_id, &request.account_profile);
+        imported
     }
 
     pub fn provider_session_id(&self) -> &str {
