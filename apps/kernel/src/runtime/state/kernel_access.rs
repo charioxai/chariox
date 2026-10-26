@@ -505,6 +505,8 @@ impl KernelRuntimeState {
             .is_some_and(|pending| pending.grant_id == summary.grant_id);
         let term = result?;
         if !admitted || state.generation != generation || !holder.contains(&peer) {
+            // Ending the request also locks the access store to track owed audit work.
+            drop(state);
             self.audit_access(&summary, "revoked", Some("authorization_invalidated"))?;
             return Err(error(
                 "access request invalidated before approval completed",
