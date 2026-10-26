@@ -260,6 +260,7 @@ fn agent_outline_rehydrates_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        size_bytes: None,
         contents_base64: None,
     }];
     let event = HistoryEvent::transcript(10, &entry, context);
@@ -533,6 +534,7 @@ fn session_history_outline_recovers_multiple_agents_and_image_attachment_after_s
             mime: "image/png".to_string(),
             filename: Some("screen.png".to_string()),
             preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
+            size_bytes: None,
             contents_base64: None,
         }];
         store

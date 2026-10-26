@@ -1,5 +1,29 @@
 # Managed Path-1 parity inventory (MP-11)
 
+
+## MP-08 / MP-09 / MP-10 / MP-11 bounded prompt attachments (2026-10-26)
+
+The shared relay request preparation admits prompt submissions, batches and active
+steering with attachments up to 12 MiB of encrypted data, including the AES-GCM
+tag. An inline 5 MiB file uses about 6.7 MiB after base64; this bound leaves room
+for prompt text and metadata while staying below the relay's 64 MiB message cap.
+All other request kinds retain their 768 KiB bound. Because the request kind is
+encrypted, the kernel checks the hard outer bound before base64 decoding or
+cryptography and checks the smaller kind-specific bound after decryption.
+
+A 64 MiB aggregate budget for retained encoded ciphertext is reserved before
+decoding and held through asynchronous dispatch across all connections. A new
+connection cannot bypass it. Oversized requests receive a clear non-retryable
+`request_too_large`; budget exhaustion receives retryable `request_busy`.
+The relay remains an opaque transport. Existing 256 KiB machine file chunks and
+512 KiB App package chunks (128 MiB archives) keep their existing protocols.
+
+Protocol 627 / peer 230 adds optional `size_bytes` to shared prompt attachment
+history. The kernel derives it from inline bytes or a local file's metadata;
+ordinary and managed placement use the same history path. The Web consumes this
+metadata instead of setting every historical attachment size to zero. Existing
+history without this field remains readable. No managed shutdown policy changes.
+
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
 The real WHATWG navigation timed out repeatedly creating a world that Chromium

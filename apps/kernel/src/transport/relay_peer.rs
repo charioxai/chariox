@@ -135,7 +135,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 197 carries the outside `steer` event between peers.
 /// Allocated 215 installs independent provider accounts over the encrypted peer channel.
 /// Allocated 220 unions the staging 216 line with the external agents 215 line.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 220;
+/// Allocated 230 carries protocol 627 attachment size metadata in shared history.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 230;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

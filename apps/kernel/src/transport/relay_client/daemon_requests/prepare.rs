@@ -7,6 +7,7 @@ pub(in crate::transport::relay_client) struct PreparedDaemonRequest {
     pub(super) daemon_private_key: String,
     pub(super) caller_identity: Option<RelayCallerIdentity>,
     pub(super) encrypted_request: EncryptedRelayPayload,
+    pub(super) request_memory: request_limits::RequestMemoryGuard,
 }
 impl PreparedDaemonRequest {
     /// MP-08/MP-10/MP-11: the order key of a viewer's browser input. `true` marks a
@@ -101,9 +102,12 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
             error: Some(error),
         })
     };
+    // The request kind is encrypted. Bound and reserve the outer bytes before
+    // base64 decoding or decryption, then enforce the kind's smaller limit.
+    let request_memory = request_limits::reserve(&encrypted_request).map_err(&refusal)?;
     relay_crypto::validate_encrypted_payload_shape(
         &encrypted_request,
-        MAX_BROWSER_IMPORT_ENCRYPTED_BYTES,
+        request_limits::PROMPT_REQUEST_BYTES,
     )
     .map_err(|_| {
         refusal(relay_error(
@@ -133,12 +137,14 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
             false,
         ))
     })?;
+    request_limits::validate_kind(&message, decrypted.plaintext.len()).map_err(refusal)?;
     Ok(PreparedDaemonRequest {
         message,
         client_public_key: decrypted.sender_public_key,
         daemon_private_key,
         caller_identity,
         encrypted_request,
+        request_memory,
     })
 }
 
@@ -147,6 +153,12 @@ mod tests {
     use super::*;
     use chariox_relay::auth::RelaySubjectKind;
     fn prepared(command: crate::local::KernelBrowserCommand) -> PreparedDaemonRequest {
+        let encrypted_request = EncryptedRelayPayload {
+            sender_public_key: "ephemeral-first".into(),
+            nonce: String::new(),
+            ciphertext: String::new(),
+        };
+        let request_memory = request_limits::reserve(&encrypted_request).unwrap();
         PreparedDaemonRequest {
             message: ParsedRelayClientMessage::Request(ParsedRelayClientRequest {
                 command_id: None,
@@ -157,11 +169,8 @@ mod tests {
             }),
             client_public_key: "ephemeral-first".into(),
             daemon_private_key: String::new(),
-            encrypted_request: EncryptedRelayPayload {
-                sender_public_key: "ephemeral-first".into(),
-                nonce: String::new(),
-                ciphertext: String::new(),
-            },
+            encrypted_request,
+            request_memory,
             caller_identity: Some(RelayCallerIdentity {
                 realm_id: "realm".into(),
                 subject: "terminal".into(),
