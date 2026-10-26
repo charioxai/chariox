@@ -45,7 +45,7 @@ export function createAppActionsController(deps: {
     },
     handleKey(event: { name: string; ctrl?: boolean; meta?: boolean; preventDefault?(): void }) {
       current()
-      if (!open) return false
+      if (!open || event.name === "f8") return false
       event.preventDefault?.()
       if (event.name === "escape" || event.name === "a") hide()
       else if (event.name === "pageup" || event.name === "pagedown") deps.scroll(event.name === "pageup" ? -1 : 1)

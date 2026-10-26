@@ -46,3 +46,9 @@ test("DEV panel preserves kernel JSON number formatting and numeric-key order",a
   await h.controller.handle(["actions","toggle"])
   assert.equal(h.shown.slice(h.shown.indexOf("\n")+1),catalog_json)
 })
+
+test("DEV inspector lets F8 reach the shared kernel approval handler",async () => {
+  const h=harness();await h.controller.handle(["actions","toggle"])
+  assert.equal(h.controller.handleKey({name:"f8"}),false)
+  assert.equal(h.controller.ownsInput(),true)
+})
