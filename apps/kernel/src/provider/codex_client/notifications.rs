@@ -422,7 +422,8 @@ fn codex_error_info_code(error: &Value) -> Option<String> {
             Some(401) => "unauthorized",
             Some(429) => "rate_limit_exceeded",
             Some(503 | 529) => "server_overloaded",
-            _ => return Some(code),
+            Some(status) => return Some(format!("http_status_{status}")),
+            None => return Some(code),
         };
         return Some(code.to_string());
     }

@@ -1074,7 +1074,7 @@ mod tests {
                 turn_id: "turn-1".to_string(),
                 status: "failed".to_string(),
                 error_message: Some(
-                    "Codex error [http_connection_failed]: stream closed".to_string()
+                    "Codex error [http_status_502]: stream closed".to_string()
                 ),
                 items: Vec::new(),
             })
@@ -1171,6 +1171,14 @@ mod tests {
             (
                 json!({"message": "Request rejected", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 401}}}),
                 SignInRequired, false, "Request rejected",
+            ),
+            (
+                json!({"message": "Request rejected", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 400}}}),
+                Other, false, "Request rejected",
+            ),
+            (
+                json!({"message": "Model access denied", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 403}}}),
+                Other, false, "Model access denied",
             ),
             (
                 json!({"message": "Try later", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 429}}}),
