@@ -302,6 +302,24 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &PolicyV2) -> Result<VerifiedPackageV
         &files,
         limits,
     )?;
+    // Component parsing happens only after signature, inventory and policy
+    // checks: a trusted signature cannot grant an unlisted host import.
+    let check_component = |entry: &str, world: &str| {
+        chariox_app_wit::check_component(files[entry], world).map_err(|error| {
+            PackageError::new(
+                ErrorCode::IncompatibleContract,
+                format!("component `{entry}`: {error}"),
+            )
+        })
+    };
+    check_component(&manifest.runtime.component, &manifest.world)?;
+    if let Some(migrations) = &manifest.migrations {
+        let world = WorldId::parse(super::MIGRATION_WORLD)?;
+        check_world(&world, &policy.worlds).map_err(|refusal| refusal.into_error(&world))?;
+        for step in &migrations.steps {
+            check_component(&step.entry, super::MIGRATION_WORLD)?;
+        }
+    }
     let (declarations, ui_actions) = read_documents(&manifest, &files, limits)?;
     let mut publisher_entries: Vec<(&str, &[u8])> = entries[..3]
         .iter()

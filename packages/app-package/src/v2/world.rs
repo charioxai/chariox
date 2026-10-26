@@ -5,10 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ErrorCode, PackageError, Result};
 
-/// The world every v2 backend component targets. Version 1.0 is async.
-pub const APP_WORLD: &str = "chariox:app/app@1.0.0";
-/// The restricted world of compiled migration steps (§4.7).
-pub const MIGRATION_WORLD: &str = "chariox:app/migration@1.0.0";
+pub use chariox_app_wit::{APP_WORLD, MIGRATION_WORLD};
 
 /// `<namespace>:<package>/<world>@<major>.<minor>.<patch>`, the exact world a
 /// manifest names. Pre-release and build metadata are not part of the contract.
