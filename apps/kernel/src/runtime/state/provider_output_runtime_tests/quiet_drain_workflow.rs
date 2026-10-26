@@ -1079,8 +1079,9 @@ async fn assert_workflow_output_follow_up(valid_first: bool, valid_follow_up: bo
             .hidden_system_context()
             .contains("Your turn ended without"));
         assert!(
-            follow_up.prompt().is_empty(),
-            "reminder must be hidden context"
+            !follow_up.prompt().trim().is_empty()
+                && crate::session::is_internal_prompt_echo_id(follow_up.id()),
+            "the provider cue must be nonempty and its echo internal"
         );
         assert_eq!(
             waiting.workflow_run(workflow_run.id()).unwrap().status(),

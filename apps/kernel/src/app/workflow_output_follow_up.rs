@@ -10,7 +10,7 @@ use crate::session::{
 
 pub(crate) use crate::session::WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX as FOLLOW_UP_PREFIX;
 pub(crate) const EXHAUSTED_REASON: &str =
-    "Workflow output is missing after one follow-up. Resume or cancel the workflow.";
+    "Workflow output is missing after one follow-up. Check the output instructions and start a new workflow run.";
 const REMINDER: &str = "Your turn ended without the required structured output. If helpers or background tasks are still running, wait for them, then give the final output now, in the required schema.";
 
 /// The prompt identity is the durable retry budget. Retain the node envelope and
@@ -68,7 +68,7 @@ pub(crate) fn prepare_follow_up(
             &id,
             previous.source_attachment_id(),
             previous.target_agent_id(),
-            "",
+            "Continue the workflow turn.",
             PromptStatus::Running,
         )
         .with_workflow_context(run_id, node_id)
@@ -281,7 +281,9 @@ mod tests {
     fn workflow_output_follow_up_is_durable_and_bounded() {
         let (app, session, prompt, _worktree) = fixture();
         let next = prepare(&app, &session, &prompt).unwrap();
-        assert!(next.prompt().is_empty());
+        assert!(!next.prompt().trim().is_empty());
+        assert!(crate::session::is_internal_prompt_echo_id(next.id()));
+        assert!(!next.prompt().contains(REMINDER));
         assert!(next.hidden_system_context().contains(REMINDER));
         assert_eq!(next.workflow_node_run_id(), prompt.workflow_node_run_id());
         assert!(prepare(&app, &session, &next).is_none());
