@@ -3,6 +3,8 @@
 //! Provider CLIs continue to own credential formats. This registry stores only
 //! stable Chariox selection metadata and host-local provider root locators.
 
+#[path = "account_profile_copy.rs"]
+mod account_copy;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
@@ -921,6 +923,8 @@ struct ReplacedProviderAccountProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryDocument {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    account_copies: Vec<account_copy::AccountCopyRecord>,
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
@@ -941,6 +945,7 @@ struct PendingReplicaCleanup {
 impl Default for RegistryDocument {
     fn default() -> Self {
         Self {
+            account_copies: Vec::new(),
             version: REGISTRY_VERSION,
             credential_copy_notices: Vec::new(),
             profiles: Vec::new(),
@@ -1203,8 +1208,9 @@ impl ProviderAccountProfileRegistry {
         model: Option<&str>,
         operation: &'static str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
-        // MP-08 / MP-10 / MP-11: existing peers use the admission operation to
-        // classify a leased-account refusal. Keep that context and only static text.
+        let profile = self.get(owner_user_id, provider, profile_id)?;
+        // Leased prompt admission retains its existing generic code; other
+        // refusals keep their reason for the local and relay projections.
         let refused = |reason: crate::error::ProviderProfileRefusal| {
             if operation == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION {
                 DaemonError::LocalTransport {
@@ -1212,10 +1218,13 @@ impl ProviderAccountProfileRegistry {
                     message: crate::error::external_request_failure_message(reason.code()).into(),
                 }
             } else {
-                DaemonError::ProviderProfileRefused { reason }
+                DaemonError::ProviderProfileRefused {
+                    reason,
+                    provider: profile.provider.clone(),
+                    account_name: profile.label.clone(),
+                }
             }
         };
-        let profile = self.get(owner_user_id, provider, profile_id)?;
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check. A
@@ -5021,7 +5030,7 @@ mod tests {
     }
 
     #[test]
-    fn lane_profile_refusals_preserve_refresh_action_without_profile_values() {
+    fn local_profile_refusals_name_the_account_and_the_recovery_action() {
         crate::test_support::isolated_env_test!();
         let root = crate::test_support::TestWorktree::new("lane-profile-refusals");
         let registry =
@@ -5065,8 +5074,9 @@ mod tests {
             let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
             assert_eq!(mapped.code, code);
             assert!(!mapped.retryable);
-            assert!(mapped.message.contains("RefreshProviderAccountProfile"));
-            assert!(!mapped.message.contains("private-profile-label"));
+            assert!(mapped.message.contains("Provider Accounts"));
+            assert!(mapped.message.contains("private-profile-label"));
+            assert!(!mapped.message.contains(&profile.profile_id));
         }
     }
 

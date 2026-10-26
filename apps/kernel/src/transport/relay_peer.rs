@@ -130,7 +130,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// The Room terminal service (`RoomTerminal`, formerly provisional 177) and its peer forwards ride this number too.
 /// MP-08/MP-10/MP-11: allocated 181 adds exact-home-check assessment wire identities.
 /// Allocated 197 carries the outside `steer` event between peers.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 210;
+/// Version 215 installs independent provider accounts over the encrypted peer channel.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 215;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -142,6 +143,7 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 /// account cannot start work there; repeating the prompt cannot repair it.
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
+pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote provider account";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
@@ -1136,6 +1138,10 @@ pub enum RelayPeerRequest {
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
     },
+    InstallProviderAccountCopy {
+        binding: crate::provider_account_copy::ProviderAccountCopyBinding,
+        credential: crate::provider_account_copy::ProviderAccountCopyCredential,
+    },
     EnsureRemoteProviderAccount {
         context: RemoteProviderAccountSyncContext,
         materialization: crate::account_profile::ProviderAccountMaterialization,
@@ -1184,7 +1190,10 @@ impl RelayPeerRequest {
         &self,
         configured: std::time::Duration,
     ) -> std::time::Duration {
-        if matches!(self, Self::EnsureRemoteProviderAccount { .. }) {
+        if matches!(
+            self,
+            Self::EnsureRemoteProviderAccount { .. } | Self::InstallProviderAccountCopy { .. }
+        ) {
             configured.max(std::time::Duration::from_secs(150))
         } else {
             configured
@@ -1451,6 +1460,12 @@ pub enum RelayPeerResponse {
     },
     RemoteSkillPackagesEnsured {
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    ProviderAccountCopyFailed {
+        code: String,
+    },
+    ProviderAccountCopyInstalled {
+        receipt: crate::provider_account_copy::ProviderAccountCopyReceipt,
     },
     RemoteProviderAccountEnsured {
         provider: String,

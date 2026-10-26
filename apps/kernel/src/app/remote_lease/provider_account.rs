@@ -79,7 +79,7 @@ impl RemoteLeaseRuntime<'_> {
             || lease.home_agent_id != context.home_agent_id
         {
             return Err(DaemonError::LocalTransport {
-                operation: "ensure remote provider account",
+                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 message:
                     "provider-account materialization context does not match the execution lease"
                         .to_string(),
@@ -87,7 +87,7 @@ impl RemoteLeaseRuntime<'_> {
         }
         if lease.owner_user_id != owner_user_id {
             return Err(DaemonError::LocalTransport {
-                operation: "ensure remote provider account",
+                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 message:
                     "provider-account materialization owner does not match the execution lease"
                         .to_string(),
@@ -548,13 +548,17 @@ exit 2
             )
             .expect_err("malformed transferred credentials must fail closed");
         let message = error.to_string();
-        // The refusal is a constant remediation and never names the profile or provider output.
+        // Local provisioning retains the reason; the relay projection redacts account names.
+        assert!(matches!(
+            &error,
+            DaemonError::ProviderProfileRefused {
+                reason: crate::error::ProviderProfileRefusal::Unauthenticated,
+                ..
+            }
+        ));
         assert!(message.contains("not authenticated"), "{message}");
-        assert!(
-            message.contains("RefreshProviderAccountProfile"),
-            "{message}"
-        );
-        assert!(!message.contains("OpenCode Zen"), "{message}");
+        assert!(message.contains("Provider Accounts"), "{message}");
+        assert!(message.contains("OpenCode Zen"), "{message}");
         assert!(!message.contains("eyJvcGVuY29kZSI"), "{message}");
         let corrected = RemoteLeaseRuntime::new(&mut app)
             .ensure_remote_provider_account(

@@ -416,6 +416,7 @@ response_policies! {
         ProviderAccountProfileRemoved,
         ProviderAccountProfileDataDeleted,
         ProviderAccountCredentialStored,
+        ProviderAccountCopied,
         ProviderAccountPortabilityPreflightPassed,
         ProviderProcessesListed,
         ProviderProcessesTornDown,

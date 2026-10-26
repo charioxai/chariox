@@ -35,6 +35,7 @@ pub(crate) mod prompt_assembly;
 pub mod prompt_notes;
 pub mod prompt_transcript;
 pub mod provider;
+pub mod provider_account_copy;
 pub(crate) mod provider_output_policy;
 pub mod pty;
 mod publication_provider_accounts;

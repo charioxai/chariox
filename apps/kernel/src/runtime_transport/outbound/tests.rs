@@ -378,3 +378,28 @@ fn a_forwarded_stream_offers_the_writer_only_events_an_external_peer_may_see() {
         closed: Vec::new(),
     }));
 }
+
+#[test]
+fn account_copy_refusals_are_constant_at_public_error_boundary() {
+    for code in [
+        "provider_account_copy_unauthorized",
+        "provider_account_copy_profile",
+        "provider_account_copy_unavailable",
+        "provider_account_copy_unsupported",
+        "provider_account_copy_vault_locked",
+        "provider_account_copy_conflict",
+        "provider_account_copy_rejected",
+        "provider_account_copy_verification_failed",
+        "provider_account_copy_install_failed",
+    ] {
+        let error =
+            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":true}));
+        assert_eq!(error.code, code);
+        assert_eq!(
+            error.message,
+            crate::provider_account_copy::failure_message(code)
+        );
+        assert!(error.retryable);
+        assert!(!error.message.contains(CANARY));
+    }
+}

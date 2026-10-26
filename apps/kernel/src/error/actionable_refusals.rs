@@ -1,5 +1,8 @@
 //! MP-08 / MP-10 / MP-11: constant remediations safe at every external boundary.
 pub(crate) fn message(code: &str) -> Option<&'static str> {
+    if crate::provider_account_copy::is_public_code(code) {
+        return Some(crate::provider_account_copy::failure_message(code));
+    }
     Some(match code {
         "provider_profile_unverified" => "provider profile has not been verified; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel, then retry the prompt",
         "provider_profile_unauthenticated" => "provider profile is not authenticated; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel. If it remains unauthenticated, reconnect it in Provider Accounts before retrying",
