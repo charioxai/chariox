@@ -1,5 +1,5 @@
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
-import { CommandType, ICommandService } from '@univerjs/core';
+import { CommandType, ICommandService, IConfirmService } from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import coreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort';
@@ -7,6 +7,7 @@ import sortEnUS from '@univerjs/preset-sheets-sort/locales/en-US';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import '@univerjs/preset-sheets-sort/lib/index.css';
 import { attachWorkbook } from './actions.mjs';
+import { fileDialogs } from './dialogs.mjs';
 
 async function start() {
   if (!globalThis.chariox?.action || !globalThis.chariox?.call) throw new Error('Open Univer through its installed Chariox App view');
@@ -16,22 +17,21 @@ async function start() {
     presets: [UniverSheetsCorePreset({ container: 'app' }), UniverSheetsSortPreset()],
   });
   const { actions, summary } = await attachWorkbook(univerAPI, chariox);
+  const dialogs = fileDialogs(options => univer.__getInjector().get(IConfirmService).confirm(options));
   const run = task => async () => {
-    try { await task(); univerAPI.showMessage({ type: 'success', content: 'Done', duration: 2000 }); }
+    try { if (await task() === false) return; univerAPI.showMessage({ type: 'success', content: 'Done', duration: 2000 }); }
     catch (error) { univerAPI.showMessage({ type: 'error', content: error.message ?? String(error), duration: 10000 }); }
   };
   const open = async format => {
-    if (summary().dirty && !confirm('Replace the workbook? Save or export your changes first.')) return;
+    if (summary().dirty && !await dialogs.replace()) return false;
     const { grants } = await actions.pick_file({ format });
     if (!grants.length) return;
     await actions[format === 'csv' ? 'import_csv' : 'open_workbook']({ name: format === 'csv' ? 'import.csv' : 'import.univer.json', grantId: grants[0] });
   };
   const exportFile = async format => {
-    const name = prompt('Export filename', format === 'csv' ? 'Workbook.csv' : 'Workbook.univer.json');
-    if (!name) return;
-    const range = format === 'csv' ? prompt('CSV range (blank for used cells; at most 1,000 cells)', '') : '';
-    if (range === null) return;
-    await actions[format === 'csv' ? 'export_csv' : 'export_workbook']({ name, offer: true, ...(range ? { range: range.trim().toUpperCase() } : {}) });
+    const input = await dialogs.export(format);
+    if (!input) return false;
+    await actions[format === 'csv' ? 'export_csv' : 'export_workbook'](input);
   };
   const file = univerAPI.createSubmenu({ id: 'chariox.files', title: 'Files', order: -1 });
   file.appendTo('ribbon.start.history');
@@ -50,9 +50,7 @@ async function start() {
     univer.__getInjector().get(ICommandService).registerCommand({ id: command, type: CommandType.COMMAND, handler: run(task) });
     univerAPI.createMenu({ id: command, title, action: command }).appendTo('chariox.files');
   }
-  window.addEventListener('beforeunload', event => {
-    if (summary().dirty) { event.preventDefault(); event.returnValue = ''; }
-  });
+
 }
 
 start().catch(error => {

@@ -133,6 +133,18 @@ try {
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...saveButton, button: 'left', clickCount: 1 });
     for (let attempt=0; attempt<100 && calls.filter(call=>call.method==='save_workbook').length===saves; attempt++) await delay(50);
     assert.equal(calls.filter(call=>call.method==='save_workbook').length, saves+1, 'human Files > Save reaches the backend');
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...bounds, button: 'left', clickCount: 1 });
+    const exportButton = await evaluate(`(() => { const el=[...document.querySelectorAll('[role="menuitem"]')].find(e=>e.textContent.trim()==='Export CSV…'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...exportButton, button: 'left', clickCount: 1 });
+    await delay(250);
+    assert.equal(await evaluate(`document.querySelectorAll('[role="dialog"] input').length`), 2, 'CSV export uses the existing Univer dialog inside the App sandbox');
+    const popup = await cdp('Page.captureScreenshot', { format: 'png' });
+    await writeFile(path.join(evidence, `export-dialog-dpr${dpr}.png`), Buffer.from(popup.data, 'base64'));
+    const exportConfirm = await evaluate(`(() => { const el=[...document.querySelectorAll('[role="dialog"] button')].find(e=>e.textContent.trim()==='Export'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...exportConfirm, button: 'left', clickCount: 1 });
+    for(let attempt=0;attempt<100&&!files.has('Workbook.csv');attempt++)await delay(50);
+    assert.ok(files.has('Workbook.csv'), 'human CSV export reaches the backend');
+
     await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   }

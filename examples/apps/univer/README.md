@@ -24,8 +24,8 @@ normal capability and user-selection flows. The backend accepts plain filenames
 only and reads only `data/<validated-name>` under R6's installation preopens.
 No host paths, ambient network capability, provider SDK or custom bridge exists.
 
-Save is explicit. Closing with unsaved changes requests the browser's normal
-confirmation. A failed or conflicting save retains the current workbook;
+Save is explicit; save or export changes before closing the view. Native browser
+confirmation is disabled by the App sandbox. A failed or conflicting save retains the current workbook;
 export it before reopening another client's saved copy. Opening a file replaces
 the open workbook and marks it unsaved until Save workbook succeeds. Edits made
 while an import is reading cause that import to refuse before replacement.
