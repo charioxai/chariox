@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, extname, join } from 'node:path';
 import { chromium } from 'playwright-core';
 import { createViewActions } from '../../../../apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs';
@@ -24,15 +24,18 @@ async function fixture(run) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({ executablePath: process.env.CHARIOX_TEST_CHROME ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
     page.setDefaultTimeout(5000);
-    const broker = { scene: null, version: null, saveAttempts: 0, fail: false, files: new Map(), writes: [], picked: null };
-    await page.exposeFunction('broker', async (name, input) => {
-      if (name === 'load_scene') return { scene: broker.scene, version: broker.version };
+    const broker = { scene: null, version: null, saveAttempts: 0, saves: [], fail: false, files: new Map(), writes: [], picked: null };
+    await context.exposeFunction('broker', async (name, input) => {
+      if (name === 'load_scene') return { scene: JSON.parse(JSON.stringify(broker.scene, (_, value) =>
+        value && !Array.isArray(value) && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value)), version: broker.version };
       if (name === 'save_scene') {
         broker.saveAttempts++;
+        broker.saves.push(input);
         if (broker.fail) throw Error('Concurrent view changed the scene; reload.');
-        assert.equal(input.version, broker.version);
+        if (input.version !== broker.version) throw Error('Concurrent view changed the scene; reload.');
         broker.scene = input.scene; broker.version = String(Number(broker.version) + 1);
         return { version: broker.version };
       }
@@ -45,7 +48,7 @@ async function fixture(run) {
       if (name === 'read_file') return { name: input.name ?? input.grantId, scene: JSON.parse(broker.files.get(input.name ?? input.grantId)) };
       throw Error('unknown tool: ' + name);
     });
-    await page.addInitScript(`const sdk = (${createViewActions.toString()})(); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;`);
+    await context.addInitScript(`const sdk = (${createViewActions.toString()})(); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;`);
     await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
     await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
     const invoke = (name, input = {}) => page.evaluate(({ name, input }) => window.__charioxViewAgent.invoke(name, input), { name, input });
@@ -58,7 +61,14 @@ async function fixture(run) {
       await page.waitForTimeout(450);
     };
     await mkdir(evidence, { recursive: true });
-    await run({ page, broker, invoke, draw });
+    const openView = async () => {
+      const other = await context.newPage();
+      other.setDefaultTimeout(5000);
+      await other.goto(page.url());
+      await other.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
+      return other;
+    };
+    await run({ page, broker, invoke, draw, openView });
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 }
 
@@ -212,4 +222,35 @@ test('selection, hover and scroll do not flood view.changed', { timeout: 30_000 
   const settled = edited.value.latest;
   await page.waitForTimeout(600);
   assert.equal((await page.evaluate(since => window.__charioxViewAgent.changes(since), settled)).value.latest, settled, 'persisting an already announced scene must not notify twice');
+}));
+
+test('an unchanged loaded scene neither saves nor notifies', { timeout: 30_000 }, () => fixture(async ({ page, broker, draw }) => {
+  await draw();
+  const attempts = broker.saveAttempts, version = broker.version;
+  const original = structuredClone(broker.scene);
+  await page.reload();
+  await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
+  await page.waitForTimeout(700);
+  await writeFile(join(evidence, 'loaded-scenes.json'), JSON.stringify({ original, restored: broker.scene }));
+  assert.equal(broker.saveAttempts, attempts, 'restoring an unchanged scene must not write');
+  assert.equal(broker.version, version, 'an idle view must not bump the state version');
+  assert.equal((await page.evaluate(() => window.__charioxViewAgent.changes(0))).value.latest, 0, 'initial restoration must not announce an edit');
+  await page.screenshot({ path: join(evidence, 'unchanged-load.png') });
+}));
+
+test('opening an idle second view does not conflict with the editor', { timeout: 30_000 }, () => fixture(async ({ page, broker, draw, openView }) => {
+  await draw();
+  const attempts = broker.saveAttempts;
+  const idle = await openView();
+  await idle.waitForTimeout(700);
+  const afterIdle = broker.saveAttempts;
+  assert.equal(afterIdle, attempts, 'an idle second view must leave the saved version unchanged');
+  assert.equal((await idle.evaluate(() => window.__charioxViewAgent.changes(0))).value.latest, 0);
+  await page.bringToFront();
+  await draw(600);
+  await writeFile(join(evidence, 'two-view-saves.json'), JSON.stringify({ attempts, afterIdle, saves: broker.saves }));
+  assert.equal(broker.saveAttempts, attempts + 1, 'only the editor should save');
+  assert.equal(broker.scene.elements.length, 2, 'the editor must persist its next edit');
+  assert.equal(await page.locator('.Toast').count(), 0, 'opening a view must not cause a conflict');
+  await page.screenshot({ path: join(evidence, 'idle-view-editor.png') });
 }));

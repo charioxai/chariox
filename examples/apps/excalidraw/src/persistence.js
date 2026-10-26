@@ -1,21 +1,31 @@
 import { checkedScene, sceneJSON } from './scene.js';
+import { restore, serializeAsJSON } from '@excalidraw/excalidraw';
+
+// The backend and Excalidraw serialize the same scene with different key order
+// and whitespace. Compare scene content so opening a view cannot bump its CAS.
+const sceneKey = scene => JSON.stringify(scene, (_, value) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
 
 export function persistence(chariox, api, loaded) {
   let version = loaded.version;
-  let lastSaved = loaded.scene ? JSON.stringify(loaded.scene) : null;
+  const restored = loaded.scene ? restore(loaded.scene, null, null) : null;
+  let lastSaved = restored ? sceneKey(JSON.parse(serializeAsJSON(restored.elements, restored.appState, restored.files, 'local'))) : null;
   let queue = Promise.resolve();
   let failure = null;
   let sequence = 0;
   let lastNotified = lastSaved;
   const notify = (text = sceneJSON(api)) => {
-    if (text === lastNotified) return;
-    lastNotified = text;
+    const key = sceneKey(JSON.parse(text));
+    if (key === lastNotified) return;
+    lastNotified = key;
     chariox.view.changed({ sequence: ++sequence, persisted: !failure });
   };
   function save(candidate) {
     const pending = queue.then(async () => {
       const text = candidate ?? sceneJSON(api);
-      if (text === lastSaved) return;
+      const key = sceneKey(JSON.parse(text));
+      if (key === lastSaved) return;
       if (failure) throw failure;
       // Validation failures can recover after a person makes the diagram smaller.
       const scene = checkedScene(text);
@@ -23,7 +33,7 @@ export function persistence(chariox, api, loaded) {
       try { result = await chariox.call('save_scene', { scene, version }); }
       catch (error) { failure = error; throw error; }
       version = result.version;
-      lastSaved = text;
+      lastSaved = key;
       notify();
     });
     queue = pending.catch(() => {});
