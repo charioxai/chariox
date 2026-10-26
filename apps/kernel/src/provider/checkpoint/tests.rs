@@ -514,7 +514,11 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
     };
     let request = LaunchProviderRequest::new("session", "codex", "codex", "profile", "gpt-6-luna")
         .with_variant(Some("low".into()))
-        .with_working_directory(cwd.clone());
+        .with_working_directory(cwd.clone())
+        .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+            "http://127.0.0.1:9/mcp",
+            "synthetic-probe-token",
+        ));
     let run = crate::provider::RuntimeProviderRun::new(
         "checkpoint-import",
         &request,
