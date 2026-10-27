@@ -503,7 +503,7 @@ impl DaemonApp {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
         crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
-        let initial_run = self.providers.launch_run_detached(request)?;
+        let initial_run = self.providers.start_run_provider_only(request)?.into_run();
         let run_id = initial_run.id().to_string();
         let launch_result = (|| {
             let mut run = initial_run.clone();
@@ -518,7 +518,9 @@ impl DaemonApp {
             }
             self.providers
                 .initialize_runtime_with_credentials(&run, &provider_credential_env)?;
-            let run = self.providers.get_run(run.id())?;
+            // A native checkpoint is imported by runtime initialization.
+            // Keep admission in Starting until that binding has been applied.
+            let run = self.providers.mark_run_running(run.id())?;
             self.sessions
                 .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
             let _ = self.providers.record_run_activity(run.id());
