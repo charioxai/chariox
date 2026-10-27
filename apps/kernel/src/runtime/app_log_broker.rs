@@ -126,6 +126,8 @@ impl AppLogBroker {
             if result.is_ok() {
                 pending_drops.count = 0;
             }
+            // Capture and release the entire guard on this blocking task.
+            drop(pending_drops);
             result
         })
         .await
@@ -187,6 +189,7 @@ mod tests {
         assert_eq!(entries.len(), PER_SECOND as usize + 2);
         assert_eq!(entries[PER_SECOND as usize].fields["dropped"], 2);
         assert_eq!(entries[PER_SECOND as usize + 1].message, "after");
+        assert_eq!(broker.dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
         drop(broker);
         std::fs::remove_dir_all(root).unwrap();
     }

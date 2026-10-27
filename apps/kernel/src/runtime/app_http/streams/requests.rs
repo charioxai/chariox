@@ -405,6 +405,8 @@ impl HttpRequest {
                             }),
                         });
                         delivery.completed = response.send(result).is_ok();
+                        // Keep the entire delivery guard on the socket task.
+                        drop(delivery);
                     },
                     &group.0.runtime,
                 );
