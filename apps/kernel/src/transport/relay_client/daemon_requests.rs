@@ -4,7 +4,7 @@ use super::request_errors::map_relay_error;
 #[cfg(test)]
 mod app_tests;
 mod prepare;
-mod request_limits;
+pub(super) mod request_limits;
 pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
 pub(super) mod renewal_refusals;
 

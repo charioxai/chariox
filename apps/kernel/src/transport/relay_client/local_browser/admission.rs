@@ -15,7 +15,11 @@ use super::*;
 
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_HANDSHAKE_FRAME_BYTES: usize = 16 * 1024;
-const MAX_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+// The direct carrier carries the same base64 ciphertext as the relay. Leave
+// room for its envelope and a small oversize request to receive a clean refusal;
+// tungstenite still rejects abusive declared frame lengths before reading bodies.
+const MAX_MESSAGE_BYTES: usize =
+    super::super::daemon_requests::request_limits::MAX_ENCODED_REQUEST_BYTES + 64 * 1024;
 pub(super) const MAX_PENDING_HANDSHAKES: usize = 8;
 const MAX_SESSIONS: usize = 32;
 const FORWARDING_HEADERS: [&str; 5] = [

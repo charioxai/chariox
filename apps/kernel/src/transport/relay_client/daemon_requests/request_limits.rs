@@ -8,6 +8,8 @@ pub(super) const SMALL_REQUEST_BYTES: usize = 768 * 1024;
 // A 5 MiB attachment takes 6.7 MiB after inline base64. Twelve MiB leaves
 // room for the prompt and metadata, well below the relay's 64 MiB message cap.
 pub(super) const PROMPT_REQUEST_BYTES: usize = 12 * 1024 * 1024;
+pub(in crate::transport::relay_client) const MAX_ENCODED_REQUEST_BYTES: usize =
+    PROMPT_REQUEST_BYTES.div_ceil(3) * 4;
 // Account encoded bytes across all connections, including each spawned dispatch.
 // This is stricter than a per-connection budget; opening sockets cannot evade it.
 const RETAINED_ENCODED_BYTES: u32 = 64 * 1024 * 1024;
@@ -18,7 +20,7 @@ pub(super) fn reserve(payload: &EncryptedRelayPayload) -> Result<RequestMemoryGu
     let encoded_bytes = payload.ciphertext.len();
     // Length alone rejects an oversized body, even when its base64 or key is
     // invalid. Do not decode it merely to report that it exceeds the limit.
-    if encoded_bytes > PROMPT_REQUEST_BYTES.div_ceil(3) * 4 {
+    if encoded_bytes > MAX_ENCODED_REQUEST_BYTES {
         return Err(too_large("Prompt and attachments exceed the 12 MiB relay request limit. Attach smaller files or use file.transfer."));
     }
     let retained =
