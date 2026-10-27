@@ -61,6 +61,6 @@ function fixture(scenario) {
   const browser = new BrowserCdpClient();
   browser.connection = connection; browser.browserGeneration = 1;
   browser.resolvePageTarget = async () => ({ connection, sessionId: "root" });
-  browser.viewportByTarget.set("tab", JSON.stringify({ width: 8, height: 6, deviceScaleFactor: 1, mobile: false, screenWidth: 8, screenHeight: 6 }));
+  browser.viewportByTarget.set("tab", { key: JSON.stringify({ width: 8, height: 6, deviceScaleFactor: 1, mobile: false, screenWidth: 8, screenHeight: 6 }) });
   return { browser, connection, source, request: { target_id: "tab", document_id: "doc-root", browser_generation: 1, viewport, kind: "image" } };
 }

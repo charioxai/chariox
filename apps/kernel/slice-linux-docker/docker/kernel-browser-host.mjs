@@ -23,6 +23,7 @@ import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { BrowserRecovery } from "./kernel-browser-recovery.mjs";
+import { requireBrowserMemory } from './browser-memory.mjs';
 import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_REFUSED } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
@@ -616,6 +617,7 @@ export class KernelBrowserHost {
     return { ...state, tab_id: tabId };
   }
   async createTab(url, tabId, { signal, background = false } = {}) {
+    requireBrowserMemory();
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     const browser = this.browser;

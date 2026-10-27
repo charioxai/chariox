@@ -21,5 +21,5 @@ export function stateChangingEvent(message) {
   const method = message?.method ?? '', params = message?.params;
   if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') return params?.targetInfo?.type === 'page';
   if (method === 'Page.frameNavigated') return !params?.frame?.parentId;
-  return ['Target.targetDestroyed', 'Target.detachedFromTarget', 'Inspector.detached', 'Chariox.browserDisconnected'].includes(method);
+  return ['Target.targetDestroyed', 'Target.detachedFromTarget', 'Target.targetCrashed', 'Inspector.targetCrashed', 'Inspector.detached', 'Chariox.browserDisconnected'].includes(method);
 }

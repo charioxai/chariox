@@ -68,7 +68,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   };
   // The existing native observer retires this measurement on resize, zoom,
   // tab/window changes or detach. A cold binding retains fresh measurement.
-  const viewportGuard=frameProof&&typeof metrics==='string'?host.tabGroups?.nativeStateGuard?.():null;
+  const viewportGuard=frameProof&&typeof metrics?.key==='string'?host.tabGroups?.nativeStateGuard?.():null;
   const viewport=await measure();
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});

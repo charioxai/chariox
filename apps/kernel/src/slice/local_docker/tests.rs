@@ -1564,7 +1564,7 @@ fn local_docker_slice_uses_the_safe_default_memory_limit() {
                 .flatten()
         })
         .expect("slice memory limit should be configured");
-    assert_eq!(memory_limit, "2048m");
+    assert_eq!(memory_limit, "4096m");
 }
 
 #[test]
