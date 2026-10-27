@@ -10,13 +10,13 @@ function harness(overrides: Partial<AgentMoveCommandHandlerDeps> = {}) {
   const moved: (string | null)[] = []
   const cancelled: string[] = []
   const answers: { resolve: (agent: unknown) => void; refuse: (message: string) => void }[] = []
-  const state = { status: null as Status, polls: 0 }
+  const state = { status: null as Status, away: false, polls: 0 }
   const deps: AgentMoveCommandHandlerDeps = {
     flashFooter: (message, tone) => { flashed.push({ message, tone }) },
     formatError: error => (error instanceof Error ? error.message : String(error)),
     resolveSessionAgent: reference => ({ agent: { id: "agent-1", agent_ref: reference ?? "reviewer" } as never, error: null }),
     formatAgentLabel: agent => agent?.agent_ref ?? "",
-    refreshSessionState: async () => { state.polls += 1; return { id: "room", agents: [{ id: "agent-1", agent_move: state.status }] } as never },
+    refreshSessionState: async () => { state.polls += 1; return { id: "room", agents: [{ id: "agent-1", agent_move: state.status, remote_execution: state.away ? { worker_kernel_id: "kernel-b3" } : null }] } as never },
     applySessionState: () => {},
     refreshAgentPanes: async () => {},
     rebuildTranscript: () => {},
@@ -44,7 +44,18 @@ test("/agent move announces a move the kernel holds for the turn, then reports t
   // The request is long over: the outcome comes from the agent's published status.
   await until(() => h.state.polls >= 2)
   h.state.status = null
-  await until(() => h.flashed.at(-1)?.message === "move of reviewer to kernel-b3 finished")
+  h.state.away = true
+  await until(() => h.flashed.at(-1)?.message === "moved reviewer to kernel-b3")
+})
+
+test("/agent move reports a held move that was cancelled, not as moved", async () => {
+  const h = harness()
+  await handleAgentMoveCommand(h.deps, ["move", "kernel-b3"])
+  h.state.status = { state: "waiting_for_turn" }
+  h.answers[0]!.resolve({ id: "agent-1", agent_move: h.state.status })
+  await until(() => h.state.polls >= 1)
+  h.state.status = null
+  await until(() => h.flashed.at(-1)?.message === "move of reviewer to kernel-b3 cancelled")
 })
 
 test("/agent move reports the reason a held move failed", async () => {

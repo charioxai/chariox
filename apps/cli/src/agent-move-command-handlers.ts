@@ -60,7 +60,7 @@ export async function handleAgentMoveCommand(
     async moved => {
       if (moved.agent_move?.state === "waiting_for_turn") {
         deps.flashFooter(`moving ${label} ${where} after its current turn; /agent move cancel stops it`, "info")
-        await watchMove(deps, agent.id, label, where)
+        await watchMove(deps, agent.id, label, target)
         return
       }
       await showSettledMove(deps)
@@ -78,18 +78,26 @@ async function showSettledMove(deps: AgentMoveCommandHandlerDeps): Promise<void>
 }
 
 /** Follows a Move the kernel holds until it moves the agent, fails or is cancelled. */
-async function watchMove(deps: AgentMoveCommandHandlerDeps, agentId: string, label: string, where: string): Promise<void> {
+async function watchMove(deps: AgentMoveCommandHandlerDeps, agentId: string, label: string, target: string | null): Promise<void> {
+  const where = target === null ? "home" : `to ${target}`
   for (;;) {
     await deps.pause(moveStatusPollMs)
     const session = await deps.refreshSessionState(deps.sessionState().id)
-    const status = session.agents?.find(agent => agent.id === agentId)?.agent_move
+    const agent = session.agents?.find(candidate => candidate.id === agentId)
+    const status = agent?.agent_move
     if (status?.state === "failed") {
       deps.flashFooter(`move of ${label} ${where} failed: ${status.reason}; /agent move cancel dismisses it`, "error")
       return
     }
     if (!status) {
-      await showSettledMove(deps)
-      deps.flashFooter(`move of ${label} ${where} finished`, "info")
+      // The kernel clears the status when the agent moved and when the move was cancelled.
+      const away = Boolean(agent?.remote_execution)
+      if (away === (target !== null)) {
+        await showSettledMove(deps)
+        deps.flashFooter(`moved ${label} ${where}`, "info")
+      } else {
+        deps.flashFooter(`move of ${label} ${where} cancelled`, "info")
+      }
       return
     }
   }
