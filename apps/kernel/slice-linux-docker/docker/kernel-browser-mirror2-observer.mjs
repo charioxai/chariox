@@ -317,6 +317,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const formControl = node => ['input', 'textarea', 'select'].includes(node.localName) || node.localName === 'option' && node.closest('select')?.multiple === true;
     // A lazy image Chromium has not started loading has no currentSrc yet, but it is laid out as an image (by its
     // width/height), never as its alt text: its src travels as the key until its bytes exist.
+    // The capture-phase image load handler above rechecks a late currentSrc selection without an attribute mutation.
     const imageSource = node => node.currentSrc || node.src;
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {

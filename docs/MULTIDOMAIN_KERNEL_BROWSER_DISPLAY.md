@@ -34,8 +34,13 @@ FFmpeg majors 58, 59, 60 and 61 do **not** share those struct layouts. Only the
 major used at compilation is accepted. Missing codec libraries produce a diagnostic
 with the required soname and instructions to install it or rebuild for the host
 distribution; renaming a newer library is unsafe. In particular, a Jammy release
-build requires `libavcodec.so.58` and `libx264.so.163` if x264 is explicitly selected;
-Debian 12/Ubuntu 24.04's newer codec majors cannot substitute for them. Codec
+build requires `libavcodec.so.58` always (the output-guard decoder, including with
+the default OpenH264 encoder) and `libx264.so.163` only when x264 is selected.
+Debian 12/Ubuntu 24.04's newer codec majors cannot substitute for them.
+`install-browser-dependencies.sh` installs the browser/display dependencies, but
+does not provision this codec ABI: `libavcodec58` is not available in every supported
+host archive. On Jammy install `libavcodec58`; on other distributions provision
+the matching runtime libraries or rebuild the native codec for that distribution. Codec
 availability does not gate window inventory or resize. The default encoder needs
 OpenH264 2.6 ABI 8 (`CHARIOX_BROWSER_DISPLAY_OPENH264` can name its absolute path);
 x264 remains opt-in. libyuv and libwebp are static (SharpYUV only where WebP ships
