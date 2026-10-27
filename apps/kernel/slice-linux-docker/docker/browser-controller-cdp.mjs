@@ -1,6 +1,8 @@
 import {pageObservationFence,nativeStatePage} from './browser-controller-frames.mjs';
 import {FOCUS_WORLD,ensureFocusWorld,recordFocusWorld} from './browser-focus-world.mjs';
-import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
+import { BrowserResponseBodies, responseBufferLimits } from './browser-controller-response-bodies.mjs';
+import { BrowserMemory } from './browser-memory.mjs';
+import { BrowserRendererRecovery } from './browser-renderer-recovery.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
@@ -97,7 +99,10 @@ export class BrowserCdpClient {
     eventJournal = new BrowserEventJournal(),
     applyCanonicalDisplay,
     focusWorldSource,
+    memory = new BrowserMemory(),
   } = {}) {
+    this.memory = memory;
+    this.rendererRecovery = new BrowserRendererRecovery(this);
     this.applyCanonicalDisplay = applyCanonicalDisplay;
     this.focusWorldSource = focusWorldSource;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
@@ -276,6 +281,8 @@ export class BrowserCdpClient {
   }
 
   async close() {
+    this.memory.close();
+    this.rendererRecovery.close();
     const connection = this.connection;
     this.connection = null;
     this.appliedViewport = null;
@@ -398,6 +405,7 @@ export class BrowserCdpClient {
   }
 
   async openConnection() {
+    this.rendererRecovery.close();
     this.appliedViewport = null;
     this.viewportByTarget.clear();
     this.focusWorldsByTarget.clear();
@@ -441,6 +449,7 @@ export class BrowserCdpClient {
     }
     try {
       await connection.send("Target.setDiscoverTargets", { discover: true });
+      this.memory.watch(connection);
       this.eventJournal.recordCdp(
         { method: "Chariox.browserConnected", params: {} },
         this.eventContext(),
@@ -460,6 +469,7 @@ export class BrowserCdpClient {
   }
 
   async forgetTarget(targetId) {
+    this.rendererRecovery.forget(targetId);
     const sessionId = this.sessionsByTarget.get(targetId);
     this.targetsBySession.delete(sessionId);
     this.networkRequestsBySession.delete(sessionId);
@@ -535,6 +545,9 @@ export class BrowserCdpClient {
   }
 
   async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
+    if (this.rendererRecovery.crashed.has(target.targetId)) {
+      throw new BrowserControllerError('browser_renderer_crashed', 'Browser tab crashed; recovery waits for available memory. Close the tab to stop recovery.');
+    }
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
     // Metrics differ per target (App pages lay out beside their panel).
     // Reapply only when this target's metrics changed.
@@ -707,7 +720,11 @@ export class BrowserCdpClient {
   }
 
   async snapshot(rawRequest) {
+    await this.memory.requireHeadroom();
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    if (this.rendererRecovery.crashed.has(targetId)) {
+      throw new BrowserControllerError('browser_renderer_crashed', 'Browser tab crashed; recovery waits for available memory. Close the tab to stop recovery.');
+    }
     const documentId = requiredIdentity(
       rawRequest?.document_id,
       "document_id",
@@ -813,6 +830,7 @@ export class BrowserCdpClient {
 
   async navigate(rawRequest, { signal } = {}) {
     assertNotCancelled(signal);
+    await this.memory.requireHeadroom();
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
     const { connection, sessionId } = await this.resolvePageTarget(targetId);
@@ -1019,6 +1037,7 @@ export class BrowserCdpClient {
 
   // MP-08/MP-10/MP-11: document/viewport fences around same-tab bytes.
   async captureArtifact(request) {
+    await this.memory.requireHeadroom();
     try {
       const { connection, sessionId } = await this.resolvePageTarget(requiredIdentity(request?.target_id, "target_id"));
       const targetId = request.target_id;
@@ -1121,6 +1140,9 @@ export class BrowserCdpClient {
       && entry.frame.loaderId === this.documentIdsByTarget.get(targetId) ? entry : null;
   }
   async resolvePageTarget(targetId) {
+    if (this.rendererRecovery.crashed.has(targetId)) {
+      throw new BrowserControllerError('browser_renderer_crashed', 'Browser tab crashed; recovery waits for available memory. Close the tab to stop recovery.');
+    }
     const connection = await this.ensureConnection();
     const { targetInfos = [] } = await connection.send("Target.getTargets");
     const target = targetInfos.find(
@@ -1180,7 +1202,7 @@ export class BrowserCdpClient {
         connection.send("Page.enable", {}, sessionId),
         connection.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId),
         connection.send("Runtime.enable", {}, sessionId),
-        connection.send("Network.enable", {}, sessionId),
+        connection.send("Network.enable", responseBufferLimits, sessionId),
         connection.send("Inspector.enable", {}, sessionId),
         this.frameSessions.start(connection, sessionId),
       ]);
@@ -1232,7 +1254,7 @@ export class BrowserCdpClient {
     this.targetsBySession.set(sessionId, targetId);
     try {
       await Promise.all([
-        connection.send("Network.enable", {}, sessionId),
+        connection.send("Network.enable", responseBufferLimits, sessionId),
         connection.send("Debugger.enable", {}, sessionId),
       ]);
     } catch (error) {
@@ -1245,6 +1267,7 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    this.rendererRecovery.observe(message);
     this.responseBodies.observe(message);
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
         && typeof message.params?.requestId === "string") {
@@ -1515,6 +1538,7 @@ export class CdpConnection {
     if (typeof message?.method === "string") {
       this.dispatchEvent(message);
       if (message.method === "Target.detachedFromTarget") this.failSession(message.params?.sessionId);
+      if (message.method === "Inspector.targetCrashed") this.failSession(message.sessionId);
     }
     if (!Number.isSafeInteger(message?.id)) {
       return;

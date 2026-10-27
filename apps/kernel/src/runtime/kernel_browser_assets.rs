@@ -423,6 +423,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-response-bodies.mjs"),
     ),
     (
+        "browser-memory.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-memory.mjs"),
+    ),
+    (
+        "browser-renderer-recovery.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-renderer-recovery.mjs"),
+    ),
+    (
         "browser-focus-world.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-focus-world.mjs"),
     ),

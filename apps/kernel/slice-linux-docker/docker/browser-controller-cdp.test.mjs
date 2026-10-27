@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { BrowserMemory } from "./browser-memory.mjs";
 import test from "node:test";
 
 import {
@@ -85,6 +86,36 @@ test("concurrent reads share fully initialized target sessions", async () => {
   assert.equal(connection.calls.filter(call => call.method === "Page.enable").length, 1);
 });
 
+test("MP-08/MP-10: page and worker response retention fits the bounded body reader", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  try {
+    await browser.ensureConnection();
+    await browser.ensureTargetSession(connection, "target-a");
+    await browser.ensureWriterTargetSession(connection, "worker-a");
+    const enabled = connection.calls.filter(call => call.method === "Network.enable");
+    assert.equal(enabled.length, 2);
+    for (const call of enabled) {
+      assert.equal(call.params.maxResourceBufferSize, 4 * 1024 * 1024);
+      assert.equal(call.params.maxTotalBufferSize, 8 * 1024 * 1024);
+    }
+  } finally { await browser.close(); }
+});
+
+test("MP-08/MP-10: memory pressure refuses navigation before dispatch and still permits closing a tab", async () => {
+  const connection = new FakeConnection();
+  const memory = new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 });
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection, memory });
+  try {
+    await browser.reconcile(viewport);
+    await assert.rejects(browser.navigate({ target_id: "target-a", document_id: "loader-a", url: "https://next.test/" }),
+      error => error.code === 'browser_memory_pressure');
+    assert.equal(connection.calls.filter(call => call.method === 'Page.navigate').length, 0);
+    await browser.manageTab({ action: 'close', target_id: 'target-a', document_id: 'loader-a' });
+    assert.equal(connection.calls.filter(call => call.method === 'Target.closeTarget').length, 1);
+  } finally { await browser.close(); }
+});
+
 test("persistent browser connection returns page identities, focus, and applied viewport", async () => {
   const connection = new FakeConnection();
   let connectionCount = 0;
@@ -166,6 +197,23 @@ test("persistent browser connection returns page identities, focus, and applied 
     "document.visibilityState === 'visible'",
     "active-tab focus must not disappear merely because the browser window loses OS focus",
   );
+});
+
+test("MP-08/MP-10: a crashed renderer is reloaded once without replaying input or replacing another tab", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  try {
+    await browser.reconcile(viewport);
+    connection.emit({ method: 'Inspector.targetCrashed', sessionId: 'session-a', params: {} });
+    connection.emit({ method: 'Target.targetCrashed', params: { targetId: 'target-a', status: 'oom', errorCode: 9 } });
+    await assert.rejects(browser.snapshot({ target_id: 'target-a', document_id: 'loader-a' }),
+      error => error.code === 'browser_renderer_crashed');
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const reloads = connection.calls.filter(call => call.method === 'Page.reload');
+    assert.equal(reloads.length, 1);
+    assert.equal(reloads[0].sessionId, 'session-a');
+    assert.equal(connection.calls.filter(call => call.method === 'Input.dispatchKeyEvent' || call.method === 'Target.closeTarget').length, 0);
+  } finally { await browser.close(); }
 });
 
 test("focus is read in a controller-owned isolated world a page cannot redefine", async () => {

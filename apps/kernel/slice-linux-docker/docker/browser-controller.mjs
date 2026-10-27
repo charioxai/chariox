@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
 import { BrowserActionError } from "./browser-controller-actions.mjs";
+import { BrowserMemoryPressureError } from './browser-memory.mjs';
 import { AppTabs } from "./browser-controller-apps.mjs";
 import {
   BrowserResourceInventoryError,
@@ -203,6 +204,7 @@ async function handleBrowserControllerRequestInner(
     if(error instanceof UserDomainRefusal)return errorResponse(request.id,error.code,error.message);
     const code =
       error instanceof BrowserControllerError
+        || error instanceof BrowserMemoryPressureError
         || error instanceof BrowserActionError
         || error instanceof BrowserResourceInventoryError
         ? error.code

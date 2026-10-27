@@ -180,6 +180,28 @@ additional swap, and one CPU. Reducing a drill's cap does not bypass kernel
 admission checks. SIGINT and SIGTERM use the shared interruption lifecycle,
 allow in-flight provisioning to settle, and clean up before reporting failure.
 
+MP-08 / MP-09 / MP-10 / MP-11: ordinary new slices default to 4096 MiB for
+the shared browser, worker kernel and provider processes. The explicit 2048 MiB
+persistence drill remains a smaller-budget stress case. Existing slices retain
+their configured limit; stop and recreate them to adopt the new default.
+
+Room and native browsers use the same memory policy. Below 1024 MiB available,
+the controller asks Chromium to reclaim caches through its documented
+`Memory.simulatePressureNotification` command. Below 512 MiB, new browser
+launches, tabs, navigation, snapshots and artifacts return
+`browser_memory_pressure`; closing tabs and ordinary input remain available.
+This reserve covers transient rendering/capture allocations, not a hard cap
+on browser RSS. `process.availableMemory()` accounts for the process's cgroup,
+so healthy host RAM does not hide a full slice. Response-body retention is
+bounded to 8 MiB per CDP session and 4 MiB per resource, matching the body reader.
+
+A renderer crash leaves Chromium/CDP alive. The controller retires that page's
+observations, rejects pending page commands and reloads only the crashed tab
+after memory recovers, with bounded backoff. It never replays input. A complete
+browser exit still uses the owned browser supervisor and persistent tab/profile
+restore. Both cases require separate real-browser failure-injection evidence;
+a successful CDP health request alone does not prove a live renderer.
+
 This deterministic drill uses production Computer input helpers directly. It
 does not establish provider-driven office work, vault injection, or Web/TUI
 projection. Those remain separate acceptance drills. Package installation

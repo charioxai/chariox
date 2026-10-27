@@ -13,6 +13,7 @@ import { fenceScreenshotPresentation } from './browser-capture-presentation.mjs'
 import { writePolicyLayer } from './kernel-browser-policy.mjs';
 import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
 import { isOwnedAlive, validOwnedPid } from './linux-owned-process.mjs';
+import { requireBrowserMemory } from './browser-memory.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -111,6 +112,7 @@ export class HostChromium {
       await this.stop(this.connection, { preserveDesktop: keepDesktop });
     }
     // MP-08/MP-11: settle a previously owned display before failed recovery.
+    requireBrowserMemory();
     if (!keepDesktop) { await this.display?.close(); this.display = null; }
     let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
