@@ -179,9 +179,7 @@ fn reserve_prompt_id_block(path: &Path, minimum: u64) -> std::io::Result<(u64, u
 fn lock_file_exclusive(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
 
-    // `std::fs::File::lock` is not stable on the Rust 1.88 toolchain used by
-    // CI. The kernel already depends on libc, and flock is released when the
-    // file descriptor closes at the end of the reservation transaction.
+    // Release the reservation lock when this transaction's descriptor closes.
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if result == 0 {
         Ok(())
