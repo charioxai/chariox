@@ -95,7 +95,8 @@ try {
     assert.equal(operation.phase.phase, 'complete');
     assert.deepEqual(operation.composition.commit.readiness, operation.composition.readiness);
     assert.ok(operation.composition.readiness.environment_setup_operation_id, 'Target-native Project setup receipt is required');
-    const primary = receipt.repositories.find(r => r.repository_id === receipt.primary_repository_id).destination_path;
+    await record('move-receipt', {receipt, readiness: operation.composition.readiness});
+    const primary = receipt.repositories.find(r => r.repositoryId === receipt.primary_repository_id).destinationPath;
     assert.equal((await readFile(primary + '/.mk04-env-ready', 'utf8')).trim(), primary, 'Source setup output must have been rewritten by target setup');
     const profiles = variant(await source.client.send({ListProviderAccountProfiles: {provider: 'codex'}}), 'ProviderAccountProfilesListed').profiles;
     const selected = profiles.find(p => p.profile_id === source.accountProfile.profile_id);
