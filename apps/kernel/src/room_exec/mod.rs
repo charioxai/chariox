@@ -68,6 +68,12 @@ pub struct ExecOutput {
     pub outcome: Option<ExecOutcome>,
 }
 
+#[derive(Clone, Copy)]
+enum CancelReason {
+    Canceled,
+    Expired,
+}
+
 pub(super) struct Record {
     session_id: String,
     created_at: tokio::time::Instant,
@@ -76,7 +82,7 @@ pub(super) struct Record {
     output: Mutex<buffer::Output>,
     changed: Notify,
     space: Notify,
-    cancel: watch::Sender<bool>,
+    cancel: watch::Sender<Option<CancelReason>>,
 }
 
 impl Record {
@@ -155,7 +161,7 @@ impl RoomExecService {
             ));
         }
         let (sender, receiver) = mpsc::channel(8);
-        let (cancel, cancelled) = watch::channel(false);
+        let (cancel, cancelled) = watch::channel(None);
         let created_at = tokio::time::Instant::now();
         let (reader_deadline, deadline) = watch::channel(created_at + lease::READER_LEASE);
         let record = Arc::new(Record {
@@ -334,7 +340,9 @@ impl RoomExecService {
     }
 
     pub fn cancel(&self, session_id: &str, exec_id: &str) -> Result<(), DaemonError> {
-        self.record(session_id, exec_id)?.cancel.send_replace(true);
+        self.record(session_id, exec_id)?
+            .cancel
+            .send_replace(Some(CancelReason::Canceled));
         Ok(())
     }
 
@@ -347,7 +355,7 @@ impl RoomExecService {
             return Err(error("exec_not_found", "this Room has no such exec"));
         }
         if let Some(record) = records.remove(exec_id) {
-            record.cancel.send_replace(true);
+            record.cancel.send_replace(Some(CancelReason::Canceled));
         }
         drop(records);
         self.report_work();
@@ -369,7 +377,7 @@ impl RoomExecService {
             .expect("exec records poisoned")
             .retain(|_, record| {
                 if predicate(record) {
-                    record.cancel.send_replace(true);
+                    record.cancel.send_replace(Some(CancelReason::Canceled));
                     false
                 } else {
                     true

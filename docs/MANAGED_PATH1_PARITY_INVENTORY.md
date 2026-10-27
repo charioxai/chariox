@@ -18,7 +18,10 @@ recovery. Five minutes without an output read expires any record and cancels
 its process tree; listing and stdin writes do not renew it. Expiry releases
 managed work only after reaping and pipe settlement. The CLI handles SIGHUP
 alongside SIGINT/SIGTERM. Canceled, unfinished pipes report an incomplete stream,
-and transport loss retains normalized failure codes and resume cursors. This is the existing mandatory-shutdown exception: no new placement rule,
+distinguishing cancellation, lease expiry and actual pipe read errors. While
+local output writes are pending, the CLI renews the lease at its last consumed
+cursor; SIGKILL still abandons the reader and permits expiry. Transport loss
+retains normalized failure codes and resume cursors. This is the existing mandatory-shutdown exception: no new placement rule,
 provider adapter, history format, credential path or Cloud stop policy is added.
 The wire contract is local 632 / peer 235, advertised by `room_exec_v1`.
 See `docs/PROTOCOL.md` (Binary Room exec) and the executable scenarios in

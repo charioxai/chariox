@@ -5531,7 +5531,9 @@ requests and responses, using its existing bounded framing and flow control.
   `signaled { signal }` or `failed { message }`.
 - `exec_cancel { exec_id }` cancels the owned process and closes its pipes;
   already-buffered output remains available. Cancellation before pipe EOF publishes
-  `failed` with an incomplete-stream message, even if the process exited zero.
+  `failed` with `command canceled before its output ended; the stream is incomplete`,
+  even if the process exited zero. Lease expiry uses `expired` in that message;
+  an actual pipe read error retains its I/O failure reason.
   `exec_close { exec_id }` cancels and
   releases the record. Room end and kernel shutdown cancel all owned execs.
 

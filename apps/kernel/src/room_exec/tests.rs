@@ -168,13 +168,21 @@ async fn exec_cancel_settles_even_with_full_output_and_blocked_stdin() {
     assert!(saw_busy, "stdin admission must be bounded");
     tokio::time::sleep(Duration::from_millis(100)).await;
     service.cancel("room", &id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(5), collect(&service, &id))
         .await
         .unwrap();
-    assert!(
-        matches!(outcome, ExecOutcome::Signaled { signal: 9 })
-            || matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("incomplete")),
-        "{outcome:?}"
+    assert_eq!(
+        outcome,
+        ExecOutcome::Failed {
+            message: "command canceled before its output ended; the stream is incomplete".into(),
+        }
     );
     assert!(!service.has_running_work());
     service.close("room", &id).unwrap();
@@ -303,9 +311,10 @@ async fn exec_cancel_never_reports_truncated_output_as_success() {
     service.close("room", &id).unwrap();
 }
 
-async fn abandoned_reader_expires(script: &str) {
+async fn abandoned_reader_expires(script: &str) -> ExecOutcome {
     let service = RoomExecService::default();
     let id = open(&service, script);
+    let record = service.record("room", &id).unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(service.has_running_work());
     tokio::time::pause();
@@ -329,6 +338,8 @@ async fn abandoned_reader_expires(script: &str) {
         "abandoned {script} still occupies a record after five minutes"
     );
     assert!(idle, "abandoned {script} still counts as managed work");
+    let outcome = record.output.lock().unwrap().outcome.clone().unwrap();
+    outcome
 }
 
 #[tokio::test]
@@ -338,7 +349,13 @@ async fn exec_abandoned_stdin_reader_expires_and_releases_managed_work() {
 
 #[tokio::test]
 async fn exec_abandoned_output_reader_expires_and_releases_managed_work() {
-    abandoned_reader_expires("head -c 8388608 /dev/zero").await;
+    let outcome = abandoned_reader_expires("head -c 8388608 /dev/zero").await;
+    assert_eq!(
+        outcome,
+        ExecOutcome::Failed {
+            message: "command expired before its output ended; the stream is incomplete".into(),
+        }
+    );
 }
 
 #[tokio::test]

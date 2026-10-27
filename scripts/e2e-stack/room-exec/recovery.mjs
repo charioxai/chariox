@@ -111,7 +111,7 @@ try {
     await request({ operation: 'exec_close', exec_id: opened.exec_id })
     assert.ok(bytes < 1081344)
     assert.equal(outcome.kind, 'failed')
-    assert.match(outcome.message, /incomplete/)
+    assert.equal(outcome.message, 'command canceled before its output ended; the stream is incomplete')
     return { bytes, outcome }
   })
   await cell('sigkill-expiry-input-and-unread-output', async () => {

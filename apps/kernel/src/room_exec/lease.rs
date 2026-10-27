@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use super::{Inner, RoomExecService};
+use super::{CancelReason, Inner, RoomExecService};
 
 // Longer than the maximum four-minute read wait, including its transport margin.
 pub(super) const READER_LEASE: Duration = Duration::from_secs(300);
@@ -26,7 +26,7 @@ pub(super) fn start(exec_id: String, inner: Weak<Inner>, mut deadline: watch::Re
                     });
                     if expired {
                         let record = records.remove(&exec_id).expect("expired record exists");
-                        record.cancel.send_replace(true);
+                        record.cancel.send_replace(Some(CancelReason::Expired));
                         drop(records);
                         // The process task releases managed work only after group
                         // cleanup, reaping and pipe settlement have completed.

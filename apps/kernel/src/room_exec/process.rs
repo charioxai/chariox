@@ -10,7 +10,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
 use super::buffer::PIPE_READ_BYTES;
-use super::{error, ExecOutcome, ExecStream, Record, RoomExecService};
+use super::{error, CancelReason, ExecOutcome, ExecStream, Record, RoomExecService};
 use crate::error::DaemonError;
 use crate::runtime::owned_process_signals::OwnedProcessSignals;
 
@@ -67,35 +67,41 @@ pub(super) fn spawn(cwd: &Path, argv: &[String]) -> Result<Process, DaemonError>
     Ok(Process { child, signals })
 }
 
-async fn cancelled(cancel: &mut watch::Receiver<bool>) {
-    if *cancel.borrow() {
-        return;
+async fn cancelled(cancel: &mut watch::Receiver<Option<CancelReason>>) -> CancelReason {
+    if let Some(reason) = *cancel.borrow() {
+        return reason;
     }
     let _ = cancel.changed().await;
+    (*cancel.borrow()).unwrap_or(CancelReason::Canceled)
+}
+
+enum OutputEnd {
+    Eof,
+    Canceled(CancelReason),
 }
 
 async fn output(
     mut pipe: impl AsyncRead + Unpin,
     record: Arc<Record>,
     stream: ExecStream,
-    mut cancel: watch::Receiver<bool>,
-) -> io::Result<()> {
+    mut cancel: watch::Receiver<Option<CancelReason>>,
+) -> io::Result<OutputEnd> {
     let mut bytes = vec![0; PIPE_READ_BYTES];
     loop {
         let length = tokio::select! {
             biased;
             read = pipe.read(&mut bytes) => read,
-            _ = cancelled(&mut cancel) => return Err(io::Error::other("output cancelled before EOF")),
+            reason = cancelled(&mut cancel) => return Ok(OutputEnd::Canceled(reason)),
         };
         let length = match length {
             Ok(length) => length,
             Err(failure) => {
-                record.cancel.send_replace(true);
+                record.cancel.send_replace(Some(CancelReason::Canceled));
                 return Err(failure);
             }
         };
         if length == 0 {
-            return Ok(());
+            return Ok(OutputEnd::Eof);
         }
         loop {
             let space = record.space.notified();
@@ -111,7 +117,7 @@ async fn output(
                 break;
             }
             tokio::select! {
-                _ = cancelled(&mut cancel) => return Err(io::Error::other("output cancelled before EOF")),
+                reason = cancelled(&mut cancel) => return Ok(OutputEnd::Canceled(reason)),
                 _ = space => {},
             }
         }
@@ -122,7 +128,7 @@ pub(super) fn run(
     mut process: Process,
     record: Arc<Record>,
     mut input: mpsc::Receiver<Option<Vec<u8>>>,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: watch::Receiver<Option<CancelReason>>,
     service: RoomExecService,
 ) {
     let mut stdin = process.child.stdin.take().expect("piped stdin");
@@ -157,10 +163,24 @@ pub(super) fn run(
         let _ = writer.await;
         let (out, err) = tokio::join!(out, err);
         let outcome = match (out, err) {
-            (Ok(Ok(())), Ok(Ok(()))) => outcome,
-            _ => ExecOutcome::Failed {
-                message: "command output pipe failed; the stream is incomplete".to_string(),
+            (Ok(Ok(OutputEnd::Eof)), Ok(Ok(OutputEnd::Eof))) => outcome,
+            (Ok(Err(failure)), _) | (_, Ok(Err(failure))) => ExecOutcome::Failed {
+                message: format!("command output pipe failed: {failure}; the stream is incomplete"),
             },
+            (Err(failure), _) | (_, Err(failure)) => ExecOutcome::Failed {
+                message: format!("command output task failed: {failure}; the stream is incomplete"),
+            },
+            (Ok(Ok(OutputEnd::Canceled(reason))), _) | (_, Ok(Ok(OutputEnd::Canceled(reason)))) => {
+                ExecOutcome::Failed {
+                    message: format!(
+                        "command {} before its output ended; the stream is incomplete",
+                        match reason {
+                            CancelReason::Canceled => "canceled",
+                            CancelReason::Expired => "expired",
+                        }
+                    ),
+                }
+            }
         };
         // Only the reaped process and settled pipes publish the final outcome.
         record.output.lock().expect("exec output poisoned").outcome = Some(outcome);
@@ -170,7 +190,10 @@ pub(super) fn run(
     });
 }
 
-async fn supervise(process: &mut Process, cancel: &mut watch::Receiver<bool>) -> ExecOutcome {
+async fn supervise(
+    process: &mut Process,
+    cancel: &mut watch::Receiver<Option<CancelReason>>,
+) -> ExecOutcome {
     // Observe exit without reaping first: the root's birth still witnesses its
     // complete private session when descendants must be cleaned up.
     let failure = loop {
