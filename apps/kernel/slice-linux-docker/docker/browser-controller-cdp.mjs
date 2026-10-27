@@ -229,6 +229,9 @@ export class BrowserCdpClient {
         try {
           return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
         } catch (error) {
+          if (this.rendererRecovery.crashed.has(target.targetId)) {
+            return this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
+          }
           if (!targetGone(error)) throw error;
           await this.forgetTarget(target.targetId);
           const { targetInfos: now = [] } = await connection.send("Target.getTargets");
@@ -236,6 +239,9 @@ export class BrowserCdpClient {
           try {
             return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
           } catch (again) {
+            if (this.rendererRecovery.crashed.has(target.targetId)) {
+              return this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
+            }
             // Gone twice: it is closing. The next reconcile sees it if not.
             if (!targetGone(again)) throw again;
             await this.forgetTarget(target.targetId);
