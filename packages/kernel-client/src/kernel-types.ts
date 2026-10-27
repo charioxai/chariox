@@ -1,6 +1,6 @@
 import type { ProviderFailure } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 636
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 640
 
 export type * from "./kernel-types-apps.js"
 
