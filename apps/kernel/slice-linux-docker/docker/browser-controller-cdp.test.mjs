@@ -481,6 +481,11 @@ test("App pages get a narrower viewport; the panel takes the rest", async () => 
   await browser.reconcile(viewport, { appPanelCssWidth: 380 });
   const last = connection.calls.filter((call) => call.method === "Emulation.setDeviceMetricsOverride" && call.sessionId === "session-a").at(-1).params;
   assert.deepEqual([last.width, last.height], [1280, 460]);
+  const applied = connection.calls.filter(call => call.method === "Emulation.setDeviceMetricsOverride").length;
+  await browser.setLayout("target-a", { width: 640, height: 360 });
+  await browser.setLayout("target-a", null);
+  assert.equal(connection.calls.filter(call => call.method === "Emulation.setDeviceMetricsOverride").length, applied,
+    "viewer layout changes must preserve the Room App panel size");
   // A size larger than the viewport is ignored.
   browser.appTabs.apps.get("session-a").page = { width: 5000, height: 460 };
   await browser.reconcile(viewport, { appPanelCssWidth: 380 });

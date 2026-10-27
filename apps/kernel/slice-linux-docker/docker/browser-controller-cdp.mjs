@@ -546,7 +546,8 @@ export class BrowserCdpClient {
   async applyLayout(targetId) {
     const connection = this.connection;
     if (!this.canonical || !connection) return;
-    if ([...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
+    // Room Apps keep their panel-sized page; tabbed user-domain Apps use the viewer layout.
+    if (this.appViewport && [...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
     const sessionId = await this.ensureTargetSession(connection, targetId);
     const metrics = this.layoutMetrics(targetId, this.canonical);
     const key = JSON.stringify(metrics);
