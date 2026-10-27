@@ -83,6 +83,7 @@ impl ProviderProcessService {
         Ok(ProviderRunStartedOutcome { run })
     }
 
+    #[cfg(test)]
     pub(crate) fn launch_run_detached(
         &mut self,
         request: LaunchProviderRequest,
