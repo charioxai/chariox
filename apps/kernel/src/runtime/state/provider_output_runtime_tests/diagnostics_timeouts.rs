@@ -349,7 +349,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             .expect("provider run should exist")
             .terminal_diagnostic(),
         Some(
-            "Provider error. Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Fix the cause named in the message, then send the request again."
+            "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
         )
     );
     assert_eq!(
