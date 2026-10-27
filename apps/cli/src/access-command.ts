@@ -60,7 +60,10 @@ function waiterFailure(output: string): CommandFailure {
 }
 
 async function startWaiter(argv: string[], holder: number): Promise<void> {
-  const script = process.argv[1] && existsSync(process.argv[1]) ? [process.argv[1]] : []
+  // Bun's embedded entry exists in its virtual filesystem, but the compiled
+  // executable already owns that entry and accepts only CLI arguments.
+  const entry = process.argv[1]
+  const script = entry && !entry.startsWith("/$bunfs/") && existsSync(entry) ? [entry] : []
   const args = argv.filter(arg => arg !== "--no-wait")
   const child = spawn(process.execPath, [...script, "access", "request", ...args, ...(args.includes("--holder-pid") ? [] : ["--holder-pid", String(holder)])], { detached: true, stdio: ["ignore", "ignore", "pipe"] })
   const output = await new Promise<string>((resolve, reject) => {
