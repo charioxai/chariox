@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite"
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) {
   const key = process.argv[i]
-  if (["--expect-base", "--review-regressions", "--expect-review-base"].includes(key)) flags.set(key, true)
+  if (["--expect-base", "--review-regressions", "--expect-review-base", "--round3-regressions", "--expect-round3-base"].includes(key)) flags.set(key, true)
   else flags.set(key, process.argv[++i])
 }
 function required(key) {
@@ -239,6 +239,7 @@ try {
   assert(r.value.events.some(e => e.type === "terminal" && e.value.exit_code === 23))
   if (flags.has("--review-regressions")) rememberSourceCursors()
   cursor = r.value.next_cursor
+  const listedTerminalCursor = cursor
   await cli(home, ["terminal", "close", "--kernel", target, "--session", session, "--terminal", terminal.value.terminal.terminal_id])
   r = await cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "0"])
   cursor = r.value.next_cursor
@@ -308,6 +309,12 @@ try {
         return batch.value?.events.some(e => e.type === "terminal" && e.value.exit_code === 30 + i)
       }, "terminal imported before next overflow")
       rememberSourceCursors()
+      if (flags.has("--round3-regressions") && i === 1) {
+        const resumed = await cli(home, ["events", "wait", "--since", String(listedTerminalCursor), "--timeout", "0"])
+        const covered = resumed.code === 7 || resumed.value?.events.some(e => e.type === "gap" && e.kernel === target)
+        assert.equal(!!covered, !flags.has("--expect-round3-base"), "a dropped health transition after the listed cursor needs a gap or expiry")
+        note("health-cursor-coverage", { listedTerminalCursor, covered: !!covered, code: resumed.code, batch: resumed.value })
+      }
       assert.equal((await cli(home, ["terminal", "close", "--kernel", target, "--session", session, "--terminal", opened.value.terminal.terminal_id])).code, 0)
     }
     const merged = await retainedEvents()
@@ -324,10 +331,36 @@ try {
     note("source-gap", { actual: gap.value, expected, source, merged: merged.value })
     cursor = merged.value.next_cursor
   }
+  if (flags.has("--round3-regressions")) {
+    // Restart the home pump after the followed session ends. Its reinstallation
+    // is now persistently refused, while the last committed baseline is online.
+    assert.equal((await cli(home, ["events", "ack", String(cursor)])).code, 0)
+    await stop(home.child)
+    await worker.rpc({ EndSession: { session_id: session } })
+    home.child = start(binary, home.env, "home-pump-resumed")
+    await until(async () => { try { return (await home.rpc({ RelayStatus: null })).RelayStatus.status.connected } catch { return false } }, "home pump restart")
+    const result = await cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "2"])
+    const sub = await cli(home, ["events", "subscription"])
+    const issue = sub.value.subscription.kernels.find(k => k.kernel === target)
+    const offline = result.value?.events.filter(e => e.type === "kernel_health" && !e.value.online) || []
+    if (flags.has("--expect-round3-base")) {
+      assert.equal(offline.length, 0, "base must silently suppress pump refusals")
+      assert.equal(issue.error.code, "events_connecting", "base must fail to record the pump refusal in its cache")
+    } else {
+      assert.equal(offline.length, 1, "persistent pump refusal must wake once")
+      assert.equal(issue.online, false)
+      assert.equal(issue.error.code, "events_refused")
+      assert.deepEqual(offline[0].value, { online: false, reason: "events_part_failed" })
+    }
+    note("persistent-pump-refusal", { batch: result.value, health: issue })
+    cursor = result.value.next_cursor
+    const again = await cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "1"])
+    assert.equal(again.code, 5, "unchanged persistent refusal must not wake again")
+  }
   assert.equal((await cli(home, ["events", "ack", String(cursor)])).code, 0)
   assert.equal((await cli(home, ["events", "unsubscribe", "--all"])).code, 0)
-  await remote({ EndSession: { session_id: session } })
-  note(flags.has("--expect-base") ? "BASE-RED-CONFIRMED" : flags.has("--expect-review-base") ? "REVIEW-BASE-RED-CONFIRMED" : "PASS")
+  if (!flags.has("--round3-regressions")) await remote({ EndSession: { session_id: session } })
+  note(flags.has("--expect-base") ? "BASE-RED-CONFIRMED" : flags.has("--expect-review-base") ? "REVIEW-BASE-RED-CONFIRMED" : flags.has("--expect-round3-base") ? "ROUND3-BASE-RED-CONFIRMED" : "PASS")
 } catch (error) {
   note("FAIL", { message: error.message }); process.exitCode = 1
 } finally {

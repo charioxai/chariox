@@ -120,11 +120,7 @@ impl KernelGateway {
                 }))
                 .await;
                 for (kernel, result) in installations {
-                    self.record_event_health(
-                        origin,
-                        kernel,
-                        result.as_ref().map(|_| ()).map_err(Clone::clone),
-                    );
+                    // Only the subscribing caller receives this refusal directly.
                     if let Err(
                         error @ GatewayError::Remote {
                             retryable: false, ..
@@ -141,6 +137,11 @@ impl KernelGateway {
                         self.start_event_parts(origin);
                         return Err(event_error(error));
                     }
+                    self.record_event_health(
+                        origin,
+                        kernel,
+                        result.as_ref().map(|_| ()).map_err(Clone::clone),
+                    );
                 }
                 self.start_event_parts(origin);
                 self.runtime_state.outside_subscription_response(id)?

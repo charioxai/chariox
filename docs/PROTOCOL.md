@@ -5451,7 +5451,11 @@ per-kernel health transitions in the same grant-owned inbox:
 "reason": "kernel_offline" } }`. `kernel` identifies the followed source;
 `session_id` and `machine` are empty for this kernel-level control record, and
 `agent_id` is absent. `reason` is the gateway error code (a reason class, without
-error details), `events_part_failed` for a retryable target failure, or `connected` on recovery. A non-retryable refusal is returned to the caller without changing the health baseline or appending a health event. The first successful connection
+error details), `events_part_failed` for a remote part failure, or `connected` on
+recovery. A non-retryable refusal of a caller's `SubscribeEvents` is returned
+without changing the health baseline or appending a health event. Background
+pump failures still update subscription health and append a transition, including
+persistent non-retryable refusals. The first successful connection
 establishes a baseline; an initial failure and each later online/offline change
 append a durable event. Repeated failures, including a different failure reason,
 do not append duplicates; `GetEventSubscription` retains the current full error.
@@ -5461,8 +5465,11 @@ cursors, retain normal ordering and acknowledgement rules, wake an outstanding
 subscriptions collect no later health events. Callers that depend on these wakes
 require gateway protocol 631; existing CLI callers keep their supported minimum.
 Retention excludes home-observed health records from source gap ranges and
-dropped counts. If only health records expire, the home cursor floor advances
-without creating a source gap; subscription status retains the current health.
+dropped counts. A kernel's gap position still advances through its dropped
+health records so an unacknowledged listed cursor cannot silently skip a lost
+transition. Health-only loss advances the home cursor floor, even when other
+kernels retain source gaps, without fabricating source loss; subscription status
+retains the current health.
 The relay remains an opaque carrier and clients need no health polling.
 
 File writes and file transfers alone are not inbox events. Lane coordination

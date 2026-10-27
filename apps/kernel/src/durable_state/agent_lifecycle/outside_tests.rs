@@ -709,3 +709,138 @@ fn outside_health_ignores_removed_targets_and_ended_subscriptions() {
         OutsideEventValue::SubscriptionEnded { .. }
     ));
 }
+
+// A client may list a source event without acknowledging it before retention.
+fn listed_terminal_at_ten(f: &Fixture, kernels: &[&str]) -> u64 {
+    let targets = kernels
+        .iter()
+        .map(|kernel| EventTarget {
+            kernel: (*kernel).into(),
+            ..target("x", None)
+        })
+        .collect();
+    subscribe(f, "grant", true, targets);
+    for n in 1..=9 {
+        publish(f, &n.to_string(), event("x", "x1"));
+    }
+    f.store
+        .outside_mutate(Mutation::Ack {
+            id: "grant".into(),
+            cursor: 9,
+        })
+        .unwrap();
+    import_terminal(f, "kernel-a", 1000);
+    let listed = list(f, "grant");
+    assert_eq!(listed.next_cursor, 10);
+    assert_eq!(listed.events.len(), 1);
+    10
+}
+fn import_terminal(f: &Fixture, kernel: &str, cursor: u64) {
+    let mut e = event("x", "x1");
+    e.kernel = kernel.into();
+    e.cursor = cursor;
+    e.value = OutsideEventValue::Terminal {
+        exit_code: Some(23),
+    };
+    f.store
+        .outside_mutate(Mutation::Import {
+            id: "grant".into(),
+            kernel: kernel.into(),
+            events: vec![e],
+        })
+        .unwrap();
+}
+fn offline(f: &Fixture, kernel: &str) {
+    f.store
+        .outside_mutate(Mutation::KernelHealth {
+            id: "grant".into(),
+            kernel: kernel.into(),
+            online: false,
+            reason: "test".into(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn outside_retention_keeps_health_after_the_listed_source_cursor_covered() {
+    let f = Fixture::new();
+    let listed = listed_terminal_at_ten(&f, &["kernel-a"]);
+    offline(&f, "kernel-a"); // health@11 between terminal@10 and terminal@12
+    import_terminal(&f, "kernel-a", 1001);
+    import_terminal(&f, "kernel-a", 1002);
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 3,
+        })
+        .unwrap();
+    let resumed = f
+        .store
+        .outside_list("grant", Some(listed), 1000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resumed.events[0].cursor, 11,
+        "the gap must cover the dropped health row after cursor 10"
+    );
+    assert!(matches!(
+        resumed.events[0].value,
+        OutsideEventValue::Gap {
+            dropped: 1,
+            from: 1000,
+            to: 1000,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn outside_retention_covers_later_health_for_each_kernel() {
+    check_other_kernel_health(true);
+}
+
+#[test]
+fn outside_retention_health_only_kernel_expires_past_other_gaps() {
+    check_other_kernel_health(false);
+}
+
+fn check_other_kernel_health(source_before_health: bool) {
+    let f = Fixture::new();
+    let mut listed = listed_terminal_at_ten(&f, &["kernel-a", "kernel-b"]);
+    if source_before_health {
+        import_terminal(&f, "kernel-b", 2000);
+        listed = list(&f, "grant").next_cursor;
+    }
+    offline(&f, "kernel-b");
+    for cursor in 1001..=1003 {
+        import_terminal(&f, "kernel-a", cursor);
+    }
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 4,
+        })
+        .unwrap();
+    let resumed = f.store.outside_list("grant", Some(listed), 1000).unwrap();
+    if source_before_health {
+        let resumed = resumed.unwrap();
+        assert!(
+            resumed.events.iter().any(|e| e.kernel == "kernel-b"
+                && matches!(
+                    e.value,
+                    OutsideEventValue::Gap {
+                        dropped: 1,
+                        from: 2000,
+                        to: 2000,
+                        ..
+                    }
+                )),
+            "kernel B's health after the listed cursor must be covered by its gap"
+        );
+    } else {
+        assert!(
+            resumed.is_err(),
+            "health-only kernel B must expire the cursor past its lost transition"
+        );
+    }
+}
