@@ -126,6 +126,16 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        // An upgrade restart leaves no live turn for a legacy run, which the
+        // owner has not yet been able to adopt: it keeps draining, never orphaned.
+        let session = self.session_store.get_session(room)?;
+        for run in self.unadopted_legacy_runs(&session)? {
+            targets.extend(
+                run.node_runs()
+                    .iter()
+                    .map(|node| (run.id().to_string(), node.id().to_string())),
+            );
+        }
         Ok(targets)
     }
 

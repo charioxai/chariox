@@ -211,6 +211,30 @@ async fn a12_legacy_workflow_turn_settled_without_a_task_keeps_its_node() {
     );
 }
 
+// A12-S06: an upgrade leaves a legacy run without a live turn; until the owner adopts
+// or stops it, the orphan sweep must keep it draining (an ordinary run gets no such cover).
+#[tokio::test]
+async fn a12_unadopted_legacy_run_is_supervised_until_the_owner_decides() {
+    let supervised = |alias: &str| {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let fixture = interrupt_fixture_with_alias(
+            crate::test_support::TestWorktree::new("a12-legacy-orphan"),
+            config,
+            true,
+            alias,
+        );
+        let targets = fixture
+            .runtime
+            .owned
+            .supervised_workflow_targets(&fixture.session_id)
+            .unwrap();
+        targets.contains(&(fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    };
+    assert!(supervised("planner-worker-reviewer"));
+    assert!(!supervised("interrupt-durability"));
+}
+
 // A plain turn only gets a task row: ending after a tool call with no answer is
 // settled Done, never corrected, held to a wait or blocked for the owner.
 #[tokio::test]
@@ -1171,6 +1195,15 @@ fn interrupt_fixture_with_creator(
     config: crate::config::DaemonConfig,
     agent_created: bool,
 ) -> InterruptFixture {
+    interrupt_fixture_with_alias(worktree, config, agent_created, "interrupt-durability")
+}
+
+fn interrupt_fixture_with_alias(
+    worktree: crate::test_support::TestWorktree,
+    config: crate::config::DaemonConfig,
+    agent_created: bool,
+    workflow_alias: &str,
+) -> InterruptFixture {
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -1195,7 +1228,7 @@ fn interrupt_fixture_with_creator(
         .expect("second affected workflow agent should be created");
     let workflow = app
         .sessions_mut()
-        .create_workflow(session.id(), Some("interrupt-durability".to_string()))
+        .create_workflow(session.id(), Some(workflow_alias.to_string()))
         .expect("workflow should be created");
     let node = app
         .sessions_mut()
