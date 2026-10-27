@@ -49,7 +49,7 @@ try {
     const source = await runtime('source'), target = await runtime('target');
     await enroll(source); await enroll(target);
     const paths = await fixture();
-    await writeFile(paths.primary + '/.gitignore', '.mk04-env-ready\nmk04-skill-proof.txt\n');
+    await writeFile(paths.primary + '/.gitignore', 'mk04-skill-proof.txt\n');
     const projectId = await project(source, paths);
     const approval = {primary: target.path + '/approval', notes: target.path + '/approval-notes'};
     await mkdir(approval.primary); await mkdir(approval.notes); await project(target, approval);
@@ -75,7 +75,7 @@ try {
     assert.deepEqual(operation.composition.commit.readiness, operation.composition.readiness);
     assert.ok(operation.composition.readiness.environment_setup_operation_id, 'Target-native Project setup receipt is required');
     const primary = receipt.repositories.find(r => r.repository_id === receipt.primary_repository_id).destination_path;
-    assert.equal((await readFile(primary + '/.mk04-env-ready', 'utf8')).trim(), primary, 'Ignored setup output must have been regenerated on the target');
+    assert.equal((await readFile(primary + '/.mk04-env-ready', 'utf8')).trim(), primary, 'Source setup output must have been rewritten by target setup');
     const profiles = variant(await target.client.send({ListProviderAccountProfiles: {provider: 'codex'}}), 'ProviderAccountProfilesListed').profiles;
     assert.equal(profiles.filter(p => p.auth_state === 'authenticated').length, 1, 'Move must transfer exactly its selected authenticated account');
     await record('resource-receipts', {requirements: operation.composition.requirements, readiness: operation.composition.readiness, commit: operation.composition.commit, accountTransferred: true, targetNativeSetup: true});

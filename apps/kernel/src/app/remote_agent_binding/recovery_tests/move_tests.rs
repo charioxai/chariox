@@ -2441,7 +2441,23 @@ async fn mk04_locked_required_vault_rejects_before_publication_and_activation() 
         )
     };
     source_config.user_config.credential_vault.backend =
-        crate::config::CredentialVaultBackend::ProcessMemory;
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    source_config.user_config.credential_vault.path = fixture
+        .workspace_root
+        .join("required-source-vault.json")
+        .display()
+        .to_string();
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&source_config.user_config.credential_vault.path),
+        "synthetic-fixture-passphrase",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &source_config.user_config.credential_vault.path,
+        "synthetic-fixture-passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
     let target_config = {
         let mut worker = fixture.workers[0].lock().await;
         worker.config.user_config.credential_vault.backend =
