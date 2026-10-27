@@ -35,7 +35,8 @@ const unwrap = (response, key) => { if (!response || typeof response !== 'object
 const check = (name, condition) => { assert.ok(condition, name); results.checks.push(name); console.log(JSON.stringify({ check: name, status: 'PASS' })) }
 const port = async () => { const server = net.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const result = server.address().port; await new Promise(resolve => server.close(resolve)); return result }
 const kernelPort = await port()
-const env = { ...process.env, CHARIOX_HOME: stateRoot, CHARIOX_KERNEL_HOST: '127.0.0.1', CHARIOX_KERNEL_PORT: String(kernelPort), CHARIOX_MCP_PORT: String(await port()), CHARIOX_CODEX_PORT: String(await port()), CHARIOX_OPENCODE_PORT: String(await port()), CHARIOX_DAEMON_SOCKET: path.join(runRoot, 'kernel.sock'), CHARIOX_DAEMON_ID: `archive-drill-${provider}-${Date.now()}`, CHARIOX_SESSION_HISTORY_DIR: path.join(stateRoot, 'history'), CHARIOX_KERNEL_RUNTIME_ROLE: 'ordinary' }
+const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('CHARIOX_')))
+const env = { ...inheritedEnv, CHARIOX_HOME: stateRoot, CHARIOX_KERNEL_HOST: '127.0.0.1', CHARIOX_KERNEL_PORT: String(kernelPort), CHARIOX_MCP_PORT: String(await port()), CHARIOX_CODEX_PORT: String(await port()), CHARIOX_OPENCODE_PORT: String(await port()), CHARIOX_DAEMON_SOCKET: path.join(runRoot, 'kernel.sock'), CHARIOX_DAEMON_ID: `archive-drill-${provider}-${Date.now()}`, CHARIOX_SESSION_HISTORY_DIR: path.join(stateRoot, 'history'), CHARIOX_KERNEL_RUNTIME_ROLE: 'general' }
 for (const name of ['CHARIOX_KERNEL_LOCAL_AUTH_TOKEN', 'CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE']) {
   delete process.env[name]
   delete env[name]
