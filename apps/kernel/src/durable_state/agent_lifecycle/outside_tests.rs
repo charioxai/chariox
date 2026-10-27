@@ -486,3 +486,131 @@ fn a_producer_without_a_subscription_does_not_wait_for_the_durable_writer() {
     publish_session_event().unwrap();
     assert_eq!(list(&f, "grant").events.len(), 1);
 }
+
+#[test]
+fn outside_health_is_durable_ordered_and_scoped_to_followed_home_parts() {
+    let f = Fixture::new();
+    subscribe(&f, "home", true, vec![target("room", None)]);
+    subscribe(&f, "other", true, vec![target("room", None)]);
+    subscribe(&f, "source", false, vec![target("room", None)]);
+    let health = |id: &str, online| Mutation::KernelHealth {
+        id: id.into(),
+        kernel: "kernel-a".into(),
+        online,
+        reason: if online {
+            "connected"
+        } else {
+            "kernel_offline"
+        }
+        .into(),
+    };
+    f.store.outside_mutate(health("home", true)).unwrap();
+    assert!(list(&f, "home").events.is_empty());
+    publish(&f, "before-health", event("room", "agent"));
+    f.store.outside_mutate(health("home", false)).unwrap();
+    f.store.outside_mutate(health("source", false)).unwrap();
+    let first = list(&f, "home");
+    assert_eq!(first.events.len(), 2);
+    assert!(matches!(
+        first.events[0].value,
+        OutsideEventValue::Agent { .. }
+    ));
+    assert!(matches!(
+        first.events[1].value,
+        OutsideEventValue::KernelHealth { online: false, .. }
+    ));
+    assert!(first.events[1].cursor > first.events[0].cursor);
+    assert_eq!(first.next_cursor, first.events[1].cursor);
+    assert_eq!(list(&f, "other").events.len(), 1);
+    assert_eq!(list(&f, "source").events.len(), 1);
+
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    reopened.outside_mutate(health("home", false)).unwrap();
+    assert_eq!(list(&f, "home"), first);
+    reopened.outside_mutate(health("home", true)).unwrap();
+    let recovered = list(&f, "home");
+    assert_eq!(recovered.events.len(), 3);
+    assert!(
+        matches!(&recovered.events[2].value, OutsideEventValue::KernelHealth { online: true, reason } if reason == "connected")
+    );
+    assert!(recovered.next_cursor > first.next_cursor);
+    reopened
+        .outside_mutate(Mutation::Ack {
+            id: "home".into(),
+            cursor: first.next_cursor,
+        })
+        .unwrap();
+    assert_eq!(list(&f, "home").events, recovered.events[2..]);
+}
+
+#[test]
+fn outside_health_ignores_removed_targets_and_ended_subscriptions() {
+    let f = Fixture::new();
+    subscribe(
+        &f,
+        "home",
+        true,
+        vec![target("one", None), target("two", None)],
+    );
+    let health = |kernel: &str, online| Mutation::KernelHealth {
+        id: "home".into(),
+        kernel: kernel.into(),
+        online,
+        reason: if online {
+            "connected"
+        } else {
+            "kernel_offline"
+        }
+        .into(),
+    };
+    f.store.outside_mutate(health("unknown", false)).unwrap();
+    assert!(list(&f, "home").events.is_empty());
+    // An initial failure is observable even if this part never connected.
+    f.store.outside_mutate(health("kernel-a", false)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 1);
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: "home".into(),
+            targets: vec![target("one", None)],
+            all: false,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    f.store.outside_mutate(health("kernel-a", true)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 2);
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: "home".into(),
+            targets: vec![target("two", None)],
+            all: false,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    f.store.outside_mutate(health("kernel-a", false)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 2);
+    assert!(f
+        .store
+        .outside_part("home")
+        .unwrap()
+        .unwrap()
+        .kernel_health
+        .is_empty());
+    subscribe(&f, "home", true, vec![target("three", None)]);
+    f.store.outside_mutate(health("kernel-a", true)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 2);
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: "home".into(),
+            targets: vec![],
+            all: true,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    f.store.outside_mutate(health("kernel-a", false)).unwrap();
+    let events = list(&f, "home").events;
+    assert_eq!(events.len(), 3);
+    assert!(matches!(
+        events[2].value,
+        OutsideEventValue::SubscriptionEnded { .. }
+    ));
+}

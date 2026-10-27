@@ -44,6 +44,8 @@ pub(crate) struct Part {
     pub forwarded_counts: BTreeMap<String, u64>,
     #[serde(default)]
     pub run_states: BTreeMap<String, crate::local::EventRunState>,
+    #[serde(default)]
+    pub kernel_health: BTreeMap<String, bool>,
 }
 impl Part {
     pub(super) fn new(id: String, home: bool) -> Self {
@@ -60,6 +62,7 @@ impl Part {
             cleanup_targets: Vec::new(),
             forwarded_counts: BTreeMap::new(),
             run_states: BTreeMap::new(),
+            kernel_health: BTreeMap::new(),
         }
     }
     pub(crate) fn subscription(&self) -> EventSubscription {
@@ -75,6 +78,12 @@ impl Part {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Mutation {
+    KernelHealth {
+        id: String,
+        kernel: String,
+        online: bool,
+        reason: String,
+    },
     RunStates {
         states: Vec<RunState>,
     },

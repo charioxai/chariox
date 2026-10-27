@@ -11,6 +11,8 @@ pub(super) struct EventParts {
     health: StdMutex<HashMap<(String, String), Result<(), GatewayError>>>,
 }
 mod parts;
+#[cfg(test)]
+mod tests;
 
 impl KernelGateway {
     async fn event_targets(
@@ -118,7 +120,7 @@ impl KernelGateway {
                 }))
                 .await;
                 for (kernel, result) in installations {
-                    self.event_health(
+                    self.record_event_health(
                         origin,
                         kernel,
                         result.as_ref().map(|_| ()).map_err(Clone::clone),

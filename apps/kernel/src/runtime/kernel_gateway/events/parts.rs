@@ -125,7 +125,7 @@ impl KernelGateway {
                 .forward_grant_ended(kernel, origin, &command_id, &request)
                 .await
             {
-                self.event_health(origin, kernel, Err(error));
+                self.record_event_health(origin, kernel, Err(error));
                 return true;
             }
             if store
@@ -151,7 +151,7 @@ impl KernelGateway {
         let result = self
             .pull_event_part(origin, kernel, &targets, subscribed, &part)
             .await;
-        self.event_health(origin, kernel, result);
+        self.record_event_health(origin, kernel, result);
         true
     }
     pub(super) fn event_health(
@@ -159,12 +159,53 @@ impl KernelGateway {
         origin: &Origin,
         kernel: &str,
         status: Result<(), GatewayError>,
-    ) {
-        self.event_parts
+    ) -> Result<(), crate::error::DaemonError> {
+        let mut health = self
+            .event_parts
             .health
             .lock()
-            .expect("event health poisoned")
-            .insert((origin.grant_id.clone(), kernel.into()), status);
+            .expect("event health poisoned");
+        let key = (origin.grant_id.clone(), kernel.into());
+        // Following a kernel again clears its durable baseline. The status cache
+        // alone cannot tell whether this subscription still observed it.
+        let previous = self
+            .runtime_state
+            .outside_store()
+            .outside_part(&origin.grant_id)?
+            .and_then(|part| part.kernel_health.get(kernel).copied());
+        if previous != Some(status.is_ok()) {
+            self.runtime_state
+                .outside_store()
+                .outside_mutate(Mutation::KernelHealth {
+                    id: origin.grant_id.clone(),
+                    kernel: kernel.into(),
+                    online: status.is_ok(),
+                    reason: match &status {
+                        Ok(()) => "connected",
+                        // A target's error code is data, not a gateway reason class.
+                        Err(GatewayError::Remote { .. }) => "events_part_failed",
+                        Err(error) => error.code(),
+                    }
+                    .into(),
+                })?;
+        }
+        health.insert(key, status);
+        Ok(())
+    }
+    pub(super) fn record_event_health(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        status: Result<(), GatewayError>,
+    ) {
+        if self.event_health(origin, kernel, status).is_err() {
+            // Do not cache an uncommitted transition: the next pump retries it.
+            crate::logging::error_with_fields(
+                "kernel_gateway.events",
+                "event health could not be committed; retrying",
+                serde_json::json!({"kernel": kernel, "subscription": origin.grant_id}),
+            );
+        }
     }
     async fn pull_event_part(
         &self,
