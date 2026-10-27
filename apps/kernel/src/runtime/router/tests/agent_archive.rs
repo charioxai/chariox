@@ -97,19 +97,10 @@ async fn reversible_agent_archive_stops_running_and_queued_work_only_for_target(
             .state(),
         crate::provider::ProviderRunState::Ended
     );
-    router
-        .runtime_state
-        .owned
-        .provider_run_projection
-        .update(first_run.clone());
+    let projection = app.lock().await.provider_run_projection_store();
+    projection.update(first_run.clone());
     assert_eq!(
-        router
-            .runtime_state
-            .owned
-            .provider_run_projection
-            .get(first_run.id())
-            .unwrap()
-            .state(),
+        projection.get(first_run.id()).unwrap().state(),
         crate::provider::ProviderRunState::Ended,
         "a late launch callback cannot revive an archived run projection"
     );
