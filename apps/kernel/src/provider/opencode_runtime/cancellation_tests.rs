@@ -74,7 +74,7 @@ fn check_session_error(current_error: bool) {
     if current_error {
         assert_eq!(
             result.terminal_failure.as_deref(),
-            Some("Current turn failed")
+            Some("OpenCode error [other]: Current turn failed")
         );
         assert!(result.prompt_completed);
         assert!(result.explicit_provider_error);
