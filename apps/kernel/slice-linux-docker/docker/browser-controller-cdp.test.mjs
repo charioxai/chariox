@@ -146,8 +146,8 @@ test("MP-08/MP-10/MP-11: headed page bottom fits below the toolbar at every sour
     let toolbar = 87;
     connection.send = async (method, params, sessionId) => {
       const result = await send(method, params, sessionId);
-      if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: width * dpr, height: height * dpr + (oversized ? toolbar : 0), windowState: toolbar ? 'maximized' : 'fullscreen' } };
-      if (method === 'Browser.getWindowBounds') return { bounds: { windowState: toolbar ? 'maximized' : 'fullscreen' } };
+      if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: width * dpr, height: height * dpr + (oversized ? toolbar : 0), windowState: toolbar ? (oversized ? 'normal' : 'maximized') : 'fullscreen' } };
+      if (method === 'Browser.getWindowBounds') return { bounds: { windowState: toolbar ? (oversized ? 'normal' : 'maximized') : 'fullscreen' } };
       if (method === 'Runtime.evaluate' && params.expression === '({ width: innerWidth, height: innerHeight })') return { result: { value: {
         width: width * dpr, height: height * dpr - (oversized ? 0 : toolbar),
       } } };

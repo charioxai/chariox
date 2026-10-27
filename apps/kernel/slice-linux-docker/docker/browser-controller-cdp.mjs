@@ -552,6 +552,14 @@ export class BrowserCdpClient {
   async setPageMetrics(connection, sessionId, metrics) {
     if (this.applyCanonicalDisplay) {
       let { windowId, bounds } = await connection.send("Browser.getWindowForTarget", {}, sessionId);
+      const desktop = this.canonical;
+      const deadline = performance.now() + 2000;
+      const maximized = () => ["maximized", "fullscreen"].includes(bounds?.windowState);
+      while (desktop && maximized() && (bounds.width !== desktop.desktop_pixel_width || bounds.height !== desktop.desktop_pixel_height)) {
+        if (performance.now() >= deadline) throw new BrowserControllerError("viewport_apply_failed", "Chromium window resize is still pending; retry the browser viewport");
+        await new Promise(resolve => setTimeout(resolve, 25));
+        ({ windowId, bounds } = await connection.send("Browser.getWindowForTarget", {}, sessionId));
+      }
       if (![bounds?.left, bounds?.top, bounds?.width, bounds?.height].every(Number.isFinite)) {
         throw new BrowserControllerError("viewport_apply_failed", "Chromium window bounds are unavailable; restore its window and retry");
       }
@@ -567,10 +575,17 @@ export class BrowserCdpClient {
         const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
           frameId: tree.frameTree.frame.id, worldName: "chariox-content-viewport",
         }, sessionId);
-        const { result } = await connection.send("Runtime.evaluate", {
-          expression: "({ width: innerWidth, height: innerHeight })", contextId: executionContextId, returnByValue: true,
-        }, sessionId);
-        const content = result?.value;
+        let content;
+        for (;;) {
+          const { result } = await connection.send("Runtime.evaluate", {
+            expression: "({ width: innerWidth, height: innerHeight })", contextId: executionContextId, returnByValue: true,
+          }, sessionId);
+          content = result?.value;
+          if (!maximized() || content?.width === bounds.width) break;
+          if (performance.now() >= deadline) throw new BrowserControllerError("viewport_apply_failed", "Chromium content resize is still pending; retry the browser viewport");
+          await new Promise(resolve => setTimeout(resolve, 25));
+          ({ bounds } = await connection.send("Browser.getWindowForTarget", {}, sessionId));
+        }
         if (![content?.width, content?.height].every(n => Number.isFinite(n) && n > 0)
             || content.width > bounds.width || content.height > bounds.height) {
           throw new BrowserControllerError("viewport_apply_failed", "Chromium content area is unavailable; retry the browser viewport");
@@ -579,7 +594,6 @@ export class BrowserCdpClient {
         this.contentInsetsByWindow.set(windowId, insets);
       }
       const content = { width: bounds.width - insets.width, height: bounds.height - insets.height };
-      const desktop = this.canonical;
       const visibleWidth = desktop ? Math.min(content.width,
         desktop.desktop_pixel_width - Math.max(0, bounds.left) - (bounds.width - content.width)) : content.width;
       const visibleHeight = desktop ? Math.min(content.height,
