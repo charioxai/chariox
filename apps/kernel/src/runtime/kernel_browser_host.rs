@@ -610,7 +610,7 @@ impl KernelBrowserHost {
             || (method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
-                    Some("open" | "close" | "navigate" | "resize" | "input")
+                    Some("open" | "close" | "navigate" | "resize" | "input" | "dialog")
                 ));
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
@@ -717,7 +717,7 @@ impl KernelBrowserHost {
             // MP-08/MP-10: a navigation waits for the page's load; mirror credits and
             // state reads keep flowing meanwhile (mutations stay serial on the lane).
             || (method == "host.browser"
-                && matches!(params["op"].as_str(), Some("navigate" | "resize")))
+                && matches!(params["op"].as_str(), Some("navigate" | "resize" | "dialog")))
         {
             let signal = cancellation
                 .clone()
@@ -831,14 +831,16 @@ impl KernelBrowserHost {
                 }
                 if state.access.focused(user) != Some(agent) {
                     let grant = state.access.grant(user, agent)?;
-                    if let Some(tabs) = payload.get_mut("tabs").and_then(Value::as_array_mut) {
-                        tabs.retain(|tab| {
-                            tab["tab_id"].as_str().is_some_and(|id| {
-                                grant
-                                    .resources
-                                    .contains(&UserDomainResource::BrowserTab { tab_id: id.into() })
-                            })
-                        });
+                    for field in ["tabs", "dialogs"] {
+                        if let Some(tabs) = payload.get_mut(field).and_then(Value::as_array_mut) {
+                            tabs.retain(|tab| {
+                                tab["tab_id"].as_str().is_some_and(|id| {
+                                    grant.resources.contains(&UserDomainResource::BrowserTab {
+                                        tab_id: id.into(),
+                                    })
+                                })
+                            });
+                        }
                     }
                 }
                 if let Some(tab) = payload["agent_activity"]["tab_id"].as_str() {

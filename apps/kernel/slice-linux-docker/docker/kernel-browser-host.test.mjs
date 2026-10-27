@@ -13,6 +13,7 @@ import { candidates as macCandidates, launchEnvironment as macEnvironment } from
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
 import { PointerOutsideViewport } from "./kernel-browser-refusal.mjs";
+import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 // These fixtures exercise the host with the mirror and display kill-switched; tests that need them on set "1" themselves.
 process.env.CHARIOX_KERNEL_BROWSER_MIRROR ??= '0'; process.env.CHARIOX_KERNEL_BROWSER_DISPLAY ??= '0';
 
@@ -79,6 +80,53 @@ async function using(callback) {
   const context = fixture(root);
   try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
+
+test("MP-08/MP-09/MP-10/MP-11 a dialog without Chrome chrome is shared and answerable while its renderer is blocked", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.com" });
+  const tab = host.tabs.get(opened.tabs[0].tab_id);
+  host.browser.dialogDefaults = new BrowserDialogDefaults();
+  host.browser.dialogDefaults.observe({ method: "Page.javascriptDialogOpening", params: {
+    type: "alert", message: "Hello from the page", url: "https://example.com/path" } }, tab.target_id, tab.document_id);
+  host.browser.reconcile = async () => { throw Error("blocked renderer must not be queried"); };
+  const state = await host.handle({ id: 1, method: "host.browser", params: { op: "state", state_wait: true } });
+  assert.equal(state.ok, true);
+  assert.equal(state.result.chrome_window, null);
+  assert.equal(state.result.dialogs.length, 1);
+  const dialog = state.result.dialogs[0];
+  assert.equal(dialog.message, "Hello from the page");
+  assert.equal(dialog.origin, "https://example.com");
+  assert.equal(dialog.tab_id, tab.tab_id);
+  assert.equal(typeof state.result._state_signal, "number");
+  const answer = { op: "dialog", ...dialog, action: "accept" };
+  host.browser.handleDialog = async request => {
+    assert.equal(request.target_id, tab.target_id);
+    assert.equal(request.action, "accept");
+    host.browser.dialogDefaults.delete(tab.target_id);
+  };
+  const answered = await host.handle({ id: 2, method: "host.browser", params: answer });
+  assert.equal(answered.ok, true);
+  assert.deepEqual(answered.result.dialogs, []);
+  const stale = await host.handle({ id: 3, method: "host.browser", params: answer });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error.code, "browser_dialog_invalid");
+  assert.deepEqual(scheduleHostRequest({ method: "host.browser", params: answer }), { kind: "bridge" });
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 a dialog opening during a state read releases that read", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.com" });
+  const tab = host.tabs.get(opened.tabs[0].tab_id);
+  host.browser.dialogDefaults = new BrowserDialogDefaults();
+  host.browser.reconcile = async () => {
+    host.browser.dialogDefaults.observe({ method: "Page.javascriptDialogOpening", params: {
+      type: "confirm", message: "Continue?", url: "https://example.com" } }, tab.target_id, "new-document");
+    host.stateSignal.notify();
+    return new Promise(() => {});
+  };
+  const state = await host.request({ op: "state", state_wait: true });
+  assert.equal(state.dialogs[0].document_id, "new-document");
+  assert.equal(state.tabs[0].document_id, "new-document");
+  assert.equal(host.stateSignal.waiters.size, 0);
+}));
 
 test("MP-08/MP-10 idle App bridge drains do not hold host input or replies", { timeout: 5000 }, () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
@@ -1539,7 +1587,7 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 530 fixture', () => using(async ({ host }) => {
+test('MP-08 public Browser state keys match the protocol 630 fixture', () => using(async ({ host }) => {
   const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
@@ -1549,7 +1597,8 @@ test('MP-08 public Browser state keys match the protocol 530 fixture', () => usi
     host.tabGroups = { active: async () => host.tabs.get(tab.tab_id).target_id };
     host.chromium.policy = 'managed';
     const state = await host.request({ op: 'state' });
-    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), fixture.state_keys);
+    const dialogs = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-dialog-630.json', import.meta.url), 'utf8'));
+    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), dialogs.state_keys);
     assert.deepEqual(Object.keys(state.chrome_window).sort(), fixture.chrome_window_keys);
     host.chromeWindows.auxiliaryState = () => [{ auxiliary_id: 1, x: 0, y: 0, width: 2, height: 2 }];
     assert.deepEqual(Object.keys((await host.request({ op: 'state' })).chrome_window.auxiliary[0]).sort(), fixture.auxiliary_keys);

@@ -5498,3 +5498,27 @@ kernels forwarding these operations require peer 232. The encrypted carrier's
 12 MiB prompt request admission changes bounds without adding a wire shape.
 Older history without `size_bytes` remains readable. The protocol fixtures and
 shape/hash tests cover both changes under this shared pair.
+
+### Shared page JavaScript dialogs (local 630 / peer 233)
+
+MP-08 / MP-09 / MP-10 / MP-11: browser `state` and `state_wait` expose
+`dialogs[]` with `dialog_id`, `tab_id`, `generation`, `document_id`, `kind`
+(`alert`, `confirm`, `prompt`, `beforeunload`), `message` and `origin`.
+The kernel controller retains one pending identity per page from CDP opening
+and closing events, independently of native Chrome window availability.
+A dialog opening during a state read releases that read without waiting on
+its blocked renderer. Navigation, target retirement and disconnect retire it.
+
+Viewers and agent browser tools answer through the same `KernelBrowser`
+`dialog` command with the four exact identity fields and `action` (`accept`
+or `dismiss`). Optional `prompt_text` is bounded to 2048 UTF-8 bytes; omission
+preserves the private prompt default and an explicit empty string clears it.
+Defaults and entered replies are excluded from the event journal. A replaced,
+answered or concurrently claimed identity is refused without answering another
+dialog. The answer bypasses renderer observation barriers, retains ordinary
+browser authority checks and wakes shared state readers.
+
+The Web dialog presentation depends on 630 and feature-detects the optional
+field; older kernels keep their existing behavior and the overall Web minimum
+does not rise. Both native-window and mirror/video viewers use this shared
+state. The relay remains an opaque encrypted carrier.

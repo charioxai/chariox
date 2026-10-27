@@ -155,6 +155,29 @@ test("M2 proves shadow traversal, nested-frame ownership, and cross-frame stalen
   );
 });
 
+test("MP-08/MP-09/MP-10/MP-11 pending dialogs expose the shared identity and reject an older answer", async () => {
+  const connection = new ControllerConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  try {
+    await browser.reconcile(viewport);
+    const open = type => connection.emit({ method: "Page.javascriptDialogOpening", sessionId: "session-a",
+      params: { type, message: "Continue?", url: "https://example.com/path?private=query", defaultPrompt: "private default" } });
+    open("confirm");
+    const [dialog] = browser.dialogDefaults.pending();
+    assert.equal(dialog.kind, "confirm");
+    assert.equal(dialog.message, "Continue?");
+    assert.equal(dialog.origin, "https://example.com");
+    assert.equal(dialog.document_id, "loader-a");
+    assert(!JSON.stringify(dialog).includes("private"));
+    open("beforeunload");
+    await assert.rejects(browser.handleDialog({ target_id: "target-a", document_id: "loader-a", dialog_id: dialog.dialog_id, action: "accept" }), { code: "browser_dialog_invalid" });
+    const [current] = browser.dialogDefaults.pending();
+    await browser.handleDialog({ target_id: "target-a", document_id: "loader-a", dialog_id: current.dialog_id, action: "dismiss" });
+    assert.deepEqual(lastCall(connection, "Page.handleJavaScriptDialog").params, { accept: false });
+    assert.deepEqual(browser.dialogDefaults.pending(), []);
+  } finally { await browser.close(); }
+});
+
 test("M2 keeps dialog answers document-bound, exactly once, and bounded on CDP timeout", async () => {
   const connection = new ControllerConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });

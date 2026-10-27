@@ -933,14 +933,21 @@ export class BrowserCdpClient {
     }
     const answer = promptText ?? defaultPrompt;
     assertNotCancelled(signal);
-    await connection.send(
+    if (rawRequest.dialog_id != null && !this.dialogDefaults.claim(targetId, rawRequest.dialog_id, documentId)) {
+      throw new BrowserControllerError("browser_dialog_invalid", "browser dialog is no longer pending; read the current browser state");
+    }
+    try { await connection.send(
       "Page.handleJavaScriptDialog",
       {
         accept: action === "accept",
         ...(action === "accept" && answer != null ? { promptText: answer } : {}),
       },
       sessionId,
-    );
+    ); } finally { this.dialogDefaults.release(rawRequest.dialog_id); }
+    // Do not retire a replacement dialog that opened while CDP acknowledged this answer.
+    if (rawRequest.dialog_id != null && this.dialogDefaults.current(targetId, rawRequest.dialog_id, documentId)) {
+      this.dialogDefaults.delete(targetId);
+    }
     return {
       browser_generation: this.browserGeneration,
       target_id: targetId,

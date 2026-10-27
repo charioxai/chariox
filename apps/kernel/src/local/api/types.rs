@@ -373,4 +373,5 @@ pub use workspace::*;
 /// snapshot (`viewport_first`, `deferred` records, `snapshot_viewport_complete`) and `:visited` links (`visited_links`);
 /// 588 leaves the predecessor list to keep it within the 32-entry policy.
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 629;
+/// MP-08/MP-09/MP-10/MP-11: allocated 630 adds shared page dialog state and exact-identity answers.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 630;

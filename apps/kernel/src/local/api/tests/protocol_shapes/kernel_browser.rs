@@ -557,7 +557,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "6ce4900ee06f9b8f02e071bd50f34b6adaac3aaf1a42c3613fc78dc37e990f17"
+        "0e3b52bcfabcd894947fd42eec15fefde5d91fd9f9d7303ec76bae46be125512"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -660,7 +660,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "bb264f7db52cfe8d6113fe117c3d641c03a2caded955d48847baaa79dfc12863"
+        "4cc4eaf8345472a74732b9c1d19f28838c928a0a8acbb908beef8e010abfacbf"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -668,4 +668,23 @@ fn browser_resize_protocol629_snapshot() {
     let mut foreign = snapshot["request"].clone();
     foreign["KernelBrowser"]["command"]["window_id"] = serde_json::json!(42);
     assert!(serde_json::from_value::<LocalDaemonRequest>(foreign).is_err());
+}
+
+// MP-08/MP-09/MP-10/MP-11: one browser dialog state and answer for viewers and agents.
+#[test]
+fn browser_dialog_protocol630_snapshot() {
+    let bytes = include_bytes!("browser-dialog-630.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "70fda0c32a9f9c3c9f895189095f7ca82caaaea2a8896518542474c9f3a45734"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let mut invalid = snapshot["request"].clone();
+    invalid["KernelBrowser"]["command"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dialog_id");
+    assert!(serde_json::from_value::<LocalDaemonRequest>(invalid).is_err());
 }
