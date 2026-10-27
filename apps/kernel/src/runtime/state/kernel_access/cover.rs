@@ -58,10 +58,10 @@ impl KernelRuntimeState {
             if live.covered.len() >= MAX_COVERED {
                 return Err(Refusal::CoverLimit.error());
             }
+            // Recorded before it is live: a cover that failed to persist is refused, and
+            // a retry records it again.
+            self.audit_cover(&live.summary, &target, "covered", None)?;
             live.covered.push(target.clone());
-            let summary = live.summary.clone();
-            drop(state);
-            self.audit_cover(&summary, &target, "covered", None)?;
         }
         Ok((grant, covered_process(&target)))
     }
