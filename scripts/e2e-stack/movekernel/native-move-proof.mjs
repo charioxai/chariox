@@ -124,7 +124,10 @@ async function turn(r, text, label, options = {}) {
         } else settled = undefined;
         await sleep(250);
     }
-    await turnProgress(r, label, await r.tui.send('snapshot'));
+    const snapshot = await r.tui.send('snapshot');
+    await turnProgress(r, label, snapshot);
+    await captureTui(r, label + '-timeout');
+    await record(label + '-timeout-rows', {before: [...before], rows: entries(snapshot)});
     throw Error('Real provider turn deadline: ' + label);
 }
 async function journal(r, generation) {
