@@ -225,6 +225,27 @@ impl KernelBrowserActors {
         self.actors.insert(actor.actor_id.clone(), actor);
         Ok(())
     }
+    /// MP-08/MP-11: dialog answers cannot reserve the lane held by the action
+    /// that opened them, but still honor both active and pending human takeover.
+    pub(crate) fn check_dialog_takeover(&self, host_tab: &str) -> Result<(), String> {
+        let tab = InputTarget::BrowserTab(self.tab(host_tab)?);
+        let targets = [tab, InputTarget::Desktop];
+        if targets
+            .iter()
+            .any(|target| self.ledger.owner(target).is_some())
+            || self
+                .ledger
+                .pending_takeovers()
+                .iter()
+                .any(|pending| targets.contains(&pending.target))
+        {
+            return Err("MD-3: human owns browser input; release takeover first".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn dialog_answered(&mut self, actor: &EnvironmentActor, host_tab: &str) {
+        self.tab_activity.acted(actor, host_tab);
+    }
     pub(crate) fn begin(
         &mut self,
         actor: EnvironmentActor,

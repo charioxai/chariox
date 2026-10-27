@@ -69,3 +69,101 @@ done
     );
     assert!(result.2, "dialog reply never reached the controller");
 }
+
+#[test]
+fn dialog_answer_honors_human_takeover_without_blocking_human_answers() {
+    let root = crate::test_support::TestWorktree::new("browser-dialog-takeover");
+    let script = root.path().join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+state='{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}'
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"input"'*)
+  printf started > "$root/started"
+  (while [ ! -f "$root/release" ]; do sleep 0.01; done
+   printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state") & ;;
+ *'"op":"dialog"'*)
+  printf answered > "$root/answered"
+  printf release > "$root/release"
+  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state" ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.path().to_path_buf());
+    host.install_fixture_backend("alice", &script, root.path());
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
+
+    host.set_focus("alice", Some("agent"));
+    host.load("alice", "agent").unwrap();
+    let admission = host.admit("alice", "agent").unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::BrowserTab {
+            tab_id: "host-tab-a".into(),
+        },
+        false,
+    )
+    .unwrap();
+    host.request_takeover(
+        "alice",
+        EnvironmentActor::new("terminal:human", EnvironmentActorKind::Human, "Human"),
+        "host-tab-a",
+        1,
+    )
+    .unwrap();
+    let params = json!({"op":"dialog","tab_id":"host-tab-a","generation":1,"document_id":"d","dialog_id":"current-dialog","action":"accept","observed_by":"terminal:human"});
+    let refused = host.protected_request_admitted(
+        "alice",
+        Some(&admission),
+        "host.browser",
+        params.clone(),
+        policy.clone(),
+    );
+    let reached = root.path().join("answered").exists();
+    let human = host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        params.clone(),
+        policy.clone(),
+    );
+    host.release_input("alice", "terminal:human", "host-tab-a", 1)
+        .unwrap();
+    let agent =
+        host.protected_request_admitted("alice", Some(&admission), "host.browser", params, policy);
+    let activity = host.actor_snapshot("alice").unwrap()["agent_activity"].clone();
+    host.shutdown().unwrap();
+    assert!(matches!(
+        refused,
+        Err(crate::error::HostFailure::Refused(
+            crate::error::UserDomainRefusalReason::NotGranted
+        ))
+    ));
+    assert!(!reached, "refused answer must not reach the controller");
+    assert!(
+        human.is_ok(),
+        "human answers remain unrestricted: {human:?}"
+    );
+    assert!(agent.is_ok(), "release restores agent answers: {agent:?}");
+    assert_eq!(activity["actor"]["actor_id"], "agent:agent");
+}
