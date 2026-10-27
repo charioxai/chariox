@@ -315,7 +315,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
     assert_eq!(provider_errors.len(), 2);
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[0].bytes),
-        "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
+        "Provider error. Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Fix the cause named in the message, then send the request again."
     );
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[1].bytes),
@@ -331,7 +331,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             event.kind == crate::history::HistoryEventKind::ProviderError
                 && event.content.as_deref()
                     == Some(
-                        "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model.",
+                        "Provider error. Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Fix the cause named in the message, then send the request again.",
                     )
         })
         .collect::<Vec<_>>();
@@ -349,7 +349,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             .expect("provider run should exist")
             .terminal_diagnostic(),
         Some(
-            "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
+            "Provider error. Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Fix the cause named in the message, then send the request again."
         )
     );
     assert_eq!(

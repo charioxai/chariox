@@ -25,7 +25,7 @@ impl ProviderFailureCause {
         match self {
             Self::Overloaded => "overloaded",
             Self::UsageLimit => "usage limit",
-            Self::SignInRequired => "sign-in required",
+            Self::SignInRequired => "Sign-in required",
             Self::ProviderCrashed => "provider crashed",
             Self::Network => "network",
             Self::Other => "other",
@@ -42,6 +42,19 @@ pub struct ProviderFailure {
     pub message: String,
 }
 
+impl ProviderFailureCause {
+    fn headline(self) -> &'static str {
+        match self {
+            Self::Overloaded => "Provider overloaded",
+            Self::UsageLimit => "Usage limit reached",
+            Self::SignInRequired => "Sign-in required",
+            Self::ProviderCrashed => "Provider stopped unexpectedly",
+            Self::Network => "Network problem",
+            Self::Other => "Provider error",
+        }
+    }
+}
+
 impl ProviderFailure {
     /// One line for event summaries, such as `overloaded, retryable`.
     pub fn summary(&self) -> String {
@@ -51,6 +64,62 @@ impl ProviderFailure {
             "not retryable"
         };
         format!("{}, {retry}", self.cause.label())
+    }
+
+    /// What the user does next. Chariox retries nothing, so this only says
+    /// what to change before sending the request again.
+    fn recovery(&self) -> &'static str {
+        match (self.cause, self.retryable) {
+            (ProviderFailureCause::Overloaded, _) => {
+                "The provider is overloaded; send the request again in a moment."
+            }
+            (ProviderFailureCause::UsageLimit, true) => {
+                "The provider is rate limiting requests; wait a minute, then send the request again."
+            }
+            (ProviderFailureCause::UsageLimit, false) => {
+                "Wait for the limit to reset (the message gives the time when the provider does) or switch this agent to another account, then send the request again."
+            }
+            (ProviderFailureCause::SignInRequired, _) => {
+                "Sign in again in Provider Accounts, then send the request again."
+            }
+            (ProviderFailureCause::ProviderCrashed, _) => {
+                "The provider process ended; send the request again to start it."
+            }
+            (ProviderFailureCause::Network, _) => {
+                "Check the connection to the provider, then send the request again."
+            }
+            (ProviderFailureCause::Other, true) => "Send the request again.",
+            (ProviderFailureCause::Other, false) => {
+                "Fix the cause named in the message, then send the request again."
+            }
+        }
+    }
+
+    /// The transcript line every client shows for a failed turn: the cause,
+    /// the harness's own words and what to do next.
+    pub fn notice(&self) -> String {
+        const MAX_MESSAGE_CHARS: usize = 400;
+        let message = self
+            .message
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let message = if message.chars().count() > MAX_MESSAGE_CHARS {
+            format!(
+                "{}...",
+                message.chars().take(MAX_MESSAGE_CHARS).collect::<String>()
+            )
+        } else {
+            message
+        };
+        let message = message.trim_end_matches('.');
+        let headline = self.cause.headline();
+        let reason = if message.is_empty() {
+            String::new()
+        } else {
+            format!(" {message}.")
+        };
+        format!("{headline}.{reason} {}", self.recovery())
     }
 
     pub(crate) fn new(cause: ProviderFailureCause, retryable: bool, message: &str) -> Self {
@@ -168,6 +237,7 @@ fn rate_limit_clears(normalized: &str) -> bool {
         "too many requests",
     ];
     let exhausted = [
+        "hit your",
         "usage limit",
         "session limit",
         "monthly limit",
@@ -285,6 +355,31 @@ mod tests {
         let framed =
             super::super::prompt_signals::provider_coded_failure_text("Codex", "other", &message);
         assert_eq!(ProviderFailure::classify("codex", &framed).message, message);
+    }
+
+    #[test]
+    fn every_class_notice_names_the_cause_the_harness_words_and_a_recovery() {
+        let weekly = ProviderFailure::classify(
+            "claude",
+            "You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC)",
+        );
+        assert_eq!(weekly.cause, ProviderFailureCause::UsageLimit);
+        assert!(!weekly.retryable);
+        assert_eq!(
+            weekly.notice(),
+            "Usage limit reached. You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC). Wait for the limit to reset (the message gives the time when the provider does) or switch this agent to another account, then send the request again."
+        );
+        for (adapter, text, headline, recovery) in [
+            ("claude", "API Error: 529 Overloaded. This is a server-side issue", "Provider overloaded.", "send the request again in a moment"),
+            ("claude", "Not logged in \u{b7} Please run /login", "Sign-in required.", "Sign in again in Provider Accounts"),
+            ("claude", "API Error: Connection refused (ECONNREFUSED)", "Network problem.", "Check the connection to the provider"),
+            ("claude", "Claude Code exited before completing the active turn: exit status: 1", "Provider stopped unexpectedly.", "send the request again to start it"),
+        ] {
+            let notice = ProviderFailure::classify(adapter, text).notice();
+            assert!(notice.starts_with(headline), "{notice}");
+            assert!(notice.contains(text.trim_end_matches('.')), "{notice}");
+            assert!(notice.contains(recovery), "{notice}");
+        }
     }
 
     #[test]
