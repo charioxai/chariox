@@ -30,6 +30,13 @@ const base = (nodes: Mirror2Record[], extra: Partial<Mirror2Packet> = {}): Mirro
 const tree = (...rest: Mirror2Record[]): Mirror2Record[] => [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, ...rest]
 const element = (tag: string, attrs: Record<string, string> = {}, extra: Partial<Mirror2Record> = {}): Mirror2Record => ({ id: 'n3', parent: 'n2', kind: 'element', tag, attrs, ...extra })
 
+test('MP-10: protocol 629 mirror accepts the full shared resize range', () => {
+  for (const [css_width, css_height] of [[320, 200], [900, 600], [1920, 1080]] as const)
+    assert.doesNotThrow(() => validateMirror2Packet(base(tree(), { css_width, css_height }), new Map()))
+  for (const [css_width, css_height] of [[319, 200], [320, 199], [1921, 1080], [1920, 1081], [900.5, 600]] as const)
+    assert.throws(() => validateMirror2Packet(base(tree(), { css_width, css_height }), new Map()), /mirror packet bounds/)
+})
+
 test('MP-11: v2 refuses active elements, handlers, navigable URLs and fetching CSS', () => {
   for (const tag of ['script', 'noscript', 'template', 'object', 'embed', 'base', 'meta', 'link', 'frame', 'portal', 'Script', 'x y'])
     assert.throws(() => validateMirror2Packet(base(tree(element(tag))), new Map()), /unsafe mirror/)
