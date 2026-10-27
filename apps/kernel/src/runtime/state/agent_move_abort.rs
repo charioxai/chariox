@@ -34,32 +34,49 @@ impl KernelRuntimeState {
         if matches!(operation.phase, HomeMovePhase::Cancelling) {
             return self.finish_agent_move_abort(operation).await;
         }
-        if !matches!(
-            operation.phase,
-            HomeMovePhase::Fenced
-                | HomeMovePhase::SourceStopped
-                | HomeMovePhase::Captured { .. }
-                | HomeMovePhase::Materialized { .. }
-        ) {
+        // A bound remote target is still uncommitted, so failed target setup can be cancelled;
+        // the target refuses if it already activated.
+        let remote_target_bound = operation.target_ref.is_some()
+            && matches!(operation.phase, HomeMovePhase::Bound { .. });
+        if !remote_target_bound
+            && !matches!(
+                operation.phase,
+                HomeMovePhase::Fenced
+                    | HomeMovePhase::SourceStopped
+                    | HomeMovePhase::Captured { .. }
+                    | HomeMovePhase::Materialized { .. }
+            )
+        {
             return Err(move_error("This Move may already own a target lease. Finish the operation, then Return through a new generation"));
         }
         let current = self.owned.agent_store.get_agent(agent.id())?;
         let source_binding = operation.source_remote.as_ref();
-        let same_source = match (source_binding, current.remote_execution()) {
+        let bound_target = match &operation.phase {
+            HomeMovePhase::Bound { remote, .. } => remote.as_ref(),
+            _ => None,
+        };
+        let same_binding = |expected: Option<&crate::agent::RemoteAgentBinding>| match (
+            expected,
+            current.remote_execution(),
+        ) {
             (None, None) => true,
-            (Some(source), Some(current)) => {
-                source.execution_lease_id == current.execution_lease_id
-                    && source.worker_kernel_id == current.worker_kernel_id
+            (Some(expected), Some(current)) => {
+                expected.execution_lease_id == current.execution_lease_id
+                    && expected.worker_kernel_id == current.worker_kernel_id
             }
             _ => false,
         };
-        if !same_source {
+        let on_target = bound_target.is_some() && same_binding(bound_target);
+        if !on_target && !same_binding(source_binding) {
             return Err(move_error(
                 "The execution lease changed during Move. Finish that generation before returning",
             ));
         }
         if operation.target_ref.is_some()
-            && matches!(operation.phase, HomeMovePhase::Materialized { .. })
+            && matches!(
+                operation.phase,
+                HomeMovePhase::Materialized { .. } | HomeMovePhase::Bound { .. }
+            )
         {
             let response = self
                 .move_peer_target(
@@ -77,11 +94,40 @@ impl KernelRuntimeState {
         } else if operation.target_ref.is_none() {
             self.abort_agent_move_target(&operation.identity).await?;
         }
+        if on_target {
+            self.restore_agent_move_source_route(&operation).await?;
+        }
         // Persist cancellation before source dispatch can reopen. Restart must
         // finish cancellation rather than resume the original Move.
         operation.phase = HomeMovePhase::Cancelling;
         let operation = self.owned.agent_moves.save_home(operation)?;
         self.finish_agent_move_abort(operation).await
+    }
+
+    /// The target is gone, so the agent returns to the route and workspace it had before binding.
+    async fn restore_agent_move_source_route(
+        &self,
+        operation: &crate::agent_move::HomeMoveOperation,
+    ) -> Result<(), DaemonError> {
+        self.with_app_side_effect(|app| {
+            let mut agent = app.agents().get_agent(&operation.identity.home_agent_id)?;
+            agent.set_remote_execution(operation.source_remote.clone());
+            app.agents().restore_agent(agent);
+            let restored = app.agents().update_agent_config(
+                &operation.identity.home_agent_id,
+                None,
+                None,
+                None,
+                Some(operation.original_agent.worktree_id().map(String::from)),
+            )?;
+            app.durable_state_store().append_event(
+                "agent.updated",
+                Some(restored.id().into()),
+                serde_json::json!({"agent": restored, "source": "agent_move_abort"}),
+            )?;
+            Ok::<_, DaemonError>(())
+        })
+        .await
     }
 
     pub(super) async fn finish_agent_move_abort(

@@ -75,19 +75,12 @@ impl DaemonApp {
         if target.capture.identity != *identity {
             return Err(move_error("Move target generation changed"));
         }
-        let has_agent = target.execution_lease_id.as_deref().is_some_and(|id| {
-            self.leased_agents
-                .values()
-                .any(|agent| agent.lease_id == id)
-        });
-        if target.active
-            || target.backing.is_some()
-            || target.backing_agent_id.is_some()
-            || has_agent
-        {
-            return Err(move_error("The target already holds a Move lease with an agent; finish the operation before returning"));
+        if target.active {
+            return Err(move_error(
+                "The target already activated this Move; finish the operation before returning",
+            ));
         }
-        // Tombstone this generation before retiring its empty lease. Delayed
+        // Tombstone this generation before retiring its lease. Delayed
         // creates stay refused even after a newer generation starts.
         target.retired = true;
         let lease_id = target.execution_lease_id.clone();

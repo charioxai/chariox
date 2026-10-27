@@ -164,3 +164,77 @@ async fn mk04_public_move_ready_does_not_ignore_provider_teardown_error() {
         .end_agent_provider_run(run.session_id(), run.agent_instance_id().unwrap())
         .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk10_failed_target_setup_can_be_cancelled_and_retried_with_a_fixed_recipe() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, _) = crash_fixture().await;
+    {
+        let home = fixture.home.lock().await;
+        let session = home.sessions().get_session(&session).unwrap();
+        let definition = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "origin": "user_authored",
+            "source": "commands",
+            "target_platform": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            "source_path": null,
+            "inputs": [],
+            "path_entries": [],
+            "setup_steps": [{"kind": "command", "command": "exit 7"}],
+            "validation_commands": ["true"]
+        }))
+        .unwrap();
+        home.sessions
+            .write()
+            .update_project_environment_definition(
+                session.project_id(),
+                definition,
+                session.owner_user_id(),
+            )
+            .unwrap();
+    }
+    let move_to_worker = serde_json::json!({"MoveAgentToRemote": {"session_id": session, "agent_ref": fixture.agent_id, "machine_ref": fixture.presences[0].machine_id}});
+    let error = dispatch_move_value(&fixture, move_to_worker.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Project setup failed"),
+        "{error}"
+    );
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "bound"
+    );
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}}))
+        .await
+        .expect("a Move whose target setup failed must be cancellable before activation");
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "rolled_back"
+    );
+    let home = fixture.home.lock().await;
+    assert!(!home
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+    assert!(home
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .is_none());
+    drop(home);
+    assert!(
+        fixture.workers[0].lock().await.leased_agents.is_empty(),
+        "cancelling must retire the target's backing agent"
+    );
+    install_move_setup_definition(&fixture, &session).await;
+    dispatch_move_value(&fixture, move_to_worker)
+        .await
+        .expect("a fixed recipe must let the next generation move");
+    assert_eq!(
+        move_journal(&fixture, &session).await["identity"]["generation"],
+        2
+    );
+}

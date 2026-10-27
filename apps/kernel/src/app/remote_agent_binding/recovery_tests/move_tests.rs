@@ -1176,15 +1176,32 @@ async fn mk03_abort_captured_move_releases_source_and_allows_new_generation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mk03_abort_refuses_after_target_lease_binding() {
+async fn mk03_abort_refuses_after_target_activation() {
     let (fixture, session, _) = crash_fixture().await;
     interrupt_public_move(&fixture, &session, "bound").await;
+    let operation = move_journal(&fixture, &session).await["identity"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    {
+        // Lost activation reply: the target committed while the home journal is still Bound.
+        let worker = fixture.workers[0].lock().await;
+        let mut target = worker.agent_moves.target(&operation).unwrap();
+        target.active = true;
+        worker.agent_moves.save_target(target).unwrap();
+    }
     let error = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.unwrap_err();
-    assert!(error.to_string().contains("lease"), "{error}");
+    assert!(error.to_string().contains("activated"), "{error}");
     assert_eq!(
         move_journal(&fixture, &session).await["phase"]["phase"],
         "bound"
     );
+    {
+        let worker = fixture.workers[0].lock().await;
+        let mut target = worker.agent_moves.target(&operation).unwrap();
+        target.active = false;
+        worker.agent_moves.save_target(target).unwrap();
+    }
     move_request(&fixture, &session, true).await;
 }
 
