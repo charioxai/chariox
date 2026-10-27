@@ -110,3 +110,56 @@ async fn mk04_public_move_keeps_prepared_provider_for_first_prompt() {
         "the next turn must find the tool installed under preparation HOME"
     );
 }
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_public_move_ready_does_not_ignore_provider_teardown_error() {
+    use crate::provider::{ProviderLifecycleFailureInjection, ProviderLifecycleFailureStage};
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, path) = crash_fixture().await;
+    install_move_setup_definition(&fixture, &session).await;
+    std::fs::write(path.join(".move-setup-gate"), "").unwrap();
+    let (_, (injection, run)) = tokio::join!(move_request(&fixture, &session, true), async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let worker = fixture.workers[0].lock().await;
+            if let Some(run) = worker.providers().list_runs().into_iter().find(|run| {
+                run.working_directory()
+                    .is_some_and(|path| path.join(".move-setup-waiting").is_file())
+            }) {
+                let injection = ProviderLifecycleFailureInjection::install(
+                    run.id(),
+                    ProviderLifecycleFailureStage::End,
+                );
+                std::fs::write(
+                    run.working_directory().unwrap().join(".move-setup-release"),
+                    "",
+                )
+                .unwrap();
+                break (injection, run);
+            }
+            drop(worker);
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Move must reach its stored setup recipe"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let mut worker = fixture.workers[0].lock().await;
+    // A successful setup retains its ordinary run. Prove that the failing
+    // teardown was never attempted after Ready, rather than silently ignored.
+    let result = worker.end_agent_provider_run(run.session_id(), run.agent_instance_id().unwrap());
+    assert!(
+        result.is_err(),
+        "Ready must not consume and ignore a provider teardown error"
+    );
+    assert_eq!(
+        worker.providers().get_run(run.id()).unwrap().state(),
+        crate::provider::ProviderRunState::Running
+    );
+    drop(injection);
+    worker
+        .end_agent_provider_run(run.session_id(), run.agent_instance_id().unwrap())
+        .unwrap();
+}

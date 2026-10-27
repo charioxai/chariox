@@ -24,6 +24,16 @@ impl DaemonApp {
         if run.state() == crate::provider::ProviderRunState::Ended {
             return Ok(());
         }
+        #[cfg(test)]
+        if crate::provider::take_provider_lifecycle_failure_for_test(
+            run.id(),
+            crate::provider::ProviderLifecycleFailureStage::End,
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "end agent provider run",
+                message: "injected provider teardown failure".into(),
+            });
+        }
         let ended = self
             .providers()
             .terminate_run_provider_only(session_id, run.id())?
