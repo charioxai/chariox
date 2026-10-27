@@ -59,6 +59,7 @@ impl KernelRuntimeState {
         target_ref: Option<String>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent_id = agent.id().to_string();
+        self.wait_for_agent_turn(session_id, &agent_id).await?;
         let result = self
             .move_agent_transaction_inner(session_id, agent, target_ref)
             .await;
@@ -71,6 +72,37 @@ impl KernelRuntimeState {
             self.spawn_agent_move_queue_promotion(session_id, &agent_id)?;
         }
         result
+    }
+
+    /// A turn is never interrupted to move its agent: the request waits for the turn to end,
+    /// and cancelling it (`abort_agent_move`) or dropping it ends the wait.
+    async fn wait_for_agent_turn(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let busy = || {
+            self.owned
+                .prompt_state_owner
+                .agent_turn_busy(&session, agent_id)
+        };
+        if !busy() {
+            return Ok(());
+        }
+        let wait = self
+            .owned
+            .agent_moves
+            .waiting
+            .begin(agent_move_wait_key(session_id, agent_id))
+            .ok_or_else(|| move_error("This agent already has a Move waiting for its turn to end. Cancel it before requesting another"))?;
+        while busy() && !wait.cancelled() {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        if wait.cancelled() {
+            return Err(move_error("Move cancelled before the agent's turn ended"));
+        }
+        Ok(())
     }
 
     async fn move_agent_transaction_inner(
@@ -554,4 +586,8 @@ impl KernelRuntimeState {
             };
         }
     }
+}
+
+pub(super) fn agent_move_wait_key(session_id: &str, agent_id: &str) -> String {
+    format!("{session_id}:{agent_id}")
 }

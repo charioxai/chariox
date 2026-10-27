@@ -120,8 +120,12 @@ recoverable failure can release the source and roll back. After commitment,
 recovery finishes target activation and source retirement. An unavailable peer
 leaves the operation fenced for retry after reconnection.
 
-A source with active provider work or a live leased process wake must finish or
-cancel that work first. If a restart lost the source run before its checkpoint
+A Move or Return requested while the agent's turn runs does not interrupt it:
+the request stays open until the turn ends and then runs. Cancelling it
+(`MoveAgentToLocal` with `abort_pending`) ends that wait without touching the
+agent; the wait is not journaled, so it also ends if the request is dropped.
+Queued prompts start before the Move can begin. A live leased process wake must
+finish or cancel first. If a restart lost the source run before its checkpoint
 was captured, the operation rolls back; resume the source for one completed
 turn before retrying. A stored, still-required checkpoint also supports an
 immediate Return before the first target turn. Scope remains the managed Codex

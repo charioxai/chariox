@@ -15,6 +15,7 @@ pub(crate) use composition::{agent_configuration_sha256, AgentMoveComposition};
 pub use composition::{AgentMoveCommitReceipt, AgentMoveReadiness, AgentMoveRequirements};
 pub mod peer;
 mod store;
+mod waiting;
 pub use artifacts::AgentMoveArtifactKind;
 pub(crate) use artifacts::MOVE_CHUNK_BYTES;
 pub(crate) use store::AgentMoveStore;

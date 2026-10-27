@@ -17,6 +17,18 @@ impl KernelRuntimeState {
         if agent.session_id() != session_id {
             return Err(move_error("The agent does not belong to this Room"));
         }
+        // A Move that still waits for the turn holds no operation yet; ending its wait cancels it.
+        if self
+            .owned
+            .agent_moves
+            .waiting
+            .cancel(&super::agent_move_runtime::agent_move_wait_key(
+                session_id,
+                agent.id(),
+            ))
+        {
+            return self.owned.agent_store.get_agent(agent.id());
+        }
         let _operation = self
             .owned
             .agent_moves

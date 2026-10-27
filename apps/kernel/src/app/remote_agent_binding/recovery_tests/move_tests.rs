@@ -2650,3 +2650,115 @@ async fn mk04_locked_required_vault_rejects_before_publication_and_activation() 
 
 #[path = "move_setup_tests.rs"]
 mod move_setup_tests;
+
+async fn dispatch_move(
+    fixture: &Fixture,
+    session: &str,
+    abort: bool,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+    let request = if abort {
+        crate::local::LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+            abort_pending: true,
+            session_id: session.into(),
+            agent_ref: fixture.agent_id.clone(),
+        })
+    } else {
+        crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id: session.into(),
+                agent_ref: fixture.agent_id.clone(),
+                machine_ref: fixture.presences[0].machine_id.clone(),
+            },
+        )
+    };
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let envelope = crate::runtime::command::KernelCommand::from_local_request(
+        "mk05-wait",
+        None,
+        None,
+        &request,
+    );
+    router.dispatch(envelope, request).await
+}
+
+async fn agent_is_remote(fixture: &Fixture) -> bool {
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .is_some()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk05_move_requested_during_a_turn_waits_for_it_and_can_be_cancelled() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, _) = crash_fixture().await;
+    let room = fixture
+        .home
+        .lock()
+        .await
+        .sessions()
+        .get_session(&session)
+        .unwrap();
+    let started = fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "turn-1",
+                "client",
+                &fixture.agent_id,
+                "work",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    // A Move requested during the turn waits; cancelling ends the wait and leaves the agent alone.
+    let (moved, cancelled) = tokio::join!(dispatch_move(&fixture, &session, false), async {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!agent_is_remote(&fixture).await);
+        assert!(
+            fixture
+                .home
+                .lock()
+                .await
+                .agent_moves
+                .for_agent(&session, &fixture.agent_id)
+                .is_none(),
+            "a waiting Move must not fence the running agent"
+        );
+        dispatch_move(&fixture, &session, true).await
+    });
+    cancelled.expect("a waiting Move can be cancelled");
+    let error = moved.expect_err("the cancelled request ends with a reason");
+    assert!(error.to_string().contains("cancelled"), "{error}");
+    assert!(!agent_is_remote(&fixture).await);
+    // The same request proceeds once the turn has ended.
+    let (moved, ()) = tokio::join!(dispatch_move(&fixture, &session, false), async {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!agent_is_remote(&fixture).await);
+        fixture
+            .home
+            .lock()
+            .await
+            .prompt_state_owner()
+            .complete_active_prompt_only(&room, &fixture.agent_id);
+    });
+    moved.expect("the Move runs after the turn ends");
+    assert!(agent_is_remote(&fixture).await);
+}
