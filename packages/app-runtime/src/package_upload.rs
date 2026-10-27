@@ -16,7 +16,7 @@ pub use model::{
 use crate::private_fs::Dir;
 use model::{
     valid_digest, valid_handle, validate_owner, validate_request_id, DurableState, Entry, Result,
-    StoreState, ABORTED_RECEIPT_MS, MAX_READERS,
+    StoreState, ABORTED_RECEIPT_MS, MAX_READERS, RETAINED_UPLOADS_PER_SLOT,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -351,8 +351,8 @@ impl PackageUploadStore {
             .ok_or(UploadError::CorruptState)?;
         entry.phase = UploadPhase::Aborted;
         // The kernel and the terminal abort every upload an install consumed.
-        // Kept until the upload's own expiry, those receipts would hold the
-        // owner's upload slots for up to the full TTL after each install.
+        // Keep retry/audit metadata briefly under its separate bound; completed
+        // installs and cancellations release active slots immediately.
         entry.expires_at_ms = entry
             .expires_at_ms
             .min(now_ms.saturating_add(ABORTED_RECEIPT_MS));
@@ -412,8 +412,20 @@ impl PackageUploadStore {
             .map(Entry::reserved_bytes)
             .sum();
         let own_total: u64 = own.iter().map(|entry| entry.reserved_bytes()).sum();
-        if state.durable.uploads.len() >= limits.max_uploads
-            || own.len() >= limits.max_uploads_per_owner
+        let active = state
+            .durable
+            .uploads
+            .values()
+            .filter(|entry| entry.phase != UploadPhase::Aborted)
+            .count();
+        let own_active = own
+            .iter()
+            .filter(|entry| entry.phase != UploadPhase::Aborted)
+            .count();
+        if active >= limits.max_uploads
+            || own_active >= limits.max_uploads_per_owner
+            || state.durable.uploads.len() >= limits.max_uploads * RETAINED_UPLOADS_PER_SLOT
+            || own.len() >= limits.max_uploads_per_owner * RETAINED_UPLOADS_PER_SLOT
             || bytes > limits.max_reserved_bytes.saturating_sub(total)
             || bytes
                 > limits

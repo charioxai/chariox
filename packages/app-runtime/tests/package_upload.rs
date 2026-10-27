@@ -590,10 +590,9 @@ fn aborted_begin_receipt_prevents_resurrection_and_expires_without_unbounded_met
         store.chunk("alice", &first.handle, 0, b"test", &digest(b"test"), 4),
         Err(UploadError::Conflict)
     ));
-    assert!(matches!(
-        store.begin("alice", "new-request", 4, &digest(b"test"), 20, 4),
-        Err(UploadError::Limit)
-    ));
+    store
+        .begin("alice", "new-request", 4, &digest(b"test"), 10, 4)
+        .unwrap();
     assert!(matches!(
         store.begin("alice", "cancelled", 4, &digest(b"next"), 20, 4),
         Err(UploadError::Conflict)
@@ -607,7 +606,7 @@ fn aborted_begin_receipt_prevents_resurrection_and_expires_without_unbounded_met
 }
 
 #[test]
-fn an_aborted_receipt_frees_its_upload_slot_after_a_minute() {
+fn an_aborted_receipt_frees_its_upload_slot_immediately() {
     let root = Root::new();
     let limits = UploadLimits {
         max_uploads: 1,
@@ -630,13 +629,20 @@ fn an_aborted_receipt_frees_its_upload_slot_after_a_minute() {
         (retried.handle.as_str(), retried.phase),
         (installed.handle.as_str(), UploadPhase::Aborted)
     );
-    assert!(matches!(
-        store.begin("owner", "next", 4, &digest(b"next"), 1_800_000, 30_000),
-        Err(UploadError::Limit)
-    ));
-    // A minute later the next install is admitted, not after the full TTL.
     let next = store
-        .begin("owner", "next", 4, &digest(b"next"), 1_800_000, 60_010)
+        .begin("owner", "next", 4, &digest(b"next"), 1_800_000, 30_000)
+        .unwrap();
+    store.abort("owner", &next.handle, 30_000).unwrap();
+    // The original receipt still expires after one minute.
+    let next = store
+        .begin(
+            "owner",
+            "after-expiry",
+            4,
+            &digest(b"next"),
+            1_800_000,
+            60_010,
+        )
         .unwrap();
     assert_eq!(next.phase, UploadPhase::Receiving);
 }
@@ -989,4 +995,152 @@ fn maintenance_discovery_uses_creation_parent_policy_and_existing_store_lease() 
         PackageUploadStore::open_or_create(&database, limits, 2),
         Err(UploadError::Busy)
     ));
+}
+
+#[test]
+fn successful_uploads_release_admission_slots_immediately() {
+    exercise_completed_uploads(true);
+}
+
+#[test]
+fn cancelled_uploads_release_admission_slots_immediately() {
+    exercise_completed_uploads(false);
+}
+
+fn exercise_completed_uploads(finalize: bool) {
+    // More than the default per-owner and global upload limits in one minute.
+    let root = Root::new();
+    let mut store = root.open();
+    let mut receipts = Vec::new();
+    for index in 0..40 {
+        let request = format!("completed-{index}");
+        let upload = store
+            .begin("owner", &request, 4, &digest(b"test"), 100_000, 1)
+            .unwrap();
+        store
+            .chunk("owner", &upload.handle, 0, b"test", &digest(b"test"), 2)
+            .unwrap();
+        // Exercise successful consumption as well as cancellation.
+        if finalize {
+            drop(store.finalize("owner", &upload.handle, 3).unwrap());
+        }
+        let receipt = store.abort("owner", &upload.handle, 4).unwrap();
+        assert_eq!(store.abort("owner", &upload.handle, 5).unwrap(), receipt);
+        assert!(!root.archive(&upload.handle).exists());
+        receipts.push((request, receipt));
+        // Recovery must apply the same accounting as admission.
+        drop(store);
+        store = PackageUploadStore::open(&root.path, UploadLimits::default(), 5).unwrap();
+    }
+    for (request, receipt) in receipts {
+        assert_eq!(
+            store
+                .begin("owner", &request, 4, &digest(b"test"), 100_000, 6)
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(store.abort("owner", &receipt.handle, 6).unwrap(), receipt);
+    }
+    // Retained receipts must not reduce either the global or per-owner live cap.
+    for owner in ["owner", "second", "third", "fourth"] {
+        for index in 0..8 {
+            store
+                .begin(
+                    owner,
+                    &format!("live-{index}"),
+                    4,
+                    &digest(b"test"),
+                    100_000,
+                    7,
+                )
+                .unwrap();
+        }
+    }
+    assert!(matches!(
+        store.begin("fifth", "over-global", 4, &digest(b"test"), 100_000, 7),
+        Err(UploadError::Limit)
+    ));
+    drop(store);
+    PackageUploadStore::open(&root.path, UploadLimits::default(), 8).unwrap();
+}
+
+#[test]
+fn receipt_budget_is_bounded_without_evicting_unexpired_retry_history() {
+    let root = Root::new();
+    let limits = UploadLimits {
+        max_uploads: 1,
+        max_uploads_per_owner: 1,
+        ..UploadLimits::default()
+    };
+    let mut store = PackageUploadStore::open(&root.path, limits, 1).unwrap();
+    let mut receipts = Vec::new();
+    for index in 0..8 {
+        let upload = store
+            .begin(
+                "owner",
+                &format!("receipt-{index}"),
+                4,
+                &digest(b"test"),
+                100_000,
+                1,
+            )
+            .unwrap();
+        receipts.push(store.abort("owner", &upload.handle, 2).unwrap());
+    }
+    assert!(matches!(
+        store.begin("owner", "over-budget", 4, &digest(b"test"), 100_000, 3),
+        Err(UploadError::Limit)
+    ));
+    drop(store);
+    store = PackageUploadStore::open(&root.path, limits, 3).unwrap();
+    for receipt in receipts {
+        assert_eq!(store.abort("owner", &receipt.handle, 4).unwrap(), receipt);
+    }
+    store.cleanup_expired(60_002).unwrap();
+    store
+        .begin(
+            "owner",
+            "after-expiry",
+            4,
+            &digest(b"test"),
+            100_000,
+            60_002,
+        )
+        .unwrap();
+}
+
+#[test]
+fn receipt_global_budget_and_live_owner_limit_remain_independent() {
+    let root = Root::new();
+    let limits = UploadLimits {
+        max_uploads: 2,
+        max_uploads_per_owner: 1,
+        ..UploadLimits::default()
+    };
+    let mut store = PackageUploadStore::open(&root.path, limits, 1).unwrap();
+    for index in 0..16 {
+        let owner = format!("owner-{index}");
+        let upload = store
+            .begin(&owner, "completed", 4, &digest(b"test"), 100_000, 1)
+            .unwrap();
+        store.abort(&owner, &upload.handle, 2).unwrap();
+    }
+    assert!(matches!(
+        store.begin("another", "over-budget", 4, &digest(b"test"), 100_000, 3),
+        Err(UploadError::Limit)
+    ));
+    drop(store);
+    store = PackageUploadStore::open(&root.path, limits, 3).unwrap();
+    store.cleanup_expired(60_002).unwrap();
+    let live = store
+        .begin("owner", "live", 4, &digest(b"test"), 100_000, 60_002)
+        .unwrap();
+    assert!(matches!(
+        store.begin("owner", "over-owner", 4, &digest(b"test"), 100_000, 60_002),
+        Err(UploadError::Limit)
+    ));
+    store.abort("owner", &live.handle, 60_002).unwrap();
+    store
+        .begin("owner", "next", 4, &digest(b"test"), 100_000, 60_002)
+        .unwrap();
 }
