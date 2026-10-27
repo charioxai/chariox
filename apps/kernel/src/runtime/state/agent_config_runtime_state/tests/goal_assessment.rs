@@ -89,8 +89,8 @@ async fn assessment_retains_bounded_rejected_dispatch_evidence() {
     assert!(data["obligations"].as_array().unwrap().is_empty());
     assert!(data["satisfied_obligations"].as_array().unwrap().is_empty());
     assert_eq!(
-        data["latest_public_answer_tail"],
-        "cold-peer summarized the README successfully"
+        data["latest_public_answer_messages"],
+        serde_json::json!(["cold-peer summarized the README successfully"])
     );
     assert_eq!(
         data["rejected_dispatch_coverage"],
@@ -497,8 +497,10 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
     assert_eq!(
-        data["latest_public_answer_tail"],
-        "GetDaemonHealth returned a healthy kernel with no projection mismatches."
+        data["latest_public_answer_messages"],
+        serde_json::json!([
+            "GetDaemonHealth returned a healthy kernel with no projection mismatches."
+        ])
     );
     assert_eq!(
         data["answer_coverage"]["shown_chars"],
@@ -522,6 +524,10 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
 
 // A full one-character answer is the A12-S04 result, not a cut-off excerpt.
 async fn count_answer_assessment_context(answer: &str) -> String {
+    count_messages_assessment_context(&[(None, answer)]).await
+}
+
+async fn count_messages_assessment_context(answers: &[(Option<&str>, &str)]) -> String {
     use crate::durable_state::agent_lifecycle::Operation;
     use crate::history::SessionHistoryEntry;
     use crate::terminal::TerminalOutputKind;
@@ -536,14 +542,16 @@ async fn count_answer_assessment_context(answer: &str) -> String {
         "Call ListSessions once and report only the count; no other tools or edits.",
     );
     request.merge_key = Some(format!("prompt:{prompt}"));
-    let answer = SessionHistoryEntry::provider_output(
-        &room,
-        "worker-run",
-        Some(&agent),
-        TerminalOutputKind::ProviderOutput,
-        None,
-        answer,
-    );
+    let answers = answers.iter().map(|(key, text)| {
+        SessionHistoryEntry::provider_output(
+            &room,
+            "worker-run",
+            Some(&agent),
+            TerminalOutputKind::ProviderOutput,
+            key.map(str::to_owned),
+            *text,
+        )
+    });
     let private_tool = SessionHistoryEntry::provider_output(
         &room,
         "worker-run",
@@ -552,7 +560,7 @@ async fn count_answer_assessment_context(answer: &str) -> String {
         None,
         r#"{"id":"count-call","tool":"chariox_kernel_request","status":"completed","input":{"request":{"ListSessions":null}},"output":"PRIVATE_MCP_OUTPUT"}"#,
     );
-    for entry in [request, private_tool, answer] {
+    for entry in [request, private_tool].into_iter().chain(answers) {
         runtime
             .owned
             .append_operational_history_entry(&entry, None, None, None);
@@ -596,12 +604,81 @@ async fn count_answer_assessment_context(answer: &str) -> String {
         .unwrap()
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: r11 check-1 received 91 characters ending
+// in `sudo window.2`; the last message must stay distinct from the retry plan.
+#[tokio::test]
+async fn assessment_preserves_captured_assistant_message_boundaries() {
+    let captured: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("goal_assessment_count_messages.json")).unwrap();
+    let answers = captured
+        .iter()
+        .map(|item| (item["merge_key"].as_str(), item["text"].as_str().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        answers
+            .iter()
+            .map(|(_, text)| *text)
+            .collect::<String>()
+            .chars()
+            .count(),
+        91
+    );
+    let context = count_messages_assessment_context(&answers).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["latest_public_answer_messages"], serde_json::json!([
+        "I’m retrying the required typed request once under the resumed task’s current sudo window.",
+        "2"
+    ]));
+    assert_eq!(data["answer_coverage"]["shown_chars"], 91);
+    assert_eq!(data["answer_coverage"]["total_chars"], 91);
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["completed_kernel_calls"][0]["request"], "ListSessions");
+    assert!(data.get("latest_public_answer_tail").is_none());
+}
+
+#[tokio::test]
+async fn assessment_keeps_provider_merged_text_in_one_message() {
+    let captured: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("goal_assessment_count_messages.json")).unwrap();
+    // These adjacent captured deltas all belong to the provider's first message.
+    let answers = captured
+        .iter()
+        .take(captured.len() - 1)
+        .map(|item| (item["merge_key"].as_str(), item["text"].as_str().unwrap()))
+        .collect::<Vec<_>>();
+    let context = count_messages_assessment_context(&answers).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!([
+        "I’m retrying the required typed request once under the resumed task’s current sudo window."
+    ])
+    );
+    // Text itself never creates a boundary, including a short trailing number.
+    let context = count_messages_assessment_context(&[
+        (Some("same-message"), "Retrying."),
+        (Some("same-message"), "2"),
+    ])
+    .await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["Retrying.2"])
+    );
+}
+
 #[tokio::test]
 async fn assessment_marks_the_full_one_character_count_as_complete() {
     let context = count_answer_assessment_context("2").await;
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
-    assert_eq!(data["latest_public_answer_tail"], "2");
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["2"])
+    );
     assert_eq!(data["answer_coverage"]["shown_chars"], 1);
     assert_eq!(data["answer_coverage"]["total_chars"], 1);
     assert_eq!(data["answer_coverage"]["complete"], true);
@@ -622,7 +699,7 @@ async fn assessment_empty_public_output_is_uncut_but_not_evidence_of_success() {
     let context = count_answer_assessment_context("").await;
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
-    assert_eq!(data["latest_public_answer_tail"], "");
+    assert_eq!(data["latest_public_answer_messages"], serde_json::json!([]));
     assert_eq!(data["answer_coverage"]["shown_chars"], 0);
     assert_eq!(data["answer_coverage"]["total_chars"], 0);
     assert_eq!(data["answer_coverage"]["complete"], true);
@@ -640,6 +717,30 @@ async fn assessment_keeps_a_genuinely_truncated_answer_incomplete() {
     assert_eq!(data["answer_coverage"]["complete"], false);
     assert_eq!(data["answer_coverage"]["truncated"], true);
     assert!(context.contains("Truncated objective/evidence coverage or missing original public context cannot mean achieved"));
+}
+
+#[tokio::test]
+async fn assessment_bounds_message_text_without_inventing_unknown_boundaries() {
+    let long = "界".repeat(4096);
+    let context =
+        count_messages_assessment_context(&[(Some("commentary"), &long), (Some("answer"), "2")])
+            .await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["界".repeat(4095), "2"])
+    );
+    assert_eq!(data["answer_coverage"]["shown_chars"], 4096);
+    assert_eq!(data["answer_coverage"]["total_chars"], 4097);
+    assert_eq!(data["answer_coverage"]["truncated"], true);
+    let context = count_messages_assessment_context(&[(None, "Retrying."), (None, "2")]).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["Retrying.2"])
+    );
 }
 
 // MP-08/MP-10/MP-11: a privacy projection is never evidence for a native check.
@@ -726,7 +827,7 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
     assert!(context.contains("Privacy withholding alone is never evidence of success"));
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
-    assert!(data["latest_public_answer_tail"].is_null());
+    assert!(data["latest_public_answer_messages"].is_null());
     assert_eq!(data["answer_coverage"]["visibility"], "protected");
     assert!(data["completed_kernel_calls"]
         .as_array()

@@ -213,6 +213,17 @@ pub(super) fn task_public_outputs<'a>(
     prompt: &str,
     run: Option<&str>,
 ) -> Vec<&'a str> {
+    task_public_output_entries(entries, prompt, run)
+        .into_iter()
+        .map(|entry| entry.text.as_str())
+        .collect()
+}
+
+pub(super) fn task_public_output_entries<'a>(
+    entries: &'a [crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+) -> Vec<&'a crate::history::SessionHistoryEntry> {
     use crate::history::SessionHistoryEntryKind as Kind;
     let key = format!("prompt:{prompt}");
     let Some(start) = entries
@@ -252,7 +263,6 @@ pub(super) fn task_public_outputs<'a>(
                     .and_then(crate::history::parse_external_provider_observed_id)
                     .is_none_or(|id| !managed_items.contains(id.provider_turn_id.as_str()))
         })
-        .map(|e| e.text.as_str())
         .collect()
 }
 
