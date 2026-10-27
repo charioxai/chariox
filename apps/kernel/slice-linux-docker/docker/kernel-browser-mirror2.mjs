@@ -113,9 +113,9 @@ function dataUrlBytes(url) {
 }
 
 // Union-free upper bound is enough for the budget: overlap only overstates.
-export const regionArea = boxes => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(1280, x + w) - Math.max(0, x)) * Math.max(0, Math.min(800, y + h) - Math.max(0, y)), 0);
+export const regionArea = (boxes, {width,height}) => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(width, x + w) - Math.max(0, x)) * Math.max(0, Math.min(height, y + h) - Math.max(0, y)), 0);
 // Opaque regions are stills/region video over the mirrored page; only a viewport they mostly cover is the video's page.
-export const regionOverBudget = boxes => regionArea(boxes) > 0.6 * 1280 * 800;
+export const regionOverBudget = (boxes, viewport) => regionArea(boxes, viewport) > 0.6 * viewport.width * viewport.height;
 
 // Compact wire records (pre-order): [idDelta, parentBack, tag | kindCode, attrs | 0, extra].
 // parentBack 0 = the context parent (null for a snapshot root, the op id for
@@ -911,7 +911,8 @@ export class Mirror2 {
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
     // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
-    if (!boxes.length || regionOverBudget(boxes) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    const viewport = this.host.pageSize(tab.tab_id);
+    if (!boxes.length || regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
@@ -928,12 +929,12 @@ export class Mirror2 {
     if (!shots.length) return out;
     boxes = shots;
     const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[1]))));
-    const x1 = Math.min(1280, Math.ceil(Math.max(...boxes.map(b => b.box[0] + b.box[2])))), y1 = Math.min(800, Math.ceil(Math.max(...boxes.map(b => b.box[1] + b.box[3]))));
+    const x1 = Math.min(viewport.width, Math.ceil(Math.max(...boxes.map(b => b.box[0] + b.box[2])))), y1 = Math.min(viewport.height, Math.ceil(Math.max(...boxes.map(b => b.box[1] + b.box[3]))));
     if (x1 <= x0 || y1 <= y0) return [];
     const clip = { x: x0, y: y0, width: x1 - x0, height: y1 - y0, scale: 1 };
     const masks = await captureRegionMasks(world.connection, world.sessionId);
     const captured = await this.host.screenshot(tab, clip);
-    const protectedRegions = await masks.afterCapture({ width: 1280 * scale, height: 800 * scale });
+    const protectedRegions = await masks.afterCapture({ width: viewport.width * scale, height: viewport.height * scale });
     const frame = maskPixels(decodePng(captured.data_base64, scale), protectedRegions.map(r => [r.x - clip.x * scale, r.y - clip.y * scale, r.width, r.height]));
     for (const { id, box } of boxes) {
       const left = Math.max(box[0], x0), top = Math.max(box[1], y0), right = Math.min(box[0] + box[2], x1), bottom = Math.min(box[1] + box[3], y1);

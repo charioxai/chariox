@@ -5,7 +5,7 @@ import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
 
 function fixture() {
   const tab = { tab_id: 'tab', document_id: 'doc', target_id: 'target' };
-  const host = { generation: 7, protection: {}, tabs: new Map([['tab', tab]]), scales: new Map([['tab', 2]]), displays: new Map(), removed: [],
+  const host = { generation: 7, protection: {}, pageSize: () => ({width:1280,height:800}), tabs: new Map([['tab', tab]]), scales: new Map([['tab', 2]]), displays: new Map(), removed: [],
     async removeDisplay(id) { this.removed.push(id); this.displays.delete(id); } };
   const stream = { id: 'mirror', scope: 'owner', tab_id: 'tab', wire: 2, document_id: 'doc', issued: 6, resetAt: 3, policy: host.protection, chain: Promise.resolve(), frames: new Map(), frameSlots: new Map(),
     introduced: new Map([['n1', 3], ['n2', 3], ['n3', 3]]), identity: new Map(), world: { ref: 'observer', connection: { isOpen: () => true }, frame: { loaderId: 'doc' } } };
@@ -114,4 +114,16 @@ test('MP-08/MP-10/MP-11 completed subscribe cancellation does not poison the own
  assert.equal(await lease.isCurrent(),true);
  assert.equal((await lease.attestationState()).media.length,1);
  await lease.close();assert.equal(await lease.isCurrent(),false);
+});
+
+test('MP-08/MP-10/MP-11: region leases cover the resized viewport and retire when it changes', async () => {
+  const f=fixture(); let size={width:1610,height:900}; f.host.pageSize=()=>({...size});
+  f.setBoxes([{id:'n3',box:[1250,780,500,200]}]);
+  const lease=await f.regions.resolve(f.target,'owner');
+  assert.deepEqual(lease.rect,{x:1250,y:780,width:360,height:120});
+  assert.equal(lease.css_width,1610); assert.equal(lease.css_height,900);
+  lease.attachDisplay({subscription_id:'display',observed_by:'owner',tab_id:'tab'});
+  size={width:1700,height:900};
+  assert.equal(lease.isAlive(),false);
+  assert.equal(await lease.isCurrent(),false); assert.deepEqual(f.host.removed,['display']);
 });
