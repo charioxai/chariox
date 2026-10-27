@@ -1,0 +1,167 @@
+{
+  "local": 632,
+  "relayPeer": 235,
+  "shapes": [
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_open",
+            "command": [
+              "/bin/cat"
+            ]
+          }
+        }
+      },
+      "sha256": "cd5f52fdbc26a81efc94ee1b27ce088a49a4c407f4e4ccb60503136e85ea0cff"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_write",
+            "exec_id": "exec-1",
+            "offset": 0,
+            "data_base64": "AP8NDQo="
+          }
+        }
+      },
+      "sha256": "e437d00f96f4e63382dda6d047ef73982b34ccad8a866b7aea0a1a418f363834"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_stdin_close",
+            "exec_id": "exec-1",
+            "offset": 5
+          }
+        }
+      },
+      "sha256": "3b91665d35fe13a6a96cf704ca19bccebcc8881a8892ec75d4b8c630f38933c0"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_read",
+            "exec_id": "exec-1",
+            "after_cursor": 7,
+            "wait_ms": 240000
+          }
+        }
+      },
+      "sha256": "e72d51674861365cd4bfd2bbed2779c73754bb3a477439bca883d77fd6d65150"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_cancel",
+            "exec_id": "exec-1"
+          }
+        }
+      },
+      "sha256": "da90d745d09af8a5b0aaa952226a13a89a8687e9aa5e5bb48ab1b3c264c7a35e"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_close",
+            "exec_id": "exec-1"
+          }
+        }
+      },
+      "sha256": "cfb9f340f4e878b8742d73d779aac2e5c96ea922907987e5d70daf530609d85e"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_opened",
+            "exec_id": "exec-1"
+          }
+        }
+      },
+      "sha256": "3c85d03eeecc57636d99f7f8dec75b17d6f9e66abcfcf7d775d8b42586e5bf31"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_input",
+            "next_offset": 5
+          }
+        }
+      },
+      "sha256": "3ba537c23acecccd017e10af37c8f272d0151100c13444a9515bfe316611bc9a"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_output",
+            "output": {
+              "chunks": [
+                {
+                  "cursor": 8,
+                  "stream": "stdout",
+                  "data_base64": "AP8="
+                },
+                {
+                  "cursor": 9,
+                  "stream": "stderr",
+                  "data_base64": "ZXJy"
+                }
+              ],
+              "next_cursor": 9,
+              "outcome": {
+                "kind": "signaled",
+                "signal": 15
+              }
+            }
+          }
+        }
+      },
+      "sha256": "2c8846c4043d064fa9eb3efd9e15da5014b083105ccab98a267ad251ea936626"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_cancelled"
+          }
+        }
+      },
+      "sha256": "98ae86dfc35a06ec1b7606c916d7c885538c8a7e2d1ae129fb86e565260e1517"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_closed"
+          }
+        }
+      },
+      "sha256": "aef274a0a7d15567562cd5eb8c6f1366ee5da1bbc768f46edf3f44de1138cf5e"
+    }
+  ]
+}

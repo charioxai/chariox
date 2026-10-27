@@ -373,4 +373,5 @@ pub use workspace::*;
 /// snapshot (`viewport_first`, `deferred` records, `snapshot_viewport_complete`) and `:visited` links (`visited_links`);
 /// 588 leaves the predecessor list to keep it within the 32-entry policy.
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 629;
+/// Version 632 adds binary Room exec with bounded pipes and cursor acknowledgements.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 632;

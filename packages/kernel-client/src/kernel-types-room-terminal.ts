@@ -77,7 +77,15 @@ export type RoomTerminalWaitResult = {
   readonly output_offset: number
 }
 
+export type ExecOutcome = { kind: "exited"; code: number } | { kind: "signaled"; signal: number } | { kind: "failed"; message: string }
+export type ExecOutput = { chunks: readonly { cursor: number; stream: "stdout" | "stderr"; data_base64: string }[]; next_cursor: number; outcome: ExecOutcome | null }
+
 export type RoomTerminalOperation =
+  | { readonly operation: "exec_open"; readonly command: readonly string[] }
+  | { readonly operation: "exec_write"; readonly exec_id: string; readonly offset: number; readonly data_base64: string }
+  | { readonly operation: "exec_stdin_close"; readonly exec_id: string; readonly offset: number }
+  | { readonly operation: "exec_read"; readonly exec_id: string; readonly after_cursor: number; readonly wait_ms?: number }
+  | { readonly operation: "exec_cancel" | "exec_close"; readonly exec_id: string }
   | {
       readonly operation: "open"
       readonly cols: number
@@ -112,6 +120,10 @@ export type RoomTerminalRequest = {
 }
 
 export type RoomTerminalResult =
+  | { readonly result: "exec_opened"; readonly exec_id: string }
+  | { readonly result: "exec_input"; readonly next_offset: number }
+  | { readonly result: "exec_output"; readonly output: ExecOutput }
+  | { readonly result: "exec_cancelled" | "exec_closed" }
   | { readonly result: "opened"; readonly terminal: RoomTerminalSummary }
   | { readonly result: "listed"; readonly terminals: readonly RoomTerminalSummary[] }
   | { readonly result: "snapshot"; readonly snapshot: RoomTerminalSnapshot }

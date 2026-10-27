@@ -41,6 +41,7 @@ pub mod provider_account_copy;
 pub(crate) mod provider_output_policy;
 pub mod pty;
 mod publication_provider_accounts;
+pub mod room_exec;
 pub mod room_terminal;
 pub mod runtime;
 pub mod runtime_transport;

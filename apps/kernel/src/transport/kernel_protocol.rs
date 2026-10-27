@@ -1056,7 +1056,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error(code, error, *retryable)
         }
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
-        DaemonError::MachineRequest { code, .. } => kernel_error(code.as_str(), error, false),
+        DaemonError::MachineRequest { code, .. } => {
+            kernel_error(code.as_str(), error, code == "exec_input_busy")
+        }
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();

@@ -4,6 +4,8 @@ import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
+import { runExec } from "./exec-command.js"
+
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
 
 const LOCAL_CONNECTION_LOSS = ["connection_closed", "outcome_unknown", "write_failed"]
@@ -157,7 +159,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
-  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && !terminalVerb) return false
+  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && command !== "exec" && !terminalVerb) return false
   let kernel: string | null = null
   try {
     if (command === "events") {
@@ -173,12 +175,21 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
     if (command === "files" && !verb) throw new CommandFailure("usage", `Usage: chariox files ${FILES_VERBS.join("|")} (chariox guide lists the arguments)`)
     // What follows `--` of `terminal open` is the program to run, not options.
-    const split = terminalVerb === "open" ? rest.indexOf("--") : -1
+    const split = terminalVerb === "open" || command === "exec" ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)
     const options = split < 0 ? rest : rest.slice(0, split)
     const { flags, positionals } = parseArguments(verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : command, verb ? options.slice(1) : terminalVerb ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
-    if (command === "guide") {
+    if (command === "exec") {
+      if (positionals.length || program.length === 0 || Boolean(flags.get("--session")) === Boolean(flags.get("--workspace")) || (flags.has("--host-agent") && !flags.has("--session"))) {
+        throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] (--session ROOM | --workspace PATH) [--host-agent AGENT] -- argv...")
+      }
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
+      process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
+        runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
+          hostAgent: flags.get("--host-agent") as string | undefined, command: program }, send,
+          { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
+    } else if (command === "guide") {
       console.log(guideText())
     } else if (command === "kernels") {
       const listed = await sendRequest({ ListGatewayKernels: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayKernelsListed: unknown }

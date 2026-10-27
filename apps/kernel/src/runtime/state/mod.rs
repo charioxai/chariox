@@ -159,6 +159,7 @@ mod room_display;
 mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
+mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
 mod room_shared_display;
@@ -256,6 +257,7 @@ struct KernelRuntimeOwnedState {
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     room_terminals: crate::room_terminal::RoomTerminalService,
+    room_execs: crate::room_exec::RoomExecService,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -1022,6 +1024,7 @@ impl KernelRuntimeState {
                     BTreeSet::new(),
                 ).with_identity(&config.relay_private_key),
                 room_terminals,
+                room_execs: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),

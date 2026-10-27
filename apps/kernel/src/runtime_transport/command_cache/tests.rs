@@ -1034,3 +1034,50 @@ fn mp08_room_display_resume_and_open_recheck_live_authority_instead_of_cached_gr
         assert!(!request_is_cacheable(&request));
     }
 }
+
+#[test]
+fn room_exec_stream_bytes_never_enter_transport_result_caches() {
+    use crate::local::{RoomTerminalOperation as Op, RoomTerminalRequest};
+    for operation in [
+        Op::ExecWrite {
+            exec_id: "exec-1".into(),
+            offset: 0,
+            data_base64: "AP8=".into(),
+        },
+        Op::ExecRead {
+            exec_id: "exec-1".into(),
+            after_cursor: 0,
+            wait_ms: 0,
+        },
+        Op::ExecStdinClose {
+            exec_id: "exec-1".into(),
+            offset: 2,
+        },
+        Op::ExecCancel {
+            exec_id: "exec-1".into(),
+        },
+        Op::ExecClose {
+            exec_id: "exec-1".into(),
+        },
+    ] {
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: "room-1".into(),
+            acting_agent: None,
+            host_agent: None,
+            operation,
+        });
+        assert!(!request_is_cacheable(&request));
+    }
+    let open = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+        session_id: "room-1".into(),
+        acting_agent: None,
+        host_agent: None,
+        operation: Op::ExecOpen {
+            command: vec!["cat".into()],
+        },
+    });
+    assert!(
+        request_is_cacheable(&open),
+        "a command start still has an at-most-once receipt"
+    );
+}

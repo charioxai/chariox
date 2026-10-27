@@ -412,3 +412,81 @@ fn the_enrolled_owner_of_a_legacy_local_room_keeps_its_terminals() {
         assert!(matches!(result, RoomTerminalResult::Listed { .. }));
     });
 }
+
+#[test]
+fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
+    run("room-exec-router", || async {
+        let worktree = crate::test_support::TestWorktree::new("room_exec_router");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let room = session.id().to_string();
+        let (_, invite) = app
+            .sessions_mut()
+            .create_session_invite(
+                &room,
+                "invite-member".to_string(),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
+                Some(1),
+                crate::session::CollaborationLevel::Private,
+            )
+            .unwrap();
+        app.sessions_mut()
+            .join_session_invite(&room, invite.invite_id(), "member".to_string(), 1)
+            .unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let operation = RoomTerminalOperation::ExecOpen {
+            command: vec!["/bin/cat".to_string()],
+        };
+        assert!(
+            terminal_request(&router, "member", &room, None, operation.clone())
+                .await
+                .is_err(),
+            "membership alone grants neither terminal nor exec access"
+        );
+        let result = terminal_request(&router, DEFAULT_LOCAL_USER_ID, &room, None, operation)
+            .await
+            .unwrap();
+        let RoomTerminalResult::ExecOpened { exec_id } = result else {
+            panic!("expected exec ID");
+        };
+        for operation in [
+            RoomTerminalOperation::ExecWrite {
+                exec_id: exec_id.clone(),
+                offset: 0,
+                data_base64: "YQ==".to_string(),
+            },
+            RoomTerminalOperation::ExecStdinClose {
+                exec_id: exec_id.clone(),
+                offset: 0,
+            },
+            RoomTerminalOperation::ExecRead {
+                exec_id: exec_id.clone(),
+                after_cursor: 0,
+                wait_ms: 0,
+            },
+            RoomTerminalOperation::ExecCancel {
+                exec_id: exec_id.clone(),
+            },
+            RoomTerminalOperation::ExecClose {
+                exec_id: exec_id.clone(),
+            },
+        ] {
+            assert!(terminal_request(&router, "member", &room, None, operation)
+                .await
+                .is_err());
+        }
+        terminal_request(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &room,
+            None,
+            RoomTerminalOperation::ExecClose { exec_id },
+        )
+        .await
+        .unwrap();
+    });
+}

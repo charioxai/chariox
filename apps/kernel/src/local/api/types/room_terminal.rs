@@ -24,6 +24,30 @@ pub struct RoomTerminalRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum RoomTerminalOperation {
+    ExecOpen {
+        command: Vec<String>,
+    },
+    ExecWrite {
+        exec_id: String,
+        offset: u64,
+        data_base64: String,
+    },
+    ExecStdinClose {
+        exec_id: String,
+        offset: u64,
+    },
+    ExecRead {
+        exec_id: String,
+        after_cursor: u64,
+        #[serde(default)]
+        wait_ms: u64,
+    },
+    ExecCancel {
+        exec_id: String,
+    },
+    ExecClose {
+        exec_id: String,
+    },
     /// A login shell in the Room's project folder, or `command` (argv, no shell).
     Open {
         cols: u16,
@@ -70,13 +94,38 @@ pub enum RoomTerminalOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum RoomTerminalResult {
-    Opened { terminal: RoomTerminalSummary },
-    Listed { terminals: Vec<RoomTerminalSummary> },
-    Snapshot { snapshot: RoomTerminalSnapshot },
-    Input { input: RoomTerminalInputResult },
-    Resized { terminal: RoomTerminalSummary },
-    Output { output: RoomTerminalOutput },
-    Waited { waited: RoomTerminalWaitResult },
+    ExecOpened {
+        exec_id: String,
+    },
+    ExecInput {
+        next_offset: u64,
+    },
+    ExecOutput {
+        output: crate::room_exec::ExecOutput,
+    },
+    ExecCancelled,
+    ExecClosed,
+    Opened {
+        terminal: RoomTerminalSummary,
+    },
+    Listed {
+        terminals: Vec<RoomTerminalSummary>,
+    },
+    Snapshot {
+        snapshot: RoomTerminalSnapshot,
+    },
+    Input {
+        input: RoomTerminalInputResult,
+    },
+    Resized {
+        terminal: RoomTerminalSummary,
+    },
+    Output {
+        output: RoomTerminalOutput,
+    },
+    Waited {
+        waited: RoomTerminalWaitResult,
+    },
     Closed,
 }
 
@@ -92,8 +141,28 @@ impl RoomTerminalResult {
             Self::Snapshot { snapshot } => host(&mut snapshot.terminal),
             Self::Output { output } => host(&mut output.terminal),
             Self::Waited { waited } => host(&mut waited.terminal),
-            Self::Input { .. } | Self::Closed => {}
+            Self::Input { .. }
+            | Self::Closed
+            | Self::ExecOpened { .. }
+            | Self::ExecInput { .. }
+            | Self::ExecOutput { .. }
+            | Self::ExecCancelled
+            | Self::ExecClosed => {}
         }
         self
+    }
+}
+
+impl RoomTerminalOperation {
+    pub(crate) fn is_exec(&self) -> bool {
+        matches!(
+            self,
+            Self::ExecOpen { .. }
+                | Self::ExecWrite { .. }
+                | Self::ExecStdinClose { .. }
+                | Self::ExecRead { .. }
+                | Self::ExecCancel { .. }
+                | Self::ExecClose { .. }
+        )
     }
 }

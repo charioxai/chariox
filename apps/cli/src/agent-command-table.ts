@@ -16,6 +16,8 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, HOST_AGENT, SOCKET],
+    summary: "run argv after -- without a PTY; streams binary stdin/stdout/stderr live, returns the command exit code; --workspace makes a temporary Room" },
   { name: "guide", flags: [], summary: "print this guide" },
   {
     name: "access request",
@@ -189,7 +191,7 @@ export function guideText(): string {
     "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
     "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
-    "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",
+    "Exec streams raw binary stdout and stderr and returns the remote command's exit code (128 + signal). Other commands print one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",
     "Exit codes:",
     ...exits,
     "",

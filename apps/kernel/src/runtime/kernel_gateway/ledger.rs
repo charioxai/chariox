@@ -196,6 +196,11 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
                 | RoomTerminalOperation::Snapshot { .. }
                 | RoomTerminalOperation::ReadOutput { .. }
                 | RoomTerminalOperation::Wait { .. }
+                | RoomTerminalOperation::ExecWrite { .. }
+                | RoomTerminalOperation::ExecStdinClose { .. }
+                | RoomTerminalOperation::ExecRead { .. }
+                | RoomTerminalOperation::ExecCancel { .. }
+                | RoomTerminalOperation::ExecClose { .. }
         );
     }
     let variant = variant_name(request);
@@ -222,7 +227,8 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
     let wait_ms = match request {
         LocalDaemonRequest::RoomTerminal(terminal) => match terminal.operation {
             RoomTerminalOperation::Wait { timeout_ms, .. } => timeout_ms,
-            RoomTerminalOperation::ReadOutput { wait_ms, .. } => wait_ms,
+            RoomTerminalOperation::ReadOutput { wait_ms, .. }
+            | RoomTerminalOperation::ExecRead { wait_ms, .. } => wait_ms,
             _ => 0,
         },
         _ => 0,
