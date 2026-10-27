@@ -66,6 +66,17 @@ fn settled_history_failure(turn: &FailingTurn) -> Option<ProviderFailure> {
         .map(|failure| serde_json::from_value(failure.clone()).unwrap())
 }
 
+fn provider_error_outputs(turn: &FailingTurn) -> Vec<String> {
+    turn.runtime
+        .owned
+        .terminal_stream
+        .output_records()
+        .into_iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+        .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+        .collect()
+}
+
 #[tokio::test]
 async fn a_codex_overload_reaches_the_follower_and_history_as_a_retryable_cause() {
     let turn = subscribed_failing_turn().await;
@@ -124,7 +135,54 @@ async fn a_declined_login_recovery_preserves_the_native_error_in_events_and_hist
         .unwrap();
     turn.assert_turn_failed();
     assert_eq!(followed_error_failure(&turn), Some(native.clone()));
-    assert_eq!(settled_history_failure(&turn), Some(native));
+    assert_eq!(settled_history_failure(&turn), Some(native.clone()));
+    assert_eq!(
+        provider_error_outputs(&turn),
+        vec![
+            native.notice(),
+            crate::agent::failed_request_notice(&crate::agent::failed_request_reason(
+                "dev-stub",
+                "Provider login did not complete; retry after logging in on this machine.",
+            )),
+        ],
+        "the transcript says what the history says"
+    );
+}
+
+#[tokio::test]
+async fn a_long_multiline_structured_error_stays_whole_in_events_history_and_transcript() {
+    let turn = subscribed_failing_turn().await;
+    let native = format!(
+        "First line\n{}\nlast line",
+        "native diagnostic\n".repeat(60)
+    );
+    assert!(native.len() > 1000);
+
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(crate::provider::provider_coded_failure_text(
+                    "Codex", "other", &native,
+                )),
+                explicit_provider_error: true,
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    turn.assert_turn_failed();
+    let failure = followed_error_failure(&turn).expect("typed cause");
+    assert_eq!(failure.message, native);
+    assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
+    assert!(
+        provider_error_outputs(&turn).contains(&failure.notice()),
+        "the transcript entry carries the whole native error"
+    );
 }
 
 #[tokio::test]

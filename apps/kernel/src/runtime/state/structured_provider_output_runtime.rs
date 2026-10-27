@@ -615,12 +615,21 @@ impl KernelRuntimeState {
             .terminal_failure
             .as_deref()
             .map(provider_prompt_dispatch_failure_notice);
+        // Typed from the harness's own error, before it is rendered into a
+        // bounded notice, so no client loses what the harness said.
+        let native_error = poll_result
+            .terminal_failure
+            .as_deref()
+            .map(|message| provider_error_message(message).unwrap_or_else(|| message.to_string()));
+        let failure = native_error
+            .as_deref()
+            .map(|message| crate::provider::ProviderFailure::classify(&adapter_key, message));
         // Only adapter-protocol error frames set this provenance bit. PTY or
         // stderr text may still fail the prompt, but never becomes durable
         // provider termination evidence.
         let provider_termination = poll_result
             .explicit_provider_error
-            .then_some(terminal_failure.as_deref())
+            .then_some(native_error.as_deref())
             .flatten()
             .map(|message| {
                 crate::provider::ProviderRunTermination::explicit_provider_error(
@@ -631,9 +640,9 @@ impl KernelRuntimeState {
             });
         // Every client renders this one entry: the cause, the harness's own
         // words and what to do next.
-        let failure_notice = terminal_failure.as_deref().map(|message| {
-            crate::provider::ProviderFailure::classify(&adapter_key, message).notice()
-        });
+        let failure_notice = failure
+            .as_ref()
+            .map(crate::provider::ProviderFailure::notice);
         project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         recorded_notice_messages.extend(terminal_failure.iter().cloned());
@@ -772,12 +781,14 @@ impl KernelRuntimeState {
             }
         }
         if let Some(message) = terminal_failure {
-            self.fail_owned_provider_prompt_with_termination(
+            self.fail_owned_provider_prompt_with_termination_if_matches(
                 session_id,
                 provider_run_id,
                 &message,
                 false,
+                None,
                 provider_termination,
+                failure,
             )
             .await?;
             return Ok(records);
