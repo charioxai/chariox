@@ -162,6 +162,37 @@
         }
       },
       "sha256": "aef274a0a7d15567562cd5eb8c6f1366ee5da1bbc768f46edf3f44de1138cf5e"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_list"
+          }
+        }
+      },
+      "sha256": "5a508e3b929b554192a3d6f40c205368e3b6bef2e00ced4412046734ddd7e732"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_listed",
+            "execs": [
+              {
+                "exec_id": "exec-1",
+                "state": "running",
+                "age_ms": 1250,
+                "buffered_bytes": 1048576
+              }
+            ]
+          }
+        }
+      },
+      "sha256": "8deebb5cf4706509afb5bda8e41034885ab52bd0e13fb3184105928be5594f75"
     }
   ]
 }

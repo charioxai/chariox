@@ -80,9 +80,11 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
   }
   const onInt = () => interrupt(2)
   const onTerm = () => interrupt(15)
+  const onHup = () => interrupt(1)
   const signals = io.signals
   signals?.on("SIGINT", onInt)
   signals?.on("SIGTERM", onTerm)
+  signals?.on("SIGHUP", onHup)
   try {
     // The kernel's capability check covers remote kernels; local old kernels
     // reject this new operation before starting anything.
@@ -180,6 +182,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     stopInput.abort()
     signals?.off("SIGINT", onInt)
     signals?.off("SIGTERM", onTerm)
+    signals?.off("SIGHUP", onHup)
     if (!options.session && completed) {
       try { await send({ EndSession: { session_id: session } }) } catch (error) {
         // Room cleanup must never replace the command's exit or its real error.

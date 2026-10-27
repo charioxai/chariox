@@ -82,7 +82,6 @@ impl Output {
         })
     }
 
-    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> usize {
         self.bytes
     }

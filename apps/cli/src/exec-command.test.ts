@@ -110,7 +110,7 @@ test("exec retries only a busy input offset while the output consumer continues"
   assert.equal(attempted, true)
 })
 
-test("exec SIGTERM cancels and closes even while local stdout is blocked", async () => {
+for (const [signal, exit] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) test(`exec ${signal} cancels and closes even while local stdout is blocked`, async () => {
   const input = new PassThrough(), signals = new EventEmitter() as NodeJS.Process
   const calls: string[] = []
   let writing: (() => void) | undefined
@@ -125,8 +125,8 @@ test("exec SIGTERM cancels and closes even while local stdout is blocked", async
   }
   const code = runExec(options, send, { stdin: input, stdout: blocked, stderr: sink([]), signals })
   while (!writing) await new Promise(resolve => setImmediate(resolve))
-  signals.emit("SIGTERM")
-  assert.equal(await code, 143)
+  signals.emit(signal)
+  assert.equal(await code, exit)
   assert.deepEqual(calls, ["exec_open", "exec_read", "exec_cancel", "exec_close"])
   writing()
 })

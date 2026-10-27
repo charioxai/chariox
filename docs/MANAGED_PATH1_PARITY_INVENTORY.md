@@ -13,7 +13,12 @@ at-most-once receipt. The shared file-transfer chunk bound applies.
 The existing `room_terminal/managed_work.rs` admission fence also gates exec;
 `runtime/state/managed_activity_runtime_state.rs` counts running exec work until
 process reaping and pipe settlement. Room end and kernel shutdown cancel that
-work. This is the existing mandatory-shutdown exception: no new placement rule,
+work. Room-scoped `exec_list` exposes IDs, state, age and retained bytes for
+recovery. Five minutes without an output read expires any record and cancels
+its process tree; listing and stdin writes do not renew it. Expiry releases
+managed work only after reaping and pipe settlement. The CLI handles SIGHUP
+alongside SIGINT/SIGTERM. Canceled, unfinished pipes report an incomplete stream,
+and transport loss retains normalized failure codes and resume cursors. This is the existing mandatory-shutdown exception: no new placement rule,
 provider adapter, history format, credential path or Cloud stop policy is added.
 The wire contract is local 632 / peer 235, advertised by `room_exec_v1`.
 See `docs/PROTOCOL.md` (Binary Room exec) and the executable scenarios in

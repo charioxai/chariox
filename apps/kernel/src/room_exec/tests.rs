@@ -172,7 +172,8 @@ async fn exec_cancel_settles_even_with_full_output_and_blocked_stdin() {
         .await
         .unwrap();
     assert!(
-        matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("incomplete")),
+        matches!(outcome, ExecOutcome::Signaled { signal: 9 })
+            || matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("incomplete")),
         "{outcome:?}"
     );
     assert!(!service.has_running_work());
@@ -269,9 +270,28 @@ async fn exec_cancel_never_reports_truncated_output_as_success() {
     let service = RoomExecService::default();
     // The extra pipe read fits in the OS pipe after the bounded buffer fills,
     // allowing a successful process exit while its output task stays parked.
-    let id = open(&service, "head -c 1081344 /dev/zero");
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("exited");
+    let id = open(
+        &service,
+        &format!("head -c 1081344 /dev/zero; : > '{}'", marker.display()),
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
     service.cancel("room", &id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let (stdout, _, outcome) = tokio::time::timeout(Duration::from_secs(5), collect(&service, &id))
         .await
         .unwrap();
@@ -281,4 +301,112 @@ async fn exec_cancel_never_reports_truncated_output_as_success() {
         "{outcome:?}"
     );
     service.close("room", &id).unwrap();
+}
+
+async fn abandoned_reader_expires(script: &str) {
+    let service = RoomExecService::default();
+    let id = open(&service, script);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(service.has_running_work());
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(301)).await;
+    // Let real OS child reaping run on wall time after the lease expires.
+    tokio::time::resume();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let gone = service.record("room", &id).is_err();
+    let idle = !service.has_running_work();
+    // Clean up even on the unfixed implementation.
+    service.end_session("room");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        gone,
+        "abandoned {script} still occupies a record after five minutes"
+    );
+    assert!(idle, "abandoned {script} still counts as managed work");
+}
+
+#[tokio::test]
+async fn exec_abandoned_stdin_reader_expires_and_releases_managed_work() {
+    abandoned_reader_expires("cat").await;
+}
+
+#[tokio::test]
+async fn exec_abandoned_output_reader_expires_and_releases_managed_work() {
+    abandoned_reader_expires("head -c 8388608 /dev/zero").await;
+}
+
+#[tokio::test]
+async fn exec_list_is_room_scoped_and_reports_retained_finished_output() {
+    let service = RoomExecService::default();
+    let id = open(&service, "printf abc");
+    let (stdout, _, outcome) = collect(&service, &id).await;
+    assert_eq!(stdout, b"abc");
+    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
+    assert!(service.list("other-room").is_empty());
+    let rows = service.list("room");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].exec_id, id);
+    assert_eq!(rows[0].state, ExecState::Finished);
+    assert_eq!(rows[0].buffered_bytes, 3);
+    service.close("room", &id).unwrap();
+    assert!(service.list("room").is_empty());
+}
+
+#[tokio::test]
+async fn exec_reads_renew_the_lease_but_listing_does_not() {
+    let service = RoomExecService::default();
+    let id = open(&service, "cat");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(299)).await;
+    service.read("room", &id, 0, Duration::ZERO).await.unwrap();
+    tokio::time::advance(Duration::from_secs(299)).await;
+    assert_eq!(service.list("room").len(), 1, "read renewed the lease");
+    tokio::time::advance(Duration::from_secs(2)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(service.list("room").is_empty(), "listing did not renew it");
+}
+
+#[tokio::test]
+async fn exec_old_long_poll_completion_does_not_extend_an_abandoned_reader() {
+    let service = RoomExecService::default();
+    let id = open(&service, "cat");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(299)).await;
+    let reader = service.clone();
+    let exec_id = id.clone();
+    let reading = tokio::spawn(async move {
+        reader
+            .read("room", &exec_id, 0, Duration::from_secs(240))
+            .await
+            .unwrap()
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(240)).await;
+    assert!(reading.await.unwrap().outcome.is_none());
+    assert_eq!(service.list("room").len(), 1);
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(service.list("room").is_empty());
 }

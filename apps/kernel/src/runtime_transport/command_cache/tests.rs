@@ -1039,6 +1039,7 @@ fn mp08_room_display_resume_and_open_recheck_live_authority_instead_of_cached_gr
 fn room_exec_stream_bytes_never_enter_transport_result_caches() {
     use crate::local::{RoomTerminalOperation as Op, RoomTerminalRequest};
     for operation in [
+        Op::ExecList,
         Op::ExecWrite {
             exec_id: "exec-1".into(),
             offset: 0,

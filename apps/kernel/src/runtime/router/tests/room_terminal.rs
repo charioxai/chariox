@@ -453,7 +453,22 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
         let RoomTerminalResult::ExecOpened { exec_id } = result else {
             panic!("expected exec ID");
         };
+        let listed = terminal_request(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &room,
+            None,
+            RoomTerminalOperation::ExecList,
+        )
+        .await
+        .unwrap();
+        let RoomTerminalResult::ExecListed { execs } = listed else {
+            panic!("expected exec list");
+        };
+        assert_eq!(execs.len(), 1);
+        assert_eq!(execs[0].exec_id, exec_id);
         for operation in [
+            RoomTerminalOperation::ExecList,
             RoomTerminalOperation::ExecWrite {
                 exec_id: exec_id.clone(),
                 offset: 0,

@@ -42,3 +42,28 @@ owned PIDs stopped and state directory removed. Kernel/relay logs remain only
 in the evidence directory. The ordinary/managed global parity matrix, hosted
 network and provider acceptance are separate; this drill changes no provider or
 Cloud shutdown policy.
+
+The MP-08 / MP-09 / MP-10 / MP-11 recovery drill uses the same arguments:
+
+```sh
+node scripts/e2e-stack/room-exec/recovery.mjs \
+  --kernel-bin /absolute/path/chariox-kernel \
+  --relay-bin /absolute/path/chariox-relay \
+  --cli-bin /absolute/path/chariox-cli \
+  --home /absolute/path/to/new/disposable-state \
+  --evidence /absolute/path/to/evidence
+```
+
+It SIGKILLs a native exec client, lists its orphan through the native request
+command, closes it and verifies that its process was reaped. It also checks
+SIGHUP cleanup, an already-exited producer whose canceled pipe data is
+reported incomplete, the actual CLI failure after an origin-kernel crash,
+and the real five-minute reader lease for both blocked stdin
+and more than 1 MiB of unread output. Polling `exec_list` must not keep either
+orphan alive. The kernel managed-work/stop-reservation tests cover busy-to-idle
+reporting after expiry; this local relay drill alone does not prove Cloud's
+managed shutdown delivery.
+
+For a focused before/after run, add `--only sigkill-list-reclaim`,
+`--only sighup-cancels`, `--only cancel-truncated-output` or
+`--only real-kernel-connection-loss`.

@@ -80,7 +80,10 @@ export type RoomTerminalWaitResult = {
 export type ExecOutcome = { kind: "exited"; code: number } | { kind: "signaled"; signal: number } | { kind: "failed"; message: string }
 export type ExecOutput = { chunks: readonly { cursor: number; stream: "stdout" | "stderr"; data_base64: string }[]; next_cursor: number; outcome: ExecOutcome | null }
 
+export type ExecSummary = { exec_id: string; state: "running" | "finished"; age_ms: number; buffered_bytes: number }
+
 export type RoomTerminalOperation =
+  | { readonly operation: "exec_list" }
   | { readonly operation: "exec_open"; readonly command: readonly string[] }
   | { readonly operation: "exec_write"; readonly exec_id: string; readonly offset: number; readonly data_base64: string }
   | { readonly operation: "exec_stdin_close"; readonly exec_id: string; readonly offset: number }
@@ -120,6 +123,7 @@ export type RoomTerminalRequest = {
 }
 
 export type RoomTerminalResult =
+  | { readonly result: "exec_listed"; readonly execs: readonly ExecSummary[] }
   | { readonly result: "exec_opened"; readonly exec_id: string }
   | { readonly result: "exec_input"; readonly next_offset: number }
   | { readonly result: "exec_output"; readonly output: ExecOutput }

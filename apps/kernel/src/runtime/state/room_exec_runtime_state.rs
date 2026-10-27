@@ -14,6 +14,9 @@ impl KernelRuntimeState {
     ) -> Result<RoomTerminalResult, DaemonError> {
         let service = &self.owned.room_execs;
         Ok(match operation {
+            RoomTerminalOperation::ExecList => RoomTerminalResult::ExecListed {
+                execs: service.list(session_id),
+            },
             RoomTerminalOperation::ExecOpen { command } => {
                 self.ensure_room_running(session_id)?;
                 let exec_id = service.open(session_id, cwd, &command)?;

@@ -5510,6 +5510,9 @@ requests and responses, using its existing bounded framing and flow control.
 
 - `exec_open { command: [program, ...args] }` starts argv directly in the Room's
   project directory; `exec_opened { exec_id }` identifies the running command.
+- `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
+  has `exec_id`, `state` (`running` or `finished`), `age_ms` and `buffered_bytes`.
+  It uses the same Room authority and worker forwarding as all exec operations.
 - `exec_write { exec_id, offset, data_base64 }` accepts at most 256 KiB at the
   next stdin byte offset; `exec_input { next_offset }` acknowledges admission to
   the bounded input queue. A repeated last write with identical bytes is safe.
@@ -5527,7 +5530,9 @@ requests and responses, using its existing bounded framing and flow control.
   after process reaping and both output pipes settle: `exited { code }`,
   `signaled { signal }` or `failed { message }`.
 - `exec_cancel { exec_id }` cancels the owned process and closes its pipes;
-  already-buffered output remains available. `exec_close { exec_id }` cancels and
+  already-buffered output remains available. Cancellation before pipe EOF publishes
+  `failed` with an incomplete-stream message, even if the process exited zero.
+  `exec_close { exec_id }` cancels and
   releases the record. Room end and kernel shutdown cancel all owned execs.
 
 Each exec retains at most 1 MiB / 128 chunks of unacknowledged raw output,
@@ -5536,12 +5541,17 @@ plus one 256 KiB write in flight). Full output buffers stop
 reading the child pipes; full input queues refuse new admission. Slow readers
 therefore apply backpressure without dropping bytes. There are at most sixteen
 records per Room and sixty-four per kernel, including completed records: close
-collected commands. Disconnect does not rerun or cancel a command; resume using
-its exec ID, accepted stdin offset and last consumed output cursor. Records
+collected commands. List execs to discover abandoned IDs, then close them to
+reclaim their processes. A record expires five minutes after its last output
+read request, including completed records. A read renews that lease on entry;
+listing, stdin writes and the completion of an old long poll do not. Expiry removes the record, kills the
+owned process tree and reaps it before releasing managed work. A disconnected
+reader can resume within that bound using its exec ID, accepted stdin offset
+and last consumed output cursor; disconnect never reruns the command. Records
 and bytes are memory-only: a kernel restart invalidates them and a crash leaves
 command outcomes unknown. These bytes never enter Room history or the persistent
 gateway ledger. Open uses the existing at-most-once ledger; chunk,
-EOF, read, cancel and close operations are repeatable without growing it.
+EOF, list, read, cancel and close operations are repeatable without growing it.
 Managed placement uses the same implementation; running execs count as work and
 respect the existing quiescence fence, preserving automatic shutdown policy.
 

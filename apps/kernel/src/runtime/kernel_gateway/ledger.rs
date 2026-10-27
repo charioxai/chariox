@@ -196,6 +196,7 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
                 | RoomTerminalOperation::Snapshot { .. }
                 | RoomTerminalOperation::ReadOutput { .. }
                 | RoomTerminalOperation::Wait { .. }
+                | RoomTerminalOperation::ExecList
                 | RoomTerminalOperation::ExecWrite { .. }
                 | RoomTerminalOperation::ExecStdinClose { .. }
                 | RoomTerminalOperation::ExecRead { .. }
@@ -521,6 +522,7 @@ mod tests {
         use crate::local::RoomTerminalOperation as Op;
         for repeats in [
             Op::List,
+            Op::ExecList,
             Op::Snapshot {
                 terminal_id: "t".into(),
             },

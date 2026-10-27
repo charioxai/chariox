@@ -472,3 +472,39 @@ async fn dropping_managed_runtime_releases_durable_state_owner() {
         }
     }
 }
+
+#[tokio::test]
+async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
+    for script in ["cat", "head -c 8388608 /dev/zero"] {
+        let fixture = fixture("exec-expiry-stop");
+        let opened = fixture
+            .terminal(RoomTerminalOperation::ExecOpen {
+                command: vec!["/bin/bash".into(), "-c".into(), script.into()],
+            })
+            .await
+            .unwrap();
+        assert!(matches!(opened, RoomTerminalResult::ExecOpened { .. }));
+        assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+        assert!(!fixture.reserve(), "busy exec prevents a managed stop");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(301)).await;
+        tokio::time::resume();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while fixture.runtime.managed_running_agent_count() != 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let listed = fixture
+            .terminal(RoomTerminalOperation::ExecList)
+            .await
+            .unwrap();
+        assert!(matches!(listed, RoomTerminalResult::ExecListed { execs } if execs.is_empty()));
+        assert!(
+            fixture.reserve(),
+            "reaped expiry reports idle and allows the managed stop"
+        );
+    }
+}

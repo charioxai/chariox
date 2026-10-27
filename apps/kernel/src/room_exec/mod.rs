@@ -1,5 +1,6 @@
 //! Binary pipes owned by the Room terminal authority, never a PTY or history.
 mod buffer;
+mod lease;
 mod process;
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,21 @@ pub enum ExecOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ExecState {
+    Running,
+    Finished,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecSummary {
+    pub exec_id: String,
+    pub state: ExecState,
+    pub age_ms: u64,
+    pub buffered_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExecStream {
     Stdout,
     Stderr,
@@ -54,11 +70,20 @@ pub struct ExecOutput {
 
 pub(super) struct Record {
     session_id: String,
+    created_at: tokio::time::Instant,
+    reader_deadline: watch::Sender<tokio::time::Instant>,
     input: Mutex<Input>,
     output: Mutex<buffer::Output>,
     changed: Notify,
     space: Notify,
     cancel: watch::Sender<bool>,
+}
+
+impl Record {
+    fn renew_reader(&self) {
+        self.reader_deadline
+            .send_replace(tokio::time::Instant::now() + lease::READER_LEASE);
+    }
 }
 
 struct Input {
@@ -126,13 +151,17 @@ impl RoomExecService {
         {
             return Err(error(
                 "exec_limit",
-                "close a collected exec before starting another command",
+                "use RoomTerminal exec_list to find and exec_close a collected or abandoned command before starting another",
             ));
         }
         let (sender, receiver) = mpsc::channel(8);
         let (cancel, cancelled) = watch::channel(false);
+        let created_at = tokio::time::Instant::now();
+        let (reader_deadline, deadline) = watch::channel(created_at + lease::READER_LEASE);
         let record = Arc::new(Record {
             session_id: session_id.to_owned(),
+            created_at,
+            reader_deadline,
             input: Mutex::new(Input {
                 sender: Some(sender),
                 offset: 0,
@@ -147,11 +176,35 @@ impl RoomExecService {
         let exec_id = format!("exec-{:032x}", rand::random::<u128>());
         records.insert(exec_id.clone(), record.clone());
         self.inner.running.fetch_add(1, Ordering::AcqRel);
+        lease::start(exec_id.clone(), Arc::downgrade(&self.inner), deadline);
         process::run(child, record, receiver, cancelled, self.clone());
         drop(records);
         drop(admission);
         self.report_work();
         Ok(exec_id)
+    }
+
+    pub fn list(&self, session_id: &str) -> Vec<ExecSummary> {
+        self.inner
+            .records
+            .lock()
+            .expect("exec records poisoned")
+            .iter()
+            .filter(|(_, record)| record.session_id == session_id)
+            .map(|(exec_id, record)| {
+                let output = record.output.lock().expect("exec output poisoned");
+                ExecSummary {
+                    exec_id: exec_id.clone(),
+                    state: if output.outcome.is_some() {
+                        ExecState::Finished
+                    } else {
+                        ExecState::Running
+                    },
+                    age_ms: record.created_at.elapsed().as_millis() as u64,
+                    buffered_bytes: output.retained_bytes(),
+                }
+            })
+            .collect()
     }
 
     fn record(&self, session_id: &str, exec_id: &str) -> Result<Arc<Record>, DaemonError> {
@@ -165,7 +218,7 @@ impl RoomExecService {
             .ok_or_else(|| {
                 error(
                     "exec_not_found",
-                    "this Room has no such exec; check the exec ID or start a new command",
+                    "this Room has no such exec (records expire after five minutes without an output read); use exec_list to find current IDs",
                 )
             })
     }
@@ -251,6 +304,7 @@ impl RoomExecService {
         wait: Duration,
     ) -> Result<ExecOutput, DaemonError> {
         let record = self.record(session_id, exec_id)?;
+        record.renew_reader();
         let deadline = tokio::time::Instant::now() + wait.min(crate::room_terminal::MAX_WAIT);
         loop {
             // Register before inspecting state, so output cannot race the wait.

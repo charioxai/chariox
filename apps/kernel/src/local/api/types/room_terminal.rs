@@ -24,6 +24,7 @@ pub struct RoomTerminalRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum RoomTerminalOperation {
+    ExecList,
     ExecOpen {
         command: Vec<String>,
     },
@@ -94,6 +95,9 @@ pub enum RoomTerminalOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum RoomTerminalResult {
+    ExecListed {
+        execs: Vec<crate::room_exec::ExecSummary>,
+    },
     ExecOpened {
         exec_id: String,
     },
@@ -143,6 +147,7 @@ impl RoomTerminalResult {
             Self::Waited { waited } => host(&mut waited.terminal),
             Self::Input { .. }
             | Self::Closed
+            | Self::ExecListed { .. }
             | Self::ExecOpened { .. }
             | Self::ExecInput { .. }
             | Self::ExecOutput { .. }
@@ -157,7 +162,8 @@ impl RoomTerminalOperation {
     pub(crate) fn is_exec(&self) -> bool {
         matches!(
             self,
-            Self::ExecOpen { .. }
+            Self::ExecList
+                | Self::ExecOpen { .. }
                 | Self::ExecWrite { .. }
                 | Self::ExecStdinClose { .. }
                 | Self::ExecRead { .. }
