@@ -164,9 +164,14 @@ impl KernelRuntimeState {
             )),
         )
         .await?;
-        let result = self
-            .move_agent_transaction_inner(session_id, agent, target_ref.clone())
-            .await;
+        // Publishing waited for the app; a revoked caller must not continue into the peers.
+        let result = match self.authorize_current_external_command() {
+            Ok(()) => {
+                self.move_agent_transaction_inner(session_id, agent, target_ref.clone())
+                    .await
+            }
+            Err(error) => Err(error),
+        };
         let unsettled = self
             .owned
             .agent_moves
