@@ -42,6 +42,7 @@ function bytes(data) {
 }
 export const frameBytes = frame => 1024 + (frame.data?.byteLength ?? 0) +
   [...(frame.tiles ?? []), ...(frame.stripes ?? [])].reduce((n, segment) => n + (segment.data?.byteLength ?? 0), 0);
+const independentFrame = frame => frame.kind === 'png' || frame.kind === 'video' && frame.key === true || independentStripeCover(frame);
 const imageTypes = { png: 'image/png', webp: 'image/webp' };
 // MP-08/MP-10: lossless scroll moves copy integer rectangles of the previous
 // canvas (source y-dy). Every destination and source stays inside the frame.
@@ -337,12 +338,17 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   };
   const closedItem = { presented: Promise.resolve() };
   const receive = () => frames.length ? Promise.resolve((queuedBytes -= frames[0].size, frames.shift())) : stopped ? Promise.resolve(closedItem) : new Promise(resolve => arrivals.push(resolve));
-  const initialEvents=[];let initialBytes=0;
+  const initialEvents=[];let initialBytes=0,initialLost=false;
   const off = transport.onEvent(event => {
     if(pushMode&&event.event==='kernel_browser_frame'&&event.subscription_id===binding.subscription_id){
       const size=frameBytes(event.frame);
-      if(initialEvents.length>=8||initialBytes+size>8*1024*1024){failure=Error('MD-DISPLAY: registration receive window exceeded');return;}
-      initialBytes+=size;initialEvents.push(event);return;
+      if(initialEvents.length>=8||initialBytes+size>8*1024*1024){
+        initialEvents.length=0;initialBytes=0;initialLost=true;
+      }
+      // Registration can flush a burst held by the relay. Keep the bounded window and
+      // recover from an independent frame just as the running stream does after a gap.
+      if(initialLost&&!independentFrame(event.frame)||size>8*1024*1024)return;
+      initialLost=false;initialBytes+=size;initialEvents.push(event);return;
     }
     if (event.event !== 'kernel_browser_frame' || event.subscription_id !== binding.subscription_id) return;
     if (running || active.size) {
@@ -366,8 +372,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
     throw error;
   }
   if (pushMode) {
-    if(failure){off();presenter.close({preserveFrame:true});await releaseDisplay(true).catch(()=>{});throw failure;}
-    const display=pushDisplay(presenter, transport, request, binding, actorCommand, {...options,releaseDisplay,initialEvents});
+    const display=pushDisplay(presenter, transport, request, binding, actorCommand, {...options,releaseDisplay,initialEvents,initialLost});
     off();return display;
   }
   const next = async () => {
@@ -494,7 +499,7 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   // MP-08/MP-10 (1.5): a lost base, decode failure or receive gap keeps the
   // canvas, asks for an independent frame and drops dependent frames until
   // it arrives. Only a binding/geometry mismatch or a stopped pump is fatal.
-  const independent = frame => frame.kind === 'png' || frame.kind === 'video' && frame.key === true || independentStripeCover(frame);
+  const independent = independentFrame;
   const recover = () => {
     recovering = true;
     if (performance.now() - keyRequestedAt >= 1000) { keyRequestedAt = performance.now(); ack(presenter.sequence, true); }
@@ -548,6 +553,7 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     drain();
   };
   const off=transport.onEvent(receiveEvent);
+  if(options.initialLost)recover();
   for(const event of options.initialEvents??[])receiveEvent(event);
   if(options.initialEvents)options.initialEvents.length=0;
   // A stopped stream sends no heartbeats: the kernel ACK gate stops its pump.
