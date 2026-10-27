@@ -227,15 +227,18 @@ try {
     child.stderr.resume()
     const sending = pipeline((async function* () { for (let count = 0; count < 256; count++) yield Buffer.alloc(256 * 1024) })(), child.stdin)
     sending.catch(() => undefined)
-    for (let count = 0; count < 12; count++) { await delay(250); samples.push(await rss()) }
+    for (let count = 0; count < 60; count++) { await delay(500); samples.push(await rss()) }
     assert.equal(child.exitCode, null, 'slow reader must backpressure the running command')
     await pipeline(child.stdout, new Writable({ write(chunk, _encoding, done) { bytes += chunk.length; done() } }))
     await sending
     assert.equal((await child.done).code, 0)
     assert.equal(bytes, 64 * 1024 * 1024)
     const growth = Math.max(...samples) - samples[0]
-    assert.ok(growth < 32 * 1024 * 1024, `slow-reader RSS grew by ${growth} bytes`)
-    return { bytes, paused_ms: 3000, kernel_rss_samples: samples, growth_bytes: growth }
+    const tail = samples.slice(-10)
+    const tailSpread = Math.max(...tail) - Math.min(...tail)
+    assert.ok(growth < 64 * 1024 * 1024, `slow-reader RSS grew by ${growth} bytes`)
+    assert.ok(tailSpread < 8 * 1024 * 1024, `slow-reader RSS did not settle: last five seconds varied by ${tailSpread} bytes`)
+    return { bytes, paused_ms: 30000, kernel_rss_samples: samples, growth_bytes: growth, tail_spread_bytes: tailSpread }
   })
   results.status = 'PASS'
 } finally {

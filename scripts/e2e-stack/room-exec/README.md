@@ -29,7 +29,8 @@ The exact scenarios are:
 - (f) SIGINT during an unbounded output stream, returning exit 130;
 - (g) absence of a live grant refuses both terminal open and exec;
 - (h) a paused output reader backpressures a 64 MiB duplex `cat`, with kernel
-  RSS samples during the pause, then completes with every byte.
+  RSS samples during a 30-second pause (including a final five-second plateau
+  check), then completes with every byte.
 
 Whole-kernel grants have no separate terminal-rights bit. Case (g) tests the
 same actual grant boundary for both interfaces. Router regressions additionally
