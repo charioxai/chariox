@@ -5439,6 +5439,16 @@ frame, such as a rejected dispatch, is typed from its text; it does not become
 termination evidence. If native sign-in recovery is declined, the failed turn retains
 the original native cause and message while the existing recovery notice explains
 what happened.
+The provider-error transcript entry of a failed turn, shown by every client, reads
+`<Cause headline>. <harness message>. <recovery>`, for example `Usage limit reached.
+You've hit your weekly limit · resets Oct 28, 9pm (UTC). Wait for the limit to reset
+(the message gives the time when the provider does) or switch this agent to another
+account, then send the request again.` It replaces the earlier `Provider prompt
+dispatch failed: <message>` entry and, for a process exit, the bare exit text; the
+entry text carries no new serialized field. A Claude account whose plan limit is
+reached still passes the credential check, because the limit answer proves the token
+authenticated. Claude's `You've hit your <session|weekly|usage|...> limit` dialogs are
+all usage limits.
 
 Every source kernel filters its own durable part. The gateway commits imported
 records and each source cursor together before acknowledging that source. Target
