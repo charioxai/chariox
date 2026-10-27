@@ -1153,6 +1153,27 @@ test("MP-10: a linked sheet whose CSSOM serialization drops var() shorthand long
     assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/.test(css), `MP-10: no empty longhand reaches the viewer: ${css.slice(0, 300)}`);
   }, { "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" } }));
 
+test("MP-10: linked lossy CSS stops CSSOM serialization before unused suffix rules", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p>fixture</p>', async ({ next, evaluate, host, subscription_id }) => {
+    const initial=[await next()];for(let i=0;i<5;i++)initial.push(await next(500));
+    const initialCss=mirroredCss(initial)+'\n'+initial.flatMap(packet=>Object.values(packet.sheets??{})).join('\n');
+    assert(initialCss.includes('var(--w)'),`MP-10: source fallback preserves the lossy shorthand: ${initialCss.slice(0,300)}`);
+    assert(initialCss.includes('suffix-marker-199'),`MP-10: source fallback preserves CSSOM suffix rules: ${initialCss.slice(-300)}`);
+    const world=host.mirror.streams.get(subscription_id).world;
+    await host.mirror.v2.evaluate(world, `(()=>{
+      let prototype=CSSStyleRule.prototype,descriptor;
+      while(prototype&&!descriptor){descriptor=Object.getOwnPropertyDescriptor(prototype,'cssText');prototype=Object.getPrototypeOf(prototype)}
+      if(!descriptor?.get||!descriptor.configurable)throw Error('CSSStyleRule cssText getter unavailable');
+      globalThis.__mirrorLossySuffixReads=0;
+      Object.defineProperty(CSSStyleRule.prototype,'cssText',{configurable:true,enumerable:descriptor.enumerable,get(){if(this.selectorText==='.tail')globalThis.__mirrorLossySuffixReads++;return descriptor.get.call(this)}});
+      return true;
+    })()`);
+    const reset=await next(0,true);
+    assert.equal(reset.reset,true,'MP-10: the measured serialization is a real source reset');
+    const suffixReads=await host.mirror.v2.evaluate(world,'globalThis.__mirrorLossySuffixReads');
+    assert.equal(suffixReads,0,`MP-10: serialization stops at the first lossy rule; read ${suffixReads} suffix rules`);
+  }, { "/gh.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}" + Array.from({length:200},(_,i)=>`.tail{--suffix-marker-${i}:${i}}`).join("") + ".tail{--suffix-marker-199:199}" } }));
+
 test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
     const first = [await next()];
