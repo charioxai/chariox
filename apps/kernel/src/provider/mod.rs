@@ -801,3 +801,6 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+pub(crate) use opencode_binding::permission_tests::assert_archived_opencode_resume_contract;

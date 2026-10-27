@@ -898,6 +898,8 @@ pub enum RelayPeerRequest {
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_resume_state: Option<crate::provider::ProviderResumeState>,
         prompt: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         hidden_system_context: String,

@@ -73,7 +73,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         if let Some(error) = remote_prompt_dispatch_unavailable_slice_error(state, dispatch) {
             return Err(error);
         }
-        if attempt > 0 && !remote_prompt_dispatch_is_current(state, dispatch) {
+        if !remote_prompt_dispatch_is_current(state, dispatch) {
             return Err(DaemonError::NoActivePrompt {
                 session_id: dispatch.session_id.clone(),
             });
@@ -636,6 +636,11 @@ async fn refresh_remote_prompt_binding(
             "leased_agent_id": dispatch.leased_agent_id,
         }),
     );
+    if !remote_prompt_dispatch_is_current(state, dispatch) {
+        return Err(DaemonError::NoActivePrompt {
+            session_id: dispatch.session_id.clone(),
+        });
+    }
     let agent_id = dispatch.agent_id.clone();
     let agent = state
         .refresh_remote_agent_binding_authorized(&agent_id)
@@ -663,6 +668,14 @@ fn remote_prompt_dispatch_is_current(
     let Ok(session) = state.owned.session_store.get_session(&dispatch.session_id) else {
         return false;
     };
+    if state
+        .owned
+        .agent_store
+        .get_agent(&dispatch.agent_id)
+        .map_or(true, |agent| agent.archived())
+    {
+        return false;
+    }
     state
         .owned
         .prompt_state_owner
@@ -968,6 +981,7 @@ impl KernelRuntimeState {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
                         crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
+                    provider_resume_state: Some(if fresh_workflow { crate::provider::ProviderResumeState::default() } else { agent.provider_resume_state().clone() }),
                     prompt,
                     hidden_system_context,
                     attachments,

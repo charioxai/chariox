@@ -25,7 +25,9 @@ impl KernelRuntimeState {
         input: serde_json::Value,
         remote: Option<crate::transport::relay_peer::RemoteExtensionInvocationContext>,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        if tool.kind != ExtensionKind::App {
+        if self.owned.agent_store.get_agent(agent.id())?.archived()
+            || tool.kind != ExtensionKind::App
+        {
             return Err(unavailable());
         }
         // Captured at submission, before any wait for an on-demand start.
@@ -41,7 +43,9 @@ impl KernelRuntimeState {
                     .owned
                     .agent_store
                     .get_agent(agent.id())
-                    .is_ok_and(|current| same_binding(&current, agent, &tool.name))
+                    .is_ok_and(|current| {
+                        !current.archived() && same_binding(&current, agent, &tool.name)
+                    })
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -90,6 +94,9 @@ impl KernelRuntimeState {
             let _permit = permit;
             let agents = owned.agent_store.read();
             let current = agents.get_agent(expected.id())?;
+            if current.archived() {
+                return Err(unavailable());
+            }
             require_binding(&current, &expected, &tool, remote.as_ref())?;
             let caller = CallerContext {
                 actor: Actor::Agent(current.id().into()),
@@ -132,6 +139,9 @@ impl KernelRuntimeState {
             }
             let agents = owned.agent_store.read();
             let current = agents.get_agent(expected.id())?;
+            if current.archived() {
+                return Err(unavailable());
+            }
             require_binding(&current, &expected, &tool, remote.as_ref())?;
             let result = owned
                 .durable_state_store
@@ -163,29 +173,33 @@ impl KernelRuntimeState {
     ) -> impl Fn() -> bool + Send + Sync + 'static {
         let prompts = self.owned.prompt_state_owner.clone();
         let agent_id = agent.id().to_owned();
-        let turn = self
+        let session = self
             .owned
             .session_store
             .get_session(agent.session_id())
-            .ok()
-            .and_then(|session| {
-                prompts
-                    .active_prompt_for_agent_snapshot(&session, &agent_id)
-                    .map(|prompt| (session, prompt.id().to_owned()))
-            });
-        // Bind once, before any await. A later turn or focus change cannot
-        // retarget accepted work, and calls between turns keep their old path.
+            .ok();
+        let turn_id = session.as_ref().and_then(|session| {
+            prompts
+                .active_prompt_for_agent_snapshot(session, &agent_id)
+                .map(|prompt| prompt.id().to_owned())
+        });
+        // The durable writer invokes this budget observer while admission may
+        // hold an agent read guard. Observe the prompt-owner fence without
+        // reacquiring that guard behind a waiting archive writer.
         move || {
-            turn.as_ref().is_some_and(|(session, turn_id)| {
-                prompts
-                    .active_prompt_for_agent_snapshot(session, &agent_id)
-                    .is_none_or(|prompt| {
-                        prompt.id() != turn_id
-                            || !matches!(
-                                prompt.status(),
-                                crate::session::PromptStatus::Dispatching
-                                    | crate::session::PromptStatus::Running
-                            )
+            session.as_ref().is_none_or(|session| {
+                prompts.agent_is_archived(session, &agent_id)
+                    || turn_id.as_ref().is_some_and(|turn_id| {
+                        prompts
+                            .active_prompt_for_agent_snapshot(session, &agent_id)
+                            .is_none_or(|prompt| {
+                                prompt.id() != turn_id
+                                    || !matches!(
+                                        prompt.status(),
+                                        crate::session::PromptStatus::Dispatching
+                                            | crate::session::PromptStatus::Running
+                                    )
+                            })
                     })
             })
         }
@@ -280,7 +294,8 @@ fn require_binding(
     tool: &RemoteExtensionTool,
     remote: Option<&crate::transport::relay_peer::RemoteExtensionInvocationContext>,
 ) -> Result<(), DaemonError> {
-    if current.owner_user_id() != expected.owner_user_id()
+    if current.archived()
+        || current.owner_user_id() != expected.owner_user_id()
         || current.session_id() != expected.session_id()
         || !same_binding(current, expected, &tool.name)
     {

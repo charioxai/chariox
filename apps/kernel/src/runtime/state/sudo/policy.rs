@@ -251,6 +251,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)
+            | LocalDaemonRequest::ArchiveAgent(_)
             | LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
             | LocalDaemonRequest::DeleteKernel(_)

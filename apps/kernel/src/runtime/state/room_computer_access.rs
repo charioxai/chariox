@@ -94,6 +94,12 @@ impl KernelRuntimeState {
     }
     pub(super) fn require_room_computer_actor(&self, actor: &str) -> Result<(), DaemonError> {
         if let Some(agent_id) = actor.strip_prefix("agent:") {
+            if self.owned.agent_store.get_agent(agent_id)?.archived() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "computer input",
+                    message: "Unarchive this agent before using the Room environment.".into(),
+                });
+            }
             self.require_room_computer_access(agent_id)?;
         }
         Ok(())

@@ -230,3 +230,13 @@ export function setAgentDeadlineRequest(sessionId: string, agentId: string, dead
 export function getAgentDeadlineRequest(sessionId: string, agentId: string) {
   return { GetAgentDeadline: { session_id: sessionId, agent_id: agentId } }
 }
+
+export const AGENT_ARCHIVE_MINIMUM_PROTOCOL_VERSION = 636
+
+export function supportsReversibleAgentArchive(protocolVersion: number | null | undefined): boolean {
+  return typeof protocolVersion === "number" && protocolVersion >= AGENT_ARCHIVE_MINIMUM_PROTOCOL_VERSION
+}
+
+export function listArchivedAgentsRequest(sessionId: string) {
+  return { ListArchivedAgents: { session_id: sessionId } }
+}

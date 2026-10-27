@@ -495,17 +495,22 @@ fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
         crate::session::PromptStatus::Dispatching,
         crate::session::PromptStatus::Running,
     ] {
-        check_app_call_turn_lifetime(status, false);
+        check_app_call_turn_lifetime(status, false, false);
     }
 }
 
 /// MP-08/MP-11 A05: revoking the binding wakes a waiting call, not only its reply.
 #[test]
 fn capability_revoking_the_app_binding_wakes_its_in_flight_app_tool() {
-    check_app_call_turn_lifetime(crate::session::PromptStatus::Running, true);
+    check_app_call_turn_lifetime(crate::session::PromptStatus::Running, true, false);
 }
 
-fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bool) {
+#[test]
+fn agent_archive_cancels_an_app_call_and_keeps_its_grant() {
+    check_app_call_turn_lifetime(crate::session::PromptStatus::Running, false, true);
+}
+
+fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bool, archive: bool) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -657,7 +662,32 @@ fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bo
     );
     // Keep the caller/connection alive: cancellation must observe the kernel
     // turn state, rather than depend on dropping the MCP dispatch future.
-    if revoke {
+    if archive {
+        let archived = runtime
+            .block_on(router.runtime_state.archive_agent_in_session(
+                &crate::local::ArchiveAgentRequest {
+                    session_id: session.id().into(),
+                    agent_id: agent.id().into(),
+                    archived: true,
+                },
+                "alice",
+            ))
+            .unwrap();
+        assert!(archived.archived());
+        assert!(archived.has_extension_grant(crate::extension::ExtensionKind::App, "installed"));
+        let restored = runtime
+            .block_on(router.runtime_state.archive_agent_in_session(
+                &crate::local::ArchiveAgentRequest {
+                    session_id: session.id().into(),
+                    agent_id: agent.id().into(),
+                    archived: false,
+                },
+                "alice",
+            ))
+            .unwrap();
+        assert!(!restored.archived());
+        assert!(restored.has_extension_grant(crate::extension::ExtensionKind::App, "installed"));
+    } else if revoke {
         runtime
             .block_on(router.runtime_state.revoke_agent_extension(
                 agent.id(),

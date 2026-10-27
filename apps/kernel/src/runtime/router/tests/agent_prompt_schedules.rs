@@ -398,7 +398,7 @@ async fn archive_test_agent(
 }
 
 #[tokio::test]
-async fn archived_agent_keeps_its_one_shot_wait_and_runs_it_after_unarchive() {
+async fn archived_agent_cancels_its_schedules_without_replaying_on_unarchive() {
     let worktree = crate::test_support::TestWorktree::new("agent-prompt-schedules-archived");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -462,24 +462,13 @@ async fn archived_agent_keeps_its_one_shot_wait_and_runs_it_after_unarchive() {
         .await
         .expect("archived agent snapshot should stay readable");
     assert!(snapshot.active_prompt_for_agent(agent.id()).is_none());
-    let retained = snapshot
-        .agent_prompt_schedules()
-        .iter()
-        .find(|schedule| schedule.id() == once.id())
-        .expect("a one-shot wait that comes due while archived must stay pending");
-    assert!(!retained.dispatch_in_flight());
-    assert_eq!(retained.runs_dispatched(), 0);
-    let coalesced = snapshot
-        .agent_prompt_schedules()
-        .iter()
-        .find(|schedule| schedule.id() == recurring.id())
-        .expect("recurring wait should remain");
-    assert_eq!(
-        (coalesced.runs_dispatched(), coalesced.next_run_at_ms()),
-        (0, due_at_ms + 60_000),
-        "a recurring wait keeps coalescing while its agent is archived"
+    assert!(
+        snapshot
+            .agent_prompt_schedules()
+            .iter()
+            .all(|schedule| schedule.id() != once.id() && schedule.id() != recurring.id()),
+        "archive cancels target schedules"
     );
-
     archive_test_agent(&router, session.id(), agent.id(), false).await;
     boxed_schedule_future(|| {
         router
@@ -491,18 +480,9 @@ async fn archived_agent_keeps_its_one_shot_wait_and_runs_it_after_unarchive() {
         .runtime_state
         .session_snapshot(session.id())
         .await
-        .expect("unarchived agent snapshot should stay readable");
-    assert_eq!(
-        snapshot
-            .active_prompt_for_agent(agent.id())
-            .map(|prompt| prompt.prompt()),
-        Some("Resume the audit.")
-    );
+        .unwrap();
     assert!(
-        snapshot
-            .agent_prompt_schedules()
-            .iter()
-            .all(|schedule| schedule.id() != once.id()),
-        "the retained one-shot wait runs exactly once after unarchive"
+        snapshot.active_prompt_for_agent(agent.id()).is_none(),
+        "unarchive must not start a turn"
     );
 }

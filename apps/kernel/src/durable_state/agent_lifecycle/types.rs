@@ -39,7 +39,11 @@ impl AgentTaskExecution {
     /// The owner stopped this turn; the agent stays stopped until prompted again.
     pub(crate) fn stopped_by_owner(&self) -> bool {
         self.state == ExecutionState::Cancelled
-            && self.reason == super::supervision::OWNER_CANCELLED_REASON
+            && matches!(
+                self.reason.as_str(),
+                super::supervision::OWNER_CANCELLED_REASON
+                    | super::supervision::AGENT_ARCHIVED_REASON
+            )
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,6 +402,11 @@ pub(crate) enum Operation {
         /// A04: (room, agent, task) of sudo-held recipients; their unrelated
         /// events wait for the window to end like busy refusals.
         held_work: Vec<(String, String, String)>,
+    },
+    ArchiveTask {
+        task: String,
+        owner: String,
+        revision: u64,
     },
     CancelTask {
         task: String,

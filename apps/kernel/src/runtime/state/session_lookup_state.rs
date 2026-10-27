@@ -144,7 +144,10 @@ impl KernelRuntimeState {
             agents: self
                 .owned
                 .agent_store
-                .get_session_agents(&request.session_id),
+                .get_session_agents(&request.session_id)
+                .into_iter()
+                .filter(|agent| !agent.archived())
+                .collect(),
         }
     }
 }

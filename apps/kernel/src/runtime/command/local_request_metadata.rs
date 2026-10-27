@@ -72,6 +72,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::ListArchivedAgents(request) => {
+            LocalRequestMetadata::new("agent.archived.list", Normal).session(&request.session_id)
+        }
         LocalDaemonRequest::SetRoomPinned(request) => {
             LocalRequestMetadata::new("room.pin", Interactive).session(&request.session_id)
         }
@@ -1024,6 +1027,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
+        LocalDaemonRequest::ListArchivedAgents(_) => "agent.archived.list",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
             "workflow.notifications.register"

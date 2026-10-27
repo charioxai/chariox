@@ -264,7 +264,7 @@ impl KernelRuntimeOwnedState {
         Ok(attachment.id().to_string())
     }
 
-    fn persist_agent_prompt_schedule_session(
+    pub(super) fn persist_agent_prompt_schedule_session(
         &self,
         session_id: &str,
         reason: &str,

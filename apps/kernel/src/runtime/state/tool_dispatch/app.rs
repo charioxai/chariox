@@ -151,7 +151,7 @@ impl KernelRuntimeState {
             .owned
             .agent_store
             .get_agent(run.agent_instance_id().ok_or_else(unavailable)?)?;
-        if run.session_id() != agent.session_id() {
+        if agent.archived() || run.session_id() != agent.session_id() {
             return Err(unavailable());
         }
         if run.owner_user_id() != agent.owner_user_id()

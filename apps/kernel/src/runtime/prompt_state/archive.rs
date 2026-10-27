@@ -2,6 +2,47 @@
 use super::*;
 
 impl PromptStateOwner {
+    pub(crate) fn agent_is_archived(&self, session: &RuntimeSession, agent_id: &str) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner
+            .archived_agents
+            .contains(&PromptStateKey::new(session.id(), agent_id))
+            || session
+                .agents()
+                .iter()
+                .any(|agent| agent.id() == agent_id && agent.archived())
+    }
+
+    /// The callback must not reenter this owner or await provider I/O.
+    pub(crate) fn with_unarchived_agent<T>(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        commit: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner
+            .archived_agents
+            .contains(&PromptStateKey::new(session.id(), agent_id))
+            || session
+                .agents()
+                .iter()
+                .any(|agent| agent.id() == agent_id && agent.archived())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "launch provider",
+                message: "Unarchive this agent before starting its provider.".into(),
+            });
+        }
+        commit()
+    }
+
     /// The callback must not reenter this owner or await provider I/O.
     pub(crate) fn change_agent_archive<T>(
         &self,
@@ -16,15 +57,27 @@ impl PromptStateOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
         if archived {
-            let state = owner.ensure_agent_state(session, agent_id);
-            let busy = state.active_prompt.is_some() || !state.queued_prompts.is_empty();
-            if busy
-                || owner.profile_transitions.contains_key(&key)
-                || owner.queue_promotions.contains(&key)
+            let prompts = owner
+                .states
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| OwnedAgentPromptState::from_session(session, agent_id));
+            if prompts
+                .active_prompt
+                .iter()
+                .chain(prompts.queued_prompts.iter())
+                .any(|prompt| prompt.workflow_run_id().is_some())
             {
                 return Err(DaemonError::LocalTransport {
                     operation: "archive agent",
-                    message: "Stop this agent and clear its queued prompts before archiving it."
+                    message: "Pause or rebind this agent's active or queued workflow before archiving it; other agents will keep running.".into(),
+                });
+            }
+            if owner.profile_transitions.contains_key(&key) || owner.queue_promotions.contains(&key)
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "archive agent",
+                    message: "Agent launch or profile change is committing; retry archive once it completes."
                         .into(),
                 });
             }
@@ -90,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_agent_refuses_admitted_or_reserved_work_without_mutating() {
+    fn archive_agent_refuses_reserved_work_and_fences_admitted_work() {
         let owner = PromptStateOwner::default();
         let session = session();
         let profile = owner
@@ -105,11 +158,55 @@ mod tests {
         owner
             .submit_prepared_prompt(&session, prompt(), false)
             .unwrap();
+        owner
+            .change_agent_archive(&session, "agent", true, || Ok(()))
+            .unwrap();
         assert!(owner
-            .change_agent_archive(&session, "agent", true, || -> Result<(), DaemonError> {
-                panic!("must not mutate")
-            })
+            .submit_prepared_prompt(&session, prompt(), false)
             .is_err());
+        assert!(
+            owner.state_parts(&session, "agent").0.is_some(),
+            "the runtime must settle existing work after the fence commits"
+        );
+    }
+
+    #[test]
+    fn archive_agent_refuses_active_or_queued_workflow_without_mutation() {
+        for queued in [false, true] {
+            let owner = PromptStateOwner::default();
+            let session = session();
+            if queued {
+                owner
+                    .submit_prepared_prompt(&session, prompt(), false)
+                    .unwrap();
+            }
+            owner
+                .submit_prepared_prompt(
+                    &session,
+                    PromptQueueItem::new(
+                        "workflow-prompt",
+                        "client",
+                        "agent",
+                        "work",
+                        PromptStatus::Queued,
+                    )
+                    .with_workflow_context("run", "node"),
+                    false,
+                )
+                .unwrap();
+            assert!(owner
+                .change_agent_archive(&session, "agent", true, || -> Result<(), DaemonError> {
+                    panic!("workflow participation must be checked before mutation")
+                })
+                .is_err());
+            assert!(owner
+                .submit_prepared_prompt(
+                    &session,
+                    PromptQueueItem::new("after", "client", "agent", "work", PromptStatus::Queued),
+                    false
+                )
+                .is_ok());
+        }
     }
 
     #[test]

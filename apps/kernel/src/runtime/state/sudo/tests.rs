@@ -2164,3 +2164,16 @@ async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
     );
     f.state.owned.room_terminals.end_session(&turn.session_id);
 }
+
+#[test]
+fn agent_archive_cannot_be_escalated_with_sudo() {
+    for archived in [true, false] {
+        let request =
+            crate::local::LocalDaemonRequest::ArchiveAgent(crate::local::ArchiveAgentRequest {
+                session_id: "room".into(),
+                agent_id: "agent".into(),
+                archived,
+            });
+        assert!(super::policy::sudo_request_forbidden(&request));
+    }
+}

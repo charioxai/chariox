@@ -260,7 +260,11 @@ impl KernelRuntimeOwnedState {
 
     /// The deadline is stopped only once every owned wake has settled; what is
     /// left after the bound is named so the retry and the owner can act on it.
-    async fn await_owned_wakes_settled(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+    pub(super) async fn await_owned_wakes_settled(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
         let bound = Instant::now() + Duration::from_secs(4);
         loop {
             let left = self.unsettled_agent_wakes(room, agent)?;
@@ -271,7 +275,7 @@ impl KernelRuntimeOwnedState {
                 return Err(refusal(
                     "agent_deadline_cleanup_pending",
                     &format!(
-                        "deadline reached; owned sources have not stopped yet: {}. Cleanup retries until they exit",
+                        "owned sources have not stopped yet: {}. Retry cleanup after they exit",
                         left.join(", ")
                     ),
                 ));
