@@ -20,7 +20,8 @@ export class BrowserRendererRecovery {
     }
     if (!['Inspector.targetCrashed', 'Target.targetCrashed'].includes(method)
         || !this.browser.sessionsByTarget.has(targetId) || !this.browser.documentIdsByTarget.has(targetId)
-        || this.crashed.has(targetId)) return;
+        || (this.crashed.has(targetId) && !this.crashed.get(targetId).awaitingCommit)) return;
+    clearTimeout(this.crashed.get(targetId)?.timer);
     const previous = this.backoff.get(targetId);
     const attempts = previous && performance.now() - previous.at < 60_000 ? previous.attempts + 1 : 0;
     this.backoff.set(targetId, { attempts, at: performance.now() });
@@ -34,12 +35,17 @@ export class BrowserRendererRecovery {
   }
   schedule(targetId, entry, delay) {
     const current = () => this.crashed.get(targetId) === entry && this.browser.connection === entry.connection;
+    clearTimeout(entry.timer);
     entry.timer = setTimeout(async () => {
       if (!current()) return;
       try {
         await this.browser.memory.requireHeadroom();
         if (!current()) return;
+        entry.awaitingCommit = true;
         await entry.connection.send('Page.reload', {}, entry.sessionId);
+        // CDP acknowledges dispatch, not a replacement document. Keep a
+        // bounded retry alive until frameNavigated retires this exact attempt.
+        if (current()) this.schedule(targetId, entry, 5000);
       } catch {
         // Keep a definitive crashed state while memory/CDP is unavailable.
         // A late retry cannot operate on another browser generation or tab.
