@@ -39,6 +39,12 @@ provider-run projections and clears their routing and prompt activity, just as
 destroy-agent cleanup does. Delayed snapshots of those runs remain Ended, and
 unarchive cannot select a run from the destroyed lease.
 
+Archive and unarchive leave output sequences and per-user seen receipts unchanged.
+The archived flag and prompt settlements carry the lifecycle outcome; redundant
+agent-output notices would create unread output that the Web cannot present.
+An agent with acknowledged or no output stays read, and real unseen output stays
+unread after unarchive, including repeated requests.
+
 Only the agent owner may archive/unarchive, under existing authenticated owner
 admission and Room membership. Room agents cannot archive/unarchive anyone,
 including themselves or children, directly or through sudo. Collaborators retain

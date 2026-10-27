@@ -64,9 +64,6 @@ impl KernelRuntimeState {
                 return Err(error);
             }
         }
-        if request.archived {
-            self.owned.record_notice_for_agent(&request.session_id, None, Some(agent.id()), self.owned.attachment_store.list_session_attachment_ids(&request.session_id), "Agent archived. Its running and queued work was cancelled; unarchive and send a new prompt to continue.");
-        }
         self.owned
             .sync_focused_provider_run_if_idle(&request.session_id)?;
         self.owned.agent_store.get_agent(agent.id())
@@ -168,16 +165,6 @@ impl KernelRuntimeState {
                 // Archive is kernel-owned cleanup, independent of whether the
                 // attachment that submitted the queued prompt still exists.
                 owned.record_cancelled_prompt_settlement(room, agent_id, &cancelled, None);
-                owned.record_notice_for_agent(
-                    room,
-                    None,
-                    Some(agent_id),
-                    owned.attachment_store.list_session_attachment_ids(room),
-                    format!(
-                        "Queued prompt `{}` cancelled: agent archived.",
-                        cancelled.id()
-                    ),
-                );
             }
         }
         let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent_id);

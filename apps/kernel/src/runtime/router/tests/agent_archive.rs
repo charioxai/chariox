@@ -16,6 +16,103 @@ async fn archive(
 }
 
 #[tokio::test]
+async fn reversible_agent_archive_does_not_create_unread_output() {
+    archive_preserves_output_seen(false, false).await;
+}
+
+#[tokio::test]
+async fn reversible_agent_archive_keeps_acknowledged_output_seen() {
+    archive_preserves_output_seen(true, true).await;
+}
+
+#[tokio::test]
+async fn reversible_agent_archive_keeps_real_unseen_output_unread() {
+    archive_preserves_output_seen(true, false).await;
+}
+
+async fn archive_preserves_output_seen(has_output: bool, seen: bool) {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    if has_output {
+        app.append_history_entry(
+            session.id(),
+            crate::history::SessionHistoryEntry::provider_output(
+                session.id(),
+                "archive-output-seen",
+                Some(agent.id()),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                None,
+                "Real output before archive",
+            ),
+        );
+    }
+    let unread = has_output && !seen;
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "archive-output-seen",
+            ClientCapabilityLevel::FullTerminal,
+            DEFAULT_LOCAL_USER_ID,
+        ))
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    if seen {
+        let request =
+            LocalDaemonRequest::AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest {
+                session_id: session.id().into(),
+                agent_id: agent.id().into(),
+            });
+        let command =
+            KernelCommand::from_local_request("archive-output-seen", None, None, &request);
+        router.dispatch(command, request).await.unwrap();
+    }
+    let before = router
+        .session_snapshot_projection_for_attachment(session.id(), attachment.id(), 0)
+        .unwrap();
+    assert_eq!(before.agent_activity[agent.id()].unread_idle_output, unread);
+    let before_session = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .unwrap();
+    for archived in [true, true, false, false] {
+        archive(&router, session.id(), agent.id(), archived)
+            .await
+            .unwrap();
+        let projection = router
+            .session_snapshot_projection_for_attachment(session.id(), attachment.id(), 0)
+            .unwrap();
+        let current = router
+            .runtime_state
+            .session_snapshot(session.id())
+            .await
+            .unwrap();
+        assert_eq!(
+            current.agent_has_unread_output(DEFAULT_LOCAL_USER_ID, agent.id()),
+            unread,
+            "archive={archived} must preserve the real output receipt"
+        );
+        if !archived {
+            let activity = &projection.agent_activity[agent.id()];
+            assert_eq!(activity.unread_idle_output, unread);
+            assert!(!activity.busy);
+            assert_eq!(activity.queued_prompt_count, 0);
+        }
+        assert!(projection
+            .session
+            .active_prompt_for_agent(agent.id())
+            .is_none());
+        assert_eq!(
+            serde_json::to_value(&current).unwrap()["agent_output_read_state"],
+            serde_json::to_value(&before_session).unwrap()["agent_output_read_state"],
+            "lifecycle cleanup must not change output sequences or seen receipts"
+        );
+    }
+}
+
+#[tokio::test]
 async fn reversible_agent_archive_stops_running_and_queued_work_only_for_target() {
     let worktree = crate::test_support::TestWorktree::new("agent-archive-running");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
