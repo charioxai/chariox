@@ -26,6 +26,7 @@ export async function until(read, label, timeout = 30_000) {
 }
 
 export class Fixture {
+  ownsHome = false
   children = []
   clients = []
   envs = {}
@@ -66,6 +67,7 @@ export class Fixture {
 
   async start() {
     await mkdir(this.home, { mode: 0o700 })
+    this.ownsHome = true
     await mkdir(this.evidence, { recursive: true })
     this.ports.relay = await port()
     await this.launch('relay', this.relayBinary, {
@@ -163,6 +165,7 @@ export class Fixture {
       } finally { clearTimeout(timer); await log.close() }
       cleanup.push({ name, pid: child.pid, code: child.exitCode, signal: child.signalCode })
     }
+    if (!this.ownsHome) return
     for (const name of ['A', 'B']) {
       const logRoot = path.join(this.home, name, 'logs')
       for (const file of await readdir(logRoot).catch(() => [])) {
@@ -170,6 +173,7 @@ export class Fixture {
       }
     }
     await rm(this.home, { recursive: true, force: true })
+    this.ownsHome = false
     await writeFile(path.join(this.evidence, 'cleanup.json'), JSON.stringify({ processes: cleanup, state_removed: this.home }, null, 2))
   }
 }
