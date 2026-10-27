@@ -61,6 +61,8 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     "COPY packages/aegs-sdk packages/aegs-sdk",
     "COPY packages/app-package packages/app-package",
     "COPY packages/app-runtime packages/app-runtime",
+    "COPY packages/app-wit packages/app-wit",
+    "COPY packages/app-wasm-worker packages/app-wasm-worker",
     "COPY packages/app-sdk packages/app-sdk",
   ]) {
     const copy = rustStage.indexOf(requiredCopy)
@@ -73,7 +75,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)].map((match) => match[1]),
   )]
   assert.deepEqual(kernelPathDependencies.sort(), [
-    "../../packages/aegs-sdk", "../../packages/app-package", "../../packages/app-runtime", "../../packages/event-protocol", "../relay",
+    "../../packages/aegs-sdk", "../../packages/app-package", "../../packages/app-runtime", "../../packages/app-wasm-worker", "../../packages/event-protocol", "../relay",
   ])
   assert.match(
     rustStage,
