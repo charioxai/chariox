@@ -22,8 +22,10 @@ export function completedTurnPromptId(rows, prompt, previousRows) {
     && ['assistant', 'error'].includes(row.role) && row.text?.trim()) ? promptId : undefined;
 }
 
-export function completedHomeMcpTool(rows, promptId, marker, homeKernelPid) {
-  if (!promptId || !Number.isSafeInteger(homeKernelPid) || homeKernelPid <= 1) return false;
+export function completedHomeMcpTool(rows, promptId, marker, homeKernelPid, targetKernelPid) {
+  if (!promptId || !Number.isSafeInteger(homeKernelPid) || homeKernelPid <= 1
+    || !Number.isSafeInteger(targetKernelPid) || targetKernelPid <= 1
+    || homeKernelPid === targetKernelPid) return false;
   return rows.some(row => {
     if (row.role !== 'tool' || row.promptId !== promptId || row.hidden
       || row.blobCollapsed === true || row.historyBlobLoading || row.historyBlobError) return false;
@@ -35,7 +37,10 @@ export function completedHomeMcpTool(rows, promptId, marker, homeKernelPid) {
       return !result.isError && result.content?.some(block => {
         if (block.type !== 'text') return false;
         const proof = JSON.parse(block.text);
-        return proof.marker === marker && proof.executionParentPid === homeKernelPid;
+        return proof.marker === marker && Array.isArray(proof.executionAncestry)
+          && proof.executionAncestry.every(pid => Number.isSafeInteger(pid) && pid > 1)
+          && proof.executionAncestry.includes(homeKernelPid)
+          && !proof.executionAncestry.includes(targetKernelPid);
       }) === true;
     } catch { return false; }
   });

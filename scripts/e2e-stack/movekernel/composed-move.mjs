@@ -11,12 +11,14 @@ import { completedWorkspaceTool, completedHomeMcpTool } from './workspace-proof.
 async function installProofPackages(source, agentId) {
     const server = root + '/proof-mcp.mjs';
     await writeFile(server, `import readline from 'node:readline';
+import {readFileSync} from 'node:fs';
+function ancestry(){let pid=process.pid;const pids=[];for(let n=0;n<64&&Number.isSafeInteger(pid)&&pid>1&&!pids.includes(pid);n++){pids.push(pid);try{const stat=readFileSync('/proc/'+pid+'/stat','utf8');pid=Number(stat.slice(stat.lastIndexOf(') ')+2).split(' ')[1]);}catch{break;}}return pids;}
 const input=readline.createInterface({input:process.stdin});
 input.on('line',line=>{const q=JSON.parse(line);if(q.id===undefined)return;
 let result={};
 if(q.method==='initialize')result={protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'mk04-proof',version:'1'}};
 else if(q.method==='tools/list')result={tools:[{name:'mk04_ping',description:'Return the supplied marker and the execution kernel home',inputSchema:{type:'object',properties:{marker:{type:'string'}},required:['marker']}}]};
-else if(q.method==='tools/call')result={content:[{type:'text',text:JSON.stringify({marker:q.params.arguments.marker,executionParentPid:process.ppid})}]};
+else if(q.method==='tools/call')result={content:[{type:'text',text:JSON.stringify({marker:q.params.arguments.marker,executionAncestry:ancestry()})}]};
 process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');});\n`);
     await source.client.send({InstallMcpServer: {workspace_id: null, config: {name: 'mk04-proof', transport: {type: 'stdio', command: process.execPath, args: [server]}, enabled: true, required: true}}});
     const skill = root + '/proof-skill';
@@ -110,7 +112,7 @@ try {
     assert.ok(completedWorkspaceTool(entries(result.snapshot), result.promptId, primary));
     const toolRows = entries(result.snapshot).filter(row => row.role === 'tool' && row.promptId === result.promptId);
     await record('target-tool-proof', {promptId: result.promptId, homeKernelPid: source.child.pid, targetKernelPid: target.child.pid, rows: toolRows});
-    assert.ok(completedHomeMcpTool(toolRows, result.promptId, marker, source.child.pid), 'Granted MCP must execute as a child of the home kernel');
+    assert.ok(completedHomeMcpTool(toolRows, result.promptId, marker, source.child.pid, target.child.pid), 'Granted MCP must execute in the home kernel process tree');
     const moved = (await state(source, sessionId)).session.agents.find(a => a.id === agentId);
     const projected = await currentRun(source, sessionId, agentId);
     const prefix = 'leased:' + moved.remote_execution.leased_agent_id + ':';
