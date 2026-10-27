@@ -3,7 +3,8 @@ import test from "node:test"
 import { PassThrough, Readable, Writable } from "node:stream"
 import { EventEmitter } from "node:events"
 import { runExec } from "./exec-command.js"
-import { CommandFailure, parseArguments } from "./agent-command-table.js"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
+import { CommandFailure, exitCodeFor, parseArguments } from "./agent-command-table.js"
 
 function sink(chunks: Buffer[]): Writable {
   return new Writable({ write(chunk, _encoding, done) { chunks.push(Buffer.from(chunk)); done() } })
@@ -169,3 +170,22 @@ test("exec handles a pipe error arriving after interrupted stdout", async () => 
   writing(Object.assign(new Error("broken pipe"), { code: "EPIPE" }))
   await new Promise(resolve => setImmediate(resolve))
 })
+
+for (const [operation, code, expected, exit] of [
+  ["handle kernel response", "connection_closed", "kernel_connection_lost", 5],
+  ["handle kernel response", "outcome_unknown", "kernel_connection_lost", 5],
+  ["handle kernel response", "write_failed", "kernel_connection_lost", 5],
+  ["connect kernel websocket", "connection_closed", "kernel_unreachable", 4],
+] as const) test(`exec normalizes real LocalIpcError ${operation}/${code} with resume details`, async () => {
+  await assert.rejects(runExec(options, async body => {
+    if ("RelayStatus" in body) return capabilities()
+    throw new LocalIpcError(operation, "transport lost", code)
+  }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
+    assert.ok(error instanceof CommandFailure)
+    assert.equal(error.code, expected)
+    assert.equal(exitCodeFor(error.code), exit)
+    assert.equal(error.details?.session_id, "room")
+    return true
+  })
+})
+

@@ -2,7 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor } from "./agent-command-table.js"
-import { failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel } from "./kernels-command.js"
+import { failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withKernel } from "./kernels-command.js"
+import { Readable, Writable } from "node:stream"
+import { runExec } from "./exec-command.js"
 import type { WebSocket } from "ws"
 import { replyWith, startFakeKernel, type FakeKernelFrame } from "./fake-unix-kernel.test-support.js"
 
@@ -231,4 +233,31 @@ test("terminal send --wait-ms keeps its request open for the whole wait, whateve
     await runKernelsCommand(["terminal", "send", "ls", "--kernel", "b3", "--session", "s1", "--terminal", "t1", "--wait-ms", "3000", "--timeout", "1", "--socket", kernel.path])
   } finally { console.log = log; await kernel.close() }
   assert.equal(JSON.parse(printed.at(-1)!).text, "done\r\n")
+})
+
+for (const ended of [false, true]) test(`exec real socket loss preserves resume details and probes access (ended=${ended})`, async () => {
+  let dropped = false
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["room_exec_v1"]))
+    if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, ended ? refusal("kernel_access_ended") : { response: { GatewayKernelsListed: {} } })
+    const operation = (frame.request.RoomTerminal as { operation: { operation: string } }).operation.operation
+    if (operation === "exec_read") { dropped = true; socket.close(); return }
+    replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "exec_opened", exec_id: "exec-live" } } } })
+  })
+  const sink = () => new Writable({ write(_chunk, _encoding, done) { done() } })
+  try {
+    await assert.rejects(withKernel({ socket: kernel.path, timeoutSeconds: 5 }, send => runExec(
+      { session: "room", command: ["cat"] }, send,
+      { stdin: new Readable({ read() {} }), stdout: sink(), stderr: sink() },
+    )), (error: unknown) => {
+      assert.ok(error instanceof CommandFailure)
+      assert.equal(error.code, ended ? "kernel_access_ended" : "kernel_connection_lost")
+      assert.equal(error.details?.exec_id, "exec-live")
+      assert.equal(error.details?.output_cursor, 0)
+      assert.equal(exitCodeFor(error.code), ended ? 3 : 5)
+      return true
+    })
+    assert.ok(dropped)
+    assert.ok(requestNames(kernel.frames).includes("ListGatewayKernels"))
+  } finally { await kernel.close() }
 })

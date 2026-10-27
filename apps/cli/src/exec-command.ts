@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises"
 import type { Readable, Writable } from "node:stream"
 import type { ExecOutcome, ExecOutput } from "@chariox/kernel-client/kernel-types"
+import { failureOf } from "./kernel-command-failure.js"
 import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 
@@ -163,8 +164,8 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     if (execId && /^E[A-Z]+$/.test(codeOf(error) ?? "")) {
       try { await request({ operation: "exec_close", exec_id: execId }); completed = true } catch { /* Resume details below retain uncertain cleanup. */ }
     }
-    const message = error instanceof Error ? error.message : String(error)
-    throw new CommandFailure(codeOf(error) ?? "exec_failed", message, {
+    const failure = failureOf(error)
+    throw new CommandFailure(failure.code, failure.message, {
       session_id: session, exec_id: execId ?? null, stdin_offset: offset, output_cursor: cursor,
       ...(!completed ? { next_step: execId
         ? "resume this exec with RoomTerminal exec_read, or exec_close to cancel; do not rerun an uncertain command"

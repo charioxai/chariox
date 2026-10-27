@@ -8,24 +8,11 @@ import { runExec } from "./exec-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
 
-const LOCAL_CONNECTION_LOSS = ["connection_closed", "outcome_unknown", "write_failed"]
-const CONNECT_OPERATION = "connect kernel websocket"
+import { failureOf, lostInFlight, lostConnectionFailure } from "./kernel-command-failure.js"
+export { failureOf, lostConnectionFailure } from "./kernel-command-failure.js"
+
 const DEFAULT_TIMEOUT_SECONDS = 30
-
-function lostInFlight(error: unknown): boolean {
-  return error instanceof LocalIpcError && error.operation !== CONNECT_OPERATION && error.code !== null && LOCAL_CONNECTION_LOSS.includes(error.code)
-}
-
-export function failureOf(error: unknown): CommandFailure {
-  if (error instanceof CommandFailure) return error
-  if (error instanceof LocalIpcError) {
-    const message = error.message.replace(/^kernel transport `[^`]*` failed: /, "")
-    if (error.operation === CONNECT_OPERATION) return new CommandFailure("kernel_unreachable", `${message}; start the kernel or pass --socket PATH`)
-    if (lostInFlight(error)) return new CommandFailure("kernel_connection_lost", message)
-    return new CommandFailure(error.code ?? "cli_error", message)
-  }
-  return new CommandFailure("cli_error", error instanceof Error ? error.message : String(error))
-}
+const CONNECT_OPERATION = "connect kernel websocket"
 
 export function reportFailure(error: unknown, kernel: string | null = null): void {
   const failure = failureOf(error)
@@ -36,13 +23,6 @@ export function reportFailure(error: unknown, kernel: string | null = null): voi
 export async function probeKernel(socket: string | undefined): Promise<unknown> {
   const client = kernelUnixClient(socket)
   try { return await client.send({ ListGatewayKernels: {} }) } finally { await client.close() }
-}
-
-export function lostConnectionFailure(probeError: unknown): CommandFailure {
-  if (probeError instanceof LocalIpcError && probeError.code === "kernel_access_ended") {
-    return new CommandFailure("kernel_access_ended", "the access grant ended while this request was in flight; the request may or may not have run")
-  }
-  return new CommandFailure("kernel_connection_lost", "the connection to the local kernel was lost before the answer; the request may or may not have run")
 }
 
 export function parseRequestBody(text: string): Record<string, unknown> {
@@ -92,10 +72,12 @@ export async function withKernel<T>(
   if (options.kernel !== undefined) await requireKernelGateway(options.socket, options.timeoutSeconds)
   const client = kernelUnixClient(options.socket, { kernel: options.kernel, commandId: options.commandId })
   try {
-    return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds))
-  } catch (error) {
-    if (!lostInFlight(error)) throw error
-    throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
+    return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds).catch(async error => {
+      // Normalize transport loss before a streaming command attaches its resume
+      // cursors; an outer catch would lose those details or the IPC error type.
+      if (!lostInFlight(error)) throw error
+      throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
+    }))
   } finally { await client.close() }
 }
 
