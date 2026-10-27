@@ -195,6 +195,7 @@ pub(crate) fn assert_archived_opencode_resume_contract(
             let payload = match path {
                 "/global/health" => r#"{"healthy":true}"#,
                 "/agent" => "[]",
+                path if path.ends_with("/prompt_async") => "",
                 path if path.ends_with("/message") => "[]",
                 "/config/providers" => r#"{"providers":[],"default":{}}"#,
                 _ => "{}",
