@@ -363,7 +363,7 @@ export class KernelBrowserHost {
   // only; the owned Computer desktop stays at its 1x X11 density.
   viewport() { return hostViewport(!this.chromium.desktop && (featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY') || featureOn('CHARIOX_KERNEL_BROWSER_MIRROR'))); }
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
-  // The newest subscription owns the layout; null restores the canonical page.
+  // The newest subscription owns the layout until an explicit shared-window resize takes precedence; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
   noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }

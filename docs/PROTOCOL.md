@@ -5447,12 +5447,15 @@ Local 591 and relay peer 197 add this event shape, and
 ### MP-08 / MP-10 / MP-11: live browser layout (629/232)
 
 Allocated local 629/peer 232 adds `KernelBrowser.command={op:"resize",tab_id,generation,width,height}`.
-The result is `{width,height}` in CSS pixels. The current bounds are320×200 through1920×1080.
+The result is `{width,height}` in CSS pixels. The current bounds are 320×200 through 1920×1080.
 This is a normal owner/agent mutation on the existing Tab and action ledger. It does not start a
 stopped browser or grant observation/input. Native rectangles retire before the owned window
 changes; fresh captures repeat the ordinary document, policy, ownership and pixel checks.
-Mirror registrations remain attached. The explicit layout survives observation subscriptions and
-ends with the Tab or browser. An acknowledgement confirms layout application, not client paint.
+Mirror registrations remain attached. Resize sets one shared window layout for every existing
+and subsequently opened Tab until the browser stops or another resize replaces it. This intentionally
+takes precedence over protocol 560 subscription layouts: remote browser observers see the same
+page geometry, and opening or closing a viewer does not restore its previous layout.
+An acknowledgement confirms layout application, not client paint.
 
 The web sends the newest container size per animation frame with one request in flight. It reflows
 mirror CSS without scaling; video retains its old pixels unscaled, cropped/padded until the new
