@@ -700,6 +700,12 @@ impl KernelRuntimeState {
                 prepared.prompt.target_agent_id(),
             )?;
             owned.validate_goal_prompt(&prepared)?;
+            self.refresh_unknown_prompt_account(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )
+            .await?;
+            authorize()?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
                     &prepared.session_id,

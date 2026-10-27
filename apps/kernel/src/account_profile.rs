@@ -342,6 +342,7 @@ pub struct ProviderAccountUsageSnapshot {
 /// snapshot that has not been re-observed within this horizon must no longer
 /// be presented as fresh provider data. Missing data is never fabricated.
 pub const PROVIDER_USAGE_STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
+pub(crate) const PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS: u64 = 5 * 60 * 1_000;
 
 impl ProviderAccountUsageSnapshot {
     pub fn unavailable(profile_id: impl Into<String>, provider: impl Into<String>) -> Self {

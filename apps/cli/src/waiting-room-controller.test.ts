@@ -56,6 +56,29 @@ test("MP-08/MP-11 TUI blocks unsigned default while offering the signed-in accou
   }
 })
 
+test("MP-08 / MP-10 / MP-11 Start does not stage a refresh for an unknown account", () => {
+  const state = waitingRoomState({ focus: "new", providerId: "codex", accountProfileId: "linked" })
+  const options = { state, workspacePath: "/workspace", worktreePath: "/workspace" }
+  for (const auth_state of ["unknown", "expired", "error", "not_configured"] as const) {
+    const providerAccounts = [{ provider: "codex", profile_id: "linked", label: "Linked", is_default: true, auth_state }] as ProviderAccountProfile[]
+    const decision = deriveWaitingRoomControlActivationDecision({ ...options, remote: { providerAccounts } })
+    assert.equal(decision.action, auth_state === "unknown" ? "none" : "stage-command")
+  }
+})
+
+test("MP-08 / MP-10 / MP-11 the Account row stages a refresh with a message for every unauthenticated state", () => {
+  const state = waitingRoomState({ focus: "account", providerId: "codex", accountProfileId: "linked" })
+  for (const auth_state of ["unknown", "expired", "error", "not_configured"] as const) {
+    const providerAccounts = [{ provider: "codex", profile_id: "linked", label: "Linked", is_default: true, auth_state }] as ProviderAccountProfile[]
+    const decision = deriveWaitingRoomControlActivationDecision({ state, workspacePath: "/workspace", worktreePath: "/workspace", remote: { providerAccounts } })
+    assert.equal(decision.action, "stage-command", auth_state)
+    if (decision.action === "stage-command") {
+      assert.equal(typeof decision.message, "string", `${auth_state} needs a footer message`)
+      assert.match(decision.message ?? "", /Linked/, auth_state)
+    }
+  }
+})
+
 test("MP-08 / MP-11 existing slice launch defers authentication to its worker", () => {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace", currentWorktreePath: "/workspace",
