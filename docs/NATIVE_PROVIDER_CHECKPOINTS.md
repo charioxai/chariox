@@ -97,7 +97,10 @@ identity and unused workspace root. It reuses the original home account
 profile. Native import extends the stopped home rollout only when every old
 byte is a complete-record prefix of the incoming history; divergent history
 is preserved and refused. Resolve that divergence before retrying, or cancel
-the pending Move before a target lease is bound. Ordinary checkpoint import
+the pending Move until its target activates. Cancelling retires the target's
+lease and backing agent and restores the agent's previous route and workspace;
+the abandoned native import stays on the target, so a retry after the source
+has advanced may still report divergence. Ordinary checkpoint import
 remains strict and accepts only its required original prefix plus native
 appends from the readiness probe, including an unindexed rollout.
 

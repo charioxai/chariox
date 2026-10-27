@@ -45,7 +45,7 @@ pub enum NativeCheckpointFailure {
     TooLarge,
     #[error("The native session changed during export. Finish writes to that session and retry.")]
     SourceChanged,
-    #[error("The target already has divergent state for this native session. Preserve it and resolve the divergence before retrying. A pending Move can be cancelled before a target lease is bound.")]
+    #[error("The target already has divergent state for this native session. Preserve it and resolve the divergence before retrying. A pending Move can be cancelled until its target activates.")]
     TargetConflict,
     #[error("The target provider profile cannot stage the checkpoint. Check its free space and directory permissions, then retry.")]
     StorageUnavailable,
