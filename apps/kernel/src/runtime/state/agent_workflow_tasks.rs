@@ -118,18 +118,23 @@ impl KernelRuntimeOwnedState {
         &self,
         room: &str,
     ) -> Result<BTreeSet<(String, String)>, DaemonError> {
+        let session = self.session_store.get_session(room)?;
+        let mut legacy_runs = self.unadopted_legacy_runs(&session)?;
         let mut targets = BTreeSet::new();
         for task in self.durable_state_store.agent_tasks(Some(room), None)? {
             if !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
                 if let Some(binding) = self.agent_workflow_task_context(&task)? {
                     targets.insert(binding);
                 }
+                // An adopted legacy run has no task binding: its goal owns the relationship.
+                if let Some(run_id) = task.goal.as_ref().and_then(|g| g.legacy_run_id.as_deref()) {
+                    legacy_runs.extend(session.workflow_runs().iter().filter(|r| r.id() == run_id));
+                }
             }
         }
-        // An upgrade restart leaves no live turn for a legacy run, which the
-        // owner has not yet been able to adopt: it keeps draining, never orphaned.
-        let session = self.session_store.get_session(room)?;
-        for run in self.unadopted_legacy_runs(&session)? {
+        // An upgrade restart leaves no live turn for a legacy run: it keeps draining
+        // while the owner has not yet adopted it, and under its goal once adopted.
+        for run in legacy_runs {
             targets.extend(
                 run.node_runs()
                     .iter()
