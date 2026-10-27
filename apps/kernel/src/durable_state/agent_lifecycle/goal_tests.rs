@@ -126,6 +126,72 @@ fn a12_achieved_requires_zero_open_and_evidence_and_never_recurses() {
     assert_eq!(check(&f, claim).state, ExecutionState::Blocked);
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S04: a rejected attempt leaves no admitted work.
+#[test]
+fn a12_rejected_dispatch_can_complete_a_refusal_goal() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: false,
+        resource: None,
+    });
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({
+            "status":"achieved", "final_answer":"The requested dispatch was refused: account not authenticated",
+            "evidence":["history:refusal"]
+        }),
+    );
+    assert_eq!(
+        t.state,
+        ExecutionState::Done,
+        "a rejected dispatch must not force owner intervention"
+    );
+    assert_eq!(t.obligations[0].dispatch_state, "rejected");
+    assert_eq!(
+        t.obligations[0].status, "failed",
+        "completion must preserve the refusal receipt"
+    );
+}
+
+#[test]
+fn a12_rejected_dispatch_exception_does_not_hide_admitted_failure() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "failed-child".into(),
+        success: false,
+        public_answer: None,
+        now: 2,
+    });
+    assert_eq!(f.task().obligations[0].status, "failed");
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({
+            "status":"achieved", "final_answer":"Everything succeeded", "evidence":["history:claim"]
+        }),
+    );
+    assert_ne!(
+        t.state,
+        ExecutionState::Done,
+        "admitted work failure still needs resolution"
+    );
+    assert_eq!(t.obligations[0].dispatch_state, "accepted");
+    assert_eq!(t.obligations[0].status, "failed");
+}
+
 #[test]
 fn a12_continue_keeps_live_sources_and_wait_checks_coverage_and_interval() {
     let f = Fixture::new();

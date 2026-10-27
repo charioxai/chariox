@@ -328,7 +328,7 @@ pub(super) fn evaluate(
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
-            if t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed")) {
+            if t.obligations.iter().any(AgentObligation::requires_resolution) {
                 if t.correction_used {
                     blocked(&mut t, "Repeated achieved claim with unresolved obligations; owner must resume or cancel");
                 } else {
@@ -362,7 +362,7 @@ pub(super) fn evaluate(
             let regs = registrations(tx, &t.task_id)?;
             let valid_sources = !registration_ids.is_empty() && deadline > now
                 && registration_ids.iter().all(|id| regs.iter().any(|r| &r.id == id && r.live))
-                && t.obligations.iter().filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+                && t.obligations.iter().filter(|o| o.requires_resolution())
                     .all(|o| regs.iter().any(|r| r.live && registration_ids.contains(&r.id) && r.obligation_id.as_deref() == Some(&o.id)));
             if !valid_sources {
                 // A source that already completed leaves its obligation settling until

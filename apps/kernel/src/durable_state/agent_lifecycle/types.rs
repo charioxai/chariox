@@ -57,6 +57,15 @@ pub struct AgentObligation {
     pub dispatch_state: String,
 }
 impl AgentObligation {
+    pub(crate) fn requires_resolution(&self) -> bool {
+        match self.status.as_str() {
+            "open" | "settling" => true,
+            // A rejected dispatch has no admitted work to reconcile.
+            "failed" => self.dispatch_state != "rejected",
+            _ => false,
+        }
+    }
+
     pub(crate) fn tracks_workflow_run(&self) -> bool {
         matches!(self.kind.as_str(), "workflow" | "workflow_run")
     }
