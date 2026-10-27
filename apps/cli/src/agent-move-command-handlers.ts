@@ -56,45 +56,63 @@ export async function handleAgentMoveCommand(
   const target = destination === "home" ? null : destination
   const where = target === null ? "home" : `to ${target}`
   deps.flashFooter(`moving ${label} ${where}`, "info")
-  void deps.moveAgent(agent.id, target).then(
-    async moved => {
-      if (moved.agent_move?.state === "waiting_for_turn") {
-        deps.flashFooter(`moving ${label} ${where} after its current turn; /agent move cancel stops it`, "info")
-        await watchMove(deps, agent.id, label, target)
-        return
-      }
-      await showSettledMove(deps)
-      deps.flashFooter(`moved ${label} ${where}`, "info")
-    },
-    (error: unknown) => { deps.flashFooter(deps.formatError(error), "error") },
-  )
+  void reportMove(deps, deps.sessionState().id, agent.id, label, target)
 }
 
-async function showSettledMove(deps: AgentMoveCommandHandlerDeps): Promise<void> {
-  const session = await deps.refreshSessionState(deps.sessionState().id)
-  deps.applySessionState(session)
-  await deps.refreshAgentPanes(session)
-  deps.rebuildTranscript()
+/** Reports a Move in the Room it was requested in, whichever Room is shown by the time it settles. */
+async function reportMove(deps: AgentMoveCommandHandlerDeps, roomId: string, agentId: string, label: string, target: string | null): Promise<void> {
+  const where = target === null ? "home" : `to ${target}`
+  let moved: AgentInstance
+  try {
+    moved = await deps.moveAgent(agentId, target)
+  } catch (error) {
+    deps.flashFooter(deps.formatError(error), "error")
+    return
+  }
+  if (moved.agent_move?.state !== "waiting_for_turn") {
+    await showMoved(deps, roomId, label, where)
+    return
+  }
+  deps.flashFooter(`moving ${label} ${where} after its current turn; /agent move cancel stops it`, "info")
+  try {
+    await watchMove(deps, roomId, agentId, label, target)
+  } catch (error) {
+    deps.flashFooter(`cannot follow the move of ${label} ${where}: ${deps.formatError(error)}; the kernel may still complete it, /agent move cancel stops it`, "error")
+  }
+}
+
+async function showMoved(deps: AgentMoveCommandHandlerDeps, roomId: string, label: string, where: string): Promise<void> {
+  deps.flashFooter(`moved ${label} ${where}`, "info")
+  // A Room the user has left refreshes when it is selected again.
+  if (deps.sessionState().id !== roomId) return
+  try {
+    const session = await deps.refreshSessionState(roomId)
+    deps.applySessionState(session)
+    await deps.refreshAgentPanes(session)
+    deps.rebuildTranscript()
+  } catch (error) {
+    deps.flashFooter(deps.formatError(error), "error")
+  }
 }
 
 /** Follows a Move the kernel holds until it moves the agent, fails or is cancelled. */
-async function watchMove(deps: AgentMoveCommandHandlerDeps, agentId: string, label: string, target: string | null): Promise<void> {
+async function watchMove(deps: AgentMoveCommandHandlerDeps, roomId: string, agentId: string, label: string, target: string | null): Promise<void> {
   const where = target === null ? "home" : `to ${target}`
   for (;;) {
     await deps.pause(moveStatusPollMs)
-    const session = await deps.refreshSessionState(deps.sessionState().id)
+    const session = await deps.refreshSessionState(roomId)
     const agent = session.agents?.find(candidate => candidate.id === agentId)
-    const status = agent?.agent_move
+    if (!agent) throw new Error("the agent is no longer in its Room")
+    const status = agent.agent_move
     if (status?.state === "failed") {
       deps.flashFooter(`move of ${label} ${where} failed: ${status.reason}; /agent move cancel dismisses it`, "error")
       return
     }
     if (!status) {
       // The kernel clears the status when the agent moved and when the move was cancelled.
-      const away = Boolean(agent?.remote_execution)
+      const away = Boolean(agent.remote_execution)
       if (away === (target !== null)) {
-        await showSettledMove(deps)
-        deps.flashFooter(`moved ${label} ${where}`, "info")
+        await showMoved(deps, roomId, label, where)
       } else {
         deps.flashFooter(`move of ${label} ${where} cancelled`, "info")
       }

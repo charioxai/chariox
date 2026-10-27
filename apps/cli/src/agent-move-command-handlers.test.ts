@@ -82,3 +82,53 @@ test("/agent move reports an immediate move, a cancelled wait and a refusal", as
   await until(() => h.flashed.at(-1)?.tone === "error")
   assert.equal(h.flashed.at(-1)?.message, "Return this agent home before moving it to another kernel")
 })
+
+test("/agent move says the outcome can no longer be observed when a status read fails", async () => {
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown) => { rejections.push(reason) }
+  process.on("unhandledRejection", onRejection)
+  try {
+    let failing = false
+    const h = harness({
+      refreshSessionState: async () => { if (failing) throw new Error("connection lost"); return { id: "room", agents: [{ id: "agent-1", agent_move: { state: "waiting_for_turn" } }] } as never },
+    })
+    await handleAgentMoveCommand(h.deps, ["move", "kernel-b3"])
+    h.answers[0]!.resolve({ id: "agent-1", agent_move: { state: "waiting_for_turn" } })
+    await until(() => h.flashed.at(-1)?.message.includes("after its current turn") === true)
+    failing = true
+    await until(() => h.flashed.at(-1)?.tone === "error")
+    assert.equal(h.flashed.at(-1)?.message, "cannot follow the move of reviewer to kernel-b3: connection lost; the kernel may still complete it, /agent move cancel stops it")
+    await new Promise(resolve => setTimeout(resolve, 5))
+    assert.ok(rejections.length === 0, "the watcher left an unhandled rejection")
+  } finally {
+    process.off("unhandledRejection", onRejection)
+  }
+})
+
+test("/agent move keeps following the Room it was requested in after a Room switch", async () => {
+  let shown = "room"
+  const polled: string[] = []
+  const applied: string[] = []
+  let status: Status = { state: "waiting_for_turn" }
+  const h = harness({
+    sessionState: () => ({ id: shown } as never),
+    refreshSessionState: async id => {
+      polled.push(id)
+      // Another Room's snapshot has no such agent.
+      return (id === "room" ? { id, agents: [{ id: "agent-1", agent_move: status }] } : { id, agents: [] }) as never
+    },
+    applySessionState: session => { applied.push(session.id) },
+  })
+  await handleAgentMoveCommand(h.deps, ["move", "home"])
+  h.answers[0]!.resolve({ id: "agent-1", agent_move: { state: "waiting_for_turn" } })
+  await until(() => polled.length >= 1)
+  shown = "other-room"
+  const seen = polled.length
+  await until(() => polled.length >= seen + 2)
+  assert.ok(polled.every(id => id === "room"), `polled ${polled.join(",")}`)
+  assert.ok(!h.flashed.some(entry => entry.message.includes("cancelled") || entry.message.startsWith("moved")), "reported an outcome while the kernel still holds the Move")
+  assert.ok(applied.length === 0, "applied the Room's state over the shown Room")
+  status = { state: "failed", reason: "Project setup failed" }
+  await until(() => h.flashed.at(-1)?.tone === "error")
+  assert.ok(h.flashed.at(-1)?.message.startsWith("move of reviewer home failed"), "the failure of the Move in its own Room is reported")
+})
