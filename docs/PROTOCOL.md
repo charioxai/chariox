@@ -5685,3 +5685,18 @@ second execution. Account transfer retains the existing no-overwrite/native
 validation and rollback behavior; no Vault or provider profile tree is copied.
 These private peer carriers require237. Existing public Move requests retain
 their shapes; protocol634 binds the integrated contract.
+
+### MP-08 / MP-09 / MP-10 / MP-11: kernel-owned deferred Move (639)
+
+A `MoveAgentToRemote` / `MoveAgentToLocal` request made while the agent's turn
+runs is acknowledged at once. The reply is the ordinary `AgentMovedToRemote` /
+`AgentMovedToLocal` whose agent carries `agent_move: {"state":
+"waiting_for_turn", "target_ref"?}`; the home kernel, not the request, holds the
+wait, so a request that ends or a client that reloads does not lose it. The same
+`agent_move` status is published with every `agent.updated` event and Room
+snapshot: `moving` while the Move runs, and
+`{"state":"failed","reason"}` when it cannot continue. A failed status stays
+(with its journalled operation, if any) until the person cancels it with
+`MoveAgentToLocal{abort_pending}` or asks for the Move again. Success and a
+cancelled wait remove the status. A kernel restart ends a wait for a turn. A
+Move requested while the agent is idle still answers when it is done.

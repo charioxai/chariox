@@ -1,5 +1,5 @@
 //! A Move requested while the agent's turn runs waits for the turn instead of interrupting it.
-//! The wait lives as long as the request: it is not journaled, and a dropped request ends it.
+//! The kernel owns the wait: it is not journaled, so a restart ends it, and a client that is gone does not.
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +12,7 @@ struct Waits {
     by_key: BTreeMap<String, u64>,
 }
 
-/// Held by the request that waits; dropping it ends the wait.
+/// Held by the task that waits; dropping it ends the wait.
 pub(crate) struct MoveWait {
     moves: WaitingMoves,
     key: String,
@@ -51,6 +51,16 @@ impl WaitingMoves {
 impl MoveWait {
     pub(crate) fn cancelled(&self) -> bool {
         self.moves.lock().by_key.get(&self.key) != Some(&self.id)
+    }
+
+    /// Ends the wait so the Move can start; false when it was cancelled first.
+    pub(crate) fn finish(&self) -> bool {
+        let mut waits = self.moves.lock();
+        if waits.by_key.get(&self.key) == Some(&self.id) {
+            waits.by_key.remove(&self.key);
+            return true;
+        }
+        false
     }
 }
 

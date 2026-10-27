@@ -207,9 +207,25 @@ async fn mk10_failed_target_setup_can_be_cancelled_and_retried_with_a_fixed_reci
         move_journal(&fixture, &session).await["phase"]["phase"],
         "bound"
     );
+    // The operation stays; the agent says so, so a client that lost the error can cancel or retry.
+    let failed = agent_move_status(&fixture)
+        .await
+        .expect("failed Move is published");
+    assert_eq!(
+        failed.target_ref.as_deref(),
+        Some(fixture.presences[0].machine_id.as_str())
+    );
+    assert!(
+        matches!(&failed.stage, crate::agent_move::AgentMoveStage::Failed { reason } if reason.contains("Project setup failed")),
+        "{failed:?}"
+    );
     dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}}))
         .await
         .expect("a Move whose target setup failed must be cancellable before activation");
+    assert!(
+        agent_move_status(&fixture).await.is_none(),
+        "cancelling settles the Move"
+    );
     assert_eq!(
         move_journal(&fixture, &session).await["phase"]["phase"],
         "rolled_back"

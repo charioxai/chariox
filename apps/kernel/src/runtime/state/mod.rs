@@ -44,6 +44,7 @@ mod agent_move_queue;
 mod agent_move_runtime;
 mod agent_move_slices;
 mod agent_move_source;
+mod agent_move_status;
 mod agent_move_target;
 mod agent_move_transport;
 mod context_handoff;

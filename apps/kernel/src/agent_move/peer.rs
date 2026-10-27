@@ -148,11 +148,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn mk04_resource_readiness_634_237_shape_and_hash() {
-        let bytes = include_bytes!("protocol-634-237.json");
+    fn mk04_resource_readiness_639_237_shape_and_hash() {
+        let bytes = include_bytes!("protocol-639-237.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "c8515b401db4cf7cd8eb124f10b228f4786daa68fc7f05d182b9a4708ba02c81"
+            "862cd663d90e51b59c85105adef1fc5bbc7e4e7f0fdf2d09fb76c3374e21509a"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
@@ -166,6 +166,11 @@ mod tests {
         let request: crate::local::LocalDaemonRequest =
             serde_json::from_value(fixture["abort"].clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), fixture["abort"]);
+        for value in fixture["agent_move_statuses"].as_array().unwrap() {
+            let status: crate::agent_move::AgentMoveStatus =
+                serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(status).unwrap(), *value);
+        }
         for value in fixture["peer_requests"].as_array().unwrap() {
             let request: AgentMovePeerRequest = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(request).unwrap(), *value);

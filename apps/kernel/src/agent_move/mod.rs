@@ -14,11 +14,14 @@ mod composition;
 pub(crate) use composition::{agent_configuration_sha256, AgentMoveComposition};
 pub use composition::{AgentMoveCommitReceipt, AgentMoveReadiness, AgentMoveRequirements};
 pub mod peer;
+mod status;
 mod store;
 mod waiting;
 pub use artifacts::AgentMoveArtifactKind;
 pub(crate) use artifacts::MOVE_CHUNK_BYTES;
+pub use status::{AgentMoveStage, AgentMoveStatus};
 pub(crate) use store::AgentMoveStore;
+pub(crate) use waiting::MoveWait;
 
 pub(crate) fn error(message: impl Into<String>) -> crate::error::DaemonError {
     crate::error::DaemonError::LocalTransport {

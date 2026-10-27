@@ -230,6 +230,8 @@ pub struct AgentInstance {
     worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_execution: Option<RemoteAgentBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_move: Option<crate::agent_move::AgentMoveStatus>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     provider_resume_state: ProviderResumeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -293,6 +295,7 @@ impl AgentInstance {
             workspace_id: None,
             worktree_id,
             remote_execution: None,
+            agent_move: None,
             provider_resume_state: ProviderResumeState::default(),
             failed_requests: Vec::new(),
             external_provider_import: None,
@@ -405,6 +408,14 @@ impl AgentInstance {
 
     pub fn remote_execution(&self) -> Option<&RemoteAgentBinding> {
         self.remote_execution.as_ref()
+    }
+
+    pub fn agent_move(&self) -> Option<&crate::agent_move::AgentMoveStatus> {
+        self.agent_move.as_ref()
+    }
+
+    pub fn set_agent_move(&mut self, status: Option<crate::agent_move::AgentMoveStatus>) {
+        self.agent_move = status;
     }
 
     pub fn provider_resume_state(&self) -> &ProviderResumeState {
@@ -539,6 +550,7 @@ impl AgentInstance {
         self.workspace_id = None;
         self.worktree_id = None;
         self.remote_execution = None;
+        self.agent_move = None;
         self.provider_resume_state = ProviderResumeState::default();
         self.failed_requests.clear();
         self.external_provider_import = None;
@@ -703,6 +715,7 @@ impl AgentInstance {
 
     fn clear_publication_runtime_state(&mut self) {
         self.remote_execution = None;
+        self.agent_move = None;
         self.provider_resume_state = ProviderResumeState::default();
         self.failed_requests.clear();
         self.external_provider_import = None;

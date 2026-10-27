@@ -1,7 +1,7 @@
 //! Cancellation restores source dispatch only before any target lease can own the move.
 use super::*;
 use crate::agent_move::peer::{AgentMovePeerRequest as Request, AgentMovePeerResponse as Response};
-use crate::agent_move::{error as move_error, AgentMoveIdentity, HomeMovePhase};
+use crate::agent_move::{error as move_error, AgentMoveIdentity, AgentMoveStage, HomeMovePhase};
 
 impl KernelRuntimeState {
     pub(crate) async fn abort_agent_move(
@@ -27,21 +27,46 @@ impl KernelRuntimeState {
                 agent.id(),
             ))
         {
-            return self.owned.agent_store.get_agent(agent.id());
+            return self.publish_agent_move_status(agent.id(), None).await;
         }
         let _operation = self
             .owned
             .agent_moves
             .operation(format!("home:{session_id}:{}", agent.id()))
             .await;
-        let mut operation = self
+        // A deferred Move that failed before it journalled anything has only its status left.
+        let failed = matches!(
+            agent.agent_move().map(|status| &status.stage),
+            Some(AgentMoveStage::Failed { .. })
+        );
+        let Some(operation) = self
             .owned
             .agent_moves
             .for_agent(session_id, agent.id())
-            .ok_or_else(|| move_error("This agent has no Move to abort"))?;
+            .filter(|operation| {
+                !(failed && matches!(operation.phase, HomeMovePhase::Complete { .. }))
+            })
+        else {
+            return if failed {
+                self.publish_agent_move_status(agent.id(), None).await
+            } else {
+                Err(move_error("This agent has no Move to abort"))
+            };
+        };
+        self.abort_agent_move_operation(session_id, agent.id(), operation)
+            .await?;
+        self.publish_agent_move_status(agent.id(), None).await
+    }
+
+    async fn abort_agent_move_operation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        mut operation: crate::agent_move::HomeMoveOperation,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         if matches!(operation.phase, HomeMovePhase::RolledBack { .. }) {
-            self.spawn_agent_move_queue_promotion(session_id, agent.id())?;
-            return self.owned.agent_store.get_agent(agent.id());
+            self.spawn_agent_move_queue_promotion(session_id, agent_id)?;
+            return self.owned.agent_store.get_agent(agent_id);
         }
         if matches!(operation.phase, HomeMovePhase::Cancelling) {
             return self.finish_agent_move_abort(operation).await;
@@ -61,7 +86,7 @@ impl KernelRuntimeState {
         {
             return Err(move_error("This Move may already own a target lease. Finish the operation, then Return through a new generation"));
         }
-        let current = self.owned.agent_store.get_agent(agent.id())?;
+        let current = self.owned.agent_store.get_agent(agent_id)?;
         let source_binding = operation.source_remote.as_ref();
         let bound_target = match &operation.phase {
             HomeMovePhase::Bound { remote, .. } => remote.as_ref(),

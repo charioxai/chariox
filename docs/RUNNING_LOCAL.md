@@ -196,7 +196,7 @@ Inside the CLI:
   - `/agent spawn [alias] [model] --dir <directory>`
   - `/agent spawn [alias] [model] --machine <machine-ref> --dir <remote-directory>`
   - `/agent spawn <number_of_agents>`
-  - `/agent move <kernel|home> [name-or-alias]` moves the agent's execution to another kernel (or back home) once its running turn ends; `/agent move cancel [name-or-alias]` stops a move that still waits. The web Prompt bar's kernel menu does the same through the same requests.
+  - `/agent move <kernel|home> [name-or-alias]` moves the agent's execution to another kernel (or back home) once its running turn ends (the kernel holds the wait and publishes it on the agent, so closing the client does not lose it); `/agent move cancel [name-or-alias]` stops a move that still waits or dismisses one that failed. The web Prompt bar's kernel menu does the same through the same requests.
   - `/agent delete [name-or-alias]`
   - `/agent focus <name-or-alias>` moves the session's focus agent, for every client and the App panel
   - `/agent list`

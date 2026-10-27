@@ -1,10 +1,16 @@
 //! Home advances one durable move; peer preparation alone never releases queued work.
 use super::*;
 use crate::agent_move::peer::{AgentMovePeerRequest as Request, AgentMovePeerResponse as Response};
-use crate::agent_move::{error as move_error, AgentMoveIdentity, HomeMoveOperation, HomeMovePhase};
+use crate::agent_move::{
+    error as move_error, AgentMoveIdentity, AgentMoveStage, AgentMoveStatus, HomeMoveOperation,
+    HomeMovePhase, MoveWait,
+};
+
+const AGENT_TURN_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 
 impl KernelRuntimeState {
     pub(super) async fn recover_agent_moves_after_restart(&self) -> usize {
+        self.clear_stale_agent_move_statuses().await;
         for operation in self.owned.agent_moves.pending() {
             let agent = match self
                 .owned
@@ -58,11 +64,124 @@ impl KernelRuntimeState {
         agent: crate::agent::AgentInstance,
         target_ref: Option<String>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .agent_turn_busy(&session, agent.id())
+        {
+            return self
+                .defer_agent_move(session_id, agent.id(), target_ref)
+                .await;
+        }
+        self.run_agent_move(session_id, agent, target_ref, false)
+            .await
+    }
+
+    /// A turn is never interrupted to move its agent. The kernel keeps the Move waiting, shows it
+    /// on the agent and answers at once: the request that asked may end, and a client may reload.
+    async fn defer_agent_move(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        target_ref: Option<String>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let wait = self
+            .owned
+            .agent_moves
+            .waiting
+            .begin(agent_move_wait_key(session_id, agent_id))
+            .ok_or_else(|| move_error("This agent already has a Move waiting for its turn to end. Cancel it before requesting another"))?;
+        let waiting = self
+            .publish_agent_move_status(
+                agent_id,
+                Some(AgentMoveStatus::new(
+                    target_ref.clone(),
+                    AgentMoveStage::WaitingForTurn,
+                )),
+            )
+            .await?;
+        let state = self.clone();
+        let (session_id, agent_id) = (session_id.to_string(), agent_id.to_string());
+        tokio::spawn(async move {
+            state
+                .run_deferred_agent_move(wait, &session_id, &agent_id, target_ref)
+                .await
+        });
+        Ok(waiting)
+    }
+
+    /// Ends when the turn ends or `abort_agent_move` cancels the wait; the outcome is the agent's status.
+    async fn run_deferred_agent_move(
+        &self,
+        wait: MoveWait,
+        session_id: &str,
+        agent_id: &str,
+        target_ref: Option<String>,
+    ) {
+        let outcome = async {
+            let session = self.owned.session_store.get_session(session_id)?;
+            while self
+                .owned
+                .prompt_state_owner
+                .agent_turn_busy(&session, agent_id)
+                && !wait.cancelled()
+            {
+                tokio::time::sleep(AGENT_TURN_POLL).await;
+            }
+            if !wait.finish() {
+                return Ok(());
+            }
+            let agent = self.owned.agent_store.get_agent(agent_id)?;
+            self.run_agent_move(session_id, agent, target_ref, true)
+                .await
+                .map(drop)
+        }
+        .await;
+        if let Err(error) = outcome {
+            crate::logging::warn_with_fields(
+                "agent_move.deferred",
+                "A deferred Move could not start; cancel it from the agent menu and retry",
+                serde_json::json!({"agent_id": agent_id, "error": error.to_string()}),
+            );
+        }
+    }
+
+    /// `deferred`: no request waits for the result, so a failure is published as the agent's status.
+    async fn run_agent_move(
+        &self,
+        session_id: &str,
+        agent: crate::agent::AgentInstance,
+        target_ref: Option<String>,
+        deferred: bool,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent_id = agent.id().to_string();
-        self.wait_for_agent_turn(session_id, &agent_id).await?;
+        self.publish_agent_move_status(
+            &agent_id,
+            Some(AgentMoveStatus::new(
+                target_ref.clone(),
+                AgentMoveStage::Moving,
+            )),
+        )
+        .await?;
         let result = self
-            .move_agent_transaction_inner(session_id, agent, target_ref)
+            .move_agent_transaction_inner(session_id, agent, target_ref.clone())
             .await;
+        let unsettled = self
+            .owned
+            .agent_moves
+            .for_agent(session_id, &agent_id)
+            .is_some_and(|operation| operation.phase.is_pending());
+        let settled = match &result {
+            Err(error) if deferred || unsettled => Some(AgentMoveStatus::new(
+                target_ref,
+                AgentMoveStage::Failed {
+                    reason: error.to_string(),
+                },
+            )),
+            _ => None,
+        };
+        let published = self.publish_agent_move_status(&agent_id, settled).await;
         // Preflight can also queue work under its temporary transition claim.
         if !self
             .owned
@@ -71,38 +190,10 @@ impl KernelRuntimeState {
         {
             self.spawn_agent_move_queue_promotion(session_id, &agent_id)?;
         }
-        result
-    }
-
-    /// A turn is never interrupted to move its agent: the request waits for the turn to end,
-    /// and cancelling it (`abort_agent_move`) or dropping it ends the wait.
-    async fn wait_for_agent_turn(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<(), DaemonError> {
-        let session = self.owned.session_store.get_session(session_id)?;
-        let busy = || {
-            self.owned
-                .prompt_state_owner
-                .agent_turn_busy(&session, agent_id)
-        };
-        if !busy() {
-            return Ok(());
+        match result {
+            Ok(_) => published,
+            Err(error) => Err(error),
         }
-        let wait = self
-            .owned
-            .agent_moves
-            .waiting
-            .begin(agent_move_wait_key(session_id, agent_id))
-            .ok_or_else(|| move_error("This agent already has a Move waiting for its turn to end. Cancel it before requesting another"))?;
-        while busy() && !wait.cancelled() {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-        if wait.cancelled() {
-            return Err(move_error("Move cancelled before the agent's turn ended"));
-        }
-        Ok(())
     }
 
     async fn move_agent_transaction_inner(

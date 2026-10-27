@@ -2682,6 +2682,18 @@ async fn dispatch_move(
     router.dispatch(envelope, request).await
 }
 
+async fn agent_move_status(fixture: &Fixture) -> Option<crate::agent_move::AgentMoveStatus> {
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .agent_move()
+        .cloned()
+}
+
 async fn agent_is_remote(fixture: &Fixture) -> bool {
     fixture
         .home
@@ -2728,37 +2740,182 @@ async fn mk05_move_requested_during_a_turn_waits_for_it_and_can_be_cancelled() {
         started,
         crate::session::PromptSubmissionOutcome::Started { .. }
     ));
-    // A Move requested during the turn waits; cancelling ends the wait and leaves the agent alone.
-    let (moved, cancelled) = tokio::join!(dispatch_move(&fixture, &session, false), async {
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(!agent_is_remote(&fixture).await);
-        assert!(
-            fixture
-                .home
-                .lock()
-                .await
-                .agent_moves
-                .for_agent(&session, &fixture.agent_id)
-                .is_none(),
-            "a waiting Move must not fence the running agent"
-        );
-        dispatch_move(&fixture, &session, true).await
-    });
-    cancelled.expect("a waiting Move can be cancelled");
-    let error = moved.expect_err("the cancelled request ends with a reason");
-    assert!(error.to_string().contains("cancelled"), "{error}");
+    // A Move requested during the turn is acknowledged at once and waits in the kernel.
+    let waiting = tokio::time::timeout(
+        Duration::from_secs(5),
+        dispatch_move(&fixture, &session, false),
+    )
+    .await
+    .expect("the request must not last as long as the turn")
+    .expect("a deferred Move is acknowledged");
+    let crate::local::LocalDaemonResponse::AgentMovedToRemote { agent } = waiting else {
+        panic!("unexpected response {waiting:?}");
+    };
+    assert_eq!(
+        agent.agent_move().map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn)
+    );
+    // No request is pending any more; a client that connects now reads the wait from the Room state.
+    let crate::local::LocalDaemonResponse::SessionState {
+        session: reloaded, ..
+    } = dispatch_move_value(
+        &fixture,
+        serde_json::json!({"GetSessionState": {"session_id": session}}),
+    )
+    .await
+    .unwrap()
+    else {
+        panic!("session state expected");
+    };
+    assert_eq!(
+        reloaded
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == fixture.agent_id)
+            .and_then(|agent| agent.agent_move())
+            .map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn),
+        "the Room state carries the waiting Move"
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(!agent_is_remote(&fixture).await);
-    // The same request proceeds once the turn has ended.
-    let (moved, ()) = tokio::join!(dispatch_move(&fixture, &session, false), async {
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(!agent_is_remote(&fixture).await);
+    assert!(
         fixture
             .home
             .lock()
             .await
-            .prompt_state_owner()
-            .complete_active_prompt_only(&room, &fixture.agent_id);
-    });
-    moved.expect("the Move runs after the turn ends");
-    assert!(agent_is_remote(&fixture).await);
+            .agent_moves
+            .for_agent(&session, &fixture.agent_id)
+            .is_none(),
+        "a waiting Move must not fence the running agent"
+    );
+    let again = dispatch_move(&fixture, &session, false).await.unwrap_err();
+    assert!(
+        again.to_string().contains("already has a Move waiting"),
+        "{again}"
+    );
+    // Cancelling after the client reconnected ends the wait and leaves the agent alone.
+    dispatch_move(&fixture, &session, true)
+        .await
+        .expect("a waiting Move can be cancelled");
+    assert!(agent_move_status(&fixture).await.is_none());
+    fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .complete_active_prompt_only(&room, &fixture.agent_id);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        !agent_is_remote(&fixture).await,
+        "a cancelled wait must not move the agent when the turn ends"
+    );
+    // The same request proceeds once the turn has ended.
+    let started = fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "turn-2",
+                "client",
+                &fixture.agent_id,
+                "work",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    dispatch_move(&fixture, &session, false).await.unwrap();
+    assert!(!agent_is_remote(&fixture).await);
+    fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .complete_active_prompt_only(&room, &fixture.agent_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !(agent_is_remote(&fixture).await && agent_move_status(&fixture).await.is_none()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the Move runs after the turn ends: {:?}",
+            agent_move_status(&fixture).await
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk05_deferred_move_that_fails_publishes_its_reason_and_can_be_cancelled() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, _) = crash_fixture().await;
+    let room = fixture
+        .home
+        .lock()
+        .await
+        .sessions()
+        .get_session(&session)
+        .unwrap();
+    let started = fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "turn-1",
+                "client",
+                &fixture.agent_id,
+                "work",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    // Returning an agent that is already home fails once the turn ends; nobody is waiting for the reply.
+    let request = serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id}});
+    dispatch_move_value(&fixture, request).await.unwrap();
+    fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .complete_active_prompt_only(&room, &fixture.agent_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let failed = loop {
+        if let Some(status) = agent_move_status(&fixture).await {
+            if matches!(
+                status.stage,
+                crate::agent_move::AgentMoveStage::Failed { .. }
+            ) {
+                break status;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the failure must be published"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        matches!(&failed.stage, crate::agent_move::AgentMoveStage::Failed { reason } if reason.contains("already executes at home")),
+        "{failed:?}"
+    );
+    dispatch_move(&fixture, &session, true)
+        .await
+        .expect("a failed Move without an operation is dismissed by cancelling it");
+    assert!(agent_move_status(&fixture).await.is_none());
 }

@@ -121,9 +121,12 @@ recovery finishes target activation and source retirement. An unavailable peer
 leaves the operation fenced for retry after reconnection.
 
 A Move or Return requested while the agent's turn runs does not interrupt it:
-the request stays open until the turn ends and then runs. Cancelling it
+the kernel acknowledges it at once, publishes the waiting Move on the agent
+(`agent_move`) and runs it when the turn ends. Cancelling it
 (`MoveAgentToLocal` with `abort_pending`) ends that wait without touching the
-agent; the wait is not journaled, so it also ends if the request is dropped.
+agent; the wait is not journaled, so a kernel restart ends it, but a client that
+disconnects or reloads does not. A Move that fails after the wait stays visible
+as `agent_move` `failed` until it is cancelled or asked for again.
 Queued prompts start before the Move can begin. A live leased process wake must
 finish or cancel first. If a restart lost the source run before its checkpoint
 was captured, the operation rolls back; resume the source for one completed

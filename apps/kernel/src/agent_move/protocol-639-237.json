@@ -1,11 +1,6 @@
 {
-<<<<<<<< HEAD:apps/kernel/src/agent_move/protocol-638-240.json
-  "local_protocol": 638,
-  "peer_protocol": 240,
-========
-  "local_protocol": 634,
+  "local_protocol": 639,
   "peer_protocol": 237,
->>>>>>>> 7ab284422 (Compose Move resource readiness and receipts [skip ci]):apps/kernel/src/agent_move/protocol-634-237.json
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
@@ -13,6 +8,11 @@
       "abort_pending": true
     }
   },
+  "agent_move_statuses": [
+    {"state": "waiting_for_turn", "target_ref": "kernel-b"},
+    {"state": "moving"},
+    {"state": "failed", "target_ref": "kernel-b", "reason": "Project setup failed"}
+  ],
   "peer_requests": [
     {
       "action": "probe",
@@ -223,7 +223,7 @@
     },
     {
       "result": "lease_created",
-      "relay_peer_protocol_version": 240,
+      "relay_peer_protocol_version": 229,
       "lease": {
         "id": "lease",
         "home_kernel_id": "home",
