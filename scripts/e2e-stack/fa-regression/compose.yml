@@ -1,0 +1,25 @@
+name: amunblock-fa
+services:
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: amunblock-fa-mailpit
+    ports: ["127.0.0.1:${FA_PORT_MAIL_SMTP}:1025", "127.0.0.1:${FA_PORT_MAIL_UI}:8025"]
+    mem_limit: 256m
+  dex:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    container_name: amunblock-fa-dex
+    command: [dex, serve, /etc/dex/config.yaml]
+    network_mode: host
+    volumes: ["${FA_STATE_DIR}/dex.yaml:/etc/dex/config.yaml:ro"]
+    mem_limit: 256m
+  postgres:
+    image: postgres:16.9-alpine
+    container_name: amunblock-fa-postgres
+    environment: {POSTGRES_USER: app, POSTGRES_DB: app, POSTGRES_PASSWORD: "${FA_DB_PASSWORD}"}
+    ports: ["127.0.0.1:${FA_PORT_DB}:5432"]
+    mem_limit: 512m
+  stripe-mock:
+    image: stripe/stripe-mock:v0.197.0
+    container_name: amunblock-fa-stripe-mock
+    ports: ["127.0.0.1:${FA_PORT_STRIPE}:12111"]
+    mem_limit: 256m
