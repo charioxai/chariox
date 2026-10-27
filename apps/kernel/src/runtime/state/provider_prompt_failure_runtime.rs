@@ -115,6 +115,7 @@ impl KernelRuntimeState {
             agent_id: &agent_id,
             message,
             safe_message: &safe_message,
+            failure: &failure,
             project_failure_output,
             record_diagnostic: expected_prompt_id.is_some(),
             termination: provider_termination.as_ref(),
@@ -365,15 +366,11 @@ impl KernelRuntimeState {
             self.owned.provider_run_projection.update(diagnosed);
         }
         if attempt.project_failure_output {
-            let failure = crate::provider::ProviderFailure::classify(
-                provider_run.adapter_key(),
-                attempt.safe_message,
-            );
             self.owned.record_provider_failure_notice(
                 session_id,
                 provider_run.id(),
                 attempt.agent_id,
-                &failure,
+                attempt.failure,
             );
         }
         self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run.id())
@@ -627,6 +624,8 @@ pub(super) struct FailedProviderAttempt<'a> {
     pub(super) agent_id: &'a str,
     pub(super) message: &'a str,
     pub(super) safe_message: &'a str,
+    /// The failure the turn settles with; the transcript entry renders this one.
+    pub(super) failure: &'a crate::provider::ProviderFailure,
     pub(super) project_failure_output: bool,
     pub(super) record_diagnostic: bool,
     pub(super) termination: Option<&'a crate::provider::ProviderRunTermination>,
