@@ -217,6 +217,13 @@ export class BrowserCdpClient {
       const appTargets = new Map([...(this.appTabs?.apps?.values() ?? [])].map((app) => [app.targetId, app]));
       const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics(appTargets.get(target.targetId).page))
         || this.layoutMetrics(target.targetId, viewport);
+      // Window mode changes the available content area. Measure only after
+      // Chromium has applied it, and retire page metrics when that mode changes.
+      if (typeof browserBarVisible === "boolean") {
+        const before = JSON.stringify([...this.browserBarApplied]);
+        await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
+        if (before !== JSON.stringify([...this.browserBarApplied])) this.viewportByTarget.clear();
+      }
       const inspected = (await Promise.all(pages.map(async (target) => {
         try {
           return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
@@ -240,9 +247,6 @@ export class BrowserCdpClient {
       );
       // A home kernel before protocol 379 sends no flag; a 379 worker behind it
       // defaults it to hidden (fullscreen), the new default.
-      if (typeof browserBarVisible === "boolean") {
-        await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
-      }
       this.appliedViewport = appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth);
       const focused = inspected.find((tab) => tab.focused)?.target_id ?? null;
       return {
@@ -498,7 +502,7 @@ export class BrowserCdpClient {
 
   // The person's display sets the layout size of the Tab they view (a phone is narrower than the canonical desktop).
   layoutViewport(targetId, viewport) {
-    const layout = this.layoutByTarget.get(targetId);
+    const layout = this.viewportByTarget.get(targetId)?.metrics ?? this.layoutByTarget.get(targetId);
     return layout ? { ...viewport, css_width: layout.width, css_height: layout.height } : viewport;
   }
 
@@ -539,12 +543,44 @@ export class BrowserCdpClient {
     const sessionId = await this.ensureTargetSession(connection, targetId);
     const metrics = this.layoutMetrics(targetId, this.canonical);
     const key = JSON.stringify(metrics);
-    if (this.viewportByTarget.get(targetId) === key) return;
-    await this.setPageMetrics(connection, sessionId, metrics);
-    this.viewportByTarget.set(targetId, key);
+    if (this.viewportByTarget.get(targetId)?.key === key) return;
+    const applied = await this.setPageMetrics(connection, sessionId, metrics);
+    this.viewportByTarget.set(targetId, { key, metrics: applied });
   }
 
   async setPageMetrics(connection, sessionId, metrics) {
+    if (this.applyCanonicalDisplay) {
+      // Clearing the previous emulation exposes Chromium's actual content area
+      // in host pixels, including the space lost to its toolbar and decorations.
+      await connection.send("Emulation.clearDeviceMetricsOverride", {}, sessionId);
+      const tree = await connection.send("Page.getFrameTree", {}, sessionId);
+      const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
+        frameId: tree.frameTree.frame.id, worldName: "chariox-content-viewport",
+      }, sessionId);
+      const { result } = await connection.send("Runtime.evaluate", {
+        expression: "({ width: innerWidth, height: innerHeight })", contextId: executionContextId, returnByValue: true,
+      }, sessionId);
+      const content = result?.value;
+      if (![content?.width, content?.height].every(n => Number.isFinite(n) && n > 0)) {
+        throw new BrowserControllerError("viewport_apply_failed", "Chromium content area is unavailable; retry the browser viewport");
+      }
+      const { bounds } = await connection.send("Browser.getWindowForTarget", {}, sessionId);
+      const desktop = this.canonical;
+      if (desktop && ![bounds?.left, bounds?.top, bounds?.width, bounds?.height].every(Number.isFinite)) {
+        throw new BrowserControllerError("viewport_apply_failed", "Chromium window bounds are unavailable; restore its window and retry");
+      }
+      const visibleWidth = desktop ? Math.min(content.width,
+        desktop.desktop_pixel_width - Math.max(0, bounds.left) - (bounds.width - content.width)) : content.width;
+      const visibleHeight = desktop ? Math.min(content.height,
+        desktop.desktop_pixel_height - Math.max(0, bounds.top) - (bounds.height - content.height)) : content.height;
+      if (![visibleWidth, visibleHeight].every(n => Number.isFinite(n) && n >= metrics.deviceScaleFactor)) {
+        throw new BrowserControllerError("viewport_apply_failed", "Chromium content area is outside the desktop; restore its window and retry");
+      }
+      metrics = { ...metrics,
+        width: Math.min(metrics.width, Math.floor(visibleWidth / metrics.deviceScaleFactor)),
+        height: Math.min(metrics.height, Math.floor(visibleHeight / metrics.deviceScaleFactor)),
+      };
+    }
     await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
     // Headed emulation leaves the visible area at CSS size even when the
     // image scale is larger. Keep it large enough for the physical raster.
@@ -554,6 +590,7 @@ export class BrowserCdpClient {
         height: Math.round(metrics.height * metrics.deviceScaleFactor),
       }, sessionId);
     }
+    return metrics;
   }
 
   async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
@@ -570,10 +607,10 @@ export class BrowserCdpClient {
     // Metrics differ per target (App pages lay out beside their panel).
     // Reapply only when this target's metrics changed.
     const metricsKey = JSON.stringify(metrics);
-    const configured = this.viewportByTarget.get(target.targetId) === metricsKey;
+    const configured = this.viewportByTarget.get(target.targetId)?.key === metricsKey;
     if (!configured) {
-      await this.setPageMetrics(connection, sessionId, metrics);
-      this.viewportByTarget.set(target.targetId, metricsKey);
+      const applied = await this.setPageMetrics(connection, sessionId, metrics);
+      this.viewportByTarget.set(target.targetId, { key: metricsKey, metrics: applied });
     }
     const metadata = nativeStatePage(this, connection, sessionId, target, visibleTargetId, configured);
     if (metadata) return metadata;
@@ -1069,7 +1106,7 @@ export class BrowserCdpClient {
         const tree = await connection.send("Page.getFrameTree", {}, sessionId);
         if (connection !== this.connection || generation !== this.browserGeneration || tree?.frameTree?.frame?.loaderId !== documentId)
           throw new BrowserControllerError("stale_document_reference", "Browser artifact document changed");
-        if (this.viewportByTarget.get(targetId) !== metricsKey)
+        if (this.viewportByTarget.get(targetId)?.key !== metricsKey)
           throw new BrowserControllerError("browser_viewport_invalid", "Browser artifact needs the canonical observed viewport");
       };
       await assertBound();
