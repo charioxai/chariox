@@ -152,7 +152,7 @@ async fn process_refusal_ends_with_its_cause() {
     assert!(worker_receipts.is_empty(), "nothing ran on the worker");
     assert_eq!(ended.state, "lost", "{ended:?}");
     assert!(
-        notices.contains("launch refused") && notices.contains("cwd must be inside"),
+        notices.contains("launch failed") && notices.contains("cwd must be inside"),
         "{notices}"
     );
     assert!(

@@ -189,9 +189,9 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-        // The worker answered with a refusal. Without a receipt, nothing ran.
+        // A start that failed leaves no launch without a worker receipt.
         let result = match result {
-            Err(refusal @ DaemonError::RelayTransport { .. }) => {
+            Err(refusal) => {
                 let receipt = self
                     .leased_process_request(
                         &wake,
@@ -207,7 +207,7 @@ impl KernelRuntimeState {
                     self.settle_failed_process_launch(
                         &wake,
                         format!(
-                            "launch refused: {}",
+                            "launch failed: {}",
                             crate::secret_redaction::redact_secrets(&refusal.to_string())
                         ),
                     );
