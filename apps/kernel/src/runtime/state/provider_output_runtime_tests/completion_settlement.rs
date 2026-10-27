@@ -433,10 +433,9 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
     );
 }
 
-// A person cannot resume a task whose agent is archived: the choice is refused with a
-// reason, nothing is committed, and the same decision comes back after unarchive.
+// Archive cancels the blocked goal and withdraws its decision; unarchive starts no work.
 #[tokio::test]
-async fn owner_resume_of_an_archived_agents_task_is_refused_until_unarchive() {
+async fn archive_cancels_blocked_task_without_reoffering_resume_on_unarchive() {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
     let worktree = crate::test_support::TestWorktree::new("owner-resume-archived");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -500,94 +499,35 @@ async fn owner_resume_of_an_archived_agents_task_is_refused_until_unarchive() {
         .await
         .unwrap();
 
-    runtime
-        .owned
-        .resolve_runtime_interaction(
-            session.id(),
-            &interaction,
-            "resume",
-            None,
-            Some(&owner),
-            false,
-        )
-        .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let history = runtime
-                .owned
-                .operational_history_store
-                .load_session_history_entries(session.id(), Some(agent.id()))
-                .unwrap();
-            if history
-                .iter()
-                .any(|entry| entry.text.contains("unarchive this agent"))
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("a refused resume must tell the person why");
     let task = store
         .agent_tasks(Some(session.id()), Some(agent.id()))
         .unwrap()
         .remove(0);
-    assert_eq!(task.state, ExecutionState::Blocked);
-    assert_eq!(task.pending_prompt_id, None, "nothing may be committed");
-
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    assert_eq!(task.pending_prompt_id, None);
+    assert_eq!(
+        task.reason.as_str(),
+        "Agent archived; its running and queued work was cancelled"
+    );
     runtime
         .archive_agent_in_session(&archive(false), &owner)
         .await
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();
-    assert!(
-        runtime
-            .owned
-            .session_store
-            .get_session(session.id())
-            .unwrap()
-            .active_interactions()
-            .iter()
-            .any(|i| i.id() == interaction),
-        "the same decision must be offered again once the agent is back"
-    );
-    runtime
+    let session = runtime
         .owned
-        .resolve_runtime_interaction(
-            session.id(),
-            &interaction,
-            "resume",
-            None,
-            Some(&owner),
-            false,
-        )
+        .session_store
+        .get_session(session.id())
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let task = store
-                .agent_tasks(Some(session.id()), Some(agent.id()))
-                .unwrap()
-                .remove(0);
-            let session = runtime
-                .owned
-                .session_store
-                .get_session(session.id())
-                .unwrap();
-            if task.state == ExecutionState::Working
-                && runtime
-                    .owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, agent.id())
-                    .is_some()
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("resume after unarchive must submit the continuation prompt");
+    assert!(!session
+        .active_interactions()
+        .iter()
+        .any(|i| i.id() == interaction));
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, agent.id())
+        .is_none());
 }
 
 #[tokio::test]

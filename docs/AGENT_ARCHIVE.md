@@ -21,8 +21,9 @@ fallback to destructive removal. All clients and remote kernels use this path.
 
 ## State and failure handling
 
-Archive durably sets the existing archived flag under the prompt admission lock
-before asynchronous cleanup. No new prompt or provider launch may pass afterward.
+Archive fences work under the prompt admission lock, then durably sets the
+existing archived flag before asynchronous cleanup. No agent lock or durable
+writer I/O runs while that admission lock is held. No new prompt or provider launch may pass afterward.
 Cleanup operates only on the target. Success confirms it stopped; errors name
 the failed resource and say to retry archive. The archived fence remains. Retrying
 archive is safe; unarchive completes/rechecks pending cleanup before reopening.
@@ -62,10 +63,12 @@ specific live drills, rather than saved IDs alone, establish resume support.
 - Default/selected/only agent: repair focus to the first visible remaining agent,
   or none. The Room stays active and readable; its Prompt bar has no agent route
   until the user selects/unarchives/spawns one. Never create a replacement agent.
-- Children: preserve identities and running children. If the target owns an
-  active workflow invocation or live delegate/workflow collaboration obligations,
-  refuse before changing state with an explicit stop/finish/rebind instruction.
-  Archive must not cancel unrelated agents implicitly. Idle parentage is kept.
+- Children/collaboration: preserve identities and running children. Cancel the
+  target's participation/subscriptions, while children and shared workflow runs
+  continue. Their results remain in history/inbox for later inspection. Do not
+  propagate archive into child cancellation. Idle parentage is kept.
+- Active or queued workflow node: refuse before changing state and ask the owner to pause
+  or rebind that invocation; never stop another node implicitly.
 - Workflow binding: retain definitions. A future run targeting an archived agent
   fails clearly with an unarchive/rebind instruction. Do not steal workflow claims.
 - Leased agent: release only its lease and terminals; other agents' leases and
@@ -100,5 +103,5 @@ outcomes, closes its terminals/wakes/lease, retains grants and other agents' wor
 Restart, list archive, unarchive same identity/history/thread, then send one prompt
 and prove provider resume. Check only-agent focus, collaborator and agent/sudo
 negative admission, pending-cleanup retry/restart, stale admission races, workflow
-and collaboration refusals, schedule cancellation, older-kernel feature gating,
+refusal and independent collaboration cancellation, schedule cancellation, older-kernel feature gating,
 and legacy EndSession unchanged. Proposal mocks are not UI acceptance.

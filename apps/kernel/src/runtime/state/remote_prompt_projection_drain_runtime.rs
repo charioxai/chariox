@@ -216,6 +216,9 @@ impl KernelRuntimeState {
         agent_id: &str,
     ) -> Option<(crate::agent::RemoteAgentBinding, String)> {
         let owned = &self.owned;
+        if owned.agent_store.get_agent(agent_id).ok()?.archived() {
+            return None;
+        }
         let session = owned.session_store.get_session(session_id).ok()?;
         let active_prompt = owned
             .prompt_state_owner
@@ -279,7 +282,7 @@ impl KernelRuntimeState {
         let session = sessions.get_session(session_id)?;
         let mut agents = self.owned.agent_store.write();
         let agent = agents.get_agent(agent_id)?;
-        if agent.session_id() != session_id {
+        if agent.archived() || agent.session_id() != session_id {
             return Ok(RemotePromptRunBindingRecovery::Rejected);
         }
         let Some(current_binding) = agent.remote_execution() else {
@@ -365,7 +368,8 @@ impl KernelRuntimeState {
         let Some(current) = agent.remote_execution() else {
             return Ok(None);
         };
-        if agent.session_id() != session_id
+        if agent.archived()
+            || agent.session_id() != session_id
             || !same_remote_prompt_worker_binding(current, expected_binding)
             || current.active_worker_provider_run_id.as_deref() != Some(previous_run_id)
         {

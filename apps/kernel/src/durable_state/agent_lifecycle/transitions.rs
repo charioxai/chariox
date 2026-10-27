@@ -647,6 +647,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::SourceOutcome { .. }
         | Operation::DelegateUnavailable { .. }
         | Operation::Sweep { .. }
+        | Operation::ArchiveTask { .. }
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }

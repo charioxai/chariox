@@ -1778,3 +1778,57 @@ fn an_output_read_never_waits_past_the_service_cap() {
     assert_eq!(output_wait(Duration::from_secs(600)), MAX_WAIT);
     assert_eq!(output_wait(Duration::from_secs(5)), Duration::from_secs(5));
 }
+
+#[tokio::test]
+async fn agent_archive_stops_only_owned_terminals_and_keeps_their_history() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let spec = |opened_by| OpenRoomTerminal {
+        session_id: "room-1".into(),
+        working_directory: root.path().to_path_buf(),
+        cols: 80,
+        rows: 24,
+        title: None,
+        opened_by,
+        command: None,
+    };
+    let target = service.open(spec(agent("archived"))).unwrap();
+    let sibling = service.open(spec(agent("sibling"))).unwrap();
+    type_as(
+        &service,
+        &target.terminal_id,
+        &agent("archived"),
+        "echo ARCHIVE_TERMINAL_HISTORY\r",
+    )
+    .await;
+    until("target terminal history", || {
+        screen_has(&service, &target.terminal_id, "ARCHIVE_TERMINAL_HISTORY")
+    })
+    .await;
+    service.stop_agent("room-1", "archived").unwrap();
+    assert!(screen_has(&service, &target.terminal_id, "ARCHIVE_TERMINAL_HISTORY").await);
+    let terminals = service.list("room-1");
+    assert!(matches!(
+        terminals
+            .iter()
+            .find(|t| t.terminal_id == target.terminal_id)
+            .unwrap()
+            .status,
+        RoomTerminalStatus::Ended { .. }
+    ));
+    assert!(matches!(
+        terminals
+            .iter()
+            .find(|t| t.terminal_id == sibling.terminal_id)
+            .unwrap()
+            .status,
+        RoomTerminalStatus::Running
+    ));
+    service.stop_agent("room-1", "archived").unwrap();
+    assert_eq!(
+        service.list("room-1").len(),
+        2,
+        "ended transcript remains addressable"
+    );
+    service.end_session("room-1");
+}
