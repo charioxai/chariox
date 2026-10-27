@@ -5504,6 +5504,9 @@ shape/hash tests cover both changes under this shared pair.
 MP-08 / MP-09 / MP-10 / MP-11: browser `state` and `state_wait` expose
 `dialogs[]` with `dialog_id`, `tab_id`, `generation`, `document_id`, `kind`
 (`alert`, `confirm`, `prompt`, `beforeunload`), `message` and `origin`.
+Prompts also publish their bounded initial reply as `default_prompt`, so the
+viewer input shows the page's default. Defaults never enter the event journal
+or dialog-answer results; oversized defaults remain controller-local.
 The kernel controller retains one pending identity per page from CDP opening
 and closing events, independently of native Chrome window availability.
 A dialog opening during a state read releases that read without waiting on

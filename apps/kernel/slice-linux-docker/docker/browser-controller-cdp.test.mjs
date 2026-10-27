@@ -815,7 +815,7 @@ test("download and upload requests stay target-bound and return no file paths", 
   assert.equal(JSON.stringify({ downloads, upload }).includes("/safe"), false);
 });
 
-test("prompt defaults remain document-bound, private, and cleared when the dialog lifecycle ends", async () => {
+test("prompt defaults remain document-bound, absent from answer results and journals, and cleared with the dialog", async () => {
   let connection = new FakeConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
   const target = { target_id: "target-a", document_id: "loader-a", action: "accept" };

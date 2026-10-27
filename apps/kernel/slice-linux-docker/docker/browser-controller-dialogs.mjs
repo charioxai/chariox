@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-// Prompt defaults stay private to the controller and live only as long as the
-// open dialog. They must never enter the event journal or a response payload.
+// Prompt defaults live only with the open dialog. The shared prompt shows its
+// bounded initial reply; answer results and the event journal never echo it.
 export class BrowserDialogDefaults {
   constructor() {
     this.byTarget = new Map();
@@ -23,6 +23,7 @@ export class BrowserDialogDefaults {
         const text = message.params.defaultPrompt ?? "";
         const bounded = typeof text === "string" && text.length <= 2048 && Buffer.byteLength(text, "utf8") <= 2048;
         this.byTarget.set(targetId, { documentId, text: bounded ? text : null });
+        if (bounded) this.dialogs.get(targetId).default_prompt = text;
       }
     } else if (
       message.method === "Page.javascriptDialogClosed" ||

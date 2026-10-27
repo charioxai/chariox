@@ -78,7 +78,7 @@ export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; act
 export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
 export type KernelBrowserDialog = {
   dialog_id: string; tab_id: string; generation: number; document_id: string;
-  kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; origin: string
+  kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; origin: string; default_prompt?: string
 }
 export type KernelBrowserResult = {
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;

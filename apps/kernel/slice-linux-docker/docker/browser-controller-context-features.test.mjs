@@ -169,6 +169,11 @@ test("MP-08/MP-09/MP-10/MP-11 pending dialogs expose the shared identity and rej
     assert.equal(dialog.origin, "https://example.com");
     assert.equal(dialog.document_id, "loader-a");
     assert(!JSON.stringify(dialog).includes("private"));
+    open("prompt");
+    assert.equal(browser.dialogDefaults.pending()[0].default_prompt, "private default", "the viewer must show the page's initial reply");
+    connection.emit({ method: "Page.javascriptDialogOpening", sessionId: "session-a",
+      params: { type: "prompt", defaultPrompt: "é".repeat(1025) } });
+    assert.equal(browser.dialogDefaults.pending()[0].default_prompt, undefined, "an oversized default stays outside the bounded shared state");
     open("beforeunload");
     await assert.rejects(browser.handleDialog({ target_id: "target-a", document_id: "loader-a", dialog_id: dialog.dialog_id, action: "accept" }), { code: "browser_dialog_invalid" });
     const [current] = browser.dialogDefaults.pending();
