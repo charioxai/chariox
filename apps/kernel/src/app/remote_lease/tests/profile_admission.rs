@@ -82,6 +82,7 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
         .relay_submit_leased_prompt(
             &lease.id,
             profile.clone(),
+            None,
             "use my selected account",
             "",
             Vec::new(),
@@ -166,6 +167,7 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
     let submission = router.relay_submit_leased_prompt(
         &lease.id,
         profile.clone(),
+            None,
         "keep my admitted profile",
         "",
         Vec::new(),
@@ -233,6 +235,7 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
     let mut submission = Box::pin(router.relay_submit_leased_prompt(
         &lease.id,
         profile.clone(),
+            None,
         "cancel before admission",
         "",
         Vec::new(),
@@ -314,6 +317,7 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
         .relay_submit_leased_prompt(
             &lease.id,
             home_profile.clone(),
+            None,
             "use the profile committed by home",
             "",
             Vec::new(),
@@ -378,6 +382,7 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
         router.relay_submit_leased_prompt(
             &lease.id,
             profile.clone(),
+            None,
             "call the capability loader",
             "",
             Vec::new(),
@@ -475,6 +480,7 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
         router.relay_submit_leased_prompt(
             &lease.id,
             profile.clone(),
+            None,
             "call the capability loader",
             "",
             Vec::new(),
@@ -781,4 +787,21 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
         first.project_environment_revision(),
         second.project_environment_revision()
     );
+}
+
+#[tokio::test]
+async fn fresh_leased_prompt_resumes_home_thread_after_archive() {
+    crate::test_support::isolated_env_test!();
+    let (app, lease) = leased_agent_fixture(false);
+    let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let saved = crate::provider::ProviderResumeState::from_codex_thread_id("archived-home-thread");
+    let (run, _) = router.relay_submit_leased_prompt(
+        &lease.id, profile, Some(saved.clone()), "resume after archive", "", Vec::new(),
+        None, None, Vec::new(), None, crate::extension::RemoteExtensionManifest::default(), None,
+    ).await.unwrap();
+    assert_eq!(app.lock().await.providers().get_run(&run).unwrap().resume_state(), &saved);
 }

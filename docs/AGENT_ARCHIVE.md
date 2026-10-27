@@ -15,7 +15,10 @@ with bounded, acknowledged cleanup. Never remove/recreate the home agent.
 
 Add `ListArchivedAgents { session_id }`; ordinary ListAgents omits archived agents.
 GetSessionState keeps all agents and their archived flags for discovery/history.
-Allocated protocol local636/peer239 covers that additive request. New archive UI
+Allocated protocol local636/peer239 covers that request and the additive
+SubmitLeasedPrompt.provider_resume_state handoff. A fresh worker backing agent
+receives the home thread before launch; an existing worker run retains its own
+current resume state. New archive UI
 requires 636; older kernels keep their existing controls/behavior, without a
 fallback to destructive removal. All clients and remote kernels use this path.
 

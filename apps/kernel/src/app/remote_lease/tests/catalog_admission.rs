@@ -72,6 +72,7 @@ async fn leased_catalog_change_returns_the_new_run_through_existing_prompt_admis
             .relay_submit_leased_prompt(
                 &lease.id,
                 profile,
+            None,
                 "use the newly bound App catalog",
                 "",
                 Vec::new(),

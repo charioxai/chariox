@@ -136,7 +136,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 215 installs independent provider accounts over the encrypted peer channel.
 /// Allocated 220 unions the staging 216 line with the external agents 215 line.
 /// MP-08/MP-09/MP-10/MP-11: allocated239 carries local636 archived-agent discovery
-/// and retains the earlier browser resize and attachment byte-size contracts.
+/// and the saved provider thread handoff to a fresh worker lease; it retains the earlier browser resize and attachment byte-size contracts.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 239;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -897,6 +897,8 @@ pub enum RelayPeerRequest {
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_resume_state: Option<crate::provider::ProviderResumeState>,
         prompt: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         hidden_system_context: String,

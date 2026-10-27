@@ -350,6 +350,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if request.variant.is_none() {
                 request = request.with_variant(run.variant().map(str::to_string));
             }
+        } else if existing.is_none() {
+            // A fresh lease resumes the authoritative home thread after archive.
+            request = request.with_resume_state(self.app.agents.get_agent(&leased_agent.backing_agent_id)?.provider_resume_state().clone());
         }
         let session = self
             .app

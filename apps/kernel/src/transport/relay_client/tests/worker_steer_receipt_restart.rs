@@ -11,6 +11,7 @@ fn leased_prompt_submission_request(
     RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: leased_agent_id.to_string(),
         expected_profile,
+        provider_resume_state: None,
         prompt: prompt.to_string(),
         hidden_system_context: String::new(),
         attachments: Vec::new(),

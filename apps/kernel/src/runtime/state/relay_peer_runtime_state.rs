@@ -521,6 +521,7 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
+        provider_resume_state: Option<crate::provider::ProviderResumeState>,
         prompt: &str,
         hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
@@ -675,6 +676,13 @@ impl KernelRuntimeState {
         let context_for_prepare = home_prompt_id.clone();
         let prepared = match self
             .with_app_side_effect(move |app| {
+                if let Some(resume) = provider_resume_state {
+                    let lease = app.leased_agents.get(&leased_agent_for_prepare).cloned()
+                        .ok_or_else(|| DaemonError::LeasedAgentNotFound { leased_agent_id: leased_agent_for_prepare.clone() })?;
+                    if app.providers.get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id).is_none() {
+                        app.agents.set_agent_provider_resume_state(&lease.backing_agent_id, resume)?;
+                    }
+                }
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,
                     &prompt_for_prepare,
