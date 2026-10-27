@@ -380,10 +380,10 @@ impl KernelRuntimeOwnedState {
         } else {
             Vec::new()
         };
-        if self.room_secret_observations.protects_bytes(room) {
-            if !fence_private_assessment(&mut value, &registrations) {
-                return String::new();
-            }
+        if self.room_secret_observations.protects_bytes(room)
+            && !fence_private_assessment(&mut value, &registrations)
+        {
+            return String::new();
         }
         self.room_secret_observations
             .scrub(room, value)

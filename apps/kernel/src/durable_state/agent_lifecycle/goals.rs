@@ -393,11 +393,7 @@ pub(super) fn evaluate(
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
             let regs = registrations(tx, &t.task_id)?;
-            let registration_ids = if let Some(resolved) = resolve_live_registration_ids(&registration_ids, &regs) {
-                resolved
-            } else {
-                registration_ids
-            };
+            let registration_ids = resolve_live_registration_ids(&registration_ids, &regs).unwrap_or(registration_ids);
             let deadline = deadline_ms
                 .min(t.wait.as_ref().map_or(u64::MAX, |w| w.deadline_ms))
                 .min(wakes::source_deadline(tx, &t, &registration_ids)?.unwrap_or(u64::MAX));
