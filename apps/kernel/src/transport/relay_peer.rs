@@ -138,3 +138,2553 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 232 carries the local 629 browser resize command.
 /// Peer 232 also carries protocol 627 attachment byte sizes in shared history.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 232;
+/// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
+/// independently of a relay's ability to downgrade its binary transport.
+pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
+/// MP-08/MP-11: typed leased Computer grants require peer 109.
+pub(crate) const MINIMUM_LEASED_COMPUTER_PEER_VERSION: u32 = 109;
+pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
+    "provider_launch_credential_required";
+/// The worker refused a leased prompt before admission because the selected
+/// account cannot start work there; repeating the prompt cannot repair it.
+pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
+pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
+pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote provider account";
+pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
+pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
+
+// MP-08/MP-09/MP-10/MP-11 A10: start and queries use the exact admitted lease.
+// Preserve the serialized peer action and its existing public Rust fields.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the versioned leased-process request shape."
+)]
+pub enum LeasedWatchedProcessAction {
+    Start {
+        wake: crate::durable_state::agent_lifecycle::AgentWake,
+        binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
+        cwd: Option<String>,
+    },
+    Query {
+        wake_id: String,
+        binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
+    },
+    Cancel {
+        wake_id: String,
+        binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
+    },
+}
+// MP-08 / MP-10 / MP-11 public transfer binding. Values are target-sealed at the source worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectEnvironmentExportTarget {
+    pub context_id: String,
+    pub kernel_id: String,
+    pub public_key: String,
+}
+
+/// Home-selected execution identity for a leased prompt. Contains no credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayAgentExecutionProfile {
+    pub provider: String,
+    pub account_profile: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+/// Status returned by the worker for a project-environment setup operation.
+/// A utility-generated definition is staged while the worker remains in
+/// Preparing; the home persists it and acknowledges its digest before worker
+/// validation may begin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectEnvironmentSetupStatus {
+    pub status: crate::local::ProjectEnvironmentSetupStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition: Option<crate::session::ProjectEnvironmentDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectEnvironmentSetupDefinitionAck {
+    pub operation_id: String,
+    pub attempt: u32,
+    pub project_id: String,
+    pub definition_digest: String,
+}
+
+impl From<&crate::agent::AgentInstance> for RelayAgentExecutionProfile {
+    fn from(agent: &crate::agent::AgentInstance) -> Self {
+        Self {
+            provider: agent.provider().to_string(),
+            account_profile: agent.provider_account_profile().to_string(),
+            model: agent.model().map(str::to_string),
+            effort: agent.effort().map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayManagedContextTransferPhase {
+    Armed,
+    Receiving,
+    ReadyToImport,
+    Importing,
+    Consumed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportedRepository {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_context::development::DevelopmentWorkspaceKind::is_git"
+    )]
+    pub workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind,
+    pub repository_id: String,
+    pub role: crate::managed_context::development::DevelopmentRepositoryRole,
+    pub target_directory: String,
+    pub destination_path: String,
+    pub head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
+    pub transfer_id: String,
+    pub archive_sha256: String,
+    pub plan_digest: String,
+    pub development: RelayManagedDevelopmentContextImportReceipt,
+    pub kernel_context: RelayManagedKernelContextImportReceipt,
+    pub receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayManagedDevelopmentContextImportReceipt {
+    Empty,
+    FromSource {
+        project_id: String,
+        destination_root: String,
+        primary_repository_id: String,
+        repositories: Vec<RelayManagedContextImportedRepository>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayManagedKernelContextImportReceipt {
+    Empty,
+    FromKernel {
+        context_id: String,
+        source_kernel_id: String,
+        source_key_thumbprint: String,
+        snapshot_sha256: String,
+        extension_count: usize,
+        dependency_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextTransferStatus {
+    pub transfer_id: String,
+    pub phase: RelayManagedContextTransferPhase,
+    pub accepted_bytes: u64,
+    pub archive_size_bytes: u64,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<RelayManagedContextImportReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayPromptAttachment {
+    pub url: String,
+    pub mime: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contents_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteWorkspaceLiveSyncContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
+    pub leased_agent_id: String,
+    pub worker_kernel_id: String,
+    pub worker_machine_id: String,
+    pub worker_provider_run_id: String,
+    pub worker_worktree_path: String,
+    pub worker_workspace_identity: WorkspaceIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSkillSyncContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteProviderAccountSyncContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub execution_lease_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSkillMaterialization {
+    pub name: String,
+    pub version_hash: String,
+    pub materialized_root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMcpCheckContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteExtensionInvocationContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub worker_provider_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_kernel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_machine_id: Option<String>,
+}
+
+/// MP-08/MP-11 peer109: value-free, home-selected lease and desktop authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeasedComputerGrant {
+    pub epoch: String,
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub desktop_kernel_id: String,
+    pub target: crate::local::KernelDesktopTarget,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteRoomBrowserRuntimeToolCall {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteRoomBrowserRuntimeToolCall")
+            .field("tool_name", &self.tool_name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteRoomBrowserRuntimeToolResult(
+    pub crate::transport::runtime_tools::RuntimeToolResult,
+);
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteRoomBrowserRuntimeToolResult(<redacted>)")
+    }
+}
+
+/// An agent's terminal tool call, forwarded by the worker its provider runs on
+/// to the home kernel that owns the Room and the agent's identity. Arguments
+/// and results carry typed text and terminal output, so they stay out of logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTerminalRuntimeToolCall {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl std::fmt::Debug for RemoteTerminalRuntimeToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteTerminalRuntimeToolCall")
+            .field("tool_name", &self.tool_name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteTerminalRuntimeToolResult(pub crate::transport::runtime_tools::RuntimeToolResult);
+
+impl std::fmt::Debug for RemoteTerminalRuntimeToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteTerminalRuntimeToolResult(<redacted>)")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteRoomComputerObservationCall {
+    Snapshot {
+        observer: String,
+    },
+    ScreenStatus,
+    Ocr {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<String>,
+    },
+    FindText {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<String>,
+    },
+}
+
+impl std::fmt::Debug for RemoteRoomComputerObservationCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Snapshot { .. } => formatter.write_str("Snapshot(<redacted>)"),
+            Self::ScreenStatus => formatter.write_str("ScreenStatus"),
+            Self::Ocr { .. } => formatter.write_str("Ocr(<redacted>)"),
+            Self::FindText { .. } => formatter.write_str("FindText(<redacted>)"),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteRoomComputerObservationResult(
+    pub crate::transport::runtime_tools::RuntimeToolResult,
+);
+
+impl std::fmt::Debug for RemoteRoomComputerObservationResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteRoomComputerObservationResult(<redacted>)")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteCredentialSecretInjection {
+    Browser { target_url: String },
+    Computer,
+    Pty,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteCredentialSecretInput(String);
+
+impl RemoteCredentialSecretInput {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn from_zeroizing(mut value: zeroize::Zeroizing<String>) -> Self {
+        Self(std::mem::take(&mut *value))
+    }
+
+    pub fn into_zeroizing(mut self) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(std::mem::take(&mut self.0))
+    }
+}
+
+impl Drop for RemoteCredentialSecretInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RemoteCredentialSecretInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted remote credential secret input]")
+    }
+}
+
+/// One provider launch secret carried only inside an encrypted kernel-to-kernel
+/// request. The worker validates the provider/profile binding, moves the value
+/// into its in-memory launch environment, and never writes it to a provider
+/// credential file or durable kernel state.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteProviderLaunchCredential {
+    pub provider: String,
+    pub account_profile: String,
+    pub secret_input: RemoteCredentialSecretInput,
+}
+
+impl std::fmt::Debug for RemoteProviderLaunchCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteProviderLaunchCredential")
+            .field("provider", &self.provider)
+            .field("account_profile", &self.account_profile)
+            .field("secret_input", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteNativeInteractionContext {
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub leased_agent_id: String,
+    pub worker_provider_run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredRemoteMcp {
+    pub config: CharioxMcpServerConfig,
+    pub definition_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredRemoteSkill {
+    pub name: String,
+    pub version_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMcpAvailability {
+    pub name: String,
+    pub expected_hash: String,
+    pub status: RemoteMcpAvailabilityStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteGitTurnContext {
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub home_prompt_id: String,
+    pub home_turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_origin: Option<PromptOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_provider_turn_id: Option<String>,
+    pub prompt_summary: String,
+}
+
+/// A10: what a worker may know of a home sudo window: a revoke handle, its
+/// revision and the time left when the home sent it. It is a narrowing fence
+/// only; the home rechecks its own window on every forwarded privileged call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedSudoGrant {
+    pub entry_id: String,
+    pub revision: u64,
+    pub remaining_ms: u64,
+    /// The window's first fence. A worker that does not hold the window
+    /// refuses any later one, so a worker restart ends elevation visibly.
+    #[serde(default)]
+    pub initial: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeasedPromptReceiptPhase {
+    Active,
+    Completed,
+    SteerDispatching,
+    SteerAccepted,
+    SteerRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedPromptReceipt {
+    pub home_prompt_id: String,
+    pub worker_provider_run_id: String,
+    pub phase: LeasedPromptReceiptPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_lease_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteGitObservation {
+    pub kind: HistoryEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
+    pub context: HistoryEventTurnContext,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_agent_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_prompt_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_turn_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_confidence: Option<HistoryAttributionConfidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteWorkspaceLiveSyncApplyContext {
+    pub home_session_id: String,
+    pub link_id: String,
+    pub link_name: String,
+    pub source_agent_id: String,
+    pub source_worktree_path: String,
+    pub target_user_id: String,
+    pub target_machine_id: String,
+    pub target_kernel_id: String,
+    pub target_repo_root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum RemoteMcpAvailabilityStatus {
+    Available,
+    Missing,
+    DefinitionMismatch { worker_hash: String },
+    MissingCommand { command: String },
+    MissingEnv { names: Vec<String> },
+    Invalid { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteWorkspaceLiveSyncArtifactState {
+    pub path: String,
+    pub exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteWorkspaceLiveSyncInvocationMetadata {
+    pub invocation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_tool_call_id: Option<String>,
+    #[serde(default = "default_workspace_live_sync_invocation_attempt")]
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+impl RemoteWorkspaceLiveSyncInvocationMetadata {
+    pub fn new(
+        provider_run_id: &str,
+        tool_name: &str,
+        provider_tool_call_id: Option<String>,
+    ) -> Self {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let started_at_ms = crate::session::unix_epoch_ms();
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            invocation_id: format!("{provider_run_id}:{tool_name}:{started_at_ms}:{sequence}"),
+            provider_tool_call_id,
+            attempt: 1,
+            idempotency_key: None,
+        }
+    }
+}
+
+fn default_workspace_live_sync_invocation_attempt() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
+)]
+pub enum RelayPeerRequest {
+    ListWorkflowNotificationSources {
+        protocol_version: u32,
+    },
+    SubscribeWorkflowNotifications {
+        protocol_version: u32,
+        source_workflow_ref: String,
+        target_ref: crate::local::WorkflowNotificationSubscription,
+    },
+    UnsubscribeWorkflowNotifications {
+        protocol_version: u32,
+        subscription_id: String,
+    },
+    DeliverWorkflowNotification {
+        protocol_version: u32,
+        subscription_id: String,
+        envelope: crate::local::WorkflowNotificationEnvelope,
+    },
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        command: super::room_browser_controller::RoomBrowserControllerCommand,
+    },
+    // MP-11: old workers must reject this request instead of ignoring its audience.
+    #[serde(rename = "open_room_shared_display_with_audience")]
+    OpenRoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        lease_id: String,
+        viewer_public_key: String,
+        audience: super::room_shared_display::RoomDisplayAudience,
+        offer: crate::slice::RoomDisplayOffer,
+        viewport: crate::session::CanonicalViewport,
+        target: super::room_shared_display::RoomDisplayTarget,
+    },
+    RoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        lease_id: String,
+        command: super::room_shared_display::RoomDisplayCommand,
+    },
+    OpenRoomDisplay {
+        session_id: String,
+        slice_id: String,
+        viewer_public_key: String,
+    },
+    CaptureRoomScreenshot {
+        session_id: String,
+        slice_id: String,
+    },
+    ReadRoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        artifact_id: String,
+        offset: u64,
+        max_bytes: u32,
+    },
+    ObserveRoomComputer {
+        session_id: String,
+        slice_id: String,
+        call: RemoteRoomComputerObservationCall,
+    },
+    Ping {
+        value: String,
+    },
+    InstallManagedSliceRelayToken {
+        slice_id: String,
+        owner_kernel_id: String,
+        owner_machine_id: String,
+        activation_nonce: String,
+        relay_token: RelayManagedSliceToken,
+        expires_at_ms: u64,
+        relay_recovery_token: RelayManagedSliceToken,
+        recovery_expires_at_ms: u64,
+    },
+    ConfirmManagedSliceRelayToken {
+        slice_id: String,
+        owner_kernel_id: String,
+        worker_kernel_id: String,
+        activation_nonce: String,
+    },
+    RefreshManagedSliceRelayToken {
+        slice_id: String,
+        owner_kernel_id: String,
+        worker_kernel_id: String,
+    },
+    CreateExecutionLease {
+        home_kernel_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        #[serde(default)]
+        home_agent_metaagent: bool,
+        owner_user_id: String,
+    },
+    DestroyExecutionLease {
+        lease_id: String,
+    },
+    SpawnLeasedAgent {
+        lease_id: String,
+        provider: String,
+        account_profile: String,
+        model: Option<String>,
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree_placement: Option<GitWorktreePlacement>,
+    },
+    DestroyLeasedAgent {
+        leased_agent_id: String,
+    },
+    UpdateLeasedAgentConfig {
+        leased_agent_id: String,
+        execution_mode: crate::provider::AgentExecutionMode,
+        permission_level: crate::provider::AgentPermissionLevel,
+    },
+    UpdateLeasedAgentProfile {
+        leased_agent_id: String,
+        provider: String,
+        account_profile: String,
+        model: Option<String>,
+        effort: Option<String>,
+    },
+    UpdateLeasedAgentMetaMode {
+        leased_agent_id: String,
+        active: bool,
+    },
+    UpdateLeasedAgentRemoteExtensionManifest {
+        leased_agent_id: String,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    },
+    LaunchLeasedNativeProviderRun {
+        leased_agent_id: String,
+        adapter_key: String,
+        provider: String,
+        account_profile: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variant: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        structured_endpoint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+        )]
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
+    },
+    SendLeasedNativeProviderInput {
+        leased_agent_id: String,
+        provider_run_id: String,
+        attachment_id: String,
+        data_base64: String,
+    },
+    ResizeLeasedProviderTerminal {
+        leased_agent_id: String,
+        provider_run_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// One Room terminal operation for the agent `leased_agent_id` runs as,
+    /// typed as `actor` (the home Room's identity).
+    RoomTerminal {
+        leased_agent_id: String,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RoomTerminalOperation,
+    },
+    SubmitLeasedPrompt {
+        leased_agent_id: String,
+        expected_profile: RelayAgentExecutionProfile,
+        prompt: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        hidden_system_context: String,
+        #[serde(default)]
+        attachments: Vec<RelayPromptAttachment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflow_context: Option<RemoteWorkflowTurnContext>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git_context: Option<RemoteGitTurnContext>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+        )]
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_launch_credential: Option<RemoteProviderLaunchCredential>,
+    },
+    /// A10: install or replace the worker fence for one exact leased home
+    /// prompt's sudo window; `remaining_ms == 0` ends the window's fences.
+    UpdateLeasedSudo {
+        leased_agent_id: String,
+        home_prompt_id: String,
+        grant: LeasedSudoGrant,
+    },
+    GetLeasedPromptReceipt {
+        leased_agent_id: String,
+        home_prompt_id: String,
+    },
+    ReconcileLeasedPromptSteerReceipt {
+        leased_agent_id: String,
+        steer_id: String,
+        target_home_prompt_id: String,
+        worker_provider_run_id: String,
+        execution_lease_id: String,
+    },
+    SteerLeasedPrompt {
+        leased_agent_id: String,
+        steer_id: String,
+        target_home_prompt_id: String,
+        prompt: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        hidden_system_context: String,
+        #[serde(default)]
+        attachments: Vec<RelayPromptAttachment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
+    },
+    DrainLeasedRuntimeProjection {
+        leased_agent_id: String,
+        provider_run_id: String,
+        #[serde(default)]
+        pump_output: bool,
+    },
+    CompleteLeasedPrompt {
+        leased_agent_id: String,
+    },
+    ObserveLeasedGitAfter {
+        leased_agent_id: String,
+        provider_run_id: String,
+    },
+    CancelLeasedPrompt {
+        leased_agent_id: String,
+        home_prompt_id: String,
+        worker_provider_run_id: String,
+    },
+    ResolveLeasedProjectEnvironmentSetupTarget {
+        leased_agent_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    StartLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        workspace_id: String,
+        target_worker_id: String,
+        target_platform: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        definition: Option<crate::session::ProjectEnvironmentDefinition>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        validation_commands: Vec<String>,
+    },
+    AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+        leased_agent_id: String,
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+        definition_digest: String,
+    },
+    GetLeasedProjectEnvironmentSetupStatus {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    CancelLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    RetryLeasedProjectEnvironmentSetup {
+        leased_agent_id: String,
+        operation_id: String,
+        home_session_id: String,
+        home_agent_id: String,
+    },
+    LeasedWatchedProcess {
+        leased_agent_id: String,
+        action: LeasedWatchedProcessAction,
+    },
+    ForwardWorkflowRuntimeTool {
+        context: RemoteWorkflowTurnContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    ForwardWorkspaceLiveSyncRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext,
+        metadata: RemoteWorkspaceLiveSyncInvocationMetadata,
+        tool_name: String,
+        arguments: serde_json::Value,
+        artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
+    },
+    FinalizeWorkspaceLiveSyncRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext,
+        metadata: RemoteWorkspaceLiveSyncInvocationMetadata,
+        tool_name: String,
+        arguments: serde_json::Value,
+        initial_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
+        final_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
+    },
+    ForwardCapabilityRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    ForwardMetaRuntimeTool {
+        context: RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    SetLeasedComputerGrant {
+        leased_agent_id: String,
+        epoch: String,
+        grant: Option<LeasedComputerGrant>,
+    },
+    CheckLeasedComputerGrant {
+        context: RemoteExtensionInvocationContext,
+        epoch: String,
+    },
+    ForwardRoomBrowserRuntimeTool {
+        context: RemoteExtensionInvocationContext,
+        call: RemoteRoomBrowserRuntimeToolCall,
+    },
+    ForwardTerminalRuntimeTool {
+        context: RemoteExtensionInvocationContext,
+        call: RemoteTerminalRuntimeToolCall,
+    },
+    InvokeHomeExtensionTool {
+        context: RemoteExtensionInvocationContext,
+        #[serde(default)]
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
+        tool: crate::extension::RemoteExtensionTool,
+        arguments: serde_json::Value,
+    },
+    InvokeHomeMcpProxy {
+        context: RemoteExtensionInvocationContext,
+        #[serde(default)]
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
+        name: String,
+        tool: crate::extension::RemoteExtensionTool,
+        payload: serde_json::Value,
+    },
+    CancelHomeExtensionInvocation {
+        context: RemoteExtensionInvocationContext,
+        #[serde(default)]
+        metadata: crate::extension::RemoteExtensionInvocationMetadata,
+    },
+    InvokeHomeCredentialTool {
+        context: RemoteExtensionInvocationContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    ResolveHomeCredentialSecret {
+        context: RemoteExtensionInvocationContext,
+        credential_id: String,
+        injection: RemoteCredentialSecretInjection,
+    },
+    ApplyWorkspaceLiveSyncChange {
+        context: RemoteWorkspaceLiveSyncApplyContext,
+        change: crate::git_observer::WorkspaceLiveSyncChange,
+    },
+    ForwardNativeTurnInteraction {
+        context: RemoteNativeInteractionContext,
+        interaction: crate::session::RuntimeInteraction,
+    },
+    UpdateNativeInteraction {
+        context: RemoteNativeInteractionContext,
+        interaction_id: String,
+        login: Option<crate::session::RuntimeProviderLogin>,
+    },
+    ExportLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        interactive: bool,
+        target_name: String,
+        target: Option<ProjectEnvironmentExportTarget>,
+    },
+    FetchProjectPrivateFile {
+        context: RemoteNativeInteractionContext,
+        workspace_id: String,
+        path: String,
+    },
+    UseLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        project_id: String,
+    },
+    ReadLeasedProjectPrivateFile {
+        context: RemoteSkillSyncContext,
+        workspace_id: String,
+        path: String,
+    },
+    ReadLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        adjust: bool,
+    },
+    InstallLeasedProjectEnvironment {
+        context: RemoteSkillSyncContext,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_kernel_id: Option<String>,
+        layer: crate::managed_context::development::DevelopmentProjectEnvironment,
+        /// Source workspace -> mounted repository basename; never arbitrary target paths.
+        workspace_directories: std::collections::BTreeMap<String, String>,
+    },
+    EnsureRemoteSkillPackages {
+        context: RemoteSkillSyncContext,
+        packages: Vec<CharioxSkillPackage>,
+    },
+    InstallProviderAccountCopy {
+        binding: crate::provider_account_copy::ProviderAccountCopyBinding,
+        credential: crate::provider_account_copy::ProviderAccountCopyCredential,
+    },
+    EnsureRemoteProviderAccount {
+        context: RemoteProviderAccountSyncContext,
+        materialization: crate::account_profile::ProviderAccountMaterialization,
+    },
+    CheckRemoteMcpAvailability {
+        context: RemoteMcpCheckContext,
+        required_mcps: Vec<RequiredRemoteMcp>,
+    },
+    ArmManagedContextImport {
+        plan: crate::managed_context::package::ManagedContextPlanBinding,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        target_environment_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
+        target_kernel_id: String,
+        target_key_thumbprint: String,
+        capability: RelayManagedContextCapability,
+        archive_sha256: String,
+        archive_size_bytes: u64,
+    },
+    BeginManagedContextImport {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+    },
+    UploadManagedContextChunk {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+        offset: u64,
+        data_base64: RelayManagedContextChunk,
+        chunk_sha256: String,
+    },
+    FinalizeManagedContextImport {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+    },
+    GetManagedContextImportStatus {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+    },
+}
+
+impl RelayPeerRequest {
+    /// Off-lock callers can wait for both bounded native account probes plus
+    /// reply cleanup. App-locked callers retain their configured response bound.
+    pub(crate) fn off_lock_response_timeout(
+        &self,
+        configured: std::time::Duration,
+    ) -> std::time::Duration {
+        if matches!(
+            self,
+            Self::EnsureRemoteProviderAccount { .. } | Self::InstallProviderAccountCopy { .. }
+        ) {
+            configured.max(std::time::Duration::from_secs(150))
+        } else {
+            configured
+        }
+    }
+
+    /// Charges transport setup to a forwarded decision's fixed expiry.
+    pub(crate) fn rebase_decision_budget(&mut self) {
+        if let Self::ForwardNativeTurnInteraction { interaction, .. } = self {
+            interaction.rebase_decision_budget();
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayPeerResponse {
+    LeasedWatchedProcess {
+        receipt: Option<crate::durable_state::agent_lifecycle::LeasedProcessReceipt>,
+    },
+    WorkflowNotificationSources {
+        protocol_version: u32,
+        sources: Vec<crate::local::WorkflowNotificationSourceSummary>,
+    },
+    WorkflowNotificationSubscribed {
+        subscription: crate::local::WorkflowNotificationSubscription,
+    },
+    WorkflowNotificationUnsubscribed,
+    WorkflowNotificationAccepted {
+        ack: crate::local::WorkflowNotificationAck,
+    },
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        result: super::room_browser_controller::RoomBrowserControllerResult,
+    },
+    RoomSharedDisplay {
+        session_id: String,
+        slice_id: String,
+        result: super::room_shared_display::RoomDisplayResult,
+    },
+    RoomDisplayOpened {
+        session_id: String,
+        slice_id: String,
+        endpoint: crate::slice::SliceDisplayEndpoint,
+    },
+    RoomScreenshotCaptured {
+        session_id: String,
+        slice_id: String,
+        artifact: crate::local::RoomEnvironmentScreenshotArtifact,
+    },
+    RoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        chunk: crate::local::RoomEnvironmentScreenshotChunk,
+    },
+    RoomComputerObserved {
+        session_id: String,
+        slice_id: String,
+        result: RemoteRoomComputerObservationResult,
+    },
+    Pong {
+        value: String,
+        daemon_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_peer_protocol_version: Option<u32>,
+    },
+    ManagedSliceRelayTokenInstalled {
+        slice_id: String,
+        activation_nonce: String,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedSliceRelayTokenActivated {
+        slice_id: String,
+        activation_nonce: String,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedSliceRelayTokenRefreshed {
+        slice_id: String,
+        relay_token: RelayManagedSliceToken,
+        expires_at_ms: u64,
+        relay_recovery_token: RelayManagedSliceToken,
+        recovery_expires_at_ms: u64,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedSliceRelayTokenFailed {
+        code: String,
+        retryable: bool,
+    },
+    ExecutionLeaseCreated {
+        lease: ExecutionLease,
+        #[serde(default)]
+        relay_peer_protocol_version: u32,
+    },
+    ExecutionLeaseDestroyed {
+        lease_id: String,
+    },
+    LeasedAgentSpawned {
+        leased_agent: LeasedAgent,
+    },
+    LeasedAgentDestroyed {
+        leased_agent_id: String,
+    },
+    LeasedAgentConfigUpdated {
+        leased_agent: LeasedAgent,
+    },
+    LeasedAgentProfileUpdated {
+        leased_agent: LeasedAgent,
+    },
+    LeasedAgentMetaModeUpdated {
+        leased_agent: LeasedAgent,
+    },
+    LeasedAgentRemoteExtensionManifestUpdated {
+        leased_agent_id: String,
+    },
+    LeasedNativeProviderRunLaunched {
+        provider_run: crate::provider::RuntimeProviderRun,
+    },
+    LeasedNativeProviderInputSent {
+        byte_count: usize,
+    },
+    LeasedProviderTerminalResized {
+        provider_run_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    RoomTerminal {
+        result: crate::local::RoomTerminalResult,
+    },
+    LeasedPromptSubmitted {
+        provider_run_id: String,
+        outcome: PromptSubmissionOutcome,
+    },
+    LeasedPromptReceiptQueried {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<LeasedPromptReceipt>,
+    },
+    LeasedPromptSteered {
+        provider_run_id: String,
+        steer_id: String,
+        replayed: bool,
+    },
+    LeasedRuntimeProjectionDrained {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event: Option<RelayPeerEvent>,
+    },
+    LeasedPromptCompleted {
+        provider_run_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_diagnostic: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_termination: Option<crate::provider::ProviderRunTermination>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        git_observations: Vec<RemoteGitObservation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_live_sync_change: Option<crate::git_observer::WorkspaceLiveSyncChange>,
+        completion: PromptCompletion,
+    },
+    LeasedGitObserved {
+        provider_run_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        git_observations: Vec<RemoteGitObservation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_live_sync_change: Option<crate::git_observer::WorkspaceLiveSyncChange>,
+    },
+    LeasedPromptCancelled {
+        cancellation: PromptCancellation,
+    },
+    LeasedSudoUpdated,
+    LeasedProjectEnvironmentSetupTargetResolved {
+        worker_id: String,
+        platform: String,
+    },
+    LeasedProjectEnvironmentSetupStarted {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupDefinitionAcknowledged {
+        operation_id: String,
+        attempt: u32,
+        project_id: String,
+        definition_digest: String,
+    },
+    LeasedProjectEnvironmentSetupStatus {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupCancelled {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    LeasedProjectEnvironmentSetupRetried {
+        setup: RelayProjectEnvironmentSetupStatus,
+    },
+    WorkflowRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    WorkspaceLiveSyncRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+        final_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
+    },
+    WorkspaceLiveSyncRuntimeToolFinalized,
+    CapabilityRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill_package: Option<CharioxSkillPackage>,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
+        )]
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    },
+    MetaRuntimeToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    LeasedComputerGrantUpdated {},
+    LeasedComputerGrantChecked {
+        grant: LeasedComputerGrant,
+    },
+    RoomBrowserRuntimeToolHandled {
+        result: RemoteRoomBrowserRuntimeToolResult,
+    },
+    TerminalRuntimeToolHandled {
+        result: RemoteTerminalRuntimeToolResult,
+    },
+    HomeExtensionToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    HomeMcpProxyHandled {
+        response: serde_json::Value,
+    },
+    HomeExtensionInvocationCancelled {
+        invocation_id: String,
+        cancelled: bool,
+    },
+    HomeCredentialToolHandled {
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    HomeCredentialSecretResolved {
+        credential_id: String,
+        secret_input: RemoteCredentialSecretInput,
+    },
+    WorkspaceLiveSyncChangeApplied {
+        target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,
+    },
+    NativeInteractionResolved {
+        resolution: crate::provider::ProviderNativeInteractionResolution,
+    },
+    NativeInteractionUpdated {},
+    LeasedProjectEnvironmentExport {
+        manifest: crate::project_environment::ProjectEnvironmentManifest,
+        evidence: crate::project_environment::ProjectEnvironmentEvidence,
+        layer: Option<crate::managed_context::development::DevelopmentProjectEnvironment>,
+    },
+    ProjectPrivateFile {
+        bytes: RelayManagedContextChunk,
+    },
+    LeasedProjectEnvironment {
+        manifest: Option<crate::project_environment::ProjectEnvironmentManifest>,
+        adjustment_started: bool,
+    },
+    LeasedProjectEnvironmentUsed {
+        exists: bool,
+    },
+    LeasedProjectEnvironmentInstalled {
+        project_id: String,
+    },
+    RemoteSkillPackagesEnsured {
+        materialized: Vec<RemoteSkillMaterialization>,
+    },
+    ProviderAccountCopyFailed {
+        code: String,
+    },
+    ProviderAccountCopyInstalled {
+        receipt: crate::provider_account_copy::ProviderAccountCopyReceipt,
+    },
+    RemoteProviderAccountEnsured {
+        provider: String,
+        account_profile: String,
+    },
+    RemoteMcpAvailabilityChecked {
+        results: Vec<RemoteMcpAvailability>,
+    },
+    ManagedContextImportArmed {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+        expires_at_ms: u64,
+        max_chunk_bytes: usize,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedContextImportStatus {
+        status: RelayManagedContextTransferStatus,
+    },
+    ManagedContextImportFailed {
+        code: String,
+        retryable: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectedOutputChunk {
+    pub kind: TerminalOutputKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_key: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectedCompletion {
+    pub message_id: String,
+    pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_termination: Option<crate::provider::ProviderRunTermination>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProjectedPrompt {
+    pub prompt_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayPeerEvent {
+    LeasedRuntimeProjection {
+        home_session_id: String,
+        home_agent_id: String,
+        provider_run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_run: Option<crate::provider::RuntimeProviderRun>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prompts: Vec<RelayProjectedPrompt>,
+        output_chunks: Vec<RelayProjectedOutputChunk>,
+        notices: Vec<String>,
+        completions: Vec<RelayProjectedCompletion>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let request = RelayPeerRequest::CancelLeasedPrompt {
+            leased_agent_id: "leased-agent-1".to_string(),
+            home_prompt_id: "home-prompt-1".to_string(),
+            worker_provider_run_id: "worker-run-1".to_string(),
+        };
+        let snapshot = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            snapshot,
+            serde_json::json!({
+                "kind": "cancel_leased_prompt",
+                "leased_agent_id": "leased-agent-1",
+                "home_prompt_id": "home-prompt-1",
+                "worker_provider_run_id": "worker-run-1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(snapshot.clone())
+                .expect("exact cancellation request should deserialize"),
+            request
+        );
+
+        for missing_field in ["home_prompt_id", "worker_provider_run_id"] {
+            let mut old_request = snapshot.clone();
+            old_request
+                .as_object_mut()
+                .expect("request snapshot should be an object")
+                .remove(missing_field);
+            assert!(
+                serde_json::from_value::<RelayPeerRequest>(old_request).is_err(),
+                "mixed-version cancellation without {missing_field} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id: "leased-agent-1".to_string(),
+            remote_extension_manifest: crate::extension::RemoteExtensionManifest {
+                room_browser_available: true,
+                ..crate::extension::RemoteExtensionManifest::default()
+            },
+        };
+        let snapshot = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            snapshot.pointer("/remote_extension_manifest/room_browser_available"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(snapshot)
+                .expect("request should deserialize"),
+            request
+        );
+    }
+
+    #[test]
+    fn leased_completion_provider_termination_shape_is_versioned() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let completion = RelayProjectedCompletion {
+            message_id: "assistant-msg-1".to_string(),
+            completed_at_ms: 1_234,
+            home_prompt_id: Some("home-prompt-1".to_string()),
+            provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
+                137, 1_234,
+            )),
+        };
+        let snapshot = serde_json::to_value(completion).expect("completion should serialize");
+        assert_eq!(
+            snapshot.pointer("/provider_termination/category"),
+            Some(&serde_json::json!("process_exit")),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/reason"),
+            Some(&serde_json::json!(
+                "provider process exited with status 137"
+            )),
+        );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/timestamp_ms"),
+            Some(&serde_json::json!(1_234)),
+        );
+        let serialized = serde_json::to_string(&snapshot).expect("completion should encode");
+        let hash = Sha256::digest(serialized.as_bytes());
+        assert_eq!(
+            format!("{hash:x}"),
+            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+        );
+    }
+
+    #[test]
+    fn leased_completion_provider_termination_categories_are_wire_distinct() {
+        let cases = [
+            (
+                crate::provider::ProviderRunTermination::signal("SIGTERM", 1_234),
+                "signal",
+            ),
+            (
+                crate::provider::ProviderRunTermination::explicit_provider_error(
+                    "provider rejected request",
+                    1_235,
+                ),
+                "explicit_provider_error",
+            ),
+        ];
+
+        for (provider_termination, category) in cases {
+            let completion = RelayProjectedCompletion {
+                message_id: "assistant-msg-1".to_string(),
+                completed_at_ms: provider_termination.timestamp_ms,
+                home_prompt_id: Some("home-prompt-1".to_string()),
+                provider_termination: Some(provider_termination),
+            };
+            let snapshot = serde_json::to_value(completion)
+                .expect("termination category completion should serialize");
+            assert_eq!(
+                snapshot.pointer("/provider_termination/category"),
+                Some(&serde_json::json!(category)),
+            );
+        }
+    }
+
+    #[test]
+    fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+            leased_agent_id: "leased-agent-1".to_string(),
+            home_session_id: "home-session-1".to_string(),
+            home_agent_id: "home-agent-1".to_string(),
+        };
+        let request_wire = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            request_wire,
+            serde_json::json!({
+                "kind": "resolve_leased_project_environment_setup_target",
+                "leased_agent_id": "leased-agent-1",
+                "home_session_id": "home-session-1",
+                "home_agent_id": "home-agent-1",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(request_wire)
+                .expect("request should deserialize"),
+            request
+        );
+
+        let response = RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+            worker_id: "worker-machine-1".to_string(),
+            platform: "linux-x86_64".to_string(),
+        };
+        let response_wire = serde_json::to_value(&response).expect("response should serialize");
+        assert_eq!(
+            response_wire,
+            serde_json::json!({
+                "kind": "leased_project_environment_setup_target_resolved",
+                "worker_id": "worker-machine-1",
+                "platform": "linux-x86_64",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(response_wire)
+                .expect("response should deserialize"),
+            response
+        );
+    }
+
+    #[test]
+    fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let definition = crate::session::ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
+            source: crate::session::ProjectEnvironmentDefinitionSource::Devcontainer,
+            target_platform: "linux-x86_64".to_string(),
+            source_path: Some(".devcontainer/devcontainer.json".to_string()),
+            inputs: vec![
+                crate::session::ProjectEnvironmentInput {
+                    kind: crate::session::ProjectEnvironmentInputKind::Recipe,
+                    path: ".devcontainer/devcontainer.json".to_string(),
+                    sha256: format!("sha256:{}", "a".repeat(64)),
+                },
+                crate::session::ProjectEnvironmentInput {
+                    kind: crate::session::ProjectEnvironmentInputKind::Lockfile,
+                    path: "Cargo.lock".to_string(),
+                    sha256: format!("sha256:{}", "b".repeat(64)),
+                },
+            ],
+            path_entries: vec![crate::session::ProjectEnvironmentPathEntry {
+                base: crate::session::ProjectEnvironmentPathBase::Workspace,
+                path: ".venv/bin".to_string(),
+            }],
+            setup_steps: vec![crate::session::ProjectEnvironmentSetupStep {
+                kind: crate::session::ProjectEnvironmentSetupStepKind::Command,
+                command: "command -v sh".to_string(),
+            }],
+            validation_commands: vec!["command -v sh".to_string()],
+        };
+        let requests = vec![
+            RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
+                leased_agent_id: "leased-agent-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+            RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                attempt: 2,
+                project_id: "project-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+                workspace_id: "worker-worktree-1".to_string(),
+                target_worker_id: "worker-machine-1".to_string(),
+                target_platform: "linux-x86_64".to_string(),
+                definition: Some(definition.clone()),
+                validation_commands: Vec::new(),
+            },
+            RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                attempt: 2,
+                project_id: "project-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+                definition_digest: "sha256:definition".to_string(),
+            },
+            RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+            RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+            RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
+                leased_agent_id: "leased-agent-1".to_string(),
+                operation_id: "setup-1".to_string(),
+                home_session_id: "home-session-1".to_string(),
+                home_agent_id: "home-agent-1".to_string(),
+            },
+        ];
+        let start_wire = serde_json::to_value(&requests[1]).expect("setup Start should encode");
+        assert_eq!(
+            start_wire.pointer("/attempt"),
+            Some(&serde_json::json!(2)),
+            "recovery Start must carry the home-authoritative attempt",
+        );
+        let acknowledgment_wire =
+            serde_json::to_value(&requests[2]).expect("definition acknowledgment should encode");
+        assert_eq!(
+            acknowledgment_wire,
+            serde_json::json!({
+                "kind": "acknowledge_leased_project_environment_setup_definition",
+                "leased_agent_id": "leased-agent-1",
+                "operation_id": "setup-1",
+                "attempt": 2,
+                "project_id": "project-1",
+                "home_session_id": "home-session-1",
+                "home_agent_id": "home-agent-1",
+                "definition_digest": "sha256:definition",
+            })
+        );
+        let request_snapshot = serde_json::to_string(&acknowledgment_wire)
+            .expect("definition acknowledgment snapshot should encode");
+        let request_hash = Sha256::digest(request_snapshot.as_bytes());
+        assert_eq!(
+            format!("{request_hash:x}"),
+            "d1787e56279249e317c632dfeb8b3a9ca31043b12c5b0e30faf15bdc5409c2f5",
+        );
+        for request in requests {
+            let encoded = serde_json::to_value(&request).expect("setup request should encode");
+            let decoded: RelayPeerRequest =
+                serde_json::from_value(encoded).expect("setup request should decode");
+            assert_eq!(decoded, request);
+        }
+
+        let setup = RelayProjectEnvironmentSetupStatus {
+            status: crate::local::ProjectEnvironmentSetupStatus {
+                operation_id: "setup-1".to_string(),
+                project_id: "project-1".to_string(),
+                session_id: "home-session-1".to_string(),
+                agent_id: "home-agent-1".to_string(),
+                worker_id: "worker-machine-1".to_string(),
+                platform: "linux-x86_64".to_string(),
+                phase: crate::local::ProjectEnvironmentSetupPhase::Ready,
+                attempt: 1,
+                progress_percent: 100,
+                definition_digest: Some("sha256:definition".to_string()),
+                validation: None,
+                message: Some("ready".to_string()),
+                failure_code: None,
+                failure_message: None,
+                retryable: false,
+                created_at_ms: 1,
+                updated_at_ms: 2,
+            },
+            definition: Some(definition),
+        };
+        let acknowledgment =
+            RelayPeerResponse::LeasedProjectEnvironmentSetupDefinitionAcknowledged {
+                operation_id: "setup-1".to_string(),
+                attempt: 2,
+                project_id: "project-1".to_string(),
+                definition_digest: "sha256:definition".to_string(),
+            };
+        let acknowledgment_wire = serde_json::to_value(&acknowledgment)
+            .expect("definition acknowledgment response should encode");
+        let response_snapshot = serde_json::to_string(&acknowledgment_wire)
+            .expect("definition acknowledgment response snapshot should encode");
+        let response_hash = Sha256::digest(response_snapshot.as_bytes());
+        assert_eq!(
+            format!("{response_hash:x}"),
+            "0a26c7a2b75e0decf598a3efc789ddd150e156436fb3d4684b14bcc6105ecdf8",
+        );
+        for response in [
+            RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
+                worker_id: "worker-machine-1".to_string(),
+                platform: "linux-x86_64".to_string(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
+                setup: setup.clone(),
+            },
+            acknowledgment,
+            RelayPeerResponse::LeasedProjectEnvironmentSetupStatus {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled {
+                setup: setup.clone(),
+            },
+            RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
+        ] {
+            let encoded = serde_json::to_value(&response).expect("setup response should encode");
+            let decoded: RelayPeerResponse =
+                serde_json::from_value(encoded).expect("setup response should decode");
+            assert_eq!(decoded, response);
+        }
+    }
+
+    #[test]
+    fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let request = RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id: "leased-agent-1".to_string(),
+            home_prompt_id: "home-prompt-1".to_string(),
+        };
+        let request_snapshot = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(
+            request_snapshot,
+            serde_json::json!({
+                "kind": "get_leased_prompt_receipt",
+                "leased_agent_id": "leased-agent-1",
+                "home_prompt_id": "home-prompt-1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(request_snapshot)
+                .expect("request should deserialize"),
+            request
+        );
+        let reconcile = RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
+            leased_agent_id: "leased-agent-1".to_string(),
+            steer_id: "queued-steer-1".to_string(),
+            target_home_prompt_id: "active-home-prompt-1".to_string(),
+            worker_provider_run_id: "worker-run-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+        };
+        let reconcile_snapshot =
+            serde_json::to_value(&reconcile).expect("reconcile request should serialize");
+        assert_eq!(
+            reconcile_snapshot,
+            serde_json::json!({
+                "kind": "reconcile_leased_prompt_steer_receipt",
+                "leased_agent_id": "leased-agent-1",
+                "steer_id": "queued-steer-1",
+                "target_home_prompt_id": "active-home-prompt-1",
+                "worker_provider_run_id": "worker-run-1",
+                "execution_lease_id": "lease-1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(reconcile_snapshot)
+                .expect("reconcile request should deserialize"),
+            reconcile
+        );
+
+        let active = RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(LeasedPromptReceipt {
+                home_prompt_id: "home-prompt-1".to_string(),
+                worker_provider_run_id: "worker-run-1".to_string(),
+                phase: LeasedPromptReceiptPhase::Active,
+                target_home_prompt_id: None,
+                execution_lease_id: None,
+            }),
+        };
+        let active_snapshot = serde_json::to_value(&active).expect("response should serialize");
+        assert_eq!(
+            active_snapshot,
+            serde_json::json!({
+                "kind": "leased_prompt_receipt_queried",
+                "receipt": {
+                    "home_prompt_id": "home-prompt-1",
+                    "worker_provider_run_id": "worker-run-1",
+                    "phase": "active"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(active_snapshot)
+                .expect("active receipt should deserialize"),
+            active
+        );
+
+        let completed = RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(LeasedPromptReceipt {
+                home_prompt_id: "home-prompt-1".to_string(),
+                worker_provider_run_id: "worker-run-1".to_string(),
+                phase: LeasedPromptReceiptPhase::Completed,
+                target_home_prompt_id: None,
+                execution_lease_id: None,
+            }),
+        };
+        let completed_snapshot =
+            serde_json::to_value(&completed).expect("completed response should serialize");
+        assert_eq!(
+            completed_snapshot,
+            serde_json::json!({
+                "kind": "leased_prompt_receipt_queried",
+                "receipt": {
+                    "home_prompt_id": "home-prompt-1",
+                    "worker_provider_run_id": "worker-run-1",
+                    "phase": "completed"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(completed_snapshot)
+                .expect("completed receipt should deserialize"),
+            completed
+        );
+
+        for (phase, phase_wire) in [
+            (
+                LeasedPromptReceiptPhase::SteerDispatching,
+                "steer_dispatching",
+            ),
+            (LeasedPromptReceiptPhase::SteerRejected, "steer_rejected"),
+        ] {
+            let original_prompt = RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(LeasedPromptReceipt {
+                    home_prompt_id: "home-prompt-1".to_string(),
+                    worker_provider_run_id: String::new(),
+                    phase,
+                    target_home_prompt_id: None,
+                    execution_lease_id: Some("lease-1".to_string()),
+                }),
+            };
+            let snapshot = serde_json::to_value(&original_prompt)
+                .expect("original-prompt admission receipt should serialize");
+            assert_eq!(
+                snapshot,
+                serde_json::json!({
+                    "kind": "leased_prompt_receipt_queried",
+                    "receipt": {
+                        "home_prompt_id": "home-prompt-1",
+                        "worker_provider_run_id": "",
+                        "phase": phase_wire,
+                        "execution_lease_id": "lease-1"
+                    }
+                })
+            );
+            assert_eq!(
+                serde_json::from_value::<RelayPeerResponse>(snapshot)
+                    .expect("original-prompt admission receipt should deserialize"),
+                original_prompt
+            );
+        }
+
+        let none = RelayPeerResponse::LeasedPromptReceiptQueried { receipt: None };
+        let none_snapshot = serde_json::to_value(&none).expect("empty response should serialize");
+        assert_eq!(
+            none_snapshot,
+            serde_json::json!({ "kind": "leased_prompt_receipt_queried" })
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(none_snapshot)
+                .expect("empty response should deserialize"),
+            none
+        );
+
+        let steer_receipts = [
+            (
+                LeasedPromptReceiptPhase::SteerDispatching,
+                "steer_dispatching",
+            ),
+            (LeasedPromptReceiptPhase::SteerAccepted, "steer_accepted"),
+            (LeasedPromptReceiptPhase::SteerRejected, "steer_rejected"),
+        ];
+        for (phase, phase_wire) in steer_receipts {
+            let response = RelayPeerResponse::LeasedPromptReceiptQueried {
+                receipt: Some(LeasedPromptReceipt {
+                    home_prompt_id: "queued-steer-1".to_string(),
+                    worker_provider_run_id: "worker-run-1".to_string(),
+                    phase,
+                    target_home_prompt_id: Some("active-home-prompt-1".to_string()),
+                    execution_lease_id: Some("lease-1".to_string()),
+                }),
+            };
+            let snapshot =
+                serde_json::to_value(&response).expect("queued-steer receipt should serialize");
+            assert_eq!(
+                snapshot,
+                serde_json::json!({
+                    "kind": "leased_prompt_receipt_queried",
+                    "receipt": {
+                        "home_prompt_id": "queued-steer-1",
+                        "worker_provider_run_id": "worker-run-1",
+                        "phase": phase_wire,
+                        "target_home_prompt_id": "active-home-prompt-1",
+                        "execution_lease_id": "lease-1"
+                    }
+                })
+            );
+            assert_eq!(
+                serde_json::from_value::<RelayPeerResponse>(snapshot)
+                    .expect("queued-steer receipt should deserialize"),
+                response
+            );
+        }
+    }
+
+    #[test]
+    fn retired_workflow_failure_forwarding_is_not_an_accepted_peer_protocol_path() {
+        let request = serde_json::json!({
+            "kind": "forward_workflow_provider_failure",
+            "context": {
+                "home_kernel_id": "home",
+                "home_session_id": "room",
+                "home_agent_id": "agent",
+                "workflow_run_id": "run",
+                "workflow_node_run_id": "node",
+                "delivery_token": "test-turn"
+            },
+            "message": "provider capacity exhausted"
+        });
+        assert!(
+            serde_json::from_value::<RelayPeerRequest>(request).is_err(),
+            "provider failures must use correlated runtime projection, not a second RPC"
+        );
+        assert!(
+            serde_json::from_value::<RelayPeerResponse>(serde_json::json!({
+                "kind": "workflow_provider_failure_handled"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_slice_relay_token_keeps_wire_shape_and_redacts_debug_output() {
+        let request = RelayPeerRequest::InstallManagedSliceRelayToken {
+            slice_id: "slice-1".to_string(),
+            owner_kernel_id: "kernel-owner".to_string(),
+            owner_machine_id: "machine-owner".to_string(),
+            activation_nonce: "activation-1".to_string(),
+            relay_token: RelayManagedSliceToken::new("secret-relay-token".to_string()),
+            expires_at_ms: 300_000,
+            relay_recovery_token: RelayManagedSliceToken::new("secret-recovery-token".to_string()),
+            recovery_expires_at_ms: 2_592_000_000,
+        };
+        let encoded = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(encoded["kind"], "install_managed_slice_relay_token");
+        assert_eq!(encoded["relay_token"], "secret-relay-token");
+        assert_eq!(encoded["relay_recovery_token"], "secret-recovery-token");
+
+        let debug = format!("{request:?}");
+        assert!(debug.contains("[redacted managed-slice relay token]"));
+        assert!(!debug.contains("secret-relay-token"));
+        assert!(!debug.contains("secret-recovery-token"));
+
+        let decoded: RelayPeerRequest =
+            serde_json::from_value(encoded).expect("request should deserialize");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn managed_slice_relay_refresh_response_redacts_token() {
+        let response = RelayPeerResponse::ManagedSliceRelayTokenRefreshed {
+            slice_id: "slice-1".to_string(),
+            relay_token: RelayManagedSliceToken::new("refreshed-secret".to_string()),
+            expires_at_ms: 600_000,
+            relay_recovery_token: RelayManagedSliceToken::new(
+                "refreshed-recovery-secret".to_string(),
+            ),
+            recovery_expires_at_ms: 2_592_600_000,
+            relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+        };
+        let debug = format!("{response:?}");
+        assert!(debug.contains("[redacted managed-slice relay token]"));
+        assert!(!debug.contains("refreshed-secret"));
+        assert!(!debug.contains("refreshed-recovery-secret"));
+    }
+
+    #[test]
+    fn managed_slice_activation_confirmation_has_versioned_nonce_wire_shape() {
+        let request = RelayPeerRequest::ConfirmManagedSliceRelayToken {
+            slice_id: "slice-1".to_string(),
+            owner_kernel_id: "kernel-owner".to_string(),
+            worker_kernel_id: "kernel-worker".to_string(),
+            activation_nonce: "activation-1".to_string(),
+        };
+        let request_value = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(request_value["kind"], "confirm_managed_slice_relay_token");
+        assert_eq!(request_value["activation_nonce"], "activation-1");
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(request_value)
+                .expect("request should deserialize"),
+            request
+        );
+
+        let response = RelayPeerResponse::ManagedSliceRelayTokenActivated {
+            slice_id: "slice-1".to_string(),
+            activation_nonce: "activation-1".to_string(),
+            relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+        };
+        let response_value = serde_json::to_value(&response).expect("response should serialize");
+        assert_eq!(
+            response_value["kind"],
+            "managed_slice_relay_token_activated"
+        );
+        assert_eq!(
+            response_value["relay_peer_protocol_version"],
+            RELAY_PEER_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(response_value)
+                .expect("response should deserialize"),
+            response
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_approval_protocol_tests {
+    #[test]
+    fn native_approval_origin_relay_shape_is_versioned() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            crate::test_support::expected_local_protocol_version()
+        );
+        let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
+            "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
+                "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
+            "interaction": {"id":"approval", "agent_id":"worker-agent", "kind":"permission", "level":"warning",
+                "message":"Allow?", "choices":[], "native_origin":{"scope":"prompt", "provider_run_id":"run", "prompt_id":"worker-prompt-A"},
+                "requested_at_ms":1}
+        });
+        let request: super::RelayPeerRequest = serde_json::from_value(snapshot.clone()).unwrap();
+        let mut legacy = snapshot.clone();
+        legacy["kind"] = serde_json::json!("forward_native_interaction");
+        assert!(serde_json::from_value::<super::RelayPeerRequest>(legacy).is_err());
+        assert_eq!(serde_json::to_value(request).unwrap(), snapshot);
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(encoded)),
+            "dee36b9bf4d4a4e4877a46ea81e1be63d696f78ebc07ebf90d964606c6d93084"
+        );
+    }
+}
+
+#[cfg(test)]
+mod project_environment_adjustment_shapes {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
+            context: RemoteSkillSyncContext {
+                home_kernel_id: "home".into(),
+                home_session_id: "session".into(),
+                home_agent_id: "agent".into(),
+                leased_agent_id: "lease-agent".into(),
+            },
+            adjust: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"kind":"read_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"lease-agent"},"adjust":true})
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&request).unwrap())
+            ),
+            "5363ab1fa44a01c413bb812af342afff37dcbadfc647e44ab3f3740cd8598254"
+        );
+        let response = RelayPeerResponse::LeasedProjectEnvironment {
+            manifest: None,
+            adjustment_started: true,
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({"kind":"leased_project_environment","manifest":null,"adjustment_started":true})
+        );
+    }
+}
+
+#[cfg(test)]
+mod project_environment_export_shapes {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "bf8f113b4f7daf9a8d832eb1ffe5cd11f37e7037849b1bdfa032c8ce1599c99b"
+        );
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"read_leased_project_private_file","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "48488ef87272c7cd031a3e2bb67fed41d4485c2f079ec451d93a4fb59ea9dfb1"
+        );
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"use_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"project_id":"project"}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "22f264441bb3be136c64a83c873a36f7e06cbe4c94e402e3d81116b9e57bb283"
+        );
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"fetch_project_private_file","context":{"home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent","worker_provider_run_id":"environment-adjustment"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(request).unwrap();
+        assert_eq!(roundtrip, value);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
+            ),
+            "1188d57291152a1dbd2a207426157c32823590a1b8686e6164555dc0c00dae47"
+        );
+        let response = RelayPeerResponse::LeasedProjectEnvironmentUsed { exists: true };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({"kind":"leased_project_environment_used","exists":true})
+        );
+    }
+}
+
+#[cfg(test)]
+mod owner_managed_context_shapes {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+            "972bfa82e0e37d399f829a7cca14b7260100b207c610d86ccc2c0039eaab6bf4"
+        );
+        assert!(value.get("target_environment_id").is_none());
+    }
+}
+
+#[cfg(test)]
+mod workflow_notification_shapes {
+    use super::*;
+    use crate::local::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp10_completion_peer_current_snapshot() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let sub = WorkflowNotificationSubscription {
+            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
+            subscription_id: "sub".into(),
+            source_id: "source".into(),
+            owner_user_id: "owner".into(),
+            source_kernel_id: "source-kernel".into(),
+            target_kernel_id: "target-kernel".into(),
+            target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
+            session_id: "session".into(),
+            workflow_id: "workflow".into(),
+            publication_id: "publication".into(),
+            endpoint_id: "endpoint".into(),
+            queue_id: "queue".into(),
+            ttl_days: 7,
+            source_available: true,
+            events: WorkflowNotificationEvents::Both,
+            filters: serde_json::json!({"repo":"fixture/repo","pr":[873]}),
+        };
+        let env = WorkflowNotificationEnvelope {
+            source_id: "source".into(),
+            occurrence_id: "run".into(),
+            output: None,
+            status: WorkflowNotificationStatus::Failure,
+            subject: Some("github:fixture/repo/pull/873".into()),
+            fields: serde_json::json!({"status":"failure","repo":"fixture/repo","pr":873}),
+            ancestry: vec!["source-workflow".into()],
+            deadline_ms: 604800000,
+        };
+        let requests = vec![
+            RelayPeerRequest::ListWorkflowNotificationSources {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            },
+            RelayPeerRequest::SubscribeWorkflowNotifications {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                source_workflow_ref: "source".into(),
+                target_ref: sub.clone(),
+            },
+            RelayPeerRequest::DeliverWorkflowNotification {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                subscription_id: "sub".into(),
+                envelope: env,
+            },
+            RelayPeerRequest::UnsubscribeWorkflowNotifications {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                subscription_id: "sub".into(),
+            },
+        ];
+        let responses = vec![
+            RelayPeerResponse::WorkflowNotificationSources {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                sources: vec![WorkflowNotificationSourceSummary {
+                    source_id: "source".into(),
+                    kernel_id: "kernel".into(),
+                    session_id: "session".into(),
+                    workflow_id: "workflow".into(),
+                    name: "Reviewer".into(),
+                    events: WorkflowNotificationEvents::Both,
+                    fields: vec!["repo".into(), "pr".into()],
+                    available: true,
+                }],
+            },
+            RelayPeerResponse::WorkflowNotificationSubscribed { subscription: sub },
+            RelayPeerResponse::WorkflowNotificationAccepted {
+                ack: WorkflowNotificationAck::Accepted,
+            },
+            RelayPeerResponse::WorkflowNotificationUnsubscribed,
+        ];
+        let mut wire = serde_json::json!({"requests":requests,"responses":responses});
+        // Pin the wire shape independently of the generated current peer number.
+        for collection in ["requests", "responses"] {
+            for message in wire[collection].as_array_mut().unwrap() {
+                if let Some(version) = message.get_mut("protocol_version") {
+                    assert_eq!(*version, RELAY_PEER_PROTOCOL_VERSION);
+                    *version = serde_json::json!(0);
+                }
+            }
+        }
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+            "874bc240ba66a34636edf93b2aec7ef58cfbc9cbd4a18cbded6c51e687900b7a"
+        );
+    }
+}
+
+#[cfg(test)]
+mod room_terminal_peer_shapes {
+    use super::*;
+    use crate::local::{RoomTerminalOperation, RoomTerminalResult};
+    use crate::room_terminal::TerminalActor;
+    use sha2::{Digest, Sha256};
+
+    fn assert_wire<T>(wire: serde_json::Value, expected_sha256: &str)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let typed: T = serde_json::from_value(wire.clone()).unwrap();
+        let encoded = serde_json::to_value(typed).unwrap();
+        assert_eq!(encoded, wire);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&encoded).unwrap())
+            ),
+            expected_sha256
+        );
+    }
+
+    #[test]
+    fn room_terminal_peer_request_and_response_shapes() {
+        let request = RelayPeerRequest::RoomTerminal {
+            leased_agent_id: "leased-1".into(),
+            actor: TerminalActor::Agent("agent-2".into()),
+            operation: RoomTerminalOperation::Close {
+                terminal_id: "term-1".into(),
+            },
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "room_terminal", "leased_agent_id": "leased-1",
+                "actor": {"kind": "agent", "agent_id": "agent-2"},
+                "operation": {"operation": "close", "terminal_id": "term-1"}})
+        );
+        assert_wire::<RelayPeerRequest>(
+            wire,
+            "eacffce23693fe298745f52ede63de4ea2f7015a31296ebf4d52f349e270988b",
+        );
+        let response = RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Closed,
+        };
+        assert_wire::<RelayPeerResponse>(
+            serde_json::to_value(&response).unwrap(),
+            "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9",
+        );
+    }
+
+    #[test]
+    fn forwarded_terminal_tool_peer_request_and_response_shapes() {
+        let request = RelayPeerRequest::ForwardTerminalRuntimeTool {
+            context: RemoteExtensionInvocationContext {
+                home_kernel_id: "home".into(),
+                home_session_id: "room-1".into(),
+                home_agent_id: "agent-1".into(),
+                leased_agent_id: "leased-1".into(),
+                worker_provider_run_id: "run-1".into(),
+                worker_kernel_id: Some("worker".into()),
+                worker_machine_id: None,
+            },
+            call: RemoteTerminalRuntimeToolCall {
+                tool_name: "chariox.terminal_read".into(),
+                arguments: serde_json::json!({"terminal_id": "term-1", "home_kernel": true}),
+            },
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "forward_terminal_runtime_tool",
+                "context": {"home_kernel_id": "home", "home_session_id": "room-1",
+                    "home_agent_id": "agent-1", "leased_agent_id": "leased-1",
+                    "worker_provider_run_id": "run-1", "worker_kernel_id": "worker"},
+                "call": {"tool_name": "chariox.terminal_read",
+                    "arguments": {"terminal_id": "term-1", "home_kernel": true}}})
+        );
+        assert_wire::<RelayPeerRequest>(
+            wire,
+            "a351eac8619e213b3af207f645f068c2fc28a8046125b98d26c447b0861f2139",
+        );
+        let response = RelayPeerResponse::TerminalRuntimeToolHandled {
+            result: RemoteTerminalRuntimeToolResult(
+                crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({"closed": true}),
+                },
+            ),
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "terminal_runtime_tool_handled",
+                "result": {"ok": true, "payload": {"closed": true}}})
+        );
+        assert_wire::<RelayPeerResponse>(
+            wire,
+            "48fbcd5f06df3e69938eb9c3d53b4d84f3c73901fa1c953aa2e364f3b098ae2a",
+        );
+    }
+}
+
+#[cfg(test)]
+mod multidomain_union_tests {
+    #[test]
+    fn md_notes_room_observation_protocol_74_snapshot_and_hash() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            super::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        assert_eq!(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            crate::test_support::expected_local_protocol_version()
+        );
+        let request = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","command":{"kind":"note_observation","target_id":"target-1","document_id":"doc-1"}});
+        let response = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","result":{"kind":"note_observation","observation":{"target_id":"target-1","document_id":"doc-1","url":"https://example.test/","selection":null}}});
+        let decoded: super::RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), request);
+        let decoded: super::RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), response);
+        let snapshot = serde_json::json!({"request":request,"response":response});
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "9e4c866474f43f003928723345c0313c768824139d9eb765931d688d303d0785"
+        );
+    }
+}
+
+#[cfg(test)]
+mod notes_protocol_probe_tests {
+    #[test]
+    fn md_notes_protocol_probe_preserves_legacy_pong_and_pins_union_advertisement() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            super::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let current = serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1","relay_peer_protocol_version":74});
+        let legacy =
+            serde_json::json!({"kind":"pong","value":"md-notes-protocol","daemon_id":"worker-1"});
+        for (value, expected) in [(&current, Some(74)), (&legacy, None)] {
+            let decoded: super::RelayPeerResponse = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                matches!(&decoded, super::RelayPeerResponse::Pong { relay_peer_protocol_version, .. } if *relay_peer_protocol_version == expected)
+            );
+            assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
+        }
+        let snapshot = serde_json::json!({"current":current,"legacy":legacy});
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+            ),
+            "5c9e2f881c4ebce7f3ee9f4af71ec364547a4f51f451f46d457e5809885c29ac"
+        );
+    }
+}
+
+#[cfg(test)]
+mod leased_watched_process_protocol_tests {
+    use super::*;
+    #[test]
+    fn mp08_mp10_mp11_leased_process_query_shape_is_bound_to_peer102() {
+        assert_eq!(
+            RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let binding = crate::durable_state::agent_lifecycle::LeasedProcessBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            execution_lease_id: "lease".into(),
+            leased_agent_id: "leased".into(),
+            home_prompt_id: "prompt".into(),
+            worker_provider_run_id: "run".into(),
+        };
+        let request = RelayPeerRequest::LeasedWatchedProcess {
+            leased_agent_id: "leased".into(),
+            action: LeasedWatchedProcessAction::Query {
+                wake_id: "wake".into(),
+                binding,
+            },
+        };
+        let value = serde_json::to_value(request).unwrap();
+        let expected = serde_json::json!({"kind":"leased_watched_process","leased_agent_id":"leased","action":{"Query":{"wake_id":"wake","binding":{"worker_kernel_id":"worker","worker_machine_id":"machine","execution_lease_id":"lease","leased_agent_id":"leased","home_prompt_id":"prompt","worker_provider_run_id":"run"}}}});
+        assert_eq!(value, expected);
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!("{:x}", Sha256::digest(value.to_string())),
+            "2432555231cea1828a200e1a9519230b8689bf51496fe714ec1a35cd239122d6"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mp08_transport_compatibility_tests {
+    #[test]
+    fn mp08_mp11_transport_downgrade_cannot_admit_legacy_worker_contracts() {
+        assert_eq!(
+            super::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        // MP-08/MP-10/MP-11: transport negotiation does not grant an older
+        // worker the integrated task, wake and leased-watcher contract.
+        for (version, compatible) in [
+            (None, false),
+            (Some(89), false),
+            (Some(90), false),
+            (Some(94), false),
+            (Some(96), false),
+            (Some(102), false),
+            (Some(114), false),
+            (Some(121), false),
+            (Some(128), false),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION - 1), false),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION), true),
+            (Some(super::RELAY_PEER_PROTOCOL_VERSION + 1), true),
+        ] {
+            let binding: crate::agent::RemoteAgentBinding =
+                serde_json::from_value(serde_json::json!({
+                    "worker_kernel_id":"worker","worker_machine_id":"machine",
+                    "execution_lease_id":"lease","leased_agent_id":"agent",
+                    "relay_peer_protocol_version":version,
+                }))
+                .unwrap();
+            assert_eq!(binding.relay_peer_protocol_compatible(), compatible);
+        }
+    }
+}

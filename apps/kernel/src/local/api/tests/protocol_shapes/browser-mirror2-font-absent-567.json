@@ -6,3 +6,44 @@
   ],
   "local_protocol": 629,
   "peer_protocol": 232,
+  "allocation": "coordinator-allocated 567/175: additive fonts-op field absent",
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "device_scale_factor": 1,
+        "wire": 2,
+        "font_requirements": true,
+        "font_absent": true
+      }
+    }
+  },
+  "subscribed": {
+    "subscription_id": "s",
+    "generation": 1,
+    "tab_id": "t",
+    "device_scale_factor": 1,
+    "wire": 2,
+    "font_requirements": true,
+    "font_absent": true
+  },
+  "absent_delta": {
+    "wire": 2,
+    "sequence": 2,
+    "ops": [
+      {
+        "op": "fonts",
+        "id": "n5",
+        "required": [
+          "10485f6e853ed68dddaea6ba28f8d8fb335ecbfa8a35d8f55ec43017e08221a4"
+        ],
+        "absent": [
+          "-apple-system",
+          "segoe ui"
+        ]
+      }
+    ]
+  }
+}
