@@ -9,6 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import * as api from '../../../packages/kernel-client/dist/index.js'
+import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const opts = Object.fromEntries(process.argv.slice(2).map(value => {
@@ -36,11 +37,13 @@ const check = (name, condition) => { assert.ok(condition, name); results.checks.
 const port = async () => { const server = net.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const result = server.address().port; await new Promise(resolve => server.close(resolve)); return result }
 const kernelPort = await port()
 const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('CHARIOX_')))
-const env = { ...inheritedEnv, CHARIOX_HOME: stateRoot, CHARIOX_KERNEL_HOST: '127.0.0.1', CHARIOX_KERNEL_PORT: String(kernelPort), CHARIOX_MCP_PORT: String(await port()), CHARIOX_CODEX_PORT: String(await port()), CHARIOX_OPENCODE_PORT: String(await port()), CHARIOX_DAEMON_SOCKET: path.join(runRoot, 'kernel.sock'), CHARIOX_DAEMON_ID: `archive-drill-${provider}-${Date.now()}`, CHARIOX_SESSION_HISTORY_DIR: path.join(stateRoot, 'history'), CHARIOX_KERNEL_RUNTIME_ROLE: 'general' }
+for (const name of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR']) delete inheritedEnv[name]
+const env = { ...inheritedEnv, XDG_CONFIG_HOME: path.join(stateRoot, 'xdg-config'), XDG_STATE_HOME: path.join(stateRoot, 'xdg-state'), XDG_CACHE_HOME: path.join(stateRoot, 'xdg-cache'), XDG_DATA_HOME: path.join(stateRoot, 'xdg-data'), CHARIOX_HOME: stateRoot, CHARIOX_KERNEL_HOST: '127.0.0.1', CHARIOX_KERNEL_PORT: String(kernelPort), CHARIOX_MCP_PORT: String(await port()), CHARIOX_CODEX_PORT: String(await port()), CHARIOX_OPENCODE_PORT: String(await port()), CHARIOX_DAEMON_SOCKET: path.join(runRoot, 'kernel.sock'), CHARIOX_DAEMON_ID: `archive-drill-${provider}-${Date.now()}`, CHARIOX_SESSION_HISTORY_DIR: path.join(stateRoot, 'history'), CHARIOX_KERNEL_RUNTIME_ROLE: 'general' }
 for (const name of ['CHARIOX_KERNEL_LOCAL_AUTH_TOKEN', 'CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE']) {
   delete process.env[name]
   delete env[name]
 }
+await writeIsolatedKernelConfig({ xdgConfigHome: env.XDG_CONFIG_HOME, storageRoot: path.join(stateRoot, 'storage') })
 let child, client, room, agent, attachment, stage = 'bootstrap'
 const children = []
 const secret = opts['credential-stdin'] ? readFileSync(0, 'utf8').trim() : null
@@ -108,7 +111,9 @@ try {
     const source = provider === 'codex'
       ? '/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex'
       : '/root/.chariox/dev/provider-runtimes/browser-computer/acct-686/home/state/provider-accounts/local/opencode/opencode-1-76jonxf5'
+    results.account_step = 'link'
     profile = unwrap(await client.send(api.linkProviderAccountProfileRequest(provider, 'archive-drill', source)), 'ProviderAccountProfile').profile.profile_id
+    results.account_step = 'refresh'
     await client.send(api.refreshProviderAccountProfileRequest(provider, profile))
   }
   stage = 'create'
@@ -185,6 +190,7 @@ try {
   results.status = 'FAIL'; results.stage = stage
   const message = String(error?.message ?? error)
   if (error?.code === 'ERR_ASSERTION') results.failure_check = message
+  results.failure_reason = (secret ? message.split(secret).join('<redacted>') : message).replace(/[A-Za-z0-9_+/=.:@-]{20,}/g, '<redacted>').slice(0, 400)
   results.failure_class = ['429', 'unauthorized', 'quota', 'model', 'credential', 'timeout', 'assertion'].find(value => message.toLowerCase().includes(value)) ?? error?.code ?? error?.name ?? 'error'
   console.error(JSON.stringify({ stage, status: 'FAIL', failure_class: results.failure_class }))
   process.exitCode = 1
