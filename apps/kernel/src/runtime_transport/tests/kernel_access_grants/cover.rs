@@ -100,6 +100,19 @@ async fn a_covered_process_keeps_a_background_process_covered_by_identity() {
         admitted["error"].is_null(),
         "covered orphan refused: {admitted}"
     );
+    // Being covered adds no authority: what the holder can't do, the process can't either.
+    let human_only = call(
+        &kernel,
+        "p1",
+        Some(serde_json::json!({"RespondToInteraction": {
+            "session_id": SESSION, "interaction_id": "critical-test", "choice_id": "approve", "passkey": PASSKEY
+        }})),
+    )
+    .await;
+    assert_eq!(
+        human_only["error"]["code"], "kernel_access_human_only",
+        "{human_only}"
+    );
     let refused = call(&kernel, "p2", None).await;
     assert_eq!(
         refused["error"]["code"], "kernel_access_not_covered",

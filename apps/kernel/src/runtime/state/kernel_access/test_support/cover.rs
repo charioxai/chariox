@@ -131,17 +131,37 @@ async fn a_covered_process_survives_a_restart_and_ends_with_its_exit() {
     );
     assert_eq!(state.access_grants_for(&target).len(), 1);
 
+    // The kernel's own descendants are never covered, even when the grant reaches them.
+    let mut kernel_started = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .unwrap();
+    let refused = state
+        .cover_kernel_access_process(
+            &holder,
+            None,
+            &CoverKernelAccessProcessRequest {
+                pid: kernel_started.id(),
+                start: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(Refusal::exact(&refused), Some(Refusal::CoverKernelProcess));
+    kernel_started.kill().unwrap();
+    kernel_started.wait().unwrap();
+
     kill_pid(background);
     assert!(state.list_kernel_access("local")[0].covered.is_empty());
     state.sweep_kernel_access();
     state.sweep_kernel_access();
-    assert_eq!(
-        outcomes(&state)
-            .iter()
-            .filter(|o| *o == "cover_ended")
-            .count(),
-        1
-    );
+    let outcomes = outcomes(&state);
+    for outcome in ["covered", "cover_ended"] {
+        assert_eq!(
+            outcomes.iter().filter(|o| *o == outcome).count(),
+            1,
+            "{outcomes:?}"
+        );
+    }
     kill_pid(holder_pid);
 }
 

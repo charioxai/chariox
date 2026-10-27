@@ -14,10 +14,11 @@ import { fileURLToPath } from "node:url"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 
 const flags = new Map()
-for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], ["--no-cover", "--no-restart"].includes(process.argv[i]) ? true : process.argv[++i])
+for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], ["--no-cover", "--no-restart", "--end-by-exit"].includes(process.argv[i]) ? true : process.argv[++i])
 const need = key => { assert.equal(typeof flags.get(key), "string", `${key} is required`); return resolve(flags.get(key)) }
 const kernelBinary = need("--kernel-binary"), cliWrapper = need("--cli-wrapper"), stateRoot = need("--state-root"), evidence = need("--evidence-dir"), loginFile = need("--login-file")
 const cover = !flags.has("--no-cover"), restart = !flags.has("--no-restart")
+const endByExit = flags.has("--end-by-exit")
 const holdSeconds = Number(flags.get("--hold-seconds") ?? 75)
 assert(Number.isSafeInteger(holdSeconds) && holdSeconds >= 45, "--hold-seconds must be at least 45")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
@@ -105,7 +106,8 @@ try {
   const token = readFileSync(loginFile, "utf8").trim()
   agent = spawn("claude", ["-p", "--model", model, "--permission-mode", "bypassPermissions", "--allowedTools=Bash", prompt1],
     { env: { ...kernelEnv, CLAUDE_CODE_OAUTH_TOKEN: token, CLAUDE_CONFIG_DIR: join(dir, "claude"), BASH_DEFAULT_TIMEOUT_MS: String((holdSeconds + 120) * 1000), BASH_MAX_TIMEOUT_MS: String((holdSeconds + 120) * 1000) }, cwd: join(dir, "work"), stdio: ["ignore", openSync(join(evidence, "agent.out"), "a", 0o600), openSync(join(evidence, "agent.err"), "a", 0o600)] })
-  owned.push({ pid: agent.pid, start: identity(agent.pid).start })
+  const agentHandle = { pid: agent.pid, start: identity(agent.pid).start }
+  owned.push(agentHandle)
   note("agent-start", { pid: agent.pid, model })
   await until(() => existsSync(pids) && readFileSync(pids, "utf8").trim().split(" ").length === 2, "agent started the background processes", 120000)
   const [p1, p2] = readFileSync(pids, "utf8").trim().split(" ").map(Number)
@@ -149,9 +151,12 @@ try {
     grants.splice(0, grants.length, ...grantsAfter)
     }
     const revokedAt = Date.now() / 1000
-    await rpc({ RevokeKernelAccessGrant: { grant_id: grants[0].grant_id } })
+    // The grant ends by an explicit revoke, or because its holder (the agent) exits.
+    if (endByExit) stopOwned(agentHandle)
+    else await rpc({ RevokeKernelAccessGrant: { grant_id: grants[0].grant_id } })
     await until(() => readFileSync(join(dir, "bg", "p1.log"), "utf8").trim().split("\n").some(l => Number(l.split(" ")[0]) > revokedAt && l.includes('"status":"ended"')), "cover ended after the grant", 10000)
     const endedAt = Number(readFileSync(join(dir, "bg", "p1.log"), "utf8").trim().split("\n").find(l => Number(l.split(" ")[0]) > revokedAt && l.includes('"status":"ended"')).split(" ")[0])
+    results.ended_by = endByExit ? "holder_exit" : "revoke"
     results.cover_ended_after_s = Number((endedAt - revokedAt).toFixed(2))
     assert(results.cover_ended_after_s <= 2, `cover ended ${results.cover_ended_after_s}s after the grant`)
   } else {
