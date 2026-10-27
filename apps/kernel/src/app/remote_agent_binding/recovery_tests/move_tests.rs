@@ -2417,7 +2417,7 @@ async fn mk04_locked_required_vault_rejects_before_publication_and_activation() 
     use crate::managed_context::development::*;
     use crate::project_environment::*;
     use std::collections::BTreeMap;
-    let (fixture, session, source) = crash_fixture().await;
+    let (mut fixture, session, source) = crash_fixture().await;
     std::fs::write(source.join("app.js"), "console.log(process.env.TOKEN)\n").unwrap();
     std::fs::write(
         source.join(".env.local"),
@@ -2464,7 +2464,7 @@ async fn mk04_locked_required_vault_rejects_before_publication_and_activation() 
         crate::secret::VaultUnlockLease::KernelShutdown,
     )
     .unwrap();
-    reboot_app(&fixture.workers[0]).await;
+    reboot_worker(&mut fixture).await;
     crate::secret::lock_chariox_encrypted_vault(&target_config.user_config.credential_vault.path)
         .unwrap();
     assert!(
