@@ -93,7 +93,12 @@ operations session again and re-reads each lane (see "After a lanes-kernel resta
 
 **Healthy** means `status` shows both kernels with `relay_connected: true` and `vault.unlocked: true`,
 a `holder` pid, `stack_ready: true`, and `chariox access status --holder-pid <holder>` (through `exec`)
-prints `{"status":"granted"}`. The Claude profile is verified by the official CLI when `start` runs.
+prints `{"status":"granted"}` **and** `chariox events subscription` under that same holder returns a subscription
+whose `ended` is null. A recorded approval alone is insufficient: after a restart it can still say
+`granted` while the event subscription says `grant_ended`. `start` checks both seats this way,
+requests a replacement through the existing access request/approval path, and verifies it again before
+reporting success. If replacement fails, it returns nonzero with the reason and the owner action.
+The Claude profile is verified by the official CLI when `start` runs.
 
 **Stop** with `stop`. The hosted stack is separate: `/w/valenv/pr-stack stop pr1080-dogfoodr6`
 (then remove its `KEEP` file). If the stack image is gone, rebuild the tag
@@ -265,6 +270,87 @@ status) and re-reads every lane. A worker's provider process can outlive the ker
 decision that nobody answered within its 300 s default is denied by the kernel and the worker reports it,
 so restart between rounds when you can.
 
+MP-08 / MP-09 / MP-10 / MP-11: a missing or ended subscription is terminal for loopd, including while
+the queue is empty. It exits nonzero with `subscription_unavailable`, the kernel's reason (for example
+`grant_ended`), and the command to renew access; active rounds retain that reason in `driverError`.
+A temporary transport outage still retries. If a replacement live grant is already available, the
+existing changed-subscription path archives the old inbox, follows the running workers again and
+re-reads their status. `loopd start` checks its holder's live subscription before reporting a service
+as started, including when an old loopd PID still exists.
+
+### Supported recovery after an unexpected kernel restart
+
+MP-08 / MP-09 / MP-10 / MP-11. Use the state root and launcher belonging to the affected pair. For
+the NEW hosted pair the launcher is an adapted copy; do not overwrite it with the old-pair launcher
+or run the old default restart helper against it. The planned old-pair helper is
+`tools/lanes/coordinator/mac/lanes-kernel-restart.sh` (see "Planned Claude YOLO restart"); it calls
+`restart-yolo`, which the NEW hosted launcher does not implement. For the NEW pair, use this recovery
+sequence after the kernel has been brought back by its own supervisor. It renews access without
+restarting the kernels again. Run it between rounds where possible, and only for the pair you own.
+
+1. Set the pair explicitly and stop its loopd. A stop failure must be resolved before killing holders.
+
+   ```sh
+   export LANES_KERNEL_STATE=/root/.chariox/dev/lanes-miguel-r28
+   launcher="$LANES_KERNEL_STATE/run/tools/lanes/kernel/lanes-kernel.mjs"
+   node "$launcher" loopd stop
+   ```
+
+2. End both old holders so the replacement requests bind to fresh processes. Verify each PID,
+   command and state root before signalling it; never signal a process by name or a process group.
+   This helper refuses PID 0/1 and mismatched ownership, and waits for the holder sockets to close.
+
+   ```sh
+   python3 - "$LANES_KERNEL_STATE" "$launcher" <<'PY'
+   import os, pathlib, signal, sys, time
+   state, launcher = sys.argv[1:]
+   for name, args, socket in [
+       ('holder.pid', ['holder'], 'holder.sock'),
+       ('coordinator-holder.pid', ['holder', 'coordinator'], 'coordinator-holder.sock'),
+   ]:
+       record = pathlib.Path(state, name)
+       if not record.exists():
+           continue
+       pid = int(record.read_text().strip())
+       if pid <= 1:
+           raise SystemExit(f'Refusing invalid holder PID in {name}')
+       proc = pathlib.Path('/proc', str(pid))
+       try:
+           argv = proc.joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+           env = proc.joinpath('environ').read_bytes().split(b'\0')
+       except FileNotFoundError:
+           continue
+       if argv[1:] != [os.fsencode(launcher), *map(os.fsencode, args)] or os.fsencode('LANES_KERNEL_STATE=' + state) not in env:
+           raise SystemExit(f'Refusing mismatched holder PID in {name}')
+       os.kill(pid, signal.SIGTERM)
+       for _ in range(100):
+           if not pathlib.Path(state, socket).exists():
+               break
+           time.sleep(0.1)
+       else:
+           raise SystemExit(f'Holder {pid} did not close its socket; inspect its log')
+   PY
+   ```
+
+3. Set aside the old inbox identity, preserving receipts, batches and queue entries. Then rerun `start`
+   to obtain and verify the replacement grants and launch loopd. Approval may require the owner;
+   a nonzero result is a recovery failure, never an existing/granted success.
+
+   ```sh
+   stamp=$(date -u +%Y%m%dT%H%M%SZ)
+   if [ -f "$LANES_KERNEL_STATE/loop/subscription.json" ]; then
+     mv "$LANES_KERNEL_STATE/loop/subscription.json" "$LANES_KERNEL_STATE/loop/subscription.$stamp.json"
+   fi
+   node "$launcher" start
+   node "$launcher" status
+   ```
+
+4. Check `events subscription` through `exec` under each seat (`exec --seat coordinator` for the
+   coordinator). Both must be live. Check the latest loopd log for pickup and status reconciliation
+   of every unfinished round, and rerun the coordinator's `lanewait` so it follows the new inbox.
+   Do not relaunch a worker just to clear an access failure; retained receipts identify its original
+   Room, agent and prompt.
+
 **Codex.** `start` links the lanes' existing Codex credential home into the kernel as a product profile
 (`LinkProviderAccountProfile`, in place, no copy, no login or logout; the home is `codexHome` in `config.json`)
 and loopd runs `provider: codex` entries with `permission: yolo` (Codex has no root refusal). The model
@@ -315,6 +401,14 @@ MP-08 / MP-10 / MP-11. `start` automatically enters `lanes.slice` with
 `systemd-run --slice=lanes.slice --scope` when the slice is installed. A caller
 already inside the slice stays there. Both kernels, holders, provider children
 and loopd inherit that cgroup. This does not move existing processes.
+
+MP-08 / MP-09 / MP-10 / MP-11: the executor scope contains provider processes **and every build or
+test they spawn**, including cargo and Node. Give the NEW executor the same budget as the old lanes
+scope: `MemoryHigh=88G`, `MemoryMax=96G` (the checked-in `lanes.slice` policy). A `MemoryMax=4G`
+executor scope will OOM during normal builds and can take down the kernel itself. Check the actual
+scope and every ancestor slice with `systemctl show <unit> -p MemoryHigh -p MemoryMax`; an ancestor
+limit still applies. The 4G memory scopes used for disposable Node tool tests belong to those test
+commands only. Keep the shared host's memory floor and cargo build-slot rules in force.
 
 To enable boot startup, the coordinator runs this once from the reviewed
 checkout (it writes `/etc/systemd/system/chariox-lanes.service` with `OOMPolicy=continue` and

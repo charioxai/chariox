@@ -13,6 +13,7 @@ import { restartWithSandbox } from './restart.mjs';
 import { syncWorkerAgents, setWorkerProfileDefault } from './worker-agents.mjs';
 import { probeClaudeToken, readToken, replaceClaudeCredential } from './claude-account.mjs';
 import { parseCredentialArgs, storeClaudeProfile } from './claude-profile.mjs';
+import { requireLiveSubscription } from '../coordinator/events.mjs';
 
 const STATE = process.env.LANES_KERNEL_STATE || '/root/.chariox/dev/lanes-kernel';
 // Put the launcher, both kernels, holders and loopd into the shared lane cgroup together.
@@ -373,10 +374,11 @@ const loopdPid = () => {
   return Number.isSafeInteger(pid) && pid > 1 && pidAlive(pid) && readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').slice(1, 3).join(' ') === `${loopdEntry} serve` ? pid : undefined;
 };
 async function startLoopd() {
+  if (!holderPid()) throw new Error('the holder is not running; run start first');
+  await liveSubscription();
   const existing = loopdPid();
   if (existing) return { loopd: existing, started: false };
   if (!existsSync(loopdEntry)) throw new Error('no frozen adapters in run/; run: lanes-kernel.mjs loopd install');
-  if (!holderPid()) throw new Error('the holder is not running; run start first');
   // Redirect before Node starts, including when installation reuses an older, already-granted holder.
   // exec preserves the acknowledged PID and the round.mjs identity used by loopdPid().
   const started = await execInHolder({ argv: ['/bin/sh', '-c', 'exec "$1" "$2" serve 2>>"$3"', 'loopd', process.execPath, loopdEntry, join(STATE, 'loopd.stderr.log')], cwd: STATE, detach: true, logFile: join(STATE, 'loopd.log') });
@@ -426,20 +428,38 @@ async function approveInPopup() {
   } finally { await browser.close(); }
 }
 
+async function liveSubscription(seat) {
+  const result = await execInHolder({ argv: [chariox, 'events', 'subscription'], cwd: STATE }, seat);
+  if (result.code !== 0) throw new Error(`Cannot verify the ${seat ?? 'loopd'} holder event subscription (exit ${result.code}); check the coordinator kernel and run start again.`);
+  return requireLiveSubscription(JSON.parse(result.stdout).subscription);
+}
+
 async function grantAccess(seat) {
   const pid = ensureHolder(seat);
   for (let i = 0; i < 40 && !existsSync(join(STATE, seatOf(seat).socket)); i++) await delay(250);
   const holder = holderPid(seat) ?? pid;
   const check = async () => {
     const result = await execInHolder({ argv: [chariox, 'access', 'status', '--holder-pid', String(holder)], cwd: STATE }, seat);
-    try { return result.code === 0 ? JSON.parse(result.stdout).status : `exit_${result.code}`; } catch { return 'unparsed'; }
+    const status = result.code === 0 ? JSON.parse(result.stdout).status : `exit_${result.code}`;
+    if (!['granted', 'approved', 'active'].includes(status)) return { status, live: false, reason: status };
+    try { await liveSubscription(seat); return { status, live: true }; }
+    catch (error) {
+      if (error.code !== 'subscription_unavailable') throw error;
+      return { status, live: false, reason: error.message };
+    }
   };
   const current = await check();
-  if (current === 'granted' || current === 'approved' || current === 'active') return { holder, granted: 'existing', status: current };
-  const request = execInHolder({ argv: [chariox, 'access', 'request', '--until-exit', '--holder-pid', String(holder)], cwd: STATE }, seat);
-  const [approved] = await Promise.all([request, approveInPopup()]);
-  if (approved.code !== 0) throw new Error(`access request exited ${approved.code}: ${approved.stderr.slice(0, 200)}`);
-  return { holder, granted: 'now', status: await check() };
+  if (current.live) return { holder, granted: 'existing', status: current.status };
+  try {
+    const request = execInHolder({ argv: [chariox, 'access', 'request', '--until-exit', '--holder-pid', String(holder)], cwd: STATE }, seat);
+    const [approved] = await Promise.all([request, approveInPopup()]);
+    if (approved.code !== 0) throw new Error(`access request exited ${approved.code}`);
+  } catch {
+    throw new Error(`${seat ?? 'loopd'} grant replacement failed: ${current.reason}. Owner: approve a new until-exit grant, then rerun lanes-kernel.mjs start.`);
+  }
+  const renewed = await check();
+  if (!renewed.live) throw new Error(`${seat ?? 'loopd'} grant is still unavailable: ${renewed.reason}. Owner: renew the holder grant before rerunning start.`);
+  return { holder, granted: 'now', status: renewed.status };
 }
 
 async function status() {

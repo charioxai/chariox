@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
 import { parseEntry, serve } from './loopd.mjs';
@@ -642,6 +642,104 @@ test('a service started while the kernel is unreachable keeps running and serves
   await serve(r.options);
   assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
   assert.ok(r.logs.some(l => l.kind === 'inbox_unavailable' && l.code === 'kernel_unreachable'), 'the outage is logged, not fatal');
+});
+
+test('an ended grant stops loopd with its reason instead of retrying subscription_unavailable forever', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  const cli = r.options.cli;
+  let ended = false;
+  r.options.cli = async argv => argv[1] === 'subscription' && ended
+    ? { subscription: { subscription_id: 'grant', ended: 'grant_ended' } }
+    : cli(argv);
+  r.script.push(async () => { ended = true; return []; });
+  let retries = 0;
+  r.options.sleep = async () => { if (++retries === 3) r.controller.abort(); };
+  await assert.rejects(serve(r.options), error => {
+    assert.equal(error.code, 'subscription_unavailable');
+    assert.match(error.message, /grant_ended/);
+    assert.match(error.message, /start/);
+    return true;
+  });
+  assert.equal(retries, 0);
+  assert.match((await runFile(r, 'alpha')).driverError.message, /grant_ended/);
+});
+
+test('an ended subscription at startup exits even with an empty queue', async t => {
+  const r = await rig(t);
+  r.options.cli = async () => ({ subscription: { subscription_id: 'grant', ended: 'grant_ended' } });
+  r.options.sleep = async () => r.controller.abort();
+  await assert.rejects(serve(r.options), /grant_ended/);
+});
+
+test('an idle loopd detects a grant ending after startup', async t => {
+  const r = await rig(t);
+  const cli = r.options.cli;
+  let ended = false;
+  r.options.cli = async argv => argv[1] === 'subscription' && ended
+    ? { subscription: { subscription_id: 'grant', ended: 'grant_ended' } }
+    : cli(argv);
+  r.options.sleep = async () => { if (ended) r.controller.abort(); ended = true; };
+  await assert.rejects(serve(r.options), /grant_ended/);
+});
+
+test('an idle loopd follows a replacement live grant before another round arrives', async t => {
+  const r = await rig(t);
+  const cli = r.options.cli;
+  let subscriptionId = 'grant';
+  r.options.cli = async argv => {
+    const result = await cli(argv);
+    if (argv[1] === 'subscription') result.subscription.subscription_id = subscriptionId;
+    return result;
+  };
+  r.options.sleep = async () => {
+    if (subscriptionId === 'replacement') r.controller.abort();
+    subscriptionId = 'replacement';
+  };
+  await serve(r.options);
+  const saved = JSON.parse(await readFile(join(r.layout.home, 'subscription.json'), 'utf8'));
+  assert.equal(saved.subscription_id, 'replacement');
+  assert.ok(r.logs.some(log => log.kind === 'inbox_reset'));
+});
+
+test('the real serve entry exits nonzero and prints the grant-end reason', async t => {
+  const r = await rig(t);
+  await mkdir(r.layout.home, { recursive: true });
+  await writeFile(join(r.layout.home, 'config.json'), JSON.stringify(r.options.config));
+  const cli = join(r.root, 'chariox.mjs');
+  await writeFile(cli, `#!${process.execPath}\nconsole.log(JSON.stringify({ subscription: { subscription_id: 'old', ended: 'grant_ended' } }));\n`, { mode: 0o700 });
+  const result = spawnSync(process.execPath, [new URL('./round.mjs', import.meta.url).pathname, 'serve'], {
+    env: { PATH: process.env.PATH, HOME: r.root, CHARIOX_HOME: join(r.root, 'chariox'), CHARIOX_BIN: cli, CHARIOX_COORDINATOR_HOME: r.layout.home, LOOPD_AGENTS: r.layout.agents },
+    encoding: 'utf8', timeout: 3000,
+  });
+  assert.equal(result.status, 1, 'the service must exit itself rather than wait for a timeout');
+  const { error } = JSON.parse(result.stderr);
+  assert.equal(error.code, 'subscription_unavailable');
+  assert.match(error.message, /grant_ended/);
+  assert.match(error.message, /lanes-kernel.mjs start/);
+});
+
+test('a running service follows a replacement live grant and re-reads the lane without an event', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  const cli = r.options.cli, followed = [];
+  let replaced = false;
+  r.options.cli = async argv => {
+    if (!replaced) return cli(argv);
+    if (argv[1] === 'subscribe') {
+      followed.push({ kernel: argv[3], session_id: argv[5], ...(argv[7] && { agent_id: argv[7] }) });
+      return {};
+    }
+    if (argv[1] === 'subscription') return { subscription: { subscription_id: 'replacement', ended: null, targets: followed } };
+    return cli(argv);
+  };
+  r.script.push(async () => { replaced = true; r.idle.add('alpha-r1'); return []; });
+  r.finished(1);
+  await serve(r.options);
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
+  assert.ok(followed.some(target => target.session_id === 'room-alpha-r1' && target.agent_id === 'agent-alpha-r1'));
+  assert.ok(followed.some(target => target.session_id === 'ops-alpha-r1'));
+  assert.ok(r.logs.some(log => log.kind === 'inbox_reset'));
 });
 
 test('after a restart gives the service a new grant, the running lanes follow the new inbox and finish', async t => {

@@ -5,9 +5,17 @@ import { randomUUID } from 'node:crypto';
 import { LaneError, save } from '../lanes.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
+export function requireLiveSubscription(subscription) {
+  if (!subscription || subscription.ended) {
+    const reason = subscription?.ended || 'no_subscription';
+    throw new LaneError('subscription_unavailable', `Event subscription unavailable (${reason}); run lanes-kernel.mjs start to renew access (owner approval may be required).`);
+  }
+  return subscription;
+}
+
 export async function openInbox(home, cli, settleMs = 1000) {
   let { subscription } = await cli(['events', 'subscription']);
-  if (!subscription || subscription.ended) throw new LaneError('subscription_unavailable');
+  requireLiveSubscription(subscription);
   const statePath = join(home, 'subscription.json');
   let previous; try { previous = await read(statePath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (previous && previous.subscription_id !== subscription.subscription_id) throw new LaneError('subscription_changed', 'The access grant changed; restore the original grant before resuming its inbox.');

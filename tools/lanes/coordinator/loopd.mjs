@@ -220,23 +220,34 @@ export async function serve(options) {
 
   // A kernel that is down at startup must not stop the service: the lanes' launches are retried, and a changed grant
   // is noticed by the first wake that fails with subscription_changed.
-  await resetStaleInbox().catch(error => log('inbox_unavailable', { code: error.code, message: error.message }));
+  const inboxUnavailable = error => {
+    if (error.code === 'subscription_unavailable') throw error;
+    log('inbox_unavailable', { code: error.code, message: error.message });
+  };
+  await resetStaleInbox().catch(inboxUnavailable);
   // Settle the inbox before the first lane: targets of workers stopped by an earlier service are dropped now.
-  await openInbox(home, round.cli).catch(error => log('inbox_unavailable', { code: error.code, message: error.message }));
+  await openInbox(home, round.cli).catch(inboxUnavailable);
   while (!signal?.aborted) {
     try {
       await scan();
       await finalize();
-      if (!round.pending().length) { await sleep(idleMs); continue; }
+      if (!round.pending().length) {
+        await resetStaleInbox();
+        await openInbox(home, round.cli);
+        await sleep(idleMs);
+        continue;
+      }
       try { await round.step(wakeMinutes); }
       catch (error) {
         if (error.code === 'subscription_changed') { await resetStaleInbox(); await round.rebrief(); continue; }
         await round.failed(error);
+        if (error.code === 'subscription_unavailable') throw error;
         log('driver_error', { code: error.code, message: error.message });
         await sleep(retryMs);
       }
       await finalize();
     } catch (error) {
+      if (error.code === 'subscription_unavailable') throw error;
       log('service_error', { code: error.code, message: error.message });
       await sleep(retryMs);
     }

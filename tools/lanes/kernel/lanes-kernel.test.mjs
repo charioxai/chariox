@@ -10,9 +10,24 @@ import { once } from 'node:events';
 
 const script = new URL('./lanes-kernel.mjs', import.meta.url).pathname;
 
+async function fakeAccessCli(state, subscription = { subscription_id: 'live-grant', ended: null }) {
+  await mkdir(join(state, 'bin'), { recursive: true });
+  await writeFile(join(state, 'bin/chariox'), `#!${process.execPath}
+import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (args[0] === 'access' && args[1] === 'status') console.log(JSON.stringify({ status: 'granted' }));
+else if (args[0] === 'events' && args[1] === 'subscription') console.log(JSON.stringify({ subscription: ${JSON.stringify(subscription)} }));
+else if (args[0] === 'access' && args[1] === 'request') {
+  writeFileSync(${JSON.stringify(join(state, 'replacement-requested'))}, 'yes');
+  console.error('owner approval required'); process.exitCode = 1;
+} else process.exitCode = 2;
+`, { mode: 0o700 });
+}
+
 async function holder(t, extraConfig = {}, seat, launchEnvironment, legacy = false) {
   const state = await mkdtemp(join(tmpdir(), 'lanes-kernel-')); t.after(() => rm(state, { recursive: true, force: true }));
   await writeFile(join(state, 'config.json'), JSON.stringify({ toolchain: state, ...extraConfig }));
+  await fakeAccessCli(state);
   if (launchEnvironment) await writeFile(join(state, 'kernel-environment.json'), JSON.stringify(launchEnvironment));
   const env = { PATH: process.env.PATH, HOME: state, LANES_KERNEL_STATE: state };
   let holderScript = script;
@@ -27,6 +42,13 @@ createServer(socket => {
  socket.on('data', chunk => {
   buffer += chunk; if (!buffer.includes('\\n')) return;
   const request = JSON.parse(buffer.split('\\n')[0]);
+  if (!request.detach) {
+    const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...request.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', data => socket.write(JSON.stringify({ out: data.toString('base64') }) + '\\n'));
+    child.stderr.on('data', data => socket.write(JSON.stringify({ err: data.toString('base64') }) + '\\n'));
+    child.on('close', code => socket.end(JSON.stringify({ exit: code }) + '\\n'));
+    return;
+  }
   // The already-running holder knows only one combined log file.
   const log = openSync(request.logFile, 'a');
   const child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, env: { ...process.env, ...request.env }, stdio: ['ignore', log, log] });
@@ -42,6 +64,36 @@ createServer(socket => {
   assert.ok(existsSync(pidFile), 'the holder is listening');
   return { state, env, child, exec: (...args) => spawnSync(process.execPath, [script, 'exec', ...(seat ? ['--seat', seat] : []), ...args], { env, encoding: 'utf8' }) };
 }
+
+for (const seat of [undefined, 'coordinator']) for (const subscription of [null, { subscription_id: 'old-grant', ended: 'grant_ended' }]) test(`grant verifies the live event subscription before reusing a recorded approval (${seat ?? 'loopd'}, ${subscription ? 'ended' : 'missing'})`, async t => {
+  const { state, env } = await holder(t, {}, seat);
+  await fakeAccessCli(state, subscription);
+  const result = spawnSync(process.execPath, [script, 'grant', ...(seat ? [seat] : [])], { env, encoding: 'utf8' });
+  assert.notEqual(result.status, 0, 'a recorded approval with an ended inbox is not a live grant');
+  assert.ok(existsSync(join(state, 'replacement-requested')), 'the existing access request path attempts replacement');
+  assert.match(result.stderr, subscription ? /grant_ended/ : /no_subscription/);
+  assert.match(result.stderr, /owner|approve/i);
+});
+
+test('grant reuses an approval only with a live subscription', async t => {
+  const { state, env } = await holder(t);
+  const result = spawnSync(process.execPath, [script, 'grant'], { env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).granted, 'existing');
+  assert.equal(existsSync(join(state, 'replacement-requested')), false);
+});
+
+test('loopd start surfaces an ended grant instead of reporting a detached service as started', async t => {
+  const { state, env } = await holder(t);
+  const directory = join(state, 'run/tools/lanes/coordinator');
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, 'round.mjs'), 'process.exit(1);\n');
+  await fakeAccessCli(state, { subscription_id: 'old-grant', ended: 'grant_ended' });
+  const result = spawnSync(process.execPath, [script, 'loopd', 'start'], { env, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /grant_ended/);
+  assert.match(result.stderr, /start|grant/i);
+});
 
 test('exec --detach exits 0 with the pid of a command that started, and keeps its log', async t => {
   const { state, exec } = await holder(t);
