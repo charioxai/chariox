@@ -143,6 +143,7 @@ async function enroll(r) {
         const login = variant(await r.client.send({ StartCloudRelayLogin: { api_url: origin, client_id: 'movekernel-r6-' + r.name + '-' + Date.now(), client_alias: 'Move workspace ' + r.name, machine_id: before.machine_id, machine_alias: 'movekernel-r6-' + r.name } }), 'CloudRelayLoginStarted').login;
         assert.equal(new URL(login.verification_url).origin, origin);
         await page.goto(login.verification_url);
+        await page.waitForLoadState('networkidle');
         const button = page.getByRole('button', { name: /approve|allow|connect/i });
         if (await button.count() === 1)
             await button.click();
