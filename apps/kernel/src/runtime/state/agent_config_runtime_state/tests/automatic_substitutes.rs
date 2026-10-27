@@ -29,7 +29,7 @@ impl Drop for FailingTurn {
 }
 
 impl FailingTurn {
-    fn active_prompt(&self) -> Option<crate::session::PromptQueueItem> {
+    pub(super) fn active_prompt(&self) -> Option<crate::session::PromptQueueItem> {
         let session = self
             .runtime
             .owned
@@ -188,15 +188,21 @@ impl FailingTurn {
 }
 
 pub(super) async fn failing_turn(substitutes: &[(&str, &str, Option<&str>)]) -> FailingTurn {
-    failing_turn_with(substitutes, false).await
+    failing_turn_with(substitutes, false, "dev-stub").await
 }
 
-/// A dev-stub agent on `PRIMARY_MODEL` with `substitutes` (provider, model,
-/// account), whose active turn — a workflow node's when `workflow` — runs on a
-/// provider run the test drives by hand.
+/// A turn on a `provider` run the test drives by hand, without a substitute.
+pub(super) async fn failing_turn_on(provider: &str) -> FailingTurn {
+    failing_turn_with(&[], false, provider).await
+}
+
+/// An agent on `provider` and `PRIMARY_MODEL` with `substitutes` (provider,
+/// model, account), whose active turn — a workflow node's when `workflow` —
+/// runs on a provider run the test drives by hand.
 async fn failing_turn_with(
     substitutes: &[(&str, &str, Option<&str>)],
     workflow: bool,
+    provider: &str,
 ) -> FailingTurn {
     let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-turn-substitute-{:016x}",
@@ -230,7 +236,7 @@ async fn failing_turn_with(
         .agent_store
         .set_agent_runtime_profile_with_account_profile(
             &agent_id,
-            "dev-stub",
+            provider,
             Some(PRIMARY_MODEL.to_string()),
             None,
             None,
@@ -239,8 +245,8 @@ async fn failing_turn_with(
         .unwrap();
     let request = crate::provider::LaunchProviderRequest::new(
         &session_id,
-        "dev-stub",
-        "dev-stub",
+        provider,
+        provider,
         "default",
         PRIMARY_MODEL,
     )
@@ -586,7 +592,7 @@ async fn unavailable_substitute_accounts_are_skipped_in_order() {
 
 #[tokio::test]
 async fn a_failed_workflow_turn_reruns_without_failing_its_workflow_run() {
-    let turn = failing_turn_with(&[("dev-stub", SUBSTITUTE_A, None)], true).await;
+    let turn = failing_turn_with(&[("dev-stub", SUBSTITUTE_A, None)], true, "dev-stub").await;
     let workflow_run_id = turn
         .active_prompt()
         .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))

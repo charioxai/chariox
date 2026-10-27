@@ -102,10 +102,11 @@ impl KernelRuntimeState {
         &'a self,
         run: &'a crate::provider::RuntimeProviderRun,
         message: &'a str,
+        failure: crate::provider::ProviderFailure,
         expected_prompt_id: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, DaemonError>> + Send + 'a>>
     {
-        self.start_provider_auth_recovery(run, message, expected_prompt_id, None)
+        self.start_provider_auth_recovery(run, message, failure, expected_prompt_id, None)
     }
 
     pub(super) fn try_provider_launch_auth_recovery<'a>(
@@ -114,13 +115,22 @@ impl KernelRuntimeState {
         message: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, DaemonError>> + Send + 'a>>
     {
-        self.start_provider_auth_recovery(&started.run, message, None, Some(started.clone()))
+        let failure =
+            crate::provider::ProviderFailure::classify(started.run.adapter_key(), message);
+        self.start_provider_auth_recovery(
+            &started.run,
+            message,
+            failure,
+            None,
+            Some(started.clone()),
+        )
     }
 
     fn start_provider_auth_recovery<'a>(
         &'a self,
         run: &'a crate::provider::RuntimeProviderRun,
         message: &'a str,
+        failure: crate::provider::ProviderFailure,
         expected_prompt_id: Option<&'a str>,
         failed_launch: Option<crate::app::StartedProviderLaunch>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, DaemonError>> + Send + 'a>>
@@ -217,7 +227,6 @@ impl KernelRuntimeState {
             };
             self.owned.clear_prompt_activity(run.id());
             let state = self.clone();
-            let failure = crate::provider::ProviderFailure::classify(run.adapter_key(), message);
             let run = run.clone();
             tokio::spawn(async move {
                 let _claim = claim;
