@@ -69,7 +69,24 @@ async function start() {
 async function snapshot() { return unwrap(await client.send(api.getSessionStateRequest(room)), 'SessionState').session }
 const promptState = state => state.prompt_states?.[agent] ?? { active_prompt: state.active_prompt, queued_prompts: state.queued_prompts }
 const thread = value => Object.values(value.provider_resume_state ?? {}).find(item => typeof item === 'string' && item.length) ?? value.provider_session_id ?? null
-async function pump() { return JSON.stringify(await client.send(api.pumpTerminalOutputRequest(room, attachment))) }
+async function pump() {
+  const { records } = unwrap(await client.send(api.pumpTerminalOutputRequest(room, attachment)), 'TerminalOutput')
+  let output = ''
+  for (const record of records) {
+    if (record.agent_id && record.agent_id !== agent) continue
+    const text = Buffer.from(record.bytes ?? []).toString('utf8')
+    if (record.kind === 'provider_output') output += text
+    if (record.kind === 'provider_error' || record.kind === 'provider_status') {
+      const failure = /429|rate[ -]?limit|too many requests/i.test(text) ? '429'
+        : /unauthorized|not logged in|401/i.test(text) ? 'unauthorized'
+        : /quota|insufficient.*(credit|fund)|balance/i.test(text) ? 'quota'
+        : /model.*(not found|not available|unsupported|disabled)/i.test(text) ? 'model'
+        : null
+      if (failure) throw new Error(failure)
+    }
+  }
+  return output
+}
 async function until(name, predicate, timeout = 120000) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) { if (await predicate()) return; await pause(150) }
@@ -153,6 +170,7 @@ try {
 } catch (error) {
   results.status = 'FAIL'; results.stage = stage
   const message = String(error?.message ?? error)
+  if (error?.code === 'ERR_ASSERTION') results.failure_check = message
   results.failure_class = ['429', 'unauthorized', 'quota', 'model', 'credential', 'timeout', 'assertion'].find(value => message.toLowerCase().includes(value)) ?? error?.code ?? error?.name ?? 'error'
   console.error(JSON.stringify({ stage, status: 'FAIL', failure_class: results.failure_class }))
   process.exitCode = 1
