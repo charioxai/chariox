@@ -36,6 +36,10 @@ const check = (name, condition) => { assert.ok(condition, name); results.checks.
 const port = async () => { const server = net.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const result = server.address().port; await new Promise(resolve => server.close(resolve)); return result }
 const kernelPort = await port()
 const env = { ...process.env, CHARIOX_HOME: stateRoot, CHARIOX_KERNEL_HOST: '127.0.0.1', CHARIOX_KERNEL_PORT: String(kernelPort), CHARIOX_MCP_PORT: String(await port()), CHARIOX_CODEX_PORT: String(await port()), CHARIOX_OPENCODE_PORT: String(await port()), CHARIOX_DAEMON_SOCKET: path.join(runRoot, 'kernel.sock'), CHARIOX_DAEMON_ID: `archive-drill-${provider}-${Date.now()}`, CHARIOX_SESSION_HISTORY_DIR: path.join(stateRoot, 'history'), CHARIOX_KERNEL_RUNTIME_ROLE: 'ordinary' }
+for (const name of ['CHARIOX_KERNEL_LOCAL_AUTH_TOKEN', 'CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE']) {
+  delete process.env[name]
+  delete env[name]
+}
 let child, client, room, agent, attachment, stage = 'bootstrap'
 const children = []
 const secret = opts['credential-stdin'] ? readFileSync(0, 'utf8').trim() : null
@@ -97,7 +101,7 @@ try {
   stage = 'warm-thread'
   await submit(`Remember this marker for later: ${marker}. Reply only READY. Do not use tools.`)
   let observed = ''
-  await until('warm provider turn', async () => { observed += await pump(); return observed.includes('READY') && !promptState(await snapshot()).active_prompt })
+  await until('warm provider turn', async () => { observed += await pump(); const state = await snapshot(); return observed.includes('READY') && !promptState(state).active_prompt && !!thread(state.agents.find(value => value.id === agent)) })
   let before = await snapshot()
   const original = before.agents.find(value => value.id === agent)
   const savedThread = thread(original)
