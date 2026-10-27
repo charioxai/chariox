@@ -445,6 +445,53 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
     assert!(state.outside_ended_response("timed").unwrap().is_some());
 }
 
+// The event pumps of a follower's remote targets start with the router. They
+// must find the restored grant, or they end the inbox of a holder that lives.
+#[tokio::test]
+async fn restored_grant_is_in_place_before_event_pumps_look_for_it() {
+    let root = crate::test_support::TestWorktree::new("access-restart-pumps");
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    {
+        let router = reopen_kernel(&root);
+        let state = router.runtime_state();
+        let summary = KernelAccessGrant {
+            grant_id: "kept".into(),
+            owner_user_id: "local".into(),
+            holder_pid: holder.pid,
+            holder_executable: holder.executable.clone(),
+            holder_harness: None,
+            term: KernelAccessTerm::UntilHolderExits,
+            expires_at_ms: None,
+        };
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+        drop(access);
+        state
+            .outside_store()
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Subscribe {
+                    open_decisions: vec![],
+                    baseline: vec![],
+                    id: "kept".into(),
+                    home: true,
+                    targets: vec![crate::local::EventTarget {
+                        kernel: "remote-kernel".into(),
+                        session_id: "remote-session".into(),
+                        agent_id: None,
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    assert!(state.access_grant_summary("kept").is_some());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(state.outside_ended_response("kept").unwrap().is_none());
+}
+
 /// An until-exit grant whose revocation could not be written: the grant is
 /// gone from memory, the fault is still on, and its holder (this process) lives.
 fn failed_revocation(
