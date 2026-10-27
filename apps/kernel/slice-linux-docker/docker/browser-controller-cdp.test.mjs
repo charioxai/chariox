@@ -1745,6 +1745,29 @@ test('MP-08/MP-10/MP-11 cached mirror frames follow navigation and retire with t
  assert.equal(browser.currentPageFrame('target-a'),null);await browser.close();
 });
 
+test('a late detach for an old session does not evict its replacement target session', async () => {
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ await browser.ensureConnection();
+ const oldSession=await browser.ensureTargetSession(connection,'target-a');
+ const replacement={contextId:41,documentId:'doc-new'};
+ browser.sessionsByTarget.set('target-a','replacement-session');
+ browser.targetsBySession.set('replacement-session','target-a');
+ browser.focusWorldsByTarget.set('target-a',replacement);
+ browser.viewportByTarget.set('target-a',{css_width:1280});
+ browser.networkRequestsBySession.set(oldSession,new Set());
+ browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId:oldSession,targetId:'target-a'}});
+ assert.equal(browser.sessionsByTarget.get('target-a'),'replacement-session');
+ assert.equal(browser.targetsBySession.get('replacement-session'),'target-a');
+ assert.equal(browser.focusWorldsByTarget.get('target-a'),replacement);
+ assert.deepEqual(browser.viewportByTarget.get('target-a'),{css_width:1280});
+ assert.equal(browser.targetsBySession.has(oldSession),false,'old per-session routing is retired');
+ assert.equal(browser.networkRequestsBySession.has(oldSession),false,'old per-session request state is retired');
+ browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId:'replacement-session',targetId:'target-a'}});
+ assert.equal(browser.sessionsByTarget.has('target-a'),false,'the matching current detach still retires target state');
+ assert.equal(browser.focusWorldsByTarget.has('target-a'),false);
+ await browser.close();
+});
+
 test('a same-document navigation keeps the cached page frame of its document', async () => {
  const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
  await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');

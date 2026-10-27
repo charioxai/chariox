@@ -1280,7 +1280,11 @@ export class BrowserCdpClient {
         this.networkRequestsBySession.delete(sessionId);
         this.responseBodies.drop(sessionId);
       }
-      if (typeof targetId === "string") {
+      // A late detach for an older session can arrive after this target has
+      // already been attached again. Retire target-wide state only when the
+      // detached session is still the mapped owner (or no owner remains).
+      if (typeof targetId === "string" &&
+          (!this.sessionsByTarget.has(targetId) || this.sessionsByTarget.get(targetId) === sessionId)) {
         this.appliedViewport = null;
         this.sessionsByTarget.delete(targetId);
         this.viewportByTarget.delete(targetId);
