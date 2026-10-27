@@ -1129,6 +1129,14 @@ async fn a_finished_wait_belongs_to_the_command_that_was_submitted() {
             .await
             .accepted
     );
+    // The agent may only type once the user's command is over; on a slow
+    // machine it can still be running when the next line is typed.
+    until("the user's command to end", || async {
+        let state = service.lock();
+        let terminal = &state.terminals[&id];
+        terminal.commands_started == 1 && !terminal.command_in_flight
+    })
+    .await;
     assert!(
         type_as(&service, &id, &agent("a"), "(exit 5)\r")
             .await
