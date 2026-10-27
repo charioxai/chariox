@@ -34,6 +34,11 @@ Restart replay keeps the flag and identity. Unarchive returns the same agent to
 idle, with no prompt/turn launched; the next owner prompt starts a fresh official
 provider process using the saved thread where supported.
 
+After worker cleanup is acknowledged, archive ends the target's home-only
+provider-run projections and clears their routing and prompt activity, just as
+destroy-agent cleanup does. Delayed snapshots of those runs remain Ended, and
+unarchive cannot select a run from the destroyed lease.
+
 Only the agent owner may archive/unarchive, under existing authenticated owner
 admission and Room membership. Room agents cannot archive/unarchive anyone,
 including themselves or children, directly or through sudo. Collaborators retain

@@ -221,6 +221,16 @@ impl KernelRuntimeState {
                     })
             })
             .await?;
+            // Like destroy-agent cleanup, retire home-only worker runs after
+            // the worker acknowledges release. Ended fences delayed snapshots.
+            for mut run in owned.provider_run_projection.list_for_session(room) {
+                if run.agent_instance_id() == Some(agent_id) {
+                    run.mark_ended();
+                    owned.clear_active_provider_run_session_pointer(room, run.id())?;
+                    owned.clear_prompt_activity(run.id());
+                    owned.provider_run_projection.update(run);
+                }
+            }
         }
         let runs = owned
             .provider_store
