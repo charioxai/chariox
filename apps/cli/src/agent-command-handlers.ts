@@ -8,6 +8,10 @@ import {
   type AgentConfigCommandHandlerDeps,
 } from "./agent-config-command-handlers.js"
 import {
+  handleAgentMoveCommand,
+  type AgentMoveCommandHandlerDeps,
+} from "./agent-move-command-handlers.js"
+import {
   handleAgentSpawnCommand,
   type AgentSpawnCommandHandlerDeps,
 } from "./agent-spawn-command-handlers.js"
@@ -32,6 +36,7 @@ import type { AgentForkPayload, RuntimeSession, TranscriptEntry, TurnUndoResult 
 export type AgentCommandHandlerDeps =
   & AgentConfigCommandHandlerDeps
   & AgentLifecycleCommandHandlerDeps
+  & AgentMoveCommandHandlerDeps
   & AgentSpawnCommandHandlerDeps
   & AgentSubstituteCommandHandlerDeps
   & AgentTaskCommandHandlerDeps
@@ -75,6 +80,10 @@ export async function handleAgentSlashCommand(
     case "delete":
     case "destroy": {
       await handleAgentDeleteCommand(deps, args)
+      return
+    }
+    case "move": {
+      await handleAgentMoveCommand(deps, args)
       return
     }
     case "focus": {

@@ -206,6 +206,8 @@ test("workflow add node all adds only agents missing from the selected workflow"
     refreshSessionState: async () => currentSession(),
     spawnAgent: async () => ({ agent: firstMissingAgent, session: currentSession() }),
     destroyAgent: async () => currentSession(),
+    moveAgent: async () => {},
+    cancelAgentMove: async () => {},
     focusAgent: async () => ({ agent: existingAgent, session: currentSession() }),
     resolveSessionAgent: () => ({ agent: existingAgent }),
     workflowScreenActive: () => false,

@@ -158,6 +158,8 @@ export function makeCommandDeps(overrides: Record<string, unknown> = {}) {
       return { agent, session: currentSession }
     },
     destroyAgent: async () => currentSession,
+    moveAgent: async () => {},
+    cancelAgentMove: async () => {},
     focusAgent: async () => ({ agent: currentSession.agents[0] ?? makeAgent(), session: currentSession }),
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,

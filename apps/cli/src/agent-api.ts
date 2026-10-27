@@ -3,13 +3,17 @@ import {
   type AgentInstance,
   type RuntimeSession,
 } from "./cli-types.js"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
 import type { LocalIpcClient } from "./ipc.js"
 import {
+  abortAgentMoveRequest,
   aliasAgentRequest,
   cycleAgentFocusRequest,
   destroyAgentRequest,
   focusAgentRequest,
   forkAgentRequest,
+  moveAgentToLocalRequest,
+  moveAgentToRemoteRequest,
   spawnAgentRequest,
   spawnAgentsRequest,
   updateAgentConfigRequest,
@@ -232,4 +236,31 @@ export async function updateAgentSubstitutes(
     ...payload,
     session: normalizeRuntimeSession(payload.session),
   }
+}
+
+/** The kernel keeps this request open while the agent's turn finishes, so the answer can arrive much later. */
+export async function moveAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+  destination: string | null,
+): Promise<void> {
+  const response = await client.send<Record<string, unknown>>(
+    destination === null
+      ? moveAgentToLocalRequest(sessionId, agentId)
+      : moveAgentToRemoteRequest(sessionId, agentId, destination),
+  )
+  expectVariant<{ agent: AgentInstance }>(response, destination === null ? "AgentMovedToLocal" : "AgentMovedToRemote")
+}
+
+export async function cancelAgentMove(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId: string,
+): Promise<void> {
+  const response = await client.send<Record<string, unknown>>(
+    // The client refuses this request on a kernel older than its cancellation protocol.
+    abortAgentMoveRequest(sessionId, agentId, LOCAL_DAEMON_PROTOCOL_VERSION),
+  )
+  expectVariant<{ agent: AgentInstance }>(response, "AgentMoveAborted")
 }

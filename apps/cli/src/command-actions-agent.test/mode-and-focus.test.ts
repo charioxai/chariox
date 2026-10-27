@@ -165,6 +165,8 @@ test("cycle agent focus keeps split pane contents stable within the same screen"
     refreshSessionState: async () => currentSession,
     spawnAgent: async () => ({ agent: agentB, session: currentSession }),
     destroyAgent: async () => currentSession,
+    moveAgent: async () => {},
+    cancelAgentMove: async () => {},
     focusAgent: async () => ({ agent: agentB, session: currentSession }),
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,

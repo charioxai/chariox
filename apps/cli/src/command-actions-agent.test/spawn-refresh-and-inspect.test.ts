@@ -103,6 +103,8 @@ test("agent spawn refreshes session state after launching the provider run", asy
     refreshSessionState: async () => refreshedSession,
     spawnAgent: async () => ({ agent: secondAgent, session: spawnedSession }),
     destroyAgent: async () => currentSession,
+    moveAgent: async () => {},
+    cancelAgentMove: async () => {},
     focusAgent: async () => ({ agent: secondAgent, session: currentSession }),
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,
