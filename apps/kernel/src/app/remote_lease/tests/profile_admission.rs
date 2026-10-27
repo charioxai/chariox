@@ -790,7 +790,7 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
 }
 
 #[tokio::test]
-async fn fresh_leased_prompt_resumes_home_thread_after_archive() {
+async fn fresh_leased_prompt_receives_home_resume_state() {
     crate::test_support::isolated_env_test!();
     let (app, lease) = leased_agent_fixture(false);
     let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
@@ -825,4 +825,20 @@ async fn fresh_leased_prompt_resumes_home_thread_after_archive() {
             .resume_state(),
         &saved
     );
+}
+
+#[test]
+fn fresh_leased_agent_resume_state_clears_stale_backing_thread_and_preserves_live_worker() {
+    crate::test_support::isolated_env_test!();
+    let (mut app, lease) = leased_agent_fixture(false);
+    let worker_state = crate::provider::ProviderResumeState::from_codex_thread_id("worker-thread");
+    app.agents_mut().set_agent_provider_resume_state(&lease.backing_agent_id, worker_state.clone()).unwrap();
+    RemoteLeaseRuntime::new(&mut app).seed_leased_agent_resume_state(&lease.id, Default::default()).unwrap();
+    assert!(app.agents().get_agent(&lease.backing_agent_id).unwrap().provider_resume_state().is_empty());
+    let manifest = crate::extension::RemoteExtensionManifest::default();
+    let LeasedProviderRunMatch::LaunchRequired(request) = RemoteLeaseRuntime::new(&mut app).prepare_leased_provider_run_matches_mcps(&lease, &[], &manifest).unwrap() else { panic!("fresh launch") };
+    assert!(request.resume_state.is_empty());
+    let run = app.providers_mut().launch_run_detached(request.with_resume_state(worker_state.clone())).unwrap();
+    RemoteLeaseRuntime::new(&mut app).seed_leased_agent_resume_state(&lease.id, crate::provider::ProviderResumeState::from_codex_thread_id("stale-home-thread")).unwrap();
+    assert_eq!(app.providers().get_run(run.id()).unwrap().resume_state(), &worker_state);
 }

@@ -148,6 +148,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(())
     }
 
+    pub(crate) fn seed_leased_agent_resume_state(
+        &mut self,
+        leased_agent_id: &str,
+        resume: crate::provider::ProviderResumeState,
+    ) -> Result<(), DaemonError> {
+        let lease = self.app.leased_agents.get(leased_agent_id).cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound { leased_agent_id: leased_agent_id.to_string() })?;
+        if self.app.providers.get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id).is_none() {
+            self.app.agents_mut().set_agent_provider_resume_state(&lease.backing_agent_id, resume)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_leased_provider_run_matches_mcps(
         &mut self,
         leased_agent: &LeasedAgent,

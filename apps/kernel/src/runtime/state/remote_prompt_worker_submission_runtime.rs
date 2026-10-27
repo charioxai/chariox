@@ -981,7 +981,7 @@ impl KernelRuntimeState {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
                         crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent),
-                    provider_resume_state: (!fresh_workflow).then(|| agent.provider_resume_state().clone()),
+                    provider_resume_state: Some(if fresh_workflow { crate::provider::ProviderResumeState::default() } else { agent.provider_resume_state().clone() }),
                     prompt,
                     hidden_system_context,
                     attachments,
