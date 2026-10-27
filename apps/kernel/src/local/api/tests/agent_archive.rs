@@ -175,6 +175,22 @@ fn archive_agent_checks_membership_and_ownership_without_mutation() {
 
 #[test]
 fn archive_agent_state_survives_kernel_restart() {
+    archive_restart_with_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
+        "archive-preserved-thread",
+    ));
+}
+
+#[test]
+fn archive_agent_opencode_restart_resumes_saved_native_session() {
+    let restored = archive_restart_with_resume_state(
+        crate::provider::ProviderResumeState::from_opencode_session_id("archive-opencode-session"),
+    );
+    crate::provider::assert_archived_opencode_resume_contract(restored);
+}
+
+fn archive_restart_with_resume_state(
+    resume: crate::provider::ProviderResumeState,
+) -> crate::provider::ProviderResumeState {
     let worktree = crate::test_support::TestWorktree::new("agent-archive-restart");
     let config = DaemonConfig::for_tests();
     let (room, id) = {
@@ -192,12 +208,7 @@ fn archive_agent_state_survives_kernel_restart() {
         h.with_app(|app| {
             let updated = app
                 .agents_mut()
-                .set_agent_provider_resume_state(
-                    agent.id(),
-                    crate::provider::ProviderResumeState::from_codex_thread_id(
-                        "archive-preserved-thread",
-                    ),
-                )
+                .set_agent_provider_resume_state(agent.id(), resume.clone())
                 .unwrap();
             app.durable_state_store()
                 .append_event(
@@ -281,13 +292,22 @@ fn archive_agent_state_survives_kernel_restart() {
             .get_agent(&id)
             .unwrap()
             .provider_resume_state()
-            .codex_thread_id()
-            .map(str::to_owned)),
-        Some("archive-preserved-thread".into())
+            .clone()),
+        resume
     );
     let restored =
         serde_json::to_value(h.dispatch(archive_request(&room, &id, false)).unwrap()).unwrap();
     assert_eq!(restored["AgentArchived"]["agent"]["archived"], false);
+    let state = h.with_app(|app| {
+        assert!(app.providers().get_run_for_agent(&room, &id).is_none());
+        app.agents()
+            .get_agent(&id)
+            .unwrap()
+            .provider_resume_state()
+            .clone()
+    });
+    assert_eq!(state, resume);
+    state
 }
 
 #[test]

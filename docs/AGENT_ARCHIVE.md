@@ -54,9 +54,10 @@ read visibility subject to existing Room policy; they gain no owner authority.
 Codex uses its saved thread through the official app-server/CLI resume path;
 Claude Code uses its saved session through the official resume option; OpenCode
 uses its saved session through the official server/session path. The original
-profile and provider-owned storage must remain accessible. A missing provider
-thread errors explicitly; an external endpoint must reconnect itself. Provider
-specific live drills, rather than saved IDs alone, establish resume support.
+profile and provider-owned storage must remain accessible and still contain that
+thread: existing provider-specific recovery applies if it is missing (OpenCode may create a replacement native session).
+An external endpoint must reconnect itself. Live drills establish provider resume;
+retaining an ID alone does not establish it.
 
 ## Edge cases
 
@@ -105,3 +106,12 @@ and prove provider resume. Check only-agent focus, collaborator and agent/sudo
 negative admission, pending-cleanup retry/restart, stale admission races, workflow
 refusal and independent collaboration cancellation, schedule cancellation, older-kernel feature gating,
 and legacy EndSession unchanged. Proposal mocks are not UI acceptance.
+
+### Round r1 validation allocation
+
+Codex and Claude require live official-provider archive/restart/resume drills.
+Per the coordinator's 2026-10-27 07:09Z answer, live OpenCode is NR this round:
+the acct-686 scope was deleted during disk cleanup and no OpenCode login exists
+on b3. Do not wait for or request another login. Cover archive, durable restart,
+unarchive and fresh native-runtime resume with the fake-server contract fixture;
+the coordinator's later Chariox account transfer is not an archive r1 blocker.
