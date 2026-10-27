@@ -558,7 +558,13 @@ export class BrowserCdpClient {
 
   async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
     if (this.rendererRecovery.crashed.has(target.targetId)) {
-      throw new BrowserControllerError('browser_renderer_crashed', 'Browser tab crashed; recovery waits for available memory. Close the tab to stop recovery.');
+      // Browser-owned target metadata survives renderer death. Keep its last
+      // document binding so inventory and close never wait on the dead page.
+      return { target_id: target.targetId,
+        ...(typeof target.openerId === "string" ? { opener_target_id: target.openerId } : {}),
+        document_id: this.documentIdsByTarget.get(target.targetId),
+        url: typeof target.url === "string" ? target.url : "",
+        title: typeof target.title === "string" ? target.title : "", focused: false };
     }
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
     // Metrics differ per target (App pages lay out beside their panel).

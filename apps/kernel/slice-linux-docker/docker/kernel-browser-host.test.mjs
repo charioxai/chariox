@@ -5,6 +5,8 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
+import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
+import { BrowserMemory } from "./browser-memory.mjs";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import path from "node:path";
 import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
@@ -2612,4 +2614,39 @@ test('MP-08/MP-10 a Tab opened in a resized window inherits the window layout', 
  for(const tab of next.tabs)assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:600});
  assert(applied.length>=1&&applied.every(([,layout])=>layout.width===900&&layout.height===600));
  assert.equal(opened.tabs.length+1,next.tabs.length);
+}));
+
+
+test('MP-08/MP-10/MP-11: crashed tabs remain in host state and close under sustained memory pressure', () => using(async ({ host, connection, handlers, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.test/crashed' });
+  await host.request({ op: 'open', url: 'https://example.test/healthy' });
+  const send = connection.send.bind(connection);
+  connection.close = async () => {};
+  connection.send = async (method, params, session) => {
+    const result = await send(method, params, session);
+    if (method === 'Target.attachToTarget') return { sessionId: `session-${params.targetId}` };
+    if (method === 'Target.closeTarget') return { success: true };
+    return result;
+  };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection,
+    memory: new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 }) });
+  host.browser = browser;
+  const before = await host.request({ op: 'state' });
+  const crashed = before.tabs.find(tab => tab.url.includes('/crashed'));
+  const healthy = before.tabs.find(tab => tab.url.includes('/healthy'));
+  const crashedTarget = host.tabs.get(crashed.tab_id).target_id;
+  for (const handler of handlers) handler({ method: 'Inspector.targetCrashed', sessionId: `session-${crashedTarget}`, params: {} });
+  assert.equal(browser.rendererRecovery.crashed.has(crashedTarget), true);
+  await assert.rejects(browser.memory.requireHeadroom(), error => error.code === 'browser_memory_pressure');
+  const start = sent.length;
+  const state = await host.request({ op: 'state' });
+  assert.equal(state.tabs.length, before.tabs.length);
+  assert.equal(state.tabs.find(tab => tab.tab_id === crashed.tab_id).document_id, crashed.document_id);
+  assert.ok(!sent.slice(start).some(call => call.session === `session-${crashedTarget}`), 'inventory must not query a dead renderer');
+  const closedHealthy = await host.request({ op: 'close', generation: state.generation, tab_id: healthy.tab_id });
+  assert.ok(!closedHealthy.tabs.some(tab => tab.tab_id === healthy.tab_id));
+  const closedCrashed = await host.request({ op: 'close', generation: closedHealthy.generation, tab_id: crashed.tab_id });
+  assert.ok(!closedCrashed.tabs.some(tab => tab.tab_id === crashed.tab_id));
+  assert.equal(browser.rendererRecovery.crashed.size, 0);
+  assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
 }));
