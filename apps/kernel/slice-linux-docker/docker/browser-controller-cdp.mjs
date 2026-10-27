@@ -492,7 +492,7 @@ export class BrowserCdpClient {
     // The kernel sizes each App page beside its panel; before it does, the
     // default panel takes the right of the page.
     const size = validPage(page, viewport) ?? { width: viewport.css_width - panelCssWidth, height: viewport.css_height };
-    return { ...deviceMetricsFor(viewport), ...size };
+    return { ...deviceMetricsFor(viewport, !!this.applyCanonicalDisplay), ...size };
   }
 
 
@@ -503,7 +503,7 @@ export class BrowserCdpClient {
   }
 
   layoutMetrics(targetId, viewport) {
-    return { ...deviceMetricsFor(viewport), ...(this.layoutByTarget.get(targetId) ?? {}) };
+    return { ...deviceMetricsFor(viewport, !!this.applyCanonicalDisplay), ...(this.layoutByTarget.get(targetId) ?? {}) };
   }
 
   // Null restores the canonical layout. App pages keep their panel-sized layout.
@@ -1698,11 +1698,14 @@ function appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth) {
   return JSON.stringify({ viewport, browserBarVisible, appPanelCssWidth });
 }
 
-function deviceMetricsFor(viewport) {
+function deviceMetricsFor(viewport, physicalDisplay = false) {
   return {
     width: viewport.css_width,
     height: viewport.css_height,
     deviceScaleFactor: viewport.device_scale_factor,
+    // Room X desktops stay at host scale 1. DPR changes raster density, but
+    // Chromium otherwise paints the emulated view at CSS size on that desktop.
+    ...(physicalDisplay ? { scale: viewport.device_scale_factor } : {}),
     mobile: false,
     screenWidth: Math.floor(viewport.desktop_pixel_width / viewport.device_scale_factor),
     screenHeight: Math.floor(viewport.desktop_pixel_height / viewport.device_scale_factor),

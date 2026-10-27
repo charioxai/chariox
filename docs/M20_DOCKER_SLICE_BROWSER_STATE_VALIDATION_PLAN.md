@@ -202,6 +202,12 @@ browser exit still uses the owned browser supervisor and persistent tab/profile
 restore. Both cases require separate real-browser failure-injection evidence;
 a successful CDP health request alone does not prove a live renderer.
 
+The headed Room's X desktop has host scale 1. Its emulated view therefore uses
+the canonical device scale as its paint scale as well. A source DPR2 page must
+fill its 2560×1600 physical desktop; a healthy CDP connection and a small page in
+one corner do not establish DPR2 display acceptance. Record source scale and
+physical canvas dimensions separately from the viewer's Retina setting.
+
 This deterministic drill uses production Computer input helpers directly. It
 does not establish provider-driven office work, vault injection, or Web/TUI
 projection. Those remain separate acceptance drills. Package installation

@@ -102,6 +102,20 @@ test("MP-08/MP-10: page and worker response retention fits the bounded body read
   } finally { await browser.close(); }
 });
 
+test("MP-08/MP-10: a headed Room paints the full physical desktop at source DPR2", async () => {
+  for (const headed of [false, true]) {
+    const connection = new FakeConnection();
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection,
+      ...(headed ? { applyCanonicalDisplay: async () => {} } : {}) });
+    try {
+      await browser.reconcile({ ...viewport, device_scale_factor: 2, desktop_pixel_width: 2560, desktop_pixel_height: 1600 });
+      const metrics = connection.calls.find(call => call.method === 'Emulation.setDeviceMetricsOverride').params;
+      assert.equal(metrics.deviceScaleFactor, 2);
+      assert.equal(metrics.scale, headed ? 2 : undefined, 'a 1x X desktop must paint the emulated 2x view at physical size');
+    } finally { await browser.close(); }
+  }
+});
+
 test("MP-08/MP-10: memory pressure refuses navigation before dispatch and still permits closing a tab", async () => {
   const connection = new FakeConnection();
   const memory = new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 });
