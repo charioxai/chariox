@@ -104,7 +104,7 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
     };
     // The request kind is encrypted. Bound and reserve the outer bytes before
     // base64 decoding or decryption, then enforce the kind's smaller limit.
-    let request_memory = request_limits::reserve(&encrypted_request).map_err(&refusal)?;
+    let request_memory = request_limits::reserve(&encrypted_request).map_err(refusal)?;
     relay_crypto::validate_encrypted_payload_shape(
         &encrypted_request,
         request_limits::PROMPT_REQUEST_BYTES,

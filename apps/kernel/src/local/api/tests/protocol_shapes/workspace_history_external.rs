@@ -997,11 +997,9 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
 #[test]
 fn local_daemon_protocol_prompt_attachment_size_shape_is_versioned_and_hashed() {
     use base64::Engine;
-    assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION,
-        crate::test_support::expected_local_protocol_version()
-    );
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 627);
+    let protocol = crate::test_support::expected_local_protocol_version();
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, protocol);
+    assert!(protocol >= 627);
     let attachment = crate::session::PromptAttachment::new(
         "chariox-terminal://prompt-attachment/report.pdf",
         "application/pdf",
