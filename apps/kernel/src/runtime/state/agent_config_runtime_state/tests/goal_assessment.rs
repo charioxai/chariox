@@ -2154,7 +2154,7 @@ async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
         Outcome::Task(task) | Outcome::Settled { task, .. } => task,
         other => panic!("unexpected {other:?}"),
     };
-    let append_work = |prompt: &str, answer: &str| {
+    let append_work = |prompt: &str, run: &str, answer: &str, call_id: &str, status: &str| {
         let mut entry = SessionHistoryEntry::user_prompt(
             &room,
             "owner",
@@ -2165,9 +2165,22 @@ async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
         runtime
             .owned
             .append_operational_history_entry(&entry, None, None, None);
+        let receipt = SessionHistoryEntry::provider_output(
+            &room,
+            run,
+            Some(&agent),
+            TerminalOutputKind::ProviderTool,
+            Some(call_id.into()),
+            serde_json::json!({"id":call_id,"tool":"chariox_kernel_request","status":status,
+                "input":{"request":{"ListSessions":null}},"output":"PRIVATE_TYPED_PAYLOAD"})
+            .to_string(),
+        );
+        runtime
+            .owned
+            .append_operational_history_entry(&receipt, None, None, None);
         let entry = SessionHistoryEntry::provider_output(
             &room,
-            "run",
+            run,
             Some(&agent),
             TerminalOutputKind::ProviderOutput,
             None,
@@ -2182,11 +2195,11 @@ async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
         room: room.clone(),
         agent: agent.clone(),
         prompt: "conditional".into(),
-        run: Some("run".into()),
+        run: Some("provider-run-6".into()),
         now: 1,
     });
     apply(Operation::StartGoal {task:"conditional".into(), owner:"owner".into(), objective:"Call ListSessions; if sudo is refused, block for fresh passkey, then retry once after Resume. Report only the count. No other tools.".into(), minutes:10, now:1});
-    append_work("conditional", "ListSessions was refused because sudo is missing. Please re-elevate with a fresh passkey, then press Resume.");
+    append_work("conditional", "provider-run-6", "ListSessions was refused because sudo is missing. Please re-elevate with a fresh passkey, then press Resume.", "exec-85483108-b2d7-45fd-93ed-1a6c0d24ce93", "error");
     let task = apply(Operation::Block {
         task: "conditional".into(),
         prompt: "conditional".into(),
@@ -2204,15 +2217,21 @@ async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
         room: room.clone(),
         agent: agent.clone(),
         prompt: resumed.clone(),
-        run: Some("run".into()),
+        run: Some("provider-run-7".into()),
         now: 3,
     });
-    append_work(&resumed, "2");
+    append_work(
+        &resumed,
+        "provider-run-7",
+        "4",
+        "exec-b717e58a-7efe-47e8-bff3-1d748825e7aa",
+        "completed",
+    );
     let task = apply(Operation::Settle {
         room,
         agent,
-        prompt: resumed,
-        run: "run".into(),
+        prompt: resumed.clone(),
+        run: "provider-run-7".into(),
         has_answer: true,
         cancelled: false,
         now: 4,
@@ -2226,8 +2245,21 @@ async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
     assert_eq!(
         data["latest_public_answer_messages"],
-        serde_json::json!(["2"])
+        serde_json::json!(["4"])
     );
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["completed_kernel_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        data["completed_kernel_calls"][0],
+        serde_json::json!({
+            "request":"ListSessions","status":"completed",
+            "call_id":"exec-b717e58a-7efe-47e8-bff3-1d748825e7aa",
+            "authority_outcome":"admitted",
+            "public_ref":format!("history:{}:prompt:{resumed}",task.room_id),
+        })
+    );
+    assert_eq!(data["completed_kernel_calls_omitted"], 0);
+    assert!(!context.contains("PRIVATE_TYPED_PAYLOAD"));
     assert_eq!(data["prior_work_results"].as_array().unwrap().len(), 1,
         "the first assessment after Resume needs the original blocked work, even without an earlier evaluation");
     assert_eq!(
