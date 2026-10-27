@@ -332,20 +332,34 @@ try {
     cursor = merged.value.next_cursor
   }
   if (flags.has("--round3-regressions")) {
-    // Restart the home pump after the followed session ends. Its reinstallation
-    // is now persistently refused, while the last committed baseline is online.
+    // Add a Room just after an import aligns us with the pump's 250 ms tick.
+    // Pause only this owned home process before that pump installs its new
+    // targets, then end the added Room. Reinstallation is persistently refused.
     assert.equal((await cli(home, ["events", "ack", String(cursor)])).code, 0)
-    await stop(home.child)
-    await worker.rpc({ EndSession: { session_id: session } })
-    home.child = start(binary, home.env, "home-pump-resumed")
-    await until(async () => { try { return (await home.rpc({ RelayStatus: null })).RelayStatus.status.connected } catch { return false } }, "home pump restart")
+    const second = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "health-pump-target", no_subscribe: true } })).SessionCreated.session.id
+    const imported = cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "10"])
+    assert.equal((await cli(home, ["terminal", "open", "--kernel", target, "--session", session, "--", "/bin/sh", "-c", "exit 41"])).code, 0)
+    const established = await imported
+    assert(established.value.events.some(e => e.type === "terminal" && e.value.exit_code === 41))
+    cursor = established.value.next_cursor
+    assert.equal((await cli(home, ["events", "subscribe", "--kernel", target, "--session", second])).code, 0)
+    if (!Number.isSafeInteger(home.child.pid) || home.child.pid <= 1) throw new Error("invalid owned PID")
+    home.child.kill("SIGSTOP")
+    try {
+      await worker.rpc({ EndSession: { session_id: second } })
+    } finally {
+      if (!Number.isSafeInteger(home.child.pid) || home.child.pid <= 1) throw new Error("invalid owned PID")
+      home.child.kill("SIGCONT")
+    }
     const result = await cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "2"])
     const sub = await cli(home, ["events", "subscription"])
     const issue = sub.value.subscription.kernels.find(k => k.kernel === target)
     const offline = result.value?.events.filter(e => e.type === "kernel_health" && !e.value.online) || []
     if (flags.has("--expect-round3-base")) {
+      assert.equal(result.code, 5, "base must time out without an event")
+      assert.equal(result.value.events.length, 0)
       assert.equal(offline.length, 0, "base must silently suppress pump refusals")
-      assert.equal(issue.error.code, "events_connecting", "base must fail to record the pump refusal in its cache")
+      assert.equal(issue.online, true, "base must retain the stale online cache")
     } else {
       assert.equal(offline.length, 1, "persistent pump refusal must wake once")
       assert.equal(issue.online, false)
