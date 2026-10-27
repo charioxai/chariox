@@ -144,9 +144,6 @@ async function enroll(r) {
         assert.equal(new URL(login.verification_url).origin, origin);
         await page.goto(login.verification_url);
         await page.waitForLoadState('networkidle');
-        const button = page.getByRole('button', { name: /approve|allow|connect/i });
-        if (await button.count() === 1)
-            await button.click();
         let approved = false;
         for (let n = 0; n < 24; n++) {
             await sleep(Math.max(5000, (login.interval_seconds ?? 5) * 1000));
@@ -156,6 +153,12 @@ async function enroll(r) {
                 break;
             }
             assert.notEqual(result.status, 'denied');
+            try {
+                await page.getByRole('button', { name: /approve|allow|connect/i }).click({timeout: 1000});
+            } catch (error) {
+                if (error.name !== 'TimeoutError' && !String(error).includes('Execution context was destroyed')) throw error;
+                await record(r.name + '-enrollment-pending', {approvalPending: true, pageTransition: true});
+            }
         }
         assert.ok(approved);
         await r.client.send({ ConnectCloudRelay: null });
