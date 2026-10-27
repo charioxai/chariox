@@ -93,7 +93,7 @@ try {
     assert.deepEqual(status, { code: 129, signal: null })
     await until(async () => !(await exists(pid)), 'SIGHUP process reaped')
     assert.deepEqual((await request({ operation: 'exec_list' })).execs, [])
-    return { status, reaped_pid: pid }
+    return { process_status: status, reaped_pid: pid }
   })
   await cell('cancel-truncated-output', async () => {
     const marker = path.join(fixture.home, 'B/work/cancel-process-exited')
@@ -145,7 +145,7 @@ try {
     assert.equal(error.code, 'kernel_connection_lost')
     assert.ok(error.exec_id && error.session_id === session)
     assert.equal(error.output_cursor >= 0, true)
-    return { status, error }
+    return { process_status: status, error }
   })
 
 } finally {
