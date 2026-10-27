@@ -110,7 +110,10 @@ async fn a12_assessment_unique_live_prefix_crosses_the_protected_boundary() {
     std::env::remove_var("CHARIOX_DISABLE_TERMINAL_TURN_TRACE");
     std::env::remove_var("CHARIOX_TERMINAL_TURN_TRACE");
     std::env::set_var("CHARIOX_TERMINAL_TURN_TRACE_DIR", &trace_dir);
-    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) =
+        agent_config_runtime_with_config_and_owner(config, "owner").await;
     let now = crate::session::unix_epoch_ms();
     let store = &runtime.owned.durable_state_store;
     let full = "completion-wake-a9eedf22677192661f03c4b44171fc0b";
