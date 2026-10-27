@@ -2205,3 +2205,209 @@ async fn mk04_home_package_hash_change_invalidates_preparation_after_restart() {
         .iter()
         .all(|target| !target.active));
 }
+
+async fn committed_grant_recovery(already_activated: bool) {
+    let (mut fixture, session, _) = crash_fixture().await;
+    let root = {
+        let home = fixture.home.lock().await;
+        let room = home.sessions().get_session(&session).unwrap();
+        let registry = crate::mcp::CharioxMcpRegistry::new(vec![
+            crate::mcp::CharioxMcpRegistry::project_root(room.workspace_id()),
+        ]);
+        registry
+            .install(&crate::mcp::CharioxMcpServerConfig::stdio(
+                "mk04-revoked",
+                "/bin/echo",
+                Vec::new(),
+            ))
+            .unwrap();
+        home.agents()
+            .grant_mcp(&fixture.agent_id, "mk04-revoked".into())
+            .unwrap();
+        home.save_durable_state_snapshot().unwrap();
+        home.config.private_runtime_state_root().join("agent-moves")
+    };
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "committed").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-commit-crash",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(
+        crashed.is_err(),
+        "Move must durably commit before simulating a lost acknowledgment"
+    );
+    let operation = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    let mut original_commit = None;
+    if already_activated {
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            fixture.workers[0].clone(),
+            8,
+        );
+        let result = router
+            .relay_agent_move(
+                crate::agent_move::peer::AgentMovePeerRequest::ActivateTarget {
+                    identity: operation.identity.clone(),
+                    readiness: Box::new(operation.composition.readiness.clone().unwrap()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let crate::agent_move::peer::AgentMovePeerResponse::Activated { receipt } = result else {
+            panic!("Target must durably activate");
+        };
+        original_commit = Some(*receipt);
+        drop(router);
+        reboot_worker(&mut fixture).await;
+    }
+    reboot_app(&fixture.home).await;
+    {
+        let home = fixture.home.lock().await;
+        home.remote_relay_inventory_projection_store()
+            .update(Vec::new(), fixture.presences.clone());
+        home.agents()
+            .revoke_mcp(&fixture.agent_id, "mk04-revoked")
+            .unwrap();
+    }
+    move_request(&fixture, &session, true).await;
+    let home = fixture.home.lock().await;
+    let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+    assert!(
+        agent.mcp_grants().is_empty(),
+        "Recovering a commit must preserve the current revocation"
+    );
+    let settled = home
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    assert!(matches!(
+        settled.phase,
+        crate::agent_move::HomeMovePhase::Complete { .. }
+    ));
+    if let Some(original) = original_commit {
+        assert_eq!(settled.composition.commit.as_ref(), Some(&original));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_committed_move_recovers_after_grant_revocation() {
+    committed_grant_recovery(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_lost_activation_reply_recovers_after_grant_revocation() {
+    committed_grant_recovery(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_corrupt_captured_archive_rejects_before_target_activation() {
+    let (fixture, session, original) = crash_fixture().await;
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "captured").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-archive-capture",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err());
+    {
+        let home = fixture.home.lock().await;
+        let operation = home
+            .agent_moves
+            .for_agent(&session, &fixture.agent_id)
+            .unwrap();
+        let archive = home.agent_moves.artifact_path(
+            &operation.identity.operation_id,
+            crate::agent_move::AgentMoveArtifactKind::Workspace,
+        );
+        std::fs::write(archive, b"invalid archive input").unwrap();
+    }
+    reboot_app(&fixture.home).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session.clone(),
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-archive-retry",
+        None,
+        None,
+        &request,
+    );
+    assert!(
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8)
+            .dispatch(command, request)
+            .await
+            .is_err()
+    );
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active && target.composition.readiness.is_none()));
+    assert_eq!(
+        std::fs::read(original.join("input")).unwrap(),
+        b"checkpointed workspace\n"
+    );
+}

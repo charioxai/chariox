@@ -29,11 +29,11 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');});\n
 async function setupProject(source, projectId, sessionId, agentId) {
     const operationId = 'mk04-source-setup';
     const definition = {schema_version: 1, origin: 'user_authored', source: 'commands', target_platform: 'linux-x86_64', source_path: null, inputs: [], path_entries: [], setup_steps: [{kind: 'command', command: 'pwd > .mk04-env-ready'}], validation_commands: ['test -s .mk04-env-ready']};
-    await source.client.send({StartProjectEnvironmentSetup: {operation_id: operationId, project_id: projectId, session_id: sessionId, agent_id: agentId, target_worker_id: source.status.machine_id, target_platform: definition.target_platform, definition, validation_commands: []}});
+    await source.client.send({StartProjectEnvironmentSetup: {operationId, projectId, sessionId, agentId, targetWorkerId: source.status.machine_id, targetPlatform: definition.target_platform, definition, validationCommands: []}});
     for (let n = 0; n < 960; n++) {
-        const status = variant(await source.client.send({GetProjectEnvironmentSetupStatus: {operation_id: operationId}}), 'ProjectEnvironmentSetupStatus').status;
+        const status = variant(await source.client.send({GetProjectEnvironmentSetupStatus: {operationId}}), 'ProjectEnvironmentSetupStatus').status;
         if (status.phase === 'ready') { await record('source-setup', {operationId, phase: status.phase}); return; }
-        assert.ok(!['failed', 'cancelled'].includes(status.phase), 'Source Project setup must be ready: ' + status.code);
+        assert.ok(!['failed', 'cancelled'].includes(status.phase), 'Source Project setup must be ready: ' + status.failure_code);
         await sleep(250);
     }
     throw Error('Source Project setup deadline');
