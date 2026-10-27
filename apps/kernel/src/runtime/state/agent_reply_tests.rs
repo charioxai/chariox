@@ -160,7 +160,13 @@ async fn delegate_reply_never_started_deleted_settles_every_reply_once() {
 #[tokio::test]
 async fn delegate_reply_failed_start_settles_without_deletion() {
     let f = Fixture::new();
-    f.request("unverified-profile");
+    // A known logged-out account gives a deterministic terminal admission refusal.
+    let profiles = &f.runtime.owned.provider_account_profiles;
+    let profile = profiles.get(&f.owner, "codex", "default").unwrap();
+    profiles
+        .mark_logged_out(&f.owner, "codex", &profile.profile_id)
+        .unwrap();
+    f.request("logged-out-profile");
     f.request("also-waiting");
     let error = f
         .runtime
@@ -186,7 +192,7 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
             .is_none(),
         "terminal failures must retire every affected request"
     );
-    // Another delivery pass must not even try the still-unverified profile.
+    // Another delivery pass must not even try the logged-out profile.
     f.runtime
         .deliver_agent_inbox(&f.room, &f.child)
         .await
