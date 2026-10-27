@@ -48,6 +48,8 @@ same native session/account, a transferred granted skill, and a home-owned
 MCP tool. The ignored setup output must be regenerated at the imported
 primary path. The recipe also installs a tool under preparation HOME and adds
 its directory through the definition PATH entries; the first target turn must
-invoke it. This proves the ordinary prepared provider environment survives Move.
+invoke it in a non-login shell, preserving the inherited Project PATH. This
+proves the ordinary prepared provider environment survives Move and any
+first-turn tool catalog refresh.
 Use the environment above and the same 4 GiB scope. This kernel
 acceptance leaves the route picker and its `via` label to PR5.

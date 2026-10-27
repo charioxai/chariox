@@ -247,3 +247,61 @@ fn native_catalog_waits_for_observed_refresh_and_keeps_the_attached_run_identity
         );
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: first-turn catalog admission can replace a Move setup run.
+#[tokio::test]
+async fn leased_catalog_refresh_preserves_prepared_project_environment() {
+    let root = crate::test_support::TestWorktree::new("leased-prepared-catalog-refresh");
+    let home = root
+        .path()
+        .join("kernel-home/state/project-environment-preparation")
+        .join("a".repeat(64));
+    std::fs::create_dir_all(home.join("bin")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for directory in [home.as_path(), home.parent().unwrap()] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    let home = home.canonicalize().unwrap();
+    let path = format!("{}:/usr/bin:/bin", home.join("bin").display());
+    let (mut app, lease) = leased_agent_fixture(false);
+    let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    let previous = start_fixture_run(&mut app, &lease, catalog("1:first"));
+    app.providers()
+        .update_run_preparation_environment(previous.id(), home.display().to_string(), path.clone())
+        .unwrap();
+    let desired = catalog("2:replacement");
+    RemoteLeaseRuntime::new(&mut app)
+        .update_leased_agent_remote_extension_manifest(&lease.id, desired.clone())
+        .unwrap();
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let (admitted_id, _) = router
+        .relay_submit_leased_prompt(
+            &lease.id,
+            profile,
+            "use the prepared Project with its refreshed catalog",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            desired,
+            None,
+        )
+        .await
+        .unwrap();
+    let app = app.lock().await;
+    let admitted = app.providers().get_run(&admitted_id).unwrap();
+    assert_ne!(admitted_id, previous.id());
+    assert_eq!(
+        admitted.preparation_environment(),
+        Some((home.display().to_string(), path)),
+        "catalog refresh must preserve the ordinary prepared HOME and PATH"
+    );
+}

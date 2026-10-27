@@ -23,7 +23,7 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');});\n
     await source.client.send({InstallMcpServer: {workspace_id: null, config: {name: 'mk04-proof', transport: {type: 'stdio', command: process.execPath, args: [server]}, enabled: true, required: true}}});
     const skill = root + '/proof-skill';
     await mkdir(skill);
-    await writeFile(skill + '/SKILL.md', '---\nname: mk04-proof\ndescription: Execute the requested Move skill proof\n---\nWhen asked for the MK04 proof, run a shell command that writes exactly mk04-skill-executed to mk04-skill-proof.txt in the current working directory, then invoke the existing mk04-env-tool through PATH exactly once and write its output to mk04-env-tool-proof.txt. Do not install the tool, search for it, or change HOME or PATH.\n');
+    await writeFile(skill + '/SKILL.md', '---\nname: mk04-proof\ndescription: Execute the requested Move skill proof\n---\nWhen asked for the MK04 proof, run a shell command that writes exactly mk04-skill-executed to mk04-skill-proof.txt in the current working directory, then invoke the existing mk04-env-tool through PATH exactly once and write its output to mk04-env-tool-proof.txt. Use exec_command with login=false to preserve the inherited Project environment. Do not install the tool, search for it, or change HOME or PATH.\n');
     const installed = variant(await source.client.send({InstallSkill: {workspace_id: null, source_path: skill}}), 'SkillInstalled');
     for (const kind of ['mcp', 'skill']) await source.client.send({GrantAgentExtension: {workspace_id: null, agent_ref: agentId, kind, name: 'mk04-proof'}});
     await record('packages-installed', {skill: installed.skill.name, homeMcp: 'mk04-proof', grants: ['mcp', 'skill']});
@@ -108,11 +108,11 @@ try {
     assert.equal(operation.composition.readiness.target_account_profile, source.accountProfile.profile_id);
     await record('resource-receipts', {requirements: operation.composition.requirements, readiness: operation.composition.readiness, commit: operation.composition.commit, accountTransferred: true, targetNativeSetup: true});
     const result = await turn(source, 'Perform the MK04 proof using the granted mk04-proof skill, call the mk04_ping tool with our remembered marker, then run pwd. Reply with the remembered marker. Do not create agents.', 'target-turn');
+    const toolRows = entries(result.snapshot).filter(row => row.role === 'tool' && row.promptId === result.promptId);
+    await record('target-tool-proof', {promptId: result.promptId, homeKernelPid: source.child.pid, targetKernelPid: target.child.pid, rows: toolRows});
     assert.equal(await readFile(primary + '/mk04-skill-proof.txt', 'utf8'), 'mk04-skill-executed');
     assert.equal((await readFile(primary + '/mk04-env-tool-proof.txt', 'utf8')).trim(), 'mk04-env-tool-ready', 'First target turn must invoke the tool installed under preparation HOME');
     assert.ok(completedWorkspaceTool(entries(result.snapshot), result.promptId, primary));
-    const toolRows = entries(result.snapshot).filter(row => row.role === 'tool' && row.promptId === result.promptId);
-    await record('target-tool-proof', {promptId: result.promptId, homeKernelPid: source.child.pid, targetKernelPid: target.child.pid, rows: toolRows});
     assert.ok(completedHomeMcpTool(toolRows, result.promptId, marker, source.child.pid, target.child.pid), 'Granted MCP must execute in the home kernel process tree');
     const moved = (await state(source, sessionId)).session.agents.find(a => a.id === agentId);
     const projected = await currentRun(source, sessionId, agentId);
