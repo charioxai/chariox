@@ -406,6 +406,8 @@ impl KernelBrowserHost {
         // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
         // but never hold the shared controller lock during input/CDP waits.
         // Takeover/cancellation use the actor model and remain independent.
+        // A dialog answer releases a page action that may still own this lane.
+        // Admit it independently of page input while retaining request scope checks.
         let mutation = method == "host.secret"
             || (method == "host.browser"
                 && matches!(
@@ -610,7 +612,7 @@ impl KernelBrowserHost {
             || (method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
-                    Some("open" | "close" | "navigate" | "resize" | "input" | "dialog")
+                    Some("open" | "close" | "navigate" | "resize" | "input")
                 ));
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
@@ -1460,6 +1462,8 @@ mod tests {
 
 #[cfg(test)]
 mod actor_tests;
+#[cfg(test)]
+mod dialog_tests;
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod native_input_tests;
