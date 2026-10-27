@@ -126,8 +126,14 @@ impl KernelRuntimeState {
                 Ok::<_, DaemonError>(())
             }
             .await;
-            if result.is_err() {
-                runtime.owned.project_environment_setups.mark_failed(&operation, attempt, "move_setup_provider_unavailable", "Move target provider could not start. Restore its selected account and Project inputs, then retry Project setup");
+            if let Err(error) = result {
+                tracing::warn!(
+                    operation_id = %operation,
+                    attempt,
+                    error = %crate::provider::sanitize_provider_diagnostic(&error.to_string()),
+                    "Move Project setup provider launch failed"
+                );
+                runtime.owned.project_environment_setups.mark_failed(&operation, attempt, "move_setup_provider_unavailable", &format!("Move target provider could not start: {}. Restore its selected account and Project inputs, then retry Project setup", crate::provider::sanitize_provider_diagnostic(&error.to_string())));
             }
             if runtime
                 .with_app_side_effect(|app| app.end_agent_provider_run(&session, &agent_id))
