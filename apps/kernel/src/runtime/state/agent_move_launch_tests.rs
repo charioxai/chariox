@@ -637,10 +637,18 @@ async fn mk03_environment_discovery_does_not_borrow_the_fenced_move_agent() {
 
     let worktree = crate::test_support::TestWorktree::new("move-discovery-identity");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+    let (session, mut agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
+    agent.set_provider("dev-stub");
+    agent.set_model(Some("moved-model".into()));
+    agent.set_effort(Some("low".into()));
+    app.agents().restore_agent(agent.clone());
     let config = app.config().clone();
+    app.spawn_agent(
+        crate::agent::CreateAgentRequest::new(session.id(), "opencode").with_alias("other"),
+    )
+    .unwrap();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     runtime

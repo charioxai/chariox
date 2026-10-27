@@ -466,32 +466,40 @@ impl KernelRuntimeState {
         project: &crate::session::RuntimeProject,
         repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
     ) -> Result<(String, String, Option<EnvironmentUtilityCleanup>), DaemonError> {
+        // A moving agent cannot run discovery, but its account is the one known to work here.
+        // Borrowing another agent's provider could pick an unauthenticated account.
+        let mut moving = None;
+        let mut idle = None;
         for session in self.owned.session_store.sessions_in_project(project.id()) {
-            if let Some(agent) = self
-                .owned
-                .agent_store
-                .get_session_agents(session.id())
-                .into_iter()
-                .find(|agent| {
-                    agent.remote_execution().is_none()
-                        // A moving agent holds provider admission, so it cannot run discovery.
-                        && self
-                            .owned
-                            .agent_moves
-                            .with_admission(session.id(), Some(agent.id()), None, || Ok(()))
-                            .is_ok()
-                        && !session
-                            .active_interactions()
-                            .iter()
-                            .any(|interaction| interaction.agent_id() == Some(agent.id()))
-                        && self
-                            .owned
-                            .prompt_state_owner
-                            .active_prompt_for_agent(&session, agent.id())
-                            .is_none()
-                })
-            {
-                return Ok((session.id().into(), agent.id().into(), None));
+            for agent in self.owned.agent_store.get_session_agents(session.id()) {
+                if agent.remote_execution().is_some() {
+                    continue;
+                }
+                if self
+                    .owned
+                    .agent_moves
+                    .with_admission(session.id(), Some(agent.id()), None, || Ok(()))
+                    .is_err()
+                {
+                    moving.get_or_insert(agent);
+                } else if idle.is_none()
+                    && !session
+                        .active_interactions()
+                        .iter()
+                        .any(|interaction| interaction.agent_id() == Some(agent.id()))
+                    && self
+                        .owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, agent.id())
+                        .is_none()
+                {
+                    idle = Some((session.id().to_string(), agent.id().to_string()));
+                }
+            }
+        }
+        if moving.is_none() {
+            if let Some((session_id, agent_id)) = idle {
+                return Ok((session_id, agent_id, None));
             }
         }
         let primary = repositories
@@ -500,21 +508,23 @@ impl KernelRuntimeState {
                 r.role == crate::managed_context::development::DevelopmentRepositoryRole::Primary
             })
             .ok_or_else(|| environment_failure("environment export has no primary workspace"))?;
-        let response = self
-            .create_session_response(
-                crate::session::CreateSessionRequest::new(
-                    &primary.workspace_id,
-                    primary.worktree_path.to_string_lossy().to_string(),
-                )
-                .with_alias(format!("project-environment-{:x}", rand::random::<u64>()))
-                .with_owner_user_id(project.owner_user_id())
-                .with_project_selection(
-                    crate::session::SessionProjectSelection::Existing {
-                        project_id: project.id().into(),
-                    },
-                ),
-            )
-            .await?;
+        let mut request = crate::session::CreateSessionRequest::new(
+            &primary.workspace_id,
+            primary.worktree_path.to_string_lossy().to_string(),
+        )
+        .with_alias(format!("project-environment-{:x}", rand::random::<u64>()))
+        .with_owner_user_id(project.owner_user_id())
+        .with_project_selection(crate::session::SessionProjectSelection::Existing {
+            project_id: project.id().into(),
+        });
+        if let Some(agent) = &moving {
+            let mut defaults = crate::session::SessionAgentDefaults::new(agent.provider());
+            defaults.model = agent.model().map(Into::into);
+            defaults.effort = agent.effort().map(Into::into);
+            defaults.account_profile = agent.account_profile().map(Into::into);
+            request = request.with_agent_defaults(defaults);
+        }
+        let response = self.create_session_response(request).await?;
         match response {
             LocalDaemonResponse::SessionCreated { session, agent, .. } => Ok((
                 session.id().into(),
