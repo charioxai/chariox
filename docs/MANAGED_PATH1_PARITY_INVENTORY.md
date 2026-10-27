@@ -27,6 +27,18 @@ The wire contract is local 632 / peer 235, advertised by `room_exec_v1`.
 See `docs/PROTOCOL.md` (Binary Room exec) and the executable scenarios in
 `scripts/e2e-stack/room-exec/README.md`; they do not close the whole MP matrix.
 
+## MP-08 / MP-10 / MP-11 bounded display registration recovery (2026-10-27)
+
+The shared display presenter keeps its eight-frame / 8 MiB registration window
+when an authenticated relay registration flushes a burst. If the burst loses its
+decode base, it drops the incomplete chain and uses the running stream's existing
+independent-frame recovery and lost acknowledgement instead of failing the
+attachment. Dependent frames cannot paint until an independent frame arrives.
+The binding, geometry, payload and observation checks are unchanged, as are the
+ordinary and managed paths. Focused regressions cover both count and byte pressure
+and recovery on the same subscription. This changes no serialized shape or
+managed shutdown policy; source regressions do not establish live acceptance.
+
 
 
 ## MP-08 / MP-09 / MP-10 / MP-11 bounded prompt attachments (2026-10-26)

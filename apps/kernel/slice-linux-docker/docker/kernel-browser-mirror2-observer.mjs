@@ -175,7 +175,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
-    const sheetText = (sheet, base, depth = 0, clean = null, keep = null) => {
+    const sheetText = (sheet, base, depth = 0, clean = null, keep = null, rejectLossy = false) => {
       let out = '', chunk = '';
       const flush = () => { out += clean && chunk ? clean(chunk, base) : chunk; chunk = ''; };
       for (const rule of sheet.cssRules) {
@@ -190,7 +190,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           }
           continue;
         }
-        chunk += keep ? pruned(rule, keep) : rule.cssText + '\n';
+        const serialized = keep ? pruned(rule, keep) : rule.cssText + '\n';
+        if (rejectLossy && LOSSY.test(serialized)) throw new Error('lossy CSSOM serialization');
+        chunk += serialized;
       }
       flush();
       return out;
@@ -263,7 +265,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // a linked sheet is read as source text through the kernel instead of through the CSSOM.
     const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;
     const css = (sheet, base) => {
-      const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource));
+      const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), null, Boolean(sheet.href));
       if (!LOSSY.test(text)) return text;
       if (sheet.href) throw new Error('lossy CSSOM serialization');
       // An inline <style>: its own source text is not lossy.

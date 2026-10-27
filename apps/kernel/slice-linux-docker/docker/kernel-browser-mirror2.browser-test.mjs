@@ -1153,6 +1153,27 @@ test("MP-10: a linked sheet whose CSSOM serialization drops var() shorthand long
     assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/.test(css), `MP-10: no empty longhand reaches the viewer: ${css.slice(0, 300)}`);
   }, { "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" } }));
 
+test("MP-10: linked lossy CSS stops CSSOM serialization before unused suffix rules", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p>fixture</p>', async ({ next, evaluate, host, subscription_id }) => {
+    const initial=[await next()];for(let i=0;i<5;i++)initial.push(await next(500));
+    const initialCss=mirroredCss(initial)+'\n'+initial.flatMap(packet=>Object.values(packet.sheets??{})).join('\n');
+    assert(initialCss.includes('var(--w)'),`MP-10: source fallback preserves the lossy shorthand: ${initialCss.slice(0,300)}`);
+    assert(initialCss.includes('suffix-marker-199'),`MP-10: source fallback preserves CSSOM suffix rules: ${initialCss.slice(-300)}`);
+    const world=host.mirror.streams.get(subscription_id).world;
+    await host.mirror.v2.evaluate(world, `(()=>{
+      let prototype=CSSStyleRule.prototype,descriptor;
+      while(prototype&&!descriptor){descriptor=Object.getOwnPropertyDescriptor(prototype,'cssText');prototype=Object.getPrototypeOf(prototype)}
+      if(!descriptor?.get||!descriptor.configurable)throw Error('CSSStyleRule cssText getter unavailable');
+      globalThis.__mirrorLossySuffixReads=0;
+      Object.defineProperty(CSSStyleRule.prototype,'cssText',{configurable:true,enumerable:descriptor.enumerable,get(){if(this.selectorText==='.tail')globalThis.__mirrorLossySuffixReads++;return descriptor.get.call(this)}});
+      return true;
+    })()`);
+    const reset=await next(0,true);
+    assert.equal(reset.reset,true,'MP-10: the measured serialization is a real source reset');
+    const suffixReads=await host.mirror.v2.evaluate(world,'globalThis.__mirrorLossySuffixReads');
+    assert.equal(suffixReads,0,`MP-10: serialization stops at the first lossy rule; read ${suffixReads} suffix rules`);
+  }, { "/gh.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}" + Array.from({length:200},(_,i)=>`.tail{--suffix-marker-${i}:${i}}`).join("") + ".tail{--suffix-marker-199:199}" } }));
+
 test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
     const first = [await next()];
@@ -2167,3 +2188,25 @@ test("MP-08/MP-10 protocol 629: a link visited after the snapshot re-marks witho
   assert.deepEqual(marked, { op: "attr", id: part[0], name: "href", value: "" });
 }, visitedRoutes));
 
+
+for (const kind of ['click','scroll']) test(`MP-08/MP-10 resized iframe opaque region ${kind} reaches the real canvas`,()=>mirrored(
+  '<style>body{margin:0}</style><iframe src="http://localhost:PORT/region" style="position:absolute;left:1400px;top:820px;width:100px;height:60px;border:0"></iframe><script>window.regionEvents=[];addEventListener("message",e=>regionEvents.push(e.data))</script>',
+  async ({host,tab_id,generation,next,subscription_id,evaluate})=>{
+    await host.request({op:'resize',tab_id,generation,width:1610,height:900});
+    let packet,region;
+    for(let n=0;n<12&&!region;n++){
+      packet=await next(300,n===0);
+      region=[...(host.mirror.streams.get(subscription_id).regionRecords??[])].find(([id,record])=>record.kind==='tile'&&Number(id.slice(1))>=1e9)?.[0];
+    }
+    assert(region,'the opaque canvas belongs to an attached cross-origin frame');
+    const tab=host.tabs.get(tab_id),scope=host.mirror.streams.get(subscription_id).scope,lease=await host.mirror.v2.regions.resolve({mirror_subscription_id:subscription_id,generation,document_id:tab.document_id,sequence:packet.sequence,region_id:region},scope);
+    try{
+      const resolved=await lease.resolveInput({kind,sequence:packet.sequence,x:4,y:8,...(kind==='scroll'?{delta_x:0,delta_y:120}:{})},scope);
+      assert.deepEqual([resolved.input.x,resolved.input.y],[1404,828]);
+      await resolved.guard();
+      await host.request({op:'input',tab_id,generation,document_id:tab.document_id,input:resolved.input});
+      for(let n=0;n<40&&!(await evaluate('regionEvents.length'));n++)await settle(25);
+      assert.deepEqual(await evaluate('regionEvents'),[kind]);
+    }finally{await lease.close();}
+  },{'/region':{type:'text/html',body:'<!doctype html><style>body{margin:0}</style><canvas width="100" height="60"></canvas><script>const c=document.querySelector("canvas");c.getContext("2d").fillRect(0,0,100,60);c.onclick=()=>parent.postMessage("click","*");c.onwheel=e=>{e.preventDefault();parent.postMessage("scroll","*")}</script>'}}
+));
