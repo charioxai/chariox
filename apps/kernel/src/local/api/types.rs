@@ -372,4 +372,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 629 adds the shared browser viewport resize mutation, the mirror v2 viewport-first
 /// snapshot (`viewport_first`, `deferred` records, `snapshot_viewport_complete`) and `:visited` links (`visited_links`);
 /// 588 leaves the predecessor list to keep it within the 32-entry policy.
+/// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 629;

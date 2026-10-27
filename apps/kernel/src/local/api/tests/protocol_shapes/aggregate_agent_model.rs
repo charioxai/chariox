@@ -24,28 +24,3 @@ fn mp08_mp10_mp11_aggregate_agent_model_protocol_snapshot_and_hash() {
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
         "cbe99b5d5bcc969a356f063c06ae13c263b3c1fbcf2f6da8d6f42ed4a376588f"
-    );
-    for wire in snapshot["requests"].as_array().unwrap() {
-        let typed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
-    }
-    for wire in snapshot["responses"].as_array().unwrap() {
-        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
-    }
-    for wire in snapshot["peerRequests"].as_array().unwrap() {
-        let typed: crate::transport::relay_peer::RelayPeerRequest =
-            serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
-    }
-    for wire in snapshot["events"].as_array().unwrap() {
-        let typed: crate::transport::kernel_protocol::KernelEvent =
-            serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
-    }
-    for wire in snapshot["replyOutcomes"].as_array().unwrap() {
-        let typed: crate::durable_state::agent_lifecycle::ReplyOutcome =
-            serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
-    }
-}

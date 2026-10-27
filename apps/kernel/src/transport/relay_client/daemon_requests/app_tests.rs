@@ -1384,3 +1384,74 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
         .join()
         .unwrap();
 }
+
+#[tokio::test]
+async fn three_megabyte_prompt_attachment_reaches_relay_dispatch() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let receiver =
+        relay_crypto::public_key_from_private_key_base64(&router.relay_private_key()).unwrap();
+    let sender = relay_crypto::generate_private_key_base64();
+    let attachment = crate::session::PromptAttachment::new(
+        "chariox-terminal://prompt-attachment/image.png",
+        "image/png",
+        Some("image.png".into()),
+    )
+    .with_contents_base64(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        vec![42; 3 * 1024 * 1024],
+    ));
+    let request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+        session_id: "missing-session".into(),
+        attachment_id: "client".into(),
+        target_agent_id: None,
+        prompt: "Describe the image".into(),
+        attachments: vec![attachment],
+    });
+    let plaintext = serde_json::to_vec(&request).unwrap();
+    let encrypted = relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &plaintext).unwrap();
+    let outcome = handle_daemon_request(
+        &router,
+        &AtomicU64::new(1),
+        Some(caller("alice")),
+        encrypted,
+        &Arc::new(CommandResultCache::default()),
+        &Default::default(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        outcome.error.unwrap().code,
+        "session_not_found",
+        "the multi-megabyte request must reach command dispatch"
+    );
+}
+
+#[tokio::test]
+async fn oversized_request_is_refused_before_crypto_decode() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let encrypted = EncryptedRelayPayload {
+        sender_public_key: "invalid".into(),
+        nonce: "invalid".into(),
+        ciphertext: "!".repeat(super::request_limits::PROMPT_REQUEST_BYTES.div_ceil(3) * 4 + 1),
+    };
+    let outcome = handle_daemon_request(
+        &router,
+        &AtomicU64::new(1),
+        Some(caller("alice")),
+        encrypted,
+        &Arc::new(CommandResultCache::default()),
+        &Default::default(),
+        None,
+    )
+    .await;
+    let error = outcome.error.unwrap();
+    assert_eq!(error.code, "request_too_large");
+    assert!(error.message.contains("12 MiB"));
+    assert!(!error.retryable);
+}

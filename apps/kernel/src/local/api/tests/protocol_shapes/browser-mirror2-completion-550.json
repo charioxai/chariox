@@ -1,18 +1,3 @@
 {
   "local_protocol": 629,
   "peer_protocol": 232,
-  "reset_header": {
-    "snapshot_complete": false
-  },
-  "completion_delta": {
-    "wire": 2,
-    "sequence": 2,
-    "snapshot_complete": true,
-    "ops": []
-  },
-  "inherited_delta": {
-    "wire": 2,
-    "sequence": 3,
-    "ops": []
-  }
-}

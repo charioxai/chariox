@@ -223,6 +223,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
         mime: "image/png".to_string(),
         filename: Some("Screenshot.png".to_string()),
         preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
+        size_bytes: None,
         contents_base64: None,
     }];
     user_prompt.entry.prompt_origin = Some(crate::session::PromptOrigin::External);
@@ -991,4 +992,35 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
         format!("{hash:x}"),
         "2409b4d10bab0b296bd880e060b8931116f30f2452e5c9205e7701f9ccbe0108"
     );
+}
+
+#[test]
+fn local_daemon_protocol_prompt_attachment_size_shape_is_versioned_and_hashed() {
+    use base64::Engine;
+    let protocol = crate::test_support::expected_local_protocol_version();
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, protocol);
+    assert!(protocol >= 627);
+    let attachment = crate::session::PromptAttachment::new(
+        "chariox-terminal://prompt-attachment/report.pdf",
+        "application/pdf",
+        Some("report.pdf".into()),
+    )
+    .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(vec![42; 42_310]));
+    let actual = serde_json::to_value(
+        crate::history::SessionHistoryPromptAttachment::from_prompt_attachment(&attachment),
+    )
+    .unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("prompt-attachment-627.json")).unwrap();
+    assert_eq!(actual, expected);
+    let encoded = serde_json::to_vec(&actual).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&encoded)),
+        "2e85b5d92fb931f61713949a5f4cd390be0092197bf9609bd656b167e730d9f1"
+    );
+    let mut legacy = actual;
+    legacy.as_object_mut().unwrap().remove("size_bytes");
+    let decoded: crate::history::SessionHistoryPromptAttachment =
+        serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded.size_bytes, None);
 }

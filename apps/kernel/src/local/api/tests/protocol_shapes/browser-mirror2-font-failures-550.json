@@ -1,24 +1,3 @@
 {
   "local_protocol": 629,
   "peer_protocol": 232,
-  "allocation": "mirror unreleased539/147 additive, coordinator2026-10-16T04:55Z",
-  "max_failures": 128,
-  "descriptor_canonical": "[\"nativefailed\",\"normal\",\"400\",\"100%\",\"U+0-10FFFF\"]",
-  "descriptor_sha256": "c543ec63eb4582e3c52d9199a00044aeb11389b1999a786af904be3192c0f113",
-  "reset_header": {
-    "font_failures": [
-      "c543ec63eb4582e3c52d9199a00044aeb11389b1999a786af904be3192c0f113"
-    ]
-  },
-  "inherited_delta": {
-    "wire": 2,
-    "sequence": 2,
-    "ops": []
-  },
-  "cleared_delta": {
-    "wire": 2,
-    "sequence": 3,
-    "font_failures": [],
-    "ops": []
-  }
-}

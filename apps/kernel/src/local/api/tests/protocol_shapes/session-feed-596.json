@@ -85,13 +85,3 @@
     "MP-11"
   ],
   "local_protocol": 629,
-  "subscribe_with_heartbeat_interval": {
-    "attachment_id": "__waiting_room_inventory__",
-    "heartbeat_interval_ms": 1000,
-    "request_id": "request-1",
-    "resume_from_event_id": null,
-    "session_id": "__waiting_room_inventory__",
-    "subscription_scope": "waiting_room_inventory",
-    "type": "subscribe"
-  }
-}

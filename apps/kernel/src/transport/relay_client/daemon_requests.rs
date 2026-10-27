@@ -4,6 +4,7 @@ use super::request_errors::map_relay_error;
 #[cfg(test)]
 mod app_tests;
 mod prepare;
+pub(super) mod request_limits;
 pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
 pub(super) mod renewal_refusals;
 
@@ -31,7 +32,6 @@ use super::sender_identity::{
     validate_bound_service_sender, validate_browser_import_sender,
 };
 
-pub(super) const MAX_BROWSER_IMPORT_ENCRYPTED_BYTES: usize = 768 * 1024;
 const MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES: usize = 32;
 static ACTIVE_BROWSER_IMPORT_DELIVERIES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -90,6 +90,7 @@ pub(super) async fn handle_prepared_daemon_request(
         daemon_private_key,
         caller_identity,
         encrypted_request,
+        request_memory: _request_memory,
     } = prepared;
     let (request_kind, command_id, bind_import_response, result) = match message {
         ParsedRelayClientMessage::Request(request) => {
@@ -1213,7 +1214,7 @@ mod tests {
         );
         let plaintext =
             serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
-        assert!(plaintext.len() + 16 <= super::MAX_BROWSER_IMPORT_ENCRYPTED_BYTES);
+        assert!(plaintext.len() + 16 <= super::request_limits::SMALL_REQUEST_BYTES);
     }
 
     #[test]
@@ -1235,7 +1236,7 @@ mod tests {
         let plaintext =
             serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
         // AES-GCM adds a 16-byte tag to the plaintext.
-        assert!(plaintext.len() + 16 <= super::MAX_BROWSER_IMPORT_ENCRYPTED_BYTES);
+        assert!(plaintext.len() + 16 <= super::request_limits::SMALL_REQUEST_BYTES);
     }
 
     #[test]
