@@ -1044,7 +1044,14 @@ impl KernelRuntimeState {
             // A queue item is not a live executor. Recover the exact eligible
             // head through normal provider/project admission; do not advance
             // a different (possibly blocked) task on this task's authority.
+            // A leased agent's provider runs on its worker, where only the
+            // leased dispatch starts its queued prompts.
             if task.state == ExecutionState::Working
+                && self
+                    .owned
+                    .agent_store
+                    .get_agent(&task.agent_id)
+                    .is_ok_and(|agent| agent.remote_execution().is_none())
                 && self
                     .owned
                     .prompt_state_owner
