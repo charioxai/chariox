@@ -1157,6 +1157,57 @@ async fn a_finished_wait_belongs_to_the_command_that_was_submitted() {
     service.end_session("room-1");
 }
 
+#[tokio::test]
+async fn an_agent_is_admitted_after_a_finish_the_shell_already_reported() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    until("the first prompt", || async {
+        service.lock().terminals[&id].mark_tracking
+    })
+    .await;
+    let release = root.path().join("release");
+    let ended = root.path().join("ended");
+    let line = format!(
+        "(until [ -e {} ]; do sleep 0.01; done; touch {}; exit 1)\r",
+        release.display(),
+        ended.display()
+    );
+    assert!(
+        type_as(&service, &id, &TerminalActor::User, &line)
+            .await
+            .accepted
+    );
+    until("the user's command to run", || async {
+        service.lock().terminals[&id].command_in_flight
+    })
+    .await;
+    // This test runs on one thread and does not yield from here on, so the
+    // pump cannot read the shell's report that the command is over.
+    std::fs::write(&release, "").unwrap();
+    wait_blocking("the command to end", || ended.exists());
+    // The shell reports the end right after the command exits.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        service.lock().terminals[&id].command_in_flight,
+        "the pump has not read the finish report yet"
+    );
+    assert!(
+        type_as(&service, &id, &agent("a"), "(exit 5)\r")
+            .await
+            .accepted
+    );
+    service.end_session("room-1");
+}
+
+fn wait_blocking(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn finished_with(code: u32) -> Option<RoomTerminalEventKind> {
     Some(RoomTerminalEventKind::Finished {
         exit_code: Some(code),

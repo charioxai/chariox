@@ -300,6 +300,10 @@ impl RoomTerminalService {
         }
         let submits = input.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
         loop {
+            // Decide from what the shell has already reported, not from the
+            // state of the last tick: a command that just ended still looks
+            // like it drives the terminal until its report is read.
+            self.pump_pass(false);
             {
                 // Held until the input is written and the kernel knows about
                 // the command it starts.
