@@ -85,8 +85,21 @@ impl KernelRuntimeState {
         }
         let guarded_prompt_id = active_prompt.id().to_string();
         self.flush_provider_history(provider_run_id).await?;
+        // The settled turn always says why it failed. A failure without
+        // termination evidence, such as a rejected dispatch, is typed from its
+        // text but never becomes evidence of how the provider run ended. Login
+        // recovery keeps the same failure for when it ends in a failed turn.
+        let failure = failure_override
+            .or_else(|| {
+                provider_termination
+                    .as_ref()
+                    .and_then(|termination| termination.failure.clone())
+            })
+            .unwrap_or_else(|| {
+                crate::provider::ProviderFailure::classify(provider_run.adapter_key(), message)
+            });
         if self
-            .try_provider_auth_recovery(&provider_run, message, expected_prompt_id)
+            .try_provider_auth_recovery(&provider_run, message, failure.clone(), expected_prompt_id)
             .await?
         {
             return Ok(true);
@@ -97,19 +110,6 @@ impl KernelRuntimeState {
         } else {
             safe_message
         };
-
-        // The settled turn always says why it failed. A failure without
-        // termination evidence, such as a rejected dispatch, is typed from its
-        // text but never becomes evidence of how the provider run ended.
-        let failure = failure_override
-            .or_else(|| {
-                provider_termination
-                    .as_ref()
-                    .and_then(|termination| termination.failure.clone())
-            })
-            .unwrap_or_else(|| {
-                crate::provider::ProviderFailure::classify(provider_run.adapter_key(), message)
-            });
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,

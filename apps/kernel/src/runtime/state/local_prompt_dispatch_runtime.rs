@@ -763,8 +763,10 @@ impl KernelRuntimeState {
                 .owned
                 .provider_store
                 .get_run(&dispatch.provider_run_id)?;
+            let message = error.to_string();
+            let failure = crate::provider::ProviderFailure::classify(run.adapter_key(), &message);
             if self
-                .try_provider_auth_recovery(&run, &error.to_string(), Some(&dispatch.prompt_id))
+                .try_provider_auth_recovery(&run, &message, failure, Some(&dispatch.prompt_id))
                 .await?
             {
                 return Ok(());

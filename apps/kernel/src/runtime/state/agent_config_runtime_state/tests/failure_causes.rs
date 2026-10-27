@@ -1,6 +1,6 @@
 //! EA2-75: a failed turn says why, typed, on its outside event and in history.
 
-use super::automatic_substitutes::{failing_turn, FailingTurn};
+use super::automatic_substitutes::{failing_turn, failing_turn_on, FailingTurn};
 use crate::local::{
     EventRunState, EventTarget, LocalDaemonRequest, OutsideEventValue, SubscribeEventsRequest,
 };
@@ -10,7 +10,10 @@ const OVERLOADED: &str = "Provider prompt dispatch failed: Codex error [server_o
      Selected model is at capacity. Please try a different model.";
 
 async fn subscribed_failing_turn() -> FailingTurn {
-    let turn = failing_turn(&[]).await;
+    follow(failing_turn(&[]).await)
+}
+
+fn follow(turn: FailingTurn) -> FailingTurn {
     let target = EventTarget {
         kernel: turn.runtime.owned.config_projection.snapshot().daemon_id,
         session_id: turn.session_id.clone(),
@@ -177,6 +180,74 @@ async fn a_long_multiline_structured_error_stays_whole_in_events_history_and_tra
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
+    assert_eq!(failure.message, native);
+    assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
+    assert!(
+        provider_error_outputs(&turn).contains(&failure.notice()),
+        "the transcript entry carries the whole native error"
+    );
+}
+
+#[tokio::test]
+async fn a_long_auth_error_declined_at_login_recovery_stays_whole_in_events_history_and_transcript()
+{
+    let turn = follow(failing_turn_on("codex").await);
+    let native = format!(
+        "refresh_token_expired\n{}last line",
+        "native diagnostic\n".repeat(60)
+    );
+    assert!(native.len() > 1000);
+
+    // The structured output of the provider reports the authentication error;
+    // login recovery takes the turn, so nothing settles it yet.
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(crate::provider::provider_coded_failure_text(
+                    "Codex",
+                    "unauthorized",
+                    &native,
+                )),
+                explicit_provider_error: true,
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        turn.active_prompt().is_some(),
+        "login recovery holds the turn"
+    );
+    let recovery = turn
+        .runtime
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap()
+        .active_interaction_for_agent(&turn.agent_id)
+        .expect("the owner is asked to log in")
+        .id()
+        .to_string();
+
+    turn.runtime
+        .resolve_runtime_interaction(&turn.session_id, &recovery, "cancel", None)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while turn.active_prompt().is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("declining the login settles the turn");
+
+    turn.assert_turn_failed();
+    let failure = followed_error_failure(&turn).expect("typed cause");
+    assert_eq!(failure.cause, ProviderFailureCause::SignInRequired);
     assert_eq!(failure.message, native);
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
     assert!(
