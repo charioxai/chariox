@@ -422,11 +422,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if t.wait.is_some() {
                 return Err(error("Wait already accepted. End this provider turn now without more tools; the kernel delivers the next source or deadline turn."));
             }
-            if ids.is_empty()
-                && t.obligations
-                    .iter()
-                    .all(|o| !matches!(o.status.as_str(), "open" | "settling" | "failed"))
-            {
+            if ids.is_empty() && t.obligations.iter().all(|o| !o.requires_resolution()) {
                 return Err(error(
                     "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
                 ));
@@ -451,9 +447,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if selected.len() != ids.len()
                 || t.obligations
                     .iter()
-                    .filter(|o| {
-                        o.status == "open" || o.status == "failed" || o.status == "settling"
-                    })
+                    .filter(|o| o.requires_resolution())
                     .any(|o| {
                         !selected
                             .iter()
@@ -573,7 +567,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
                     && t.obligations
                         .iter()
-                        .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+                        .filter(|o| o.requires_resolution())
                         .all(|o| {
                             regs.iter().any(|r| {
                                 w.registration_ids.contains(&r.id)
@@ -609,9 +603,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let open = t
                     .obligations
                     .iter()
-                    .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
-                let plain = is_plain(tx, &t)?;
-                if has_answer && (plain || (!open && t.wait.is_none())) {
+                    .any(AgentObligation::requires_resolution);
+                if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
                 } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
@@ -739,7 +732,7 @@ fn yield_refusal(
     let unresolved = t
         .obligations
         .iter()
-        .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+        .any(AgentObligation::requires_resolution);
     if !foreign.is_empty() && !unresolved {
         for other in tasks(tx)?.into_iter().filter(|o| {
             o.task_id != t.task_id

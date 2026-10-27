@@ -425,7 +425,7 @@ fn covered_wait(
         && w.registration_ids.iter().all(live)
         && t.obligations
             .iter()
-            .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            .filter(|o| o.requires_resolution())
             .all(|o| {
                 regs.iter().any(|r| {
                     r.live

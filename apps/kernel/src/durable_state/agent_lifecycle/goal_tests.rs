@@ -155,6 +155,17 @@ fn a12_rejected_dispatch_can_complete_a_refusal_goal() {
         t.obligations[0].status, "failed",
         "completion must preserve the refusal receipt"
     );
+    assert_eq!(
+        f.task(),
+        t,
+        "a settled refusal must survive ledger decoding"
+    );
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    assert_eq!(
+        reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
+        t,
+        "reopening must preserve the completed goal and rejected receipt"
+    );
 }
 
 #[test]

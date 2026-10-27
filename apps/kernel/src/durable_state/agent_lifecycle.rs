@@ -399,7 +399,7 @@ fn decode_task(
     if t.state == ExecutionState::Done
         && t.obligations
             .iter()
-            .any(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
+            .any(AgentObligation::requires_resolution)
     {
         return Err(error(
             "done has unfinished obligations; quarantine required",
