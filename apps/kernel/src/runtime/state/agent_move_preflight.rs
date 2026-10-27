@@ -97,20 +97,21 @@ impl KernelRuntimeState {
         let Some(native) = native else {
             return Ok(());
         };
-        let account = home_agent
-            .map(|agent| {
-                let owner = crate::account_profile::provider_account_authority_owner_user_id(
-                    &self.owned.config_projection.snapshot(),
-                    agent.owner_user_id(),
-                );
-                let profile = agent.provider_account_profile().to_string();
-                let environment = self
-                    .owned
-                    .provider_account_profiles
-                    .resolve_environment(&owner, "codex", &profile)?;
-                Ok::<_, DaemonError>((owner, profile, environment))
-            })
-            .transpose()?;
+        let account = if let Some(agent) = home_agent {
+            let owner = self
+                .with_app_side_effect(|app| {
+                    app.provider_account_owner_for_execution(agent.session_id(), Some(agent.id()))
+                })
+                .await?;
+            let profile = agent.provider_account_profile().to_string();
+            let environment = self
+                .owned
+                .provider_account_profiles
+                .resolve_environment(&owner, "codex", &profile)?;
+            Some((owner, profile, environment))
+        } else {
+            None
+        };
         tokio::task::spawn_blocking(move || {
             native.validate_target()?;
             if let Some((owner, profile, environment)) = account {
