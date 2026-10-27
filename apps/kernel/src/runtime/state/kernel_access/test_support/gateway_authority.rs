@@ -16,7 +16,9 @@ fn state_with_live_grant() -> (KernelRuntimeState, String) {
     state.owned.kernel_access.lock().unwrap().grants.insert(
         "gateway-grant".into(),
         Grant {
+            covered: Vec::new(),
             summary: KernelAccessGrant {
+                covered: Vec::new(),
                 grant_id: "gateway-grant".into(),
                 owner_user_id: "local".into(),
                 holder_pid: holder.pid,

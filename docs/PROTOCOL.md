@@ -3660,6 +3660,27 @@ Workflow trigger and deployment direction:
   sub-process, asks again) and `kernel_access_already_granted` (a second access
   request while covered).
 
+  Protocol 641 (peer protocol unchanged) adds `CoverKernelAccessProcess { pid, start? }`,
+  over the Unix socket only. A caller the grant covers names a background process it
+  started; the kernel reads the process's identity itself (pid, start time, executable)
+  and the grant then covers that process, and the programs it starts, until the process
+  exits or the grant ends, even after its parent is gone. There is no token to copy.
+  The reply is `KernelAccessCovered { grant_id, process: { pid, start, executable } }`.
+  The target must be a running process of the kernel's user that the grant reaches now:
+  the holder, a covered process or a descendant of either. `start`, when given, must be
+  the target's start time. A cover adds no authority and cannot be used from a sudo
+  window. A grant covers at most 16 named processes. Each refusal has its own code:
+  `kernel_access_not_covered` (the caller is not covered), `kernel_access_ended`,
+  `kernel_access_cover_gone` (no such running process), `kernel_access_cover_identity_changed`
+  (`start` differs), `kernel_access_cover_kernel_process` (the kernel or a process it
+  started), `kernel_access_cover_outside` (not reached by the grant, another user, pid 1)
+  and `kernel_access_cover_limit`. `KernelAccessGrant.covered` lists the running covered
+  processes (`pid`, `start`, `executable`) in `ListKernelAccessGrants` for every client.
+  The audit log records each `covered` and `cover_ended` (`process_exit`) with the grant
+  id and the process. A grant that lasts until its holder exits keeps its covered
+  processes across a kernel restart, each re-checked by identity. A process that forks
+  twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
+
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
   time and a verified answer starts a new term. These terms apply to

@@ -25,6 +25,11 @@ export const COMMANDS: readonly CommandSpec[] = [
     summary: "ask the user to approve access for you; prints the grant",
   },
   { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended or not_requested" },
+  {
+    name: "access cover",
+    flags: [{ name: "--pid", value: "PID", required: true }, SOCKET],
+    summary: "a background process you start (nohup tool &) loses your access when its parent exits: run this with $! right after starting it, or from the process itself; not for a process that forks twice (its pid changes)",
+  },
   { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   {
     name: "request",
@@ -95,7 +100,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   },
 ]
 
-const REFUSED = ["events_refused", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["events_refused", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
 const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"]
 

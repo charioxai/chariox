@@ -290,7 +290,11 @@ impl CommandRouter {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
-        if matches!(request, LocalDaemonRequest::RequestKernelAccess(_)) {
+        if matches!(
+            request,
+            LocalDaemonRequest::RequestKernelAccess(_)
+                | LocalDaemonRequest::CoverKernelAccessProcess(_)
+        ) {
             return Err(error(format!(
                 "request access through ws+unix://{}; grants cannot be used over TCP or relay",
                 self.kernel_local_socket_path().display()

@@ -384,31 +384,45 @@ fn kernel_access_background_process() {
     ) else {
         return;
     };
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-        let root = Path::new(&root);
-        let go = root.join(format!("bg-{label}-go"));
-        let result = root.join(format!("bg-{label}-result"));
-        let started = std::time::Instant::now();
-        while root.join("run/k.sock").exists() && started.elapsed() < Duration::from_secs(90) {
-            if root.join(format!("bg-{label}-exit")).exists() {
-                return;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = Path::new(&root);
+            let go = root.join(format!("bg-{label}-go"));
+            let result = root.join(format!("bg-{label}-result"));
+            let started = std::time::Instant::now();
+            while root.join("run/k.sock").exists() && started.elapsed() < Duration::from_secs(90) {
+                if root.join(format!("bg-{label}-exit")).exists() {
+                    return;
+                }
+                let Ok(body) = std::fs::read_to_string(&go) else {
+                    sleep(Duration::from_millis(20)).await;
+                    continue;
+                };
+                let _ = std::fs::remove_file(&go);
+                let request = if body.trim().is_empty() {
+                    serde_json::json!({"GetSessionState": {"session_id": SESSION}})
+                } else {
+                    serde_json::from_str(&body).unwrap()
+                };
+                let (mut socket, _) = client_async(
+                    "ws://localhost/kernel",
+                    tokio::net::UnixStream::connect(root.join("run/k.sock"))
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+                socket
+                    .send(Message::Text(frame(request).to_string().into()))
+                    .await
+                    .unwrap();
+                let reply = response(&mut socket, "request").await;
+                std::fs::write(&result, reply.to_string()).unwrap();
             }
-            let Ok(body) = std::fs::read_to_string(&go) else {
-                sleep(Duration::from_millis(20)).await;
-                continue;
-            };
-            let _ = std::fs::remove_file(&go);
-            let request = if body.trim().is_empty() {
-                serde_json::json!({"GetSessionState": {"session_id": SESSION}})
-            } else {
-                serde_json::from_str(&body).unwrap()
-            };
-            let (mut socket, _) = client_async("ws://localhost/kernel", tokio::net::UnixStream::connect(root.join("run/k.sock")).await.unwrap()).await.unwrap();
-            socket.send(Message::Text(frame(request).to_string().into())).await.unwrap();
-            let reply = response(&mut socket, "request").await;
-            std::fs::write(&result, reply.to_string()).unwrap();
-        }
-    });
+        });
 }
 
 #[test]

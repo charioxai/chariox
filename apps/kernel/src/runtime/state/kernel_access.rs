@@ -187,7 +187,13 @@ impl KernelRuntimeState {
     /// is gone, or whose pid was reused, ends its grant now.
     pub(crate) fn restore_kernel_access_grants(&self) -> Result<usize, DaemonError> {
         let mut restored = 0;
-        for (id, summary, holder) in recorded_until_exit_grants(&self.owned.durable_state_store)? {
+        for recorded in recorded_until_exit_grants(&self.owned.durable_state_store)? {
+            let RecordedGrant {
+                id,
+                summary,
+                holder,
+                covered,
+            } = recorded;
             match holder.filter(ProcessIdentity::alive) {
                 Some(holder) => {
                     self.owned
@@ -200,6 +206,10 @@ impl KernelRuntimeState {
                             Grant {
                                 summary,
                                 holder,
+                                covered: covered
+                                    .into_iter()
+                                    .filter(ProcessIdentity::alive)
+                                    .collect(),
                                 clock: None,
                             },
                         );
@@ -241,7 +251,7 @@ impl KernelRuntimeState {
             .filter_map(|id| state.grants.remove(&id))
             .collect::<Vec<_>>();
         for grant in &revoked {
-            state.remember_ended(&grant.holder);
+            state.remember_ended(grant);
         }
         let pending_keys = state
             .pending
@@ -333,9 +343,25 @@ impl KernelRuntimeState {
             .filter_map(|(id, reason)| state.grants.remove(&id).map(|grant| (grant, reason)))
             .collect::<Vec<_>>();
         for (grant, _) in &removed {
-            state.remember_ended(&grant.holder);
+            state.remember_ended(grant);
         }
+        let exited = state
+            .grants
+            .values_mut()
+            .flat_map(|grant| {
+                let (live, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut grant.covered)
+                    .into_iter()
+                    .partition(ProcessIdentity::alive);
+                grant.covered = live;
+                gone.into_iter()
+                    .map(|process| (grant.summary.clone(), process))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         drop(state);
+        for (grant, process) in exited {
+            let _ = self.audit_cover(&grant, &process, "cover_ended", Some("process_exit"));
+        }
         let _ = self.settle_owed_ends(None, None);
         for (grant, reason) in removed {
             self.retire_notification_grants(Some(&grant.summary.grant_id));
@@ -372,7 +398,7 @@ impl KernelRuntimeState {
             .grants
             .values()
             .filter_map(|grant| {
-                let distance = chain.iter().position(|p| *p == grant.holder)?;
+                let distance = grant.covering(&chain)?;
                 grant.holder.alive().then(|| (distance, grant.clone()))
             })
             .collect();
@@ -404,7 +430,10 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .grants
             .get(id)
-            .is_some_and(|grant| grant.holder.contains(peer))
+            .is_some_and(|grant| {
+                grant.holder.contains(peer)
+                    || grant.covered.iter().any(|process| process.contains(peer))
+            })
     }
 
     pub(crate) fn access_grant_summary(&self, id: &str) -> Option<KernelAccessGrant> {
@@ -426,7 +455,7 @@ impl KernelRuntimeState {
             .grants
             .values()
             .filter(|grant| grant.summary.owner_user_id == owner)
-            .map(|grant| grant.summary.clone())
+            .map(Grant::listed)
             .collect()
     }
 
@@ -460,6 +489,7 @@ impl KernelRuntimeState {
         let id = format!("access-{:016x}", rand::random::<u64>());
         let key = (holder.pid, holder.start, holder.executable.clone());
         let summary = KernelAccessGrant {
+            covered: Vec::new(),
             grant_id: id.clone(),
             owner_user_id: self.owned.config_projection.local_owner_user_id(),
             holder_pid: holder.pid,
@@ -542,6 +572,7 @@ impl KernelRuntimeState {
             Grant {
                 summary,
                 holder,
+                covered: Vec::new(),
                 clock,
             },
         );
@@ -686,25 +717,58 @@ impl KernelRuntimeState {
     }
 }
 
+mod cover;
 mod policy;
 #[cfg(test)]
 pub(super) mod test_support;
 
-/// Grants that last until their holder exits and were never revoked, each
-/// with the holder process recorded when it was granted.
+/// A grant that lasts until its holder exits and was never revoked: the holder and the
+/// background processes recorded as covered, as they were when last written.
+struct RecordedGrant {
+    id: String,
+    summary: KernelAccessGrant,
+    holder: Option<ProcessIdentity>,
+    covered: Vec<ProcessIdentity>,
+}
+
 fn recorded_until_exit_grants(
     store: &crate::durable_state::DurableKernelStateStore,
-) -> Result<Vec<(String, KernelAccessGrant, Option<ProcessIdentity>)>, DaemonError> {
+) -> Result<Vec<RecordedGrant>, DaemonError> {
     let mut recorded = std::collections::BTreeMap::new();
     for event in store.load_events_by_kind("kernel_access.grant")? {
         let Some(id) = event.subject_id else { continue };
         match event.payload["outcome"].as_str() {
             Some("granted") => {
-                if let Ok(grant) =
+                if let Ok(summary) =
                     serde_json::from_value::<KernelAccessGrant>(event.payload["grant"].clone())
                 {
                     let holder = serde_json::from_value(event.payload["holder"].clone()).ok();
-                    recorded.insert(id, (grant, holder));
+                    recorded.insert(
+                        id.clone(),
+                        RecordedGrant {
+                            id,
+                            summary,
+                            holder,
+                            covered: Vec::new(),
+                        },
+                    );
+                }
+            }
+            Some("covered") => {
+                if let (Some(grant), Ok(process)) = (
+                    recorded.get_mut(&id),
+                    serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
+                ) {
+                    grant.covered.retain(|known| *known != process);
+                    grant.covered.push(process);
+                }
+            }
+            Some("cover_ended") => {
+                if let (Some(grant), Ok(process)) = (
+                    recorded.get_mut(&id),
+                    serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
+                ) {
+                    grant.covered.retain(|known| *known != process);
                 }
             }
             Some("revoked" | "expired") => {
@@ -714,9 +778,8 @@ fn recorded_until_exit_grants(
         }
     }
     Ok(recorded
-        .into_iter()
-        .filter(|(_, (grant, _))| grant.term == KernelAccessTerm::UntilHolderExits)
-        .map(|(id, (grant, holder))| (id, grant, holder))
+        .into_values()
+        .filter(|grant| grant.summary.term == KernelAccessTerm::UntilHolderExits)
         .collect())
 }
 
@@ -727,7 +790,7 @@ pub(crate) fn grant_inboxes_to_keep(
 ) -> Result<Vec<String>, DaemonError> {
     Ok(recorded_until_exit_grants(store)?
         .into_iter()
-        .filter(|(_, _, holder)| holder.as_ref().is_some_and(ProcessIdentity::alive))
-        .map(|(id, ..)| id)
+        .filter(|grant| grant.holder.as_ref().is_some_and(ProcessIdentity::alive))
+        .map(|grant| grant.id)
         .collect())
 }

@@ -288,18 +288,19 @@ pub use api::{
     RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
 pub use api::{
-    DictationCommand, DictationContext, DictationKeyState, DictationModelState, DictationProvider,
-    DictationRequest, DictationResult, DictationStatus, DICTATION_MAX_AUDIO_BYTES,
-    DICTATION_MAX_CHUNK_BYTES, DICTATION_SAMPLE_RATE_HZ,
-};
-pub use api::{
-    ExtendKernelSudoRequest, ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel,
-    GatewayKernelStatus, GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest,
-    KernelAccessGrant, KernelDirectoryEntry, KernelFileKind, KernelFileStat, KernelSudoTurn,
+    CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest,
+    ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
+    GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant,
+    KernelDirectoryEntry, KernelFileKind, KernelFileStat, KernelSudoTurn,
     ListGatewayKernelsRequest, ListKernelAccessGrantsRequest, ListKernelDirectoryRequest,
     OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest, RequestKernelAccessRequest,
     RequestKernelSudoRequest, RevokeKernelAccessGrantRequest, StatKernelFileRequest,
     WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
+};
+pub use api::{
+    DictationCommand, DictationContext, DictationKeyState, DictationModelState, DictationProvider,
+    DictationRequest, DictationResult, DictationStatus, DICTATION_MAX_AUDIO_BYTES,
+    DICTATION_MAX_CHUNK_BYTES, DICTATION_SAMPLE_RATE_HZ,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,

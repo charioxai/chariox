@@ -271,7 +271,9 @@ The kernel identifies the connecting process through the OS, which works only on
 
 MP-08 / MP-10 / MP-11: default Claude attribution also recognizes a still-running native version in the same configured `claude/versions` installation after the launch symlink moves to a newer version. Version names and canonical installation paths are checked; unrelated installations, arbitrary basenames and symlinks escaping that directory do not qualify. This only selects and labels an OS ancestor. It neither grants access nor replaces human passkey confirmation.
 
-**Limits.** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init` and lose the grant, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`, open question 5).
+**Covering a background process (protocol 641).** A process the grant covers can name a background process it started (`chariox access cover --pid PID`, right after starting it or from the process itself). The kernel records the process's identity (pid, start time, executable) with the grant, and the process and the programs it starts stay covered after their parent exits, until the process exits or the grant ends. This keeps D9: no token, nothing to copy, and the cover adds no authority, because only a process the grant already reaches can be named. The kernel, the programs it starts, other users' processes and processes outside the grant are refused; a grant covers at most 16 named processes. A process that forks twice (a double fork) gets a new pid before it can be named, so it stays uncovered.
+
+**Limits.** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init` and lose the grant unless they were covered by name, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`, open question 5).
 
 ### 6.2 Local-kernel authority (MP-08 / MP-10 / MP-11)
 

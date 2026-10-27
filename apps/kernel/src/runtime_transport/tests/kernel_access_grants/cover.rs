@@ -40,12 +40,16 @@ async fn call(kernel: &Kernel, label: &str, request: Option<Value>) -> Value {
     let _ = std::fs::remove_file(kernel.root.join(format!("bg-{label}-result")));
     std::fs::write(
         kernel.root.join(format!("bg-{label}-go")),
-        request.map(|request| request.to_string()).unwrap_or_default(),
+        request
+            .map(|request| request.to_string())
+            .unwrap_or_default(),
     )
     .unwrap();
     timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(text) = std::fs::read_to_string(kernel.root.join(format!("bg-{label}-result"))) {
+            if let Ok(text) =
+                std::fs::read_to_string(kernel.root.join(format!("bg-{label}-result")))
+            {
                 break serde_json::from_str(&text).unwrap();
             }
             sleep(Duration::from_millis(10)).await;
@@ -80,7 +84,10 @@ async fn a_covered_process_keeps_a_background_process_covered_by_identity() {
     let reply = &covered["response"]["KernelAccessCovered"];
     assert_eq!(reply["process"]["pid"], p1, "{covered}");
     assert_eq!(reply["process"]["start"], inspect(p1).unwrap().0.start);
-    assert_eq!(reply["process"]["executable"], inspect(p1).unwrap().0.executable);
+    assert_eq!(
+        reply["process"]["executable"],
+        inspect(p1).unwrap().0.executable
+    );
     assert_eq!(covered_pids(&mut holder), vec![u64::from(p1)]);
 
     holder.end_shell("p1");
@@ -89,9 +96,15 @@ async fn a_covered_process_keeps_a_background_process_covered_by_identity() {
     orphaned(p2, holder_pid).await;
 
     let admitted = call(&kernel, "p1", None).await;
-    assert!(admitted["error"].is_null(), "covered orphan refused: {admitted}");
+    assert!(
+        admitted["error"].is_null(),
+        "covered orphan refused: {admitted}"
+    );
     let refused = call(&kernel, "p2", None).await;
-    assert_eq!(refused["error"]["code"], "kernel_access_not_covered", "{refused}");
+    assert_eq!(
+        refused["error"]["code"], "kernel_access_not_covered",
+        "{refused}"
+    );
 
     // The process exiting ends the cover at once.
     std::fs::write(kernel.root.join("bg-p1-exit"), "").unwrap();
@@ -119,7 +132,9 @@ async fn the_grant_ending_ends_the_cover_of_a_background_process() {
         .request(serde_json::json!({"RevokeKernelAccessGrant": {"grant_id": grant_id}}))
         .await;
     assert!(revoked["error"].is_null(), "{revoked}");
-    let ended = timeout(Duration::from_secs(2), call(&kernel, "p1", None)).await.unwrap();
+    let ended = timeout(Duration::from_secs(2), call(&kernel, "p1", None))
+        .await
+        .unwrap();
     assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
 }
 
@@ -128,7 +143,10 @@ async fn cover_only_names_processes_the_grant_already_covers() {
     let mut kernel = Kernel::start().await;
     let mut stranger = Client::start(&kernel.root);
     let self_cover = stranger.cover(stranger.child.id());
-    assert_eq!(self_cover["error"]["code"], "kernel_access_not_covered", "{self_cover}");
+    assert_eq!(
+        self_cover["error"]["code"], "kernel_access_not_covered",
+        "{self_cover}"
+    );
 
     let mut holder = Client::start(&kernel.root);
     let _grant = grant(&mut kernel, &mut holder).await;
@@ -141,19 +159,37 @@ async fn cover_only_names_processes_the_grant_already_covers() {
     for (target, start, code) in [
         (stranger.child.id(), None, "kernel_access_cover_outside"),
         (1, None, "kernel_access_cover_outside"),
-        (kernel.child.id(), None, "kernel_access_cover_kernel_process"),
-        (own, Some(real.start + 1), "kernel_access_cover_identity_changed"),
+        (
+            kernel.child.id(),
+            None,
+            "kernel_access_cover_kernel_process",
+        ),
+        (
+            own,
+            Some(real.start + 1),
+            "kernel_access_cover_identity_changed",
+        ),
         (gone_pid, None, "kernel_access_cover_gone"),
     ] {
-        let refused = holder.request(serde_json::json!({"CoverKernelAccessProcess": {"pid": target, "start": start}}));
+        let refused = holder.request(
+            serde_json::json!({"CoverKernelAccessProcess": {"pid": target, "start": start}}),
+        );
         assert_eq!(refused["error"]["code"], code, "pid {target}: {refused}");
     }
     assert!(covered_pids(&mut holder).is_empty());
 
     // A covered process cannot cover a process the grant does not reach.
     assert!(holder.cover(own)["error"].is_null());
-    let overreach = call(&kernel, "own", Some(serde_json::json!({"CoverKernelAccessProcess": {"pid": stranger.child.id()}}))).await;
-    assert_eq!(overreach["error"]["code"], "kernel_access_cover_outside", "{overreach}");
+    let overreach = call(
+        &kernel,
+        "own",
+        Some(serde_json::json!({"CoverKernelAccessProcess": {"pid": stranger.child.id()}})),
+    )
+    .await;
+    assert_eq!(
+        overreach["error"]["code"], "kernel_access_cover_outside",
+        "{overreach}"
+    );
     assert_eq!(covered_pids(&mut holder), vec![u64::from(own)]);
 }
 

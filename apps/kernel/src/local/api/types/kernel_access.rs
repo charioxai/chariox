@@ -137,6 +137,26 @@ pub struct RequestKernelAccessRequest {
     pub term: Option<KernelAccessTerm>,
 }
 
+/// Protocol 641: a process the grant already covers asks the grant to go on covering a
+/// background process it started, by identity, after that process's parent is gone. Over the
+/// Unix socket only. A process that forks twice changes its pid and can't be named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverKernelAccessProcessRequest {
+    pub pid: u32,
+    /// The process start time the caller saw; the request is refused if the pid now has another.
+    #[serde(default)]
+    pub start: Option<u64>,
+}
+
+/// Protocol 641: a process a grant covers by name: its pid, start time and executable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoveredProcess {
+    pub pid: u32,
+    pub start: u64,
+    pub executable: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListKernelAccessGrantsRequest {}
@@ -165,6 +185,9 @@ pub struct KernelAccessGrant {
     /// Absent for `UntilHolderExits`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
+    /// Protocol 641: the live background processes the grant covers by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covered: Vec<CoveredProcess>,
 }
 
 /// Protocol 415: a grant holder requests a human-authorized turn. Identity and

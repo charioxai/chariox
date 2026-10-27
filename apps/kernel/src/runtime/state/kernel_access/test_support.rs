@@ -3,6 +3,7 @@ use super::*;
 mod approval;
 mod capability_room_authority;
 mod control_authority;
+mod cover;
 mod credential_authority;
 mod gateway_authority;
 mod inherited_grants;
@@ -20,7 +21,9 @@ impl KernelRuntimeState {
         let holder = process::inspect(std::process::id()).unwrap().0;
         let id = format!("queue-access-{:016x}", rand::random::<u64>());
         let grant = Grant {
+            covered: Vec::new(),
             summary: KernelAccessGrant {
+                covered: Vec::new(),
                 grant_id: id.clone(),
                 owner_user_id: session.owner_user_id().into(),
                 holder_pid: holder.pid,
@@ -262,7 +265,9 @@ async fn until_exit_grant_outlives_every_deadline_but_not_its_holder() {
     .runtime_state();
     let live_holder = process::inspect(std::process::id()).unwrap().0;
     let grant = |id: &str, term, clock, holder: ProcessIdentity| Grant {
+        covered: Vec::new(),
         summary: KernelAccessGrant {
+            covered: Vec::new(),
             grant_id: id.into(),
             owner_user_id: "local".into(),
             holder_pid: holder.pid,
@@ -352,6 +357,7 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
         .unwrap();
     let doomed_holder = process::inspect(child.id()).unwrap().0;
     let summary = |id: &str, term, holder: &ProcessIdentity| KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: id.into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,
@@ -461,6 +467,7 @@ fn failed_revocation(
     let state = router.runtime_state();
     let holder = process::inspect(std::process::id()).unwrap().0;
     let summary = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "kept".into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,
@@ -550,6 +557,7 @@ async fn a_revocation_the_audit_could_not_append_is_written_by_the_retry() {
     let state = router.runtime_state();
     let holder = process::inspect(std::process::id()).unwrap().0;
     let summary = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "kept".into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,
@@ -601,6 +609,7 @@ async fn the_sweep_writes_a_revocation_the_audit_could_not_append() {
     let state = router.runtime_state();
     let holder = process::inspect(std::process::id()).unwrap().0;
     let summary = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "kept".into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,

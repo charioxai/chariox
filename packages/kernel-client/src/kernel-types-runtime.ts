@@ -497,7 +497,11 @@ export type KernelAccessGrant = {
   term: KernelAccessTerm
   /** Absent for `until_holder_exits`. */
   expires_at_ms?: number | null
+  /** Protocol 641: the background processes the grant covers by name; absent when none. */
+  covered?: KernelCoveredProcess[]
 }
+export type KernelCoveredProcess = { pid: number; start: number; executable: string }
+export type KernelAccessCoveredResponse = { KernelAccessCovered: { grant_id: string; process: KernelCoveredProcess } }
 export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
