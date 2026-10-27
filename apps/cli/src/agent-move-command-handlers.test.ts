@@ -132,3 +132,25 @@ test("/agent move keeps following the Room it was requested in after a Room swit
   await until(() => h.flashed.at(-1)?.tone === "error")
   assert.ok(h.flashed.at(-1)?.message.startsWith("move of reviewer home failed"), "the failure of the Move in its own Room is reported")
 })
+
+test("/agent move applies nothing when the Room is switched during the final refresh", async () => {
+  let shown = "room"
+  const applied: string[] = []
+  const panes: string[] = []
+  let releaseRead: () => void = () => {}
+  const h = harness({
+    sessionState: () => ({ id: shown } as never),
+    refreshSessionState: id => new Promise(resolve => { releaseRead = () => resolve({ id, agents: [] } as never) }),
+    applySessionState: session => { applied.push(session.id) },
+    refreshAgentPanes: async session => { panes.push(session.id) },
+  })
+  await handleAgentMoveCommand(h.deps, ["move", "kernel-b3"])
+  h.answers[0]!.resolve({ id: "agent-1", agent_move: null })
+  await until(() => h.flashed.some(entry => entry.message === "moved reviewer to kernel-b3"))
+  shown = "other-room"
+  releaseRead()
+  await new Promise(resolve => setTimeout(resolve, 5))
+  assert.ok(applied.length === 0, `applied ${applied.join(",")} over the shown Room`)
+  assert.ok(panes.length === 0, `refreshed panes of ${panes.join(",")} for a Room that is not shown`)
+  assert.ok(h.flashed.every(entry => entry.tone === "info"), "reported an error for a Room switch")
+})

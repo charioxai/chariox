@@ -84,15 +84,21 @@ async function reportMove(deps: AgentMoveCommandHandlerDeps, roomId: string, age
 async function showMoved(deps: AgentMoveCommandHandlerDeps, roomId: string, label: string, where: string): Promise<void> {
   deps.flashFooter(`moved ${label} ${where}`, "info")
   // A Room the user has left refreshes when it is selected again.
-  if (deps.sessionState().id !== roomId) return
+  if (!isShown(deps, roomId)) return
   try {
     const session = await deps.refreshSessionState(roomId)
+    // The user may have switched Room during the read; applying would replace the shown Room with this one.
+    if (!isShown(deps, roomId)) return
     deps.applySessionState(session)
     await deps.refreshAgentPanes(session)
     deps.rebuildTranscript()
   } catch (error) {
     deps.flashFooter(deps.formatError(error), "error")
   }
+}
+
+function isShown(deps: AgentMoveCommandHandlerDeps, roomId: string): boolean {
+  return deps.sessionState().id === roomId
 }
 
 /** Follows a Move the kernel holds until it moves the agent, fails or is cancelled. */
