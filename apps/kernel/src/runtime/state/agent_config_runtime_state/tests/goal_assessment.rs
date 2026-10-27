@@ -787,9 +787,7 @@ async fn assessment_marks_the_full_one_character_count_as_complete() {
     assert!(!context.contains("PRIVATE_MCP_OUTPUT"));
     assert!(context.contains("even one character"));
     assert!(context.contains("never treat it as truncated"));
-    assert!(context.contains("Interpret latest_public_answer_messages in that objective's context"));
-    assert!(context.contains("a requested concise result does not need to repeat the request's nouns, labels or explanation"));
-    assert!(context.contains("Render final_answer faithfully in the owner's requested form"));
+    assert!(context.contains("that complete result is the answer, not a plan or a missing report"));
     assert!(context.contains("a narrative of prerequisite authority, blocking or resume steps"));
 }
 
