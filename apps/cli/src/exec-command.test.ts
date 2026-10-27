@@ -253,3 +253,22 @@ test("exec preserves the interrupt exit when canceled pipes report incomplete ou
   signals.emit("SIGINT")
   assert.equal(await code, 130)
 })
+
+for (const [code, probedLoss] of [
+  ["kernel_request_timeout", false], ["kernel_connection_lost", false],
+  ["kernel_outcome_unknown", false], ["kernel_access_ended", true],
+] as const) test(`uncertain open retains its Room after ${code} (probe=${probedLoss})`, async () => {
+  let ended = false
+  await assert.rejects(runExec({ workspace: "/work", command: ["cat"] }, async body => {
+    if ("RelayStatus" in body) return capabilities()
+    if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
+    if ("EndSession" in body) { ended = true; return {} }
+    throw probedLoss ? new CommandFailure(code, "grant ended after an uncertain write")
+      : new LocalIpcError("handle kernel response", "gateway outcome is unknown", code)
+  }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
+    assert.ok(error instanceof CommandFailure)
+    assert.match(String(error.details?.next_step), /retained Room/)
+    return true
+  })
+  assert.equal(ended, false)
+})

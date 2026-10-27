@@ -154,9 +154,11 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     if (outcome.kind === "failed") throw new Error(outcome.message)
     return outcome.kind === "exited" ? outcome.code : 128 + outcome.signal
   } catch (error) {
-    const definiteRefusal = error instanceof LocalIpcError
+    // A probed grant-ending loss can follow admission; it is not a server refusal.
+    const uncertainOpen = ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"].includes(codeOf(error) ?? "")
+    const definiteRefusal = !uncertainOpen && (error instanceof LocalIpcError
       ? error.operation === "handle kernel response" && !lostInFlight(error)
-      : /^(exec_|terminal_|kernel_access_)/.test(codeOf(error) ?? "")
+      : /^(exec_|terminal_)/.test(codeOf(error) ?? ""))
     if (!execId && definiteRefusal) completed = true
     if (execId && codeOf(error) === "exec_interrupted" && interrupted !== undefined) {
       try {
