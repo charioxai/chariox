@@ -43,6 +43,7 @@ export type KernelBrowserCommand =
   | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
+  | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }
   | { op: "poll" | "unsubscribe"; subscription_id: string; generation: number }
 export type KernelBrowserRequest = { KernelBrowser: { command: KernelBrowserCommand } }
 export type KernelBrowserFrame = {
@@ -75,6 +76,10 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
 export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
+export type KernelBrowserDialog = {
+  dialog_id: string; tab_id: string; generation: number; document_id: string;
+  kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; origin: string; default_prompt?: string
+}
 export type KernelBrowserResult = {
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
@@ -83,6 +88,8 @@ export type KernelBrowserResult = {
   reachable_by_focused_agent?: boolean;
   // Protocol 556: a `state_wait` reply's opaque revision, echoed back as the next `after`.
   revision?: string
+  // Protocol 630/233: absent on older kernels.
+  dialogs?: KernelBrowserDialog[]
 } | KernelBrowserFrame | UserDomainGrantEvent
 
 // MP-08 / MP-11: local446; same typed surface for MCP and terminal transports.

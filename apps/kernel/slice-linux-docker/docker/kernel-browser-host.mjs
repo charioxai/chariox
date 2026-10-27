@@ -59,11 +59,11 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
-  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) ||
+  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
-    request.params?.op === 'state_signal' ||
+    request.params?.op === 'state_signal' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
     ['chrome_window_follow', 'note_selection'].includes(request.params?.op))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
@@ -488,10 +488,45 @@ export class KernelBrowserHost {
   tabState() {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
+    const dialogs = this.pendingDialogs();
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
+  }
+  pendingDialogs() {
+    const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
+    return (this.browser?.dialogDefaults?.pending() ?? []).flatMap(({ target_id, ...dialog }) => {
+      const tab = byTarget.get(target_id);
+      if (!tab || typeof dialog.document_id !== "string" || !dialog.document_id) return [];
+      // A navigation can open a dialog before its first renderer observation.
+      // The controller bound this opening to CDP's committed document.
+      tab.document_id = dialog.document_id;
+      return [{ ...dialog, tab_id: tab.tab_id, generation: this.generation }];
+    });
+  }
+  async readState({ signal } = {}) {
+    if (this.pendingDialogs().length) return this.tabState();
+    const waiting = new AbortController();
+    const cancel = () => waiting.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    const dialog = async () => {
+      let after = this.stateSignal.count;
+      while (!waiting.signal.aborted) {
+        if (this.pendingDialogs().length) return this.tabState();
+        after = await this.stateSignal.wait(after, 2000, waiting.signal);
+      }
+      // The observation won, or the request was cancelled.
+      return new Promise(() => {});
+    };
+    const observation = async () => {
+      if (this.chromium?.display && this.chromium.policy === 'managed') await this.chromeWindows?.heal?.();
+      await this.chromeWindows?.refreshWarm?.();
+      await this.chromeWindows?.refreshStale?.();
+      return this.reconcile({ readOnly: true });
+    };
+    try { return await Promise.race([dialog(), observation()]); }
+    finally { waiting.abort(); signal?.removeEventListener('abort', cancel); }
   }
   /** PERF_AUDIT 4.2.3 (protocol 540): a viewer that holds frames pushed before its registration
    * response asks for its first frame at registration; the kernel's relay pump starts there
@@ -790,11 +825,24 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["dialog", "state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
+    // A modal blocks renderer evaluation. Read and answer from the controller's
+    // CDP event state, never from a reconciliation that waits on that renderer.
+    if (command.op === "dialog") {
+      const tab = this.tabs.get(command.tab_id);
+      if (command.generation !== this.generation || !tab || tab.document_id !== command.document_id ||
+          typeof command.dialog_id !== "string" || !this.browser.dialogDefaults?.current(tab.target_id, command.dialog_id, command.document_id)) {
+        throw new BrowserActionError("browser_dialog_invalid", "browser dialog is no longer pending; read the current browser state");
+      }
+      this.appAgent(tab, command, true);
+      await this.browser.handleDialog({ ...command, target_id: tab.target_id }, { signal });
+      this.stateSignal.notify();
+      return this.observe(this.tabState(), null, scope);
+    }
     // MP-08/MP-10: the kernel's navigate/subscribe preflight reads only its own Tab
     // live; an all-tab reconcile waits for every busy (loading) page.
     if (command.op === "state" && typeof command.tab_id === "string") {
@@ -809,11 +857,8 @@ export class KernelBrowserHost {
     // Protocol 556: the signal count is taken before the read, so a change during it wakes the next wait.
     const stateSignal = command.state_wait === true ? this.stateSignal.count : null;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
-    if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
-    if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
-    if (command.op === "state") await this.chromeWindows?.refreshStale?.();
     if (["start", "state"].includes(command.op)) {
-      const state = this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
+      const state = this.observe(await (command.op === "state" ? this.readState({ signal }) : this.reconcile()), null, scope);
       return command.state_wait === true ? { ...state, _state_signal: stateSignal } : state;
     }
     const agentRequest = command.focused_agent || command._agent_input;
@@ -1206,6 +1251,8 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
+      if (error?.code === "browser_dialog_invalid") return { id: request.id, ok: false, error: {
+        code: "browser_dialog_invalid", message: "Browser dialog answer is invalid or no longer pending; read the current browser state." } };
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : error instanceof PointerOutsideViewport ? error.message : hostFailureMessage(error) } }; }
   }
 }
