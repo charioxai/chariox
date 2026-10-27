@@ -14,8 +14,120 @@ const options = { session: "room", command: ["/bin/cat"] }
 function result(value: object) { return { RoomTerminal: { result: value } } }
 function capabilities() { return { RelayStatus: { status: { capabilities: ["room_exec_v1"] } } } }
 
+for (const stream of ["stdout", "stderr"] as const) test(`exec renews its lease while a finished page blocks on ${stream}`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] })
+  let lastRead = Date.now(), renewals = 0
+  let release: (() => void) | undefined
+  const bytes: Buffer[] = []
+  const blocked = new Writable({ write(chunk, _encoding, done) {
+    bytes.push(Buffer.from(chunk))
+    if (bytes.length === 1) done()
+    else release = done
+  } })
+  const page = { chunks: [
+    { cursor: 1, stream, data_base64: "YQ==" },
+    { cursor: 2, stream, data_base64: "AP8NCg==" },
+  ], next_cursor: 2, outcome: { kind: "exited", code: 23 } }
+  const send = async (body: Record<string, unknown>) => {
+    if ("RelayStatus" in body) return capabilities()
+    const op = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
+    if (["exec_read", "exec_close"].includes(String(op.operation))) {
+      if (Date.now() - lastRead >= 300_000) throw new CommandFailure("exec_not_found", "reader lease expired")
+      if (op.operation === "exec_read") {
+        lastRead = Date.now()
+        if (op.wait_ms === 0) {
+          renewals++
+          assert.equal(op.after_cursor, 1, "only locally consumed bytes may be acknowledged")
+          return result({ result: "exec_output", output: { ...page, chunks: page.chunks.slice(1) } })
+        }
+        assert.equal(op.after_cursor, 0)
+        return result({ result: "exec_output", output: page })
+      }
+    }
+    return result({ result: "exec_closed" })
+  }
+  const running = runExec(options, send, { stdin: Readable.from([]), stdout: stream === "stdout" ? blocked : sink([]), stderr: stream === "stderr" ? blocked : sink([]) })
+  running.catch(() => undefined)
+  while (!release) await new Promise(resolve => setImmediate(resolve))
+  for (let i = 0; i < 6; i++) {
+    t.mock.timers.tick(60_000)
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  release()
+  assert.equal(await running, 23)
+  assert.ok(renewals >= 5)
+  assert.deepEqual(Buffer.concat(bytes), Buffer.from([97, 0, 255, 13, 10]))
+  const settled = renewals
+  t.mock.timers.tick(600_000)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(renewals, settled, "no renewals after exec_close")
+})
+
 test("exec parses its flags separately from literal argv", () => {
   assert.equal(parseArguments("exec", ["--session", "room", "--kernel", "worker"]).flags.get("--kernel"), "worker")
+})
+
+test("exec reports a lease renewal failure while local output remains blocked", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let release: (() => void) | undefined
+  const blocked = new Writable({ write(_chunk, _encoding, done) { release = done } })
+  const send = async (body: Record<string, unknown>) => {
+    if ("RelayStatus" in body) return capabilities()
+    const op = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
+    if (op.operation === "exec_read") {
+      if (op.wait_ms === 0) throw new CommandFailure("kernel_connection_lost", "lost during lease renewal")
+      return result({ result: "exec_output", output: { chunks: [{ cursor: 1, stream: "stdout", data_base64: "YQ==" }], next_cursor: 1, outcome: null } })
+    }
+    return result({ result: "exec_input", next_offset: 0 })
+  }
+  const running = runExec(options, send, { stdin: Readable.from([]), stdout: blocked, stderr: sink([]) })
+  const rejected = assert.rejects(running, (error: unknown) => {
+    assert.ok(error instanceof CommandFailure)
+    assert.equal(error.code, "kernel_connection_lost")
+    assert.equal(error.details?.output_cursor, 0)
+    return true
+  })
+  while (!release) await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(60_000)
+  await rejected
+  release()
+})
+
+test("exec settles a pending lease renewal before acknowledging the next page", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let releaseWrite: (() => void) | undefined, releaseRenewal: (() => void) | undefined
+  let reads = 0
+  const blocked = new Writable({ write(_chunk, _encoding, done) { releaseWrite = done } })
+  const send = async (body: Record<string, unknown>) => {
+    if ("RelayStatus" in body) return capabilities()
+    const op = (body.RoomTerminal as { operation: Record<string, unknown> }).operation
+    if (op.operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
+    if (op.operation === "exec_read") {
+      if (op.wait_ms === 0) {
+        assert.equal(op.after_cursor, 0)
+        await new Promise<void>(resolve => { releaseRenewal = resolve })
+        return result({ result: "exec_output" })
+      }
+      reads++
+      assert.equal(op.after_cursor, reads - 1)
+      return result({ result: "exec_output", output: reads === 1
+        ? { chunks: [{ cursor: 1, stream: "stdout", data_base64: "YQ==" }], next_cursor: 1, outcome: null }
+        : { chunks: [], next_cursor: 1, outcome: { kind: "exited", code: 23 } } })
+    }
+    return result({ result: "exec_closed" })
+  }
+  const running = runExec(options, send, { stdin: Readable.from([]), stdout: blocked, stderr: sink([]) })
+  while (!releaseWrite) await new Promise(resolve => setImmediate(resolve))
+  t.mock.timers.tick(60_000)
+  while (!releaseRenewal) await new Promise(resolve => setImmediate(resolve))
+  releaseWrite()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(reads, 1)
+  releaseRenewal()
+  assert.equal(await running, 23)
+  assert.equal(reads, 2)
 })
 
 test("exec drains early binary output while its input remains open", async () => {

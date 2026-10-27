@@ -67,3 +67,12 @@ managed shutdown delivery.
 For a focused before/after run, add `--only sigkill-list-reclaim`,
 `--only sighup-cancels`, `--only cancel-truncated-output` or
 `--only real-kernel-connection-loss`.
+
+The MP-08 / MP-09 / MP-10 / MP-11 slow-consumer regression uses
+`slow-consumer.mjs` with the same binary, home and evidence arguments. It pipes
+the real CLI into a downstream Python process that reads one byte, stalls for
+330 seconds (past the production 300-second reader lease), then drains the
+pipe. It requires every byte of 8 MiB stdout and 1 MiB stderr to match their
+SHA-256 hashes and the CLI to return the producer's exit 23. The CLI renews
+the lease every minute while local writes are pending, acknowledging only
+bytes already consumed locally. No lease is shortened for this drill.

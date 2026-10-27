@@ -5558,5 +5558,9 @@ respect the existing quiescence fence, preserving automatic shutdown policy.
 `chariox exec [--kernel NAME] --session ROOM [--host-agent AGENT] -- argv...`
 wires binary stdin/stdout/stderr directly, drains both output pipes while feeding
 stdin, closes stdin on EOF, and returns the remote code (128 + signal on Unix).
+While a local stdout or stderr write is pending, the CLI renews the reader lease
+every minute with a non-waiting read at its last locally consumed cursor. The
+renewal's page is left unconsumed; the CLI settles any in-flight renewal before
+its next normal read acknowledges more bytes.
 SIGINT/SIGTERM cancel the remote command before closing it. Transport loss is
 reported with the exec ID and cursors; commands are never automatically replayed.

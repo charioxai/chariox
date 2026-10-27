@@ -1,4 +1,4 @@
-import { setTimeout as delay } from "node:timers/promises"
+import timers from "node:timers/promises"
 import type { Readable, Writable } from "node:stream"
 import type { ExecOutcome, ExecOutput } from "@chariox/kernel-client/kernel-types"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
@@ -98,7 +98,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
         try { return await request(operation) } catch (error) {
           if (codeOf(error) === "exec_stdin_closed") return
           if (codeOf(error) !== "exec_input_busy") throw error
-          await delay(10, undefined, { signal: stopInput.signal }).catch(() => undefined)
+          await timers.setTimeout(10, undefined, { signal: stopInput.signal }).catch(() => undefined)
         }
       }
     }
@@ -127,10 +127,28 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
         const response = await request({ operation: "exec_read", exec_id: execId, after_cursor: cursor, wait_ms: 1000 })
         const output = response.output
         if (response.result !== "exec_output" || !output) throw new Error("kernel returned no exec output")
-        for (const chunk of output.chunks) {
-          if (chunk.cursor !== cursor + 1) throw new Error("kernel returned unordered exec output")
-          await write(chunk.stream === "stdout" ? io.stdout : io.stderr, Buffer.from(chunk.data_base64, "base64"), stopOutput.signal)
-          cursor = chunk.cursor
+        const consumed = new AbortController()
+        const renewing = (async () => {
+          while (!consumed.signal.aborted) {
+            await timers.setTimeout(60_000, undefined, { signal: consumed.signal }).catch(() => undefined)
+            if (consumed.signal.aborted) return
+            // A local consumer may stall beyond the reader lease. Acknowledge
+            // only bytes already written, leaving this page available to resume.
+            await request({ operation: "exec_read", exec_id: execId, after_cursor: cursor, wait_ms: 0 })
+          }
+        })()
+        try {
+          await Promise.race([renewing, (async () => {
+            for (const chunk of output.chunks) {
+              if (chunk.cursor !== cursor + 1) throw new Error("kernel returned unordered exec output")
+              await write(chunk.stream === "stdout" ? io.stdout : io.stderr, Buffer.from(chunk.data_base64, "base64"), stopOutput.signal)
+              cursor = chunk.cursor
+            }
+          })()])
+        } finally {
+          consumed.abort()
+          // Settle an in-flight renewal before the next read acknowledges more.
+          await renewing
         }
         if (output.next_cursor !== cursor) throw new Error("kernel returned an unexpected exec cursor")
         if (output.outcome) return output.outcome
@@ -143,6 +161,7 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     try { outcome = await Promise.race([reading, inputFailure]) } finally {
       stopped = true
       stopInput.abort()
+      stopOutput.abort()
       io.stdin.destroy()
       feeding.catch(() => undefined)
       reading.catch(() => undefined)
