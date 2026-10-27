@@ -123,7 +123,8 @@ export type RoomTerminalResult =
   | { readonly result: "exec_opened"; readonly exec_id: string }
   | { readonly result: "exec_input"; readonly next_offset: number }
   | { readonly result: "exec_output"; readonly output: ExecOutput }
-  | { readonly result: "exec_cancelled" | "exec_closed" }
+  | { readonly result: "exec_cancelled" }
+  | { readonly result: "exec_closed" }
   | { readonly result: "opened"; readonly terminal: RoomTerminalSummary }
   | { readonly result: "listed"; readonly terminals: readonly RoomTerminalSummary[] }
   | { readonly result: "snapshot"; readonly snapshot: RoomTerminalSnapshot }
