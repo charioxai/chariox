@@ -1177,7 +1177,7 @@ async fn an_agent_is_admitted_after_a_finish_the_shell_already_reported() {
     let release = root.path().join("release");
     let ended = root.path().join("ended");
     let line = format!(
-        "(until [ -e {} ]; do sleep 0.01; done; touch {}; exit 1)\r",
+        "sh -c 'until [ -e {} ]; do sleep 0.01; done; touch {}; exit 1'\r",
         release.display(),
         ended.display()
     );
