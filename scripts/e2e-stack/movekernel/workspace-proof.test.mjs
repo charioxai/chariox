@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {completedWorkspaceTool, completedTurnPromptId} from './workspace-proof.mjs';
+import {completedWorkspaceTool, completedTurnPromptId, completedHomeMcpTool} from './workspace-proof.mjs';
 
 const workspace='/owned/target/workspace';
 const text='**Ran pwd** · COMPLETED\n\n**Command**\n```bash\n$ pwd\n```\n\n**Output**\n```text\n'+workspace+'\n```\n\n**Details**\n```text\nexit_code: 0\n```';
@@ -35,4 +35,23 @@ test('MP-08/09/10/11 native turn completion survives TUI row renumbering', () =>
   }
   assert.equal(completedTurnPromptId(current, 'different prompt', previous), undefined);
   assert.equal(completedTurnPromptId(current, 'Reply ACK', current), undefined);
+});
+
+test('MP-08/09/10/11 home MCP proof uses actual kernel ancestry and a completed current tool result', () => {
+  const render = proof => '**Called chariox_mcp_mk04-proof.mk04 ping** · COMPLETED\n\n**Output**\n```json\n'
+    + JSON.stringify({content: [{type: 'text', text: JSON.stringify(proof)}]}) + '\n```';
+  const proof = {marker: 'fresh-marker', executionParentPid: 1234};
+  const row = {role: 'tool', promptId: 'current', text: render(proof)};
+  assert.equal(completedHomeMcpTool([row], 'current', 'fresh-marker', 1234), true);
+  for (const changed of [
+    {...row, promptId: 'old'}, {...row, role: 'assistant'}, {...row, hidden: true},
+    {...row, blobCollapsed: true}, {...row, historyBlobLoading: true}, {...row, historyBlobError: 'failed'},
+    {...row, text: render({...proof, executionParentPid: 5678})},
+    {...row, text: render({...proof, marker: 'old-marker'})},
+    {...row, text: render({marker: proof.marker, executionHome: '/label-only'})},
+    {...row, text: row.text.replace('COMPLETED', 'RUNNING')},
+    {...row, text: row.text.replace('COMPLETED', 'ERROR')},
+    {...row, text: row.text.replace('```json\n', '```json\ninvalid')}
+  ]) assert.equal(completedHomeMcpTool([changed], 'current', 'fresh-marker', 1234), false);
+  for (const pid of [0, 1, -1, NaN, undefined]) assert.equal(completedHomeMcpTool([row], 'current', 'fresh-marker', pid), false);
 });

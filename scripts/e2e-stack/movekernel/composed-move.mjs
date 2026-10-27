@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { root, out, kernel, binary, sha, record, runtime, enroll, project, selection, launchBrowser, close, release } from './workspace-runtime.mjs';
 import { fixture } from './workspace-fixture.mjs';
 import { sleep, entries, variant, state, currentRun, accountIdentity, turn, journal, assertTuiRoute } from './native-move-proof.mjs';
-import { completedWorkspaceTool } from './workspace-proof.mjs';
+import { completedWorkspaceTool, completedHomeMcpTool } from './workspace-proof.mjs';
 
 async function installProofPackages(source, agentId) {
     const server = root + '/proof-mcp.mjs';
@@ -16,7 +16,7 @@ input.on('line',line=>{const q=JSON.parse(line);if(q.id===undefined)return;
 let result={};
 if(q.method==='initialize')result={protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'mk04-proof',version:'1'}};
 else if(q.method==='tools/list')result={tools:[{name:'mk04_ping',description:'Return the supplied marker and the execution kernel home',inputSchema:{type:'object',properties:{marker:{type:'string'}},required:['marker']}}]};
-else if(q.method==='tools/call')result={content:[{type:'text',text:JSON.stringify({marker:q.params.arguments.marker,executionHome:process.env.CHARIOX_HOME})}]};
+else if(q.method==='tools/call')result={content:[{type:'text',text:JSON.stringify({marker:q.params.arguments.marker,executionParentPid:process.ppid})}]};
 process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');});\n`);
     await source.client.send({InstallMcpServer: {workspace_id: null, config: {name: 'mk04-proof', transport: {type: 'stdio', command: process.execPath, args: [server]}, enabled: true, required: true}}});
     const skill = root + '/proof-skill';
@@ -109,7 +109,8 @@ try {
     assert.equal(await readFile(primary + '/mk04-skill-proof.txt', 'utf8'), 'mk04-skill-executed');
     assert.ok(completedWorkspaceTool(entries(result.snapshot), result.promptId, primary));
     const toolRows = entries(result.snapshot).filter(row => row.role === 'tool' && row.promptId === result.promptId);
-    assert.ok(toolRows.some(row => row.text?.includes('mk04_ping') && row.text.includes(marker) && row.text.includes(source.path + '/home')), 'Granted MCP must execute through home forwarding');
+    await record('target-tool-proof', {promptId: result.promptId, homeKernelPid: source.child.pid, targetKernelPid: target.child.pid, rows: toolRows});
+    assert.ok(completedHomeMcpTool(toolRows, result.promptId, marker, source.child.pid), 'Granted MCP must execute as a child of the home kernel');
     const moved = (await state(source, sessionId)).session.agents.find(a => a.id === agentId);
     const projected = await currentRun(source, sessionId, agentId);
     const prefix = 'leased:' + moved.remote_execution.leased_agent_id + ':';
