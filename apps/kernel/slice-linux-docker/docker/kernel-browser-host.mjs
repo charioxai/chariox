@@ -1,3 +1,4 @@
+import { AppTabs } from './browser-controller-apps.mjs';
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
@@ -255,6 +256,7 @@ export class KernelBrowserHost {
     try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection,{preserveDesktop});throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
+    this.browser.appTabs = new AppTabs(this.browser, { windowMode: "tabbed" });
     this.browser.pageTiming = this.timing;
     this.browser.visitedLinks = this.visitedLinks;
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);

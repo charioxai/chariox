@@ -2739,3 +2739,13 @@ test('MP-08/MP-10/MP-11: a crash arriving during inventory does not cancel recov
   assert.equal(browser.rendererRecovery.crashed.size, 0);
   assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
 }));
+
+test('MP-08 / MP-10 user-domain App open and bridge polling keep the native Chrome window', () => using(async ({host, sent}) => {
+  const params = {origin_label:'native-app',installation_id:'installation-1',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<canvas/>').toString('base64')}]};
+  const opened = await host.handle({id:1,method:'browser.app.open',params});
+  assert.equal(opened.ok,true,JSON.stringify(opened));
+  assert.equal(sent.find(call=>call.method==='Target.createTarget' && call.params.newWindow!==undefined)?.params.newWindow,false);
+  await host.handle({id:2,method:'browser.app.open',params});
+  await host.handle({id:3,method:'browser.app.calls',params:{wait_ms:0}});
+  assert(!sent.some(call=>call.method==='Browser.setWindowBounds' && call.params.bounds.windowState==='fullscreen'));
+}));
