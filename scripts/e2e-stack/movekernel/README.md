@@ -46,5 +46,8 @@ setup on the target, and verifies matching home/target readiness and commit
 receipts. One real source turn and one gpt-6-luna/low target turn prove the
 same native session/account, a transferred granted skill, and a home-owned
 MCP tool. The ignored setup output must be regenerated at the imported
-primary path. Use the environment above and the same4GiB scope. This kernel
+primary path. The recipe also installs a tool under preparation HOME and adds
+its directory through the definition PATH entries; the first target turn must
+invoke it. This proves the ordinary prepared provider environment survives Move.
+Use the environment above and the same 4 GiB scope. This kernel
 acceptance leaves the route picker and its `via` label to PR5.

@@ -58,3 +58,55 @@ async fn mk04_public_return_runs_stored_project_setup_before_clearing_remote_rou
         .environment_setup_operation_id
         .is_some());
 }
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_public_move_keeps_prepared_provider_for_first_prompt() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, _) = crash_fixture().await;
+    install_move_setup_definition(&fixture, &session).await;
+    move_request(&fixture, &session, true).await;
+    let home = fixture.home.lock().await;
+    let remote = home
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
+    let mut worker = fixture.workers[0].lock().await;
+    let lease = worker
+        .leased_agents
+        .get(&remote.leased_agent_id)
+        .unwrap()
+        .clone();
+    let run = worker
+        .providers()
+        .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+        .unwrap();
+    assert_eq!(
+        run.state(),
+        crate::provider::ProviderRunState::Running,
+        "Move must retain the ordinary prepared run for its first prompt"
+    );
+    assert!(!run.read_only_discovery());
+    let first_prompt_run = worker
+        .ensure_prompt_provider_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+        .unwrap();
+    assert_eq!(
+        first_prompt_run,
+        run.id(),
+        "ordinary prompt admission must reuse the prepared run"
+    );
+    let environment = run.pty_env();
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", "test \"$(move-tool)\" = move-tool-ready"])
+        .env_clear()
+        .envs(environment)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the next turn must find the tool installed under preparation HOME"
+    );
+}

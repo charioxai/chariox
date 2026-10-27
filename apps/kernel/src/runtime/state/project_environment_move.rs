@@ -115,6 +115,7 @@ impl KernelRuntimeState {
             let operation = execution.operation_id.clone();
             let session = execution.execution_session_id.clone();
             let agent_id = execution.execution_agent_id.clone();
+            let owner = execution.owner_user_id.clone();
             let result = async {
                 let agent = runtime.owned.agent_store.get_agent(&agent_id)?;
                 let run = runtime
@@ -123,9 +124,18 @@ impl KernelRuntimeState {
                 runtime
                     .run_project_environment_setup_with_provider(execution, attempt, Some(run))
                     .await;
-                Ok::<_, DaemonError>(())
+                let (_, status) = runtime
+                    .owned
+                    .project_environment_setups
+                    .get_entry(&operation, &owner)?;
+                Ok::<_, DaemonError>(status.phase)
             }
             .await;
+            // Ordinary setup restored the prepared HOME/PATH and grants on this
+            // run. Keep it for the first turn; no teardown remains after Ready.
+            if matches!(result, Ok(ProjectEnvironmentSetupPhase::Ready)) {
+                return;
+            }
             if let Err(error) = result {
                 tracing::warn!(
                     operation_id = %operation,
