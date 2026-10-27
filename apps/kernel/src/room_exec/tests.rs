@@ -345,15 +345,22 @@ async fn exec_abandoned_output_reader_expires_and_releases_managed_work() {
 async fn exec_list_is_room_scoped_and_reports_retained_finished_output() {
     let service = RoomExecService::default();
     let id = open(&service, "printf abc");
-    let (stdout, _, outcome) = collect(&service, &id).await;
-    assert_eq!(stdout, b"abc");
-    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.has_running_work() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert!(service.list("other-room").is_empty());
     let rows = service.list("room");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].exec_id, id);
     assert_eq!(rows[0].state, ExecState::Finished);
     assert_eq!(rows[0].buffered_bytes, 3);
+    let (stdout, _, outcome) = collect(&service, &id).await;
+    assert_eq!(stdout, b"abc");
+    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
     service.close("room", &id).unwrap();
     assert!(service.list("room").is_empty());
 }
