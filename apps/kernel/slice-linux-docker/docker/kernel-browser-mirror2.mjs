@@ -1004,7 +1004,8 @@ export class Mirror2 {
           origin = await aim();
         }
         at = { x: Math.floor(origin[0] + (origin[2] ?? 1) * local.x), y: Math.floor(origin[1] + (origin[3] ?? 1) * local.y) };
-        if (at.x < 0 || at.y < 0 || at.x >= 1280 || at.y >= 800) throw new Error('MP-11: changed mirror input target');
+        const {width,height} = this.host.pageSize(tab.tab_id);
+        if (at.x < 0 || at.y < 0 || at.x >= width || at.y >= height) throw new Error('MP-11: changed mirror input target');
       } else {
         const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
         try { at = await retryOffscreen(pointAt); } catch (error) {

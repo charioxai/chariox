@@ -1049,3 +1049,33 @@ test('MP-08/MP-10: opaque area and stills use the live viewport beyond 1280 by 8
   assert.deepEqual(shots,[{x:1400,y:820,width:80,height:40,scale:1}]);
   assert.equal(tiles.length,1); assert.equal(tiles[0].width,80); assert.equal(tiles[0].height,40);
 });
+
+for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {
+  const policy = {}, tab = {tab_id:'t',target_id:'target',document_id:'doc'};
+  let viewport = {width:1610,height:900};
+  const connection = {isOpen:()=>true,send:async()=>({frameTree:{frame:{loaderId:'doc'}}})};
+  const world = {connection,contextId:7,sessionId:'s',frame:{id:'f',loaderId:'doc'},ref:'m'};
+  const child = {...world,contextId:8,sessionId:'child'};
+  const region = 'n1000000003';
+  const stream = {id:'s',wire:2,chain:Promise.resolve(),world,tab_id:'t',document_id:'doc',policy,issued:1,resetAt:1,
+    attrSequence:new Map(),identity:new Map(),introduced:new Map([[region,1]]),frameSlots:new Map([[1,{owner:'n2',child}]])};
+  const host = {generation:1,protection:policy,browser:{connection},tabs:new Map([['t',tab]]),scales:new Map([['t',1]]),pageSize:()=>viewport};
+  const mirror = new Mirror2({host,assertWebTab(){},require:()=>stream});
+  mirror.regionBoxes = async()=>[{id:region,box:[1400,820,100,60]}];
+  mirror.evaluate = async (owner,expression) => {
+    if(expression.includes('.point(')){assert.equal(owner,child);return {x:4,y:8};}
+    if(expression.includes('.frameOrigin(')){assert.equal(owner,world);return [1400,820,1,1];}
+    return true;
+  };
+  mirror.regions.record(stream,{reset:true,nodes:[{id:region,parent:null,kind:'tile'}]});
+  const lease = await mirror.regions.resolve({mirror_subscription_id:'s',generation:1,document_id:'doc',sequence:1,region_id:region},'scope');
+  try {
+    const command = {kind,x:4,y:8,sequence:1,...(kind==='scroll'?{delta_x:0,delta_y:120}:{})};
+    const resolved = await lease.resolveInput(command,'scope');
+    assert.deepEqual(resolved.input,{kind,x:1404,y:828,...(kind==='scroll'?{delta_x:0,delta_y:120}:{})});
+    await resolved.guard();
+    viewport = {width:1280,height:800};
+    await assert.rejects(lease.resolveInput(command,'scope'),/region_retired/,'a resize still retires the old lease');
+    await assert.rejects(mirror.resolveInput(stream,tab,{subscription_id:'s',sequence:1,action:{kind,node_id:region,x:4,y:8,delta_x:0,delta_y:120}},'scope'),/changed mirror input target/,'the committed smaller viewport remains the input bound');
+  } finally {await lease.close();}
+});
