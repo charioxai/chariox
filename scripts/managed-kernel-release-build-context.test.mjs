@@ -64,12 +64,16 @@ test("managed release stages every local Dockerfile COPY source", async (context
   // must not depend on the helper's executable bit.
   const checkerInvocation = /&& (\S+ )?(apps\/kernel\/slice-linux-docker\/docker\/check-prebuilt-glibc\.sh) \/opt\/chariox-prebuilt\//.exec(dockerfile)
   assert.ok(checkerInvocation, "Dockerfile does not run the prebuilt glibc checker")
-  const checked = spawnSync(
-    "sh",
-    ["-c", `${checkerInvocation[1] ?? ""}${checkerInvocation[2]} "$0"`, process.execPath],
-    { cwd: stagedContext, encoding: "utf8", env: { ...process.env, CHARIOX_GLIBC_FLOOR: "99.0" } },
-  )
-  assert.equal(checked.status, 0, `packaged prebuilt glibc checker failed: ${checked.stderr}`)
+  // The helper reads GLIBC symbol versions with objdump, which only exist in
+  // GNU/Linux ELF binaries; the host's node is not one anywhere else.
+  await context.test("packaged prebuilt glibc checker runs", { skip: glibcCheckerSkipReason() }, () => {
+    const checked = spawnSync(
+      "sh",
+      ["-c", `${checkerInvocation[1] ?? ""}${checkerInvocation[2]} "$0"`, process.execPath],
+      { cwd: stagedContext, encoding: "utf8", env: { ...process.env, CHARIOX_GLIBC_FLOOR: "99.0" } },
+    )
+    assert.equal(checked.status, 0, `packaged prebuilt glibc checker failed: ${checked.stderr}`)
+  })
   const sources = dockerfileCopySources(dockerfile)
   assert.ok(sources.length > 0, "fixture should discover local Dockerfile COPY sources")
   const missing = []
@@ -97,6 +101,12 @@ COPY --from=builder /output/generated /generated
   for (const source of sources) assert.equal(await copySourceExists(root, source), true)
   assert.equal(await copySourceExists(root, "assets/*.missing"), false)
 })
+
+function glibcCheckerSkipReason() {
+  if (process.platform !== "linux") return `needs a GNU/Linux ELF host binary, running on ${process.platform}`
+  if (spawnSync("objdump", ["--version"], { stdio: "ignore" }).status !== 0) return "needs objdump on PATH"
+  return false
+}
 
 function dockerfileCopySources(dockerfile) {
   const instructions = dockerfile.replaceAll(/\\\r?\n/g, " ").split(/\r?\n/)
