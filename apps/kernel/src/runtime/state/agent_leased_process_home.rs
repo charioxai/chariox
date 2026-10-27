@@ -7,6 +7,35 @@ use crate::transport::relay_peer::{
     LeasedWatchedProcessAction as Action, RelayPeerRequest, RelayPeerResponse,
 };
 
+const START_WAIT: Duration = Duration::from_secs(310);
+const QUERY_WAIT: Duration = Duration::from_secs(5);
+/// How long a failed start waits for the lease to renew its relay token
+/// before the worker's receipt decides the launch.
+const RECEIPT_RECOVERY_WINDOW: Duration = Duration::from_secs(30);
+const RECEIPT_RETRY_PAUSE: Duration = Duration::from_secs(1);
+
+/// Queries until one answers or the window ends. One deadline covers the
+/// queries and the pauses, and no query may wait past it.
+async fn recover_receipt<Query, Answer>(
+    window: Duration,
+    mut query: Query,
+) -> Result<Option<ledger::LeasedProcessReceipt>, DaemonError>
+where
+    Query: FnMut(Duration) -> Answer,
+    Answer: std::future::Future<Output = Result<Option<ledger::LeasedProcessReceipt>, DaemonError>>,
+{
+    let deadline = tokio::time::Instant::now() + window;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let result = query(QUERY_WAIT.min(left)).await;
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if result.is_ok() || left <= RECEIPT_RETRY_PAUSE {
+            return result;
+        }
+        tokio::time::sleep(RECEIPT_RETRY_PAUSE).await;
+    }
+}
+
 // MP-08/MP-09/MP-10/MP-11: reserve supervision before publishing the wake.
 // A scheduler Query must not race the worker's first durable Start receipt.
 struct LeasedProcessPoll {
@@ -72,6 +101,7 @@ impl KernelRuntimeState {
         wake: &AgentWake,
         binding: &LeasedProcessBinding,
         action: Action,
+        timeout: Duration,
     ) -> Result<Option<ledger::LeasedProcessReceipt>, DaemonError> {
         let agent = self.owned.agent_store.get_agent(&wake.agent_id)?;
         let remote = agent
@@ -94,11 +124,6 @@ impl KernelRuntimeState {
         if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
         }
-        let timeout = if matches!(action, Action::Start { .. }) {
-            Duration::from_secs(310)
-        } else {
-            Duration::from_secs(5)
-        };
         let response = tokio::time::timeout(
             timeout,
             crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
@@ -187,6 +212,7 @@ impl KernelRuntimeState {
                     binding: binding.clone(),
                     cwd,
                 },
+                START_WAIT,
             )
             .await;
         // A start that failed leaves no launch without a worker receipt. The
@@ -194,23 +220,18 @@ impl KernelRuntimeState {
         // the receipt query retries while the lease renews it.
         let result = match result {
             Err(failure) => {
-                let mut receipt = Err(ledger::error("worker receipt unavailable"));
-                for _ in 0..30 {
-                    receipt = self
-                        .leased_process_request(
-                            &wake,
-                            &binding,
-                            Action::Query {
-                                wake_id: wake.id.clone(),
-                                binding: binding.clone(),
-                            },
-                        )
-                        .await;
-                    if receipt.is_ok() {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
+                let receipt = recover_receipt(RECEIPT_RECOVERY_WINDOW, |wait| {
+                    self.leased_process_request(
+                        &wake,
+                        &binding,
+                        Action::Query {
+                            wake_id: wake.id.clone(),
+                            binding: binding.clone(),
+                        },
+                        wait,
+                    )
+                })
+                .await;
                 if matches!(receipt, Ok(None)) {
                     drop(admission);
                     self.settle_failed_process_launch(
@@ -359,7 +380,10 @@ impl KernelRuntimeState {
                     binding: binding.clone(),
                 }
             };
-            match self.leased_process_request(&wake, &binding, action).await {
+            match self
+                .leased_process_request(&wake, &binding, action, QUERY_WAIT)
+                .await
+            {
                 Ok(Some(receipt)) => {
                     self.project_leased_process_receipt(&wake, &receipt)?;
                     last_fresh = Instant::now();
@@ -489,5 +513,46 @@ mod tests {
         assert!(LeasedProcessPoll::reserve(&monitor, "pending-start").is_none());
         drop(poll);
         assert!(LeasedProcessPoll::reserve(&monitor, "pending-start").is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn receipt_recovery_ends_within_its_window_when_the_worker_is_unresponsive() {
+        let started = tokio::time::Instant::now();
+        let mut waits = Vec::new();
+        let result = recover_receipt(Duration::from_secs(30), |wait| {
+            waits.push(wait);
+            async move {
+                // An unresponsive worker answers nothing before the query gives up.
+                tokio::time::sleep(wait).await;
+                Err(ledger::error("leased process receipt query timed out"))
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() <= Duration::from_secs(30),
+            "recovery ran {:?}",
+            started.elapsed()
+        );
+        let last = *waits.last().unwrap();
+        assert!(last <= Duration::from_secs(5), "{waits:?}");
+        assert!(waits.len() < 30, "{waits:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn receipt_recovery_stops_at_the_first_answer() {
+        let mut asked = 0;
+        let result = recover_receipt(Duration::from_secs(30), |_| {
+            asked += 1;
+            let answer = if asked < 3 {
+                Err(ledger::error("relay token expired"))
+            } else {
+                Ok(None)
+            };
+            async move { answer }
+        })
+        .await;
+        assert!(matches!(result, Ok(None)));
+        assert_eq!(asked, 3);
     }
 }
