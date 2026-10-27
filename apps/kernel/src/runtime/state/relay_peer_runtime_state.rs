@@ -677,7 +677,8 @@ impl KernelRuntimeState {
         let prepared = match self
             .with_app_side_effect(move |app| {
                 if let Some(resume) = provider_resume_state {
-                    RemoteLeaseRuntime::new(app).seed_leased_agent_resume_state(&leased_agent_for_prepare, resume)?;
+                    RemoteLeaseRuntime::new(app)
+                        .seed_leased_agent_resume_state(&leased_agent_for_prepare, resume)?;
                 }
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,

@@ -832,13 +832,41 @@ fn fresh_leased_agent_resume_state_clears_stale_backing_thread_and_preserves_liv
     crate::test_support::isolated_env_test!();
     let (mut app, lease) = leased_agent_fixture(false);
     let worker_state = crate::provider::ProviderResumeState::from_codex_thread_id("worker-thread");
-    app.agents_mut().set_agent_provider_resume_state(&lease.backing_agent_id, worker_state.clone()).unwrap();
-    RemoteLeaseRuntime::new(&mut app).seed_leased_agent_resume_state(&lease.id, Default::default()).unwrap();
-    assert!(app.agents().get_agent(&lease.backing_agent_id).unwrap().provider_resume_state().is_empty());
+    app.agents_mut()
+        .set_agent_provider_resume_state(&lease.backing_agent_id, worker_state.clone())
+        .unwrap();
+    RemoteLeaseRuntime::new(&mut app)
+        .seed_leased_agent_resume_state(&lease.id, Default::default())
+        .unwrap();
+    assert!(app
+        .agents()
+        .get_agent(&lease.backing_agent_id)
+        .unwrap()
+        .provider_resume_state()
+        .is_empty());
     let manifest = crate::extension::RemoteExtensionManifest::default();
-    let LeasedProviderRunMatch::LaunchRequired(request) = RemoteLeaseRuntime::new(&mut app).prepare_leased_provider_run_matches_mcps(&lease, &[], &manifest).unwrap() else { panic!("fresh launch") };
-    assert!(request.resume_state.as_ref().is_some_and(crate::provider::ProviderResumeState::is_empty));
-    let run = app.providers_mut().launch_run_detached(request.with_resume_state(worker_state.clone())).unwrap();
-    RemoteLeaseRuntime::new(&mut app).seed_leased_agent_resume_state(&lease.id, crate::provider::ProviderResumeState::from_codex_thread_id("stale-home-thread")).unwrap();
-    assert_eq!(app.providers().get_run(run.id()).unwrap().resume_state(), &worker_state);
+    let LeasedProviderRunMatch::LaunchRequired(request) = RemoteLeaseRuntime::new(&mut app)
+        .prepare_leased_provider_run_matches_mcps(&lease, &[], &manifest)
+        .unwrap()
+    else {
+        panic!("fresh launch")
+    };
+    assert!(request
+        .resume_state
+        .as_ref()
+        .is_some_and(crate::provider::ProviderResumeState::is_empty));
+    let run = app
+        .providers_mut()
+        .launch_run_detached(request.with_resume_state(worker_state.clone()))
+        .unwrap();
+    RemoteLeaseRuntime::new(&mut app)
+        .seed_leased_agent_resume_state(
+            &lease.id,
+            crate::provider::ProviderResumeState::from_codex_thread_id("stale-home-thread"),
+        )
+        .unwrap();
+    assert_eq!(
+        app.providers().get_run(run.id()).unwrap().resume_state(),
+        &worker_state
+    );
 }
