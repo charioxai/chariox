@@ -1254,6 +1254,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !intentionally_cancelled
                 && active_prompt.workflow_run_id().is_some()
                 && !workflow_output_ready
+                && crate::app::workflow_output_follow_up::missing_output_is_final(
+                    &self.app.durable_state_store(),
+                    session_id,
+                    &active_prompt,
+                    projected_termination.is_some()
+                        || self
+                            .app
+                            .provider_run_projection
+                            .get(&projected_provider_run_id)
+                            .is_some_and(|run| run.terminal_diagnostic().is_some()),
+                )?
             {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                     active_prompt.workflow_run_id(),
@@ -1276,6 +1287,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         });
                     let provider_failed =
                         failed_provider.is_some() && provider_diagnostic.is_some();
+                    if provider_diagnostic.is_none()
+                        && self.app.follow_up_missing_workflow_output(
+                            session_id,
+                            &projected_provider_run_id,
+                            &active_prompt,
+                        )?
+                    {
+                        return Ok(outcome);
+                    }
+
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {

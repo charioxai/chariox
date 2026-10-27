@@ -55,6 +55,7 @@ mod terminal_fanout;
 pub(crate) mod terminal_input;
 mod turn_substitute;
 mod workflow_design_events;
+pub(crate) mod workflow_output_follow_up;
 pub(crate) mod workflow_runtime;
 mod workflow_workspace_claims;
 

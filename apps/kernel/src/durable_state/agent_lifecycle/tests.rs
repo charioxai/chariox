@@ -1,5 +1,38 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02 supplementary single-writer fault tests.
 use super::*;
+
+#[test]
+fn workflow_output_follow_up_keeps_the_task_and_helper_obligations() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    let original = f.task();
+    let next = format!(
+        "{}p",
+        crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX
+    );
+    let Outcome::Task(task) = f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: next.clone(),
+        run: Some("run".into()),
+        now: 3,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.task_id, original.task_id);
+    assert_eq!(task.obligations, original.obligations);
+    assert_eq!(task.prompt_id, next);
+    assert_eq!(task.state, ExecutionState::Working);
+    assert_eq!(
+        f.store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .len(),
+        1
+    );
+}
 pub(super) struct Fixture {
     pub(super) root: std::path::PathBuf,
     pub(super) store: DurableKernelStateStore,

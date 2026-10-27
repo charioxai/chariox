@@ -824,6 +824,9 @@ async fn assert_workflow_completion_failure_is_retryable(
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), agent.id())
         .expect("workflow node should be added");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("durability fixture should have a final output");
     let endpoint = app
         .sessions_mut()
         .create_workflow_endpoint(
@@ -857,6 +860,19 @@ async fn assert_workflow_completion_failure_is_retryable(
     app.sessions_mut()
         .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
         .expect("workflow node should start");
+    // Keep this drill about completion persistence; missing output now takes
+    // the independent bounded-reminder path before completion is attempted.
+    app.sessions_mut()
+        .submit_workflow_run_final_output(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            crate::session::WorkflowOutputPayload::new("{}", Vec::new()),
+            true,
+            None,
+        )
+        .expect("final output should be staged before the append failure");
+
     let prompt = crate::session::PromptQueueItem::new(
         app.sessions_mut().reserve_prompt_id(),
         crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),

@@ -508,19 +508,57 @@ impl KernelRuntimeState {
             worker_provider_run_id,
         );
         let cancelled = completed.status() == crate::session::PromptStatus::Cancelled;
-        let settlement = match failure {
-            Some(reason) => self
-                .owned
-                .end_failed_agent_task(session_id, agent_id, completed, &run, reason),
-            None => self.owned.settle_agent_task_answered_by(
-                session_id,
-                agent_id,
-                completed,
-                &run,
-                worker_provider_run_id,
-                cancelled,
-            ),
-        };
+        let settlement = (|| {
+            if !cancelled
+                && failure.is_none()
+                && completed
+                    .id()
+                    .starts_with(crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX)
+            {
+                if let (Some(run_id), Some(node_id)) = (
+                    completed.workflow_run_id(),
+                    completed.workflow_node_run_id(),
+                ) {
+                    let session = self.owned.session_store.get_session(session_id)?;
+                    let workflow = match session.workflow_run(run_id) {
+                        Some(run) => Some(run.clone()),
+                        None => self.owned.durable_state_store.resolve_workflow_run(
+                            session.host_daemon_id(),
+                            session_id,
+                            run_id,
+                        )?,
+                    };
+                    if workflow.is_some_and(|run| {
+                        run.failure_events().iter().any(|event| {
+                            event.source_node_run_id() == node_id
+                                && event.kind()
+                                    == crate::session::WorkflowFailureKind::MissingStructuredOutput
+                        })
+                    }) {
+                        return self.owned.end_failed_agent_task_with_reason(
+                            session_id,
+                            agent_id,
+                            completed,
+                            &run,
+                            crate::app::workflow_output_follow_up::EXHAUSTED_REASON,
+                        );
+                    }
+                }
+            }
+            match failure {
+                Some(reason) => self
+                    .owned
+                    .end_failed_agent_task(session_id, agent_id, completed, &run, reason),
+                None => self.owned.settle_agent_task_answered_by(
+                    session_id,
+                    agent_id,
+                    completed,
+                    &run,
+                    worker_provider_run_id,
+                    cancelled,
+                ),
+            }
+        })();
         let settled = match settlement {
             Ok(settlement) => {
                 Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
