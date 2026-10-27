@@ -451,6 +451,16 @@ impl KernelRuntimeOwnedState {
                 user_id: caller_user_id.to_string(),
             });
         }
+        if !self
+            .agent_store
+            .get_agent(agent_id)
+            .is_ok_and(|agent| agent.session_id() == session_id && !agent.archived())
+        {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
         self.ensure_agent_owner(agent_id, caller_user_id, "focus agent")?;
         let agent = self
             .agent_store
@@ -567,6 +577,82 @@ mod tests {
             assert_eq!(
                 runtime.owned.agent_store.get_agent(target.id()).unwrap(),
                 target
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn focus_agent_rejects_agent_outside_room_before_resolving_owner() {
+        let worktree = crate::test_support::TestWorktree::new("focus-room-member");
+        let other_worktree = crate::test_support::TestWorktree::new("focus-foreign-room");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request().with_owner_user_id("room-member"))
+            .unwrap();
+        let (other_session, target) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                other_worktree
+                    .session_request()
+                    .with_owner_user_id("other-owner"),
+            )
+            .unwrap();
+        assert_eq!(target.owner_user_id(), "other-owner");
+        assert_ne!(target.session_id(), session.id());
+        let archived = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_owner_user_id("other-owner"),
+            )
+            .unwrap();
+        let archived = app
+            .agents()
+            .archive_agent(archived.id(), true, &mut app.sessions_mut())
+            .unwrap();
+        let initial_session = app.sessions().get_session(session.id()).unwrap();
+        let runtime = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        )
+        .runtime_state();
+
+        for agent_id in [target.id(), "nonexistent-agent", archived.id()] {
+            let error = runtime
+                .focus_agent(session.id(), agent_id, "room-member", false)
+                .await
+                .expect_err("active agent Room membership must be checked before ownership");
+            assert!(
+                matches!(
+                    error,
+                    DaemonError::AgentNotInSession { session_id, agent_id: rejected_id }
+                        if session_id == session.id() && rejected_id == agent_id
+                ),
+                "foreign, missing and archived agents must receive only AgentNotInSession"
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .unwrap(),
+                initial_session,
+                "rejected focus must leave the requested Room unchanged"
+            );
+            assert_eq!(
+                runtime
+                    .owned
+                    .session_store
+                    .get_session(other_session.id())
+                    .unwrap(),
+                other_session,
+                "rejected focus must leave the foreign Room unchanged"
+            );
+            assert_eq!(
+                runtime.owned.agent_store.get_agent(target.id()).unwrap(),
+                target
+            );
+            assert_eq!(
+                runtime.owned.agent_store.get_agent(archived.id()).unwrap(),
+                archived
             );
         }
     }
