@@ -189,31 +189,40 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-        // A start that failed leaves no launch without a worker receipt.
+        // A start that failed leaves no launch without a worker receipt. The
+        // lease's relay token may have expired with the start connection, so
+        // the receipt query retries while the lease renews it.
         let result = match result {
-            Err(refusal) => {
-                let receipt = self
-                    .leased_process_request(
-                        &wake,
-                        &binding,
-                        Action::Query {
-                            wake_id: wake.id.clone(),
-                            binding: binding.clone(),
-                        },
-                    )
-                    .await;
+            Err(failure) => {
+                let mut receipt = Err(ledger::error("worker receipt unavailable"));
+                for _ in 0..30 {
+                    receipt = self
+                        .leased_process_request(
+                            &wake,
+                            &binding,
+                            Action::Query {
+                                wake_id: wake.id.clone(),
+                                binding: binding.clone(),
+                            },
+                        )
+                        .await;
+                    if receipt.is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
                 if matches!(receipt, Ok(None)) {
                     drop(admission);
                     self.settle_failed_process_launch(
                         &wake,
                         format!(
                             "launch failed: {}",
-                            crate::secret_redaction::redact_secrets(&refusal.to_string())
+                            crate::secret_redaction::redact_secrets(&failure.to_string())
                         ),
                     );
-                    return Err(refusal);
+                    return Err(failure);
                 }
-                Err(refusal)
+                Err(failure)
             }
             other => other,
         };
