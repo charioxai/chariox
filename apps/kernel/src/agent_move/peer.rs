@@ -216,3 +216,20 @@ mod tests {
         assert!(!debug.contains("112, 114"));
     }
 }
+
+#[cfg(test)]
+mod composition_probe_tests {
+    use super::AgentMovePeerResponse;
+    #[test]
+    fn mk04_probe_receipts_require_an_explicit_peer_version() {
+        for value in [
+            serde_json::json!({"result":"compatible"}),
+            serde_json::json!({"result":"source_compatible","native":null}),
+        ] {
+            assert!(
+                serde_json::from_value::<AgentMovePeerResponse>(value).is_err(),
+                "A legacy Probe cannot prove composed Move compatibility"
+            );
+        }
+    }
+}
