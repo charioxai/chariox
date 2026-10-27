@@ -52,7 +52,7 @@ RUN mkdir -p /opt/chariox-runtime-bin \
   && if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]; then \
       test -x /opt/chariox-prebuilt/chariox-kernel \
       && test -x /opt/chariox-prebuilt/chariox-relay \
-      && apps/kernel/slice-linux-docker/docker/check-prebuilt-glibc.sh /opt/chariox-prebuilt/chariox-kernel /opt/chariox-prebuilt/chariox-relay \
+      && bash apps/kernel/slice-linux-docker/docker/check-prebuilt-glibc.sh /opt/chariox-prebuilt/chariox-kernel /opt/chariox-prebuilt/chariox-relay \
       && install -m 0755 /opt/chariox-prebuilt/chariox-kernel /opt/chariox-runtime-bin/chariox-kernel \
       && install -m 0755 /opt/chariox-prebuilt/chariox-relay /opt/chariox-runtime-bin/chariox-relay; \
     else \

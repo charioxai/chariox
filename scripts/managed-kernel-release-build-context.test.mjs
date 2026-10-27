@@ -60,6 +60,16 @@ test("managed release stages every local Dockerfile COPY source", async (context
     assert.deepEqual(await readFile(join(stagedContext, path)),
       await readFile(join(repositoryRoot, path)), `exported workspace patch differs: ${path}`)
   }
+  // Release normalization resets file modes to an allowlist, so the image build
+  // must not depend on the helper's executable bit.
+  const checkerInvocation = /&& (\S+ )?(apps\/kernel\/slice-linux-docker\/docker\/check-prebuilt-glibc\.sh) \/opt\/chariox-prebuilt\//.exec(dockerfile)
+  assert.ok(checkerInvocation, "Dockerfile does not run the prebuilt glibc checker")
+  const checked = spawnSync(
+    "sh",
+    ["-c", `${checkerInvocation[1] ?? ""}${checkerInvocation[2]} "$0"`, process.execPath],
+    { cwd: stagedContext, encoding: "utf8", env: { ...process.env, CHARIOX_GLIBC_FLOOR: "99.0" } },
+  )
+  assert.equal(checked.status, 0, `packaged prebuilt glibc checker failed: ${checked.stderr}`)
   const sources = dockerfileCopySources(dockerfile)
   assert.ok(sources.length > 0, "fixture should discover local Dockerfile COPY sources")
   const missing = []

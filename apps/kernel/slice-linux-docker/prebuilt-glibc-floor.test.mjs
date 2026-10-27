@@ -28,7 +28,7 @@ test("prebuilt binaries within the slice image glibc are accepted", () => {
 
 test("the prebuilt runtime install checks the glibc floor before installing", async () => {
   const dockerfile = await readFile(dockerfilePath, "utf8")
-  const check = dockerfile.indexOf("docker/check-prebuilt-glibc.sh /opt/chariox-prebuilt/chariox-kernel /opt/chariox-prebuilt/chariox-relay")
+  const check = dockerfile.indexOf("bash apps/kernel/slice-linux-docker/docker/check-prebuilt-glibc.sh /opt/chariox-prebuilt/chariox-kernel /opt/chariox-prebuilt/chariox-relay")
   assert.ok(check > 0, "Dockerfile does not check prebuilt binaries")
   assert.ok(check < dockerfile.indexOf("install -m 0755 /opt/chariox-prebuilt/chariox-kernel"))
 })
