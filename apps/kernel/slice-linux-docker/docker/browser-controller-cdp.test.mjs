@@ -116,6 +116,29 @@ test("MP-08/MP-10: a headed Room paints the full physical desktop at source DPR2
   }
 });
 
+test("MP-08/MP-10: headed visible size follows page metrics through reconcile and layout", async () => {
+  for (const headed of [false, true]) for (const dpr of [1, 2]) {
+    const connection = new FakeConnection();
+    connection.closedTargetIds.add('target-b');
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection,
+      ...(headed ? { applyCanonicalDisplay: async () => {} } : {}) });
+    try {
+      await browser.reconcile({ ...viewport, device_scale_factor: dpr,
+        desktop_pixel_width: 1280 * dpr, desktop_pixel_height: 720 * dpr });
+      const visible = () => connection.calls.filter(call => call.method === 'Emulation.setVisibleSize');
+      assert.deepEqual(visible().map(call => call.params), headed ? [{ width: 1280 * dpr, height: 720 * dpr }] : []);
+      await browser.setLayout('target-a', { width: 640, height: 480 });
+      assert.deepEqual(visible().map(call => call.params), headed
+        ? [{ width: 1280 * dpr, height: 720 * dpr }, { width: 640 * dpr, height: 480 * dpr }] : []);
+      for (const call of visible()) {
+        const index = connection.calls.indexOf(call);
+        assert.equal(connection.calls[index - 1].method, 'Emulation.setDeviceMetricsOverride');
+        assert.equal(call.sessionId, connection.calls[index - 1].sessionId);
+      }
+    } finally { await browser.close(); }
+  }
+});
+
 test("MP-08/MP-10: memory pressure refuses navigation before dispatch and still permits closing a tab", async () => {
   const connection = new FakeConnection();
   const memory = new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 });

@@ -540,8 +540,20 @@ export class BrowserCdpClient {
     const metrics = this.layoutMetrics(targetId, this.canonical);
     const key = JSON.stringify(metrics);
     if (this.viewportByTarget.get(targetId) === key) return;
-    await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
+    await this.setPageMetrics(connection, sessionId, metrics);
     this.viewportByTarget.set(targetId, key);
+  }
+
+  async setPageMetrics(connection, sessionId, metrics) {
+    await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
+    // Headed emulation leaves the visible area at CSS size even when the
+    // image scale is larger. Keep it large enough for the physical raster.
+    if (this.applyCanonicalDisplay) {
+      await connection.send("Emulation.setVisibleSize", {
+        width: Math.round(metrics.width * metrics.deviceScaleFactor),
+        height: Math.round(metrics.height * metrics.deviceScaleFactor),
+      }, sessionId);
+    }
   }
 
   async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
@@ -554,7 +566,7 @@ export class BrowserCdpClient {
     const metricsKey = JSON.stringify(metrics);
     const configured = this.viewportByTarget.get(target.targetId) === metricsKey;
     if (!configured) {
-      await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
+      await this.setPageMetrics(connection, sessionId, metrics);
       this.viewportByTarget.set(target.targetId, metricsKey);
     }
     const metadata = nativeStatePage(this, connection, sessionId, target, visibleTargetId, configured);

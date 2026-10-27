@@ -203,7 +203,10 @@ restore. Both cases require separate real-browser failure-injection evidence;
 a successful CDP health request alone does not prove a live renderer.
 
 The headed Room's X desktop has host scale 1. Its emulated view therefore uses
-the canonical device scale as its paint scale as well. A source DPR2 page must
+the canonical device scale as its paint scale as well. After setting page
+metrics, set the headed visible area to the metrics width and height multiplied
+by that scale; otherwise Chromium clips the scaled page at its CSS dimensions.
+A source DPR2 page must
 fill its 2560×1600 physical desktop; a healthy CDP connection and a small page in
 one corner do not establish DPR2 display acceptance. Record source scale and
 physical canvas dimensions separately from the viewer's Retina setting.
