@@ -5188,17 +5188,21 @@ Clients use these requests only with protocol 588 or newer. Protocol 567 clients
 continue to work; web clients attached to a 567 kernel keep Room stars in their
 own browser storage. This feature does not raise the general client minimum.
 
-### MP-08 / MP-10 — durable agent archive (592 / peer 198)
+### MP-08 / MP-09 / MP-10 / MP-11 — reversible agent archive (636 / peer 239)
 
-`ArchiveAgent { session_id, agent_id, archived }` changes the owner's agent's
-archive state; `archived: false` restores it. `AgentArchived { session, agent }`
-returns the authoritative result and repaired focus. An agent with an active
-turn or queued prompts refuses archive: stop it and clear the queue first.
-Archived agents stay in the session snapshot with `archived: true`, retaining
-identity, history and provider-run records across restart. Clients hide their
-active panes; prompting, workflow admission and focus cannot select them.
-Scheduled work and task continuations remain paused until unarchive. Older
-agent records default to active; clients gate this request on protocol 592.
+`ArchiveAgent { session_id, agent_id, archived }` retains its protocol592 shape.
+It durably fences the owner's agent before stopping its provider process,
+queued prompts, wakes and terminals, withdrawing process-bound interactions and
+releasing its worker lease. Identity, configuration, history, provider thread and
+grants stay. Errors leave it archived and explain how to retry cleanup. Unarchive
+finishes cleanup, refreshes remote placement and returns the same agent idle;
+no prompt is launched. Children and unrelated Room agents continue. An active
+workflow node must be paused/rebound first. Agents cannot archive through sudo.
+`AgentArchived { session, agent }` returns the result and repaired focus.
+`ListArchivedAgents { session_id }` returns `AgentsListed` with archived agents;
+ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
+including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
+for edge cases, resource ownership and the proposal approval requirement.
 
 ### Staging new UI union (599/205)
 

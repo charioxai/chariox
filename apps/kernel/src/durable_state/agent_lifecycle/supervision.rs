@@ -333,6 +333,40 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             changed.extend(super::delivery_waits::block_undeliverable_waits(tx, now)?);
             Ok(Outcome::Swept(changed))
         }
+        Operation::ArchiveTask {
+            task,
+            owner,
+            revision,
+        } => {
+            let mut t = load(tx, &task)?;
+            if owner.is_empty()
+                || (!t.owner_user_id.is_empty() && t.owner_user_id != owner)
+                || t.revision != revision
+            {
+                return Err(error("stale or foreign archive cancellation"));
+            }
+            if t.owner_user_id.is_empty() {
+                t.owner_user_id = owner;
+            }
+            if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
+                // Archive cancels this agent's participation, never the child
+                // agents or workflow runs that it was observing.
+                for obligation in &mut t.obligations {
+                    if (matches!(obligation.kind.as_str(), "delegate" | "hand_off")
+                        || obligation.tracks_workflow_run())
+                        && matches!(obligation.status.as_str(), "open" | "settling")
+                    {
+                        obligation.status = "cancelled".into();
+                        obligation.dispatch_state = "cancelled".into();
+                    }
+                }
+                cancel_intent(tx, &mut t)?;
+                t.reason = AGENT_ARCHIVED_REASON.into();
+                t.revision += 1;
+                save(tx, &t)?;
+            }
+            Ok(Outcome::Task(t))
+        }
         Operation::CancelTask {
             task,
             owner,
@@ -422,6 +456,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         _ => Err(error("invalid supervision operation")),
     }
 }
+pub(super) const AGENT_ARCHIVED_REASON: &str =
+    "Agent archived; its running and queued work was cancelled";
 pub(super) const OWNER_CANCELLED_REASON: &str =
     "Owner cancelled; owned resource cancellation remains supervised until physical settlement";
 pub(super) fn cancel_intent(

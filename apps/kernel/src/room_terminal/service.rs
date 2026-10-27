@@ -446,6 +446,48 @@ impl RoomTerminalService {
         Ok(())
     }
 
+    /// Release only terminals opened by this agent; retain their screen and
+    /// scrollback as ended records. The owner already authorized the archive.
+    pub(crate) fn stop_agent(&self, session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
+        self.pump_once();
+        let mut state = self.lock();
+        let ids = state
+            .terminals
+            .values()
+            .filter(|terminal| {
+                terminal.record.session_id == session_id
+                    && terminal.record.opened_by == TerminalActor::Agent(agent_id.to_owned())
+            })
+            .map(|terminal| terminal.record.terminal_id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            let run = state
+                .terminals
+                .get(&id)
+                .and_then(|terminal| terminal.run_id.clone());
+            if let Some(run) = run {
+                state.pty.remove_process(&run)?;
+            }
+            let terminal = state
+                .terminals
+                .get_mut(&id)
+                .expect("selected terminal exists");
+            if let Some(sweep) = terminal.session_sweep.take() {
+                sweep.stop();
+            }
+            if terminal.record.ended.is_none() {
+                terminal.end(RoomTerminalOutcome::ProgramExited {
+                    exit_code: None,
+                    signal: None,
+                });
+            }
+            self.inner.store.save(&terminal.persisted_record())?;
+        }
+        drop(state);
+        self.report_work();
+        Ok(())
+    }
+
     /// The Room ended: its terminals end with it.
     pub fn end_session(&self, session_id: &str) {
         let mut state = self.lock();

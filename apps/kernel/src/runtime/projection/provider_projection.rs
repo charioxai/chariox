@@ -138,6 +138,15 @@ impl ProviderRunProjectionStore {
             .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Ended is terminal for a launch generation. A delayed spawn/output
+        // callback must not revive the projection after archive stopped it.
+        if runs.get(&run_id).is_some_and(|previous| {
+            previous.state() == ProviderRunState::Ended
+                && !ended
+                && previous.started_at_ms() == run.started_at_ms()
+        }) {
+            return;
+        }
         let changed = runs.get(&run_id).is_some_and(|previous| {
             previous.remote_extension_manifest() != run.remote_extension_manifest()
         });

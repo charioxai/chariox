@@ -54,6 +54,30 @@ impl KernelRuntimeOwnedState {
         &self,
         mut request: crate::provider::LaunchProviderRequest,
     ) -> Result<crate::app::StartedProviderLaunch, DaemonError> {
+        let session = self.session_snapshot_without_projection_update(&request.session_id)?;
+        let agent_id = request
+            .agent_id
+            .clone()
+            .or_else(|| session.focused_agent_id().map(str::to_owned));
+        let agent_id = agent_id.ok_or_else(|| DaemonError::LocalTransport {
+            operation: "launch provider",
+            message: "Select or unarchive an agent before starting its provider.".into(),
+        })?;
+        if self.agent_store.get_agent(&agent_id)?.archived() {
+            return Err(DaemonError::LocalTransport {
+                operation: "launch provider",
+                message: "Unarchive this agent before starting its provider.".into(),
+            });
+        }
+        // Pin focus before asynchronous callers can change it.
+        request.agent_id = Some(agent_id);
+        self.start_unarchived_provider_launch(request)
+    }
+
+    fn start_unarchived_provider_launch(
+        &self,
+        mut request: crate::provider::LaunchProviderRequest,
+    ) -> Result<crate::app::StartedProviderLaunch, DaemonError> {
         let session_id = request.session_id.clone();
         let active_run_id = self
             .session_store
@@ -108,14 +132,22 @@ impl KernelRuntimeOwnedState {
 
         crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
-        let outcome = self.provider_store.start_run_provider_only(request)?;
-        self.session_store
-            .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
-        Ok(crate::app::StartedProviderLaunch {
-            run: outcome.into_run(),
-            previous_active_run_id,
-            provider_credential_env,
-        })
+        let session = self.session_store.get_session(&session_id)?;
+        let agent_id = request
+            .agent_id
+            .clone()
+            .expect("launch target was resolved before preparation");
+        self.prompt_state_owner
+            .with_unarchived_agent(&session, &agent_id, || {
+                let outcome = self.provider_store.start_run_provider_only(request)?;
+                self.session_store
+                    .set_active_provider_run(&session_id, Some(outcome.run().id().to_string()))?;
+                Ok(crate::app::StartedProviderLaunch {
+                    run: outcome.into_run(),
+                    previous_active_run_id,
+                    provider_credential_env,
+                })
+            })
     }
 
     pub(super) fn resume_provider_run_for_session(

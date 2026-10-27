@@ -56,7 +56,7 @@ fn archive_agent_retains_identity_and_repairs_focus_in_session_snapshot() {
 }
 
 #[test]
-fn archive_agent_refuses_busy_work_and_preserves_history_and_provider_records() {
+fn archive_agent_cancels_busy_work_and_preserves_history_and_provider_records() {
     let worktree = crate::test_support::TestWorktree::new("agent-archive-history");
     let h = LocalRouterTestHarness::new();
     let LocalDaemonResponse::SessionCreated { session, .. } = h
@@ -98,17 +98,12 @@ fn archive_agent_refuses_busy_work_and_preserves_history_and_provider_records() 
         }))
         .unwrap();
     }
-    assert!(h
-        .dispatch(archive_request(session.id(), agent.id(), true))
-        .is_err());
-    for _ in 0..2 {
-        h.dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
-            session_id: session.id().into(),
-        }))
-        .unwrap();
-    }
     h.dispatch(archive_request(session.id(), agent.id(), true))
-        .expect("settled agent archives");
+        .expect("running and queued work should stop when archived");
+    assert_eq!(
+        h.with_app(|app| app.providers().get_run(&run_id).unwrap().state()),
+        crate::provider::ProviderRunState::Ended
+    );
     let history = h
         .dispatch(LocalDaemonRequest::GetSessionHistoryOutline(
             GetSessionHistoryOutlineRequest {
@@ -180,6 +175,22 @@ fn archive_agent_checks_membership_and_ownership_without_mutation() {
 
 #[test]
 fn archive_agent_state_survives_kernel_restart() {
+    archive_restart_with_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
+        "archive-preserved-thread",
+    ));
+}
+
+#[test]
+fn archive_agent_opencode_restart_resumes_saved_native_session() {
+    let restored = archive_restart_with_resume_state(
+        crate::provider::ProviderResumeState::from_opencode_session_id("archive-opencode-session"),
+    );
+    crate::provider::assert_archived_opencode_resume_contract(restored);
+}
+
+fn archive_restart_with_resume_state(
+    resume: crate::provider::ProviderResumeState,
+) -> crate::provider::ProviderResumeState {
     let worktree = crate::test_support::TestWorktree::new("agent-archive-restart");
     let config = DaemonConfig::for_tests();
     let (room, id) = {
@@ -194,6 +205,19 @@ fn archive_agent_state_survives_kernel_restart() {
         };
         let agent = h.spawn_workflow_test_agent(session.id(), "archive-history");
         h.launch_workflow_test_provider(session.id(), agent.id());
+        h.with_app(|app| {
+            let updated = app
+                .agents_mut()
+                .set_agent_provider_resume_state(agent.id(), resume.clone())
+                .unwrap();
+            app.durable_state_store()
+                .append_event(
+                    "agent.updated",
+                    Some(agent.id().into()),
+                    serde_json::json!({"agent":updated}),
+                )
+                .unwrap();
+        });
         let run_id = h.with_app(|app| {
             app.providers()
                 .get_run_for_agent(session.id(), agent.id())
@@ -262,9 +286,28 @@ fn archive_agent_state_survives_kernel_restart() {
     assert!(serde_json::to_string(&history)
         .unwrap()
         .contains("retained archive history"));
+    assert_eq!(
+        h.with_app(|app| app
+            .agents()
+            .get_agent(&id)
+            .unwrap()
+            .provider_resume_state()
+            .clone()),
+        resume
+    );
     let restored =
         serde_json::to_value(h.dispatch(archive_request(&room, &id, false)).unwrap()).unwrap();
     assert_eq!(restored["AgentArchived"]["agent"]["archived"], false);
+    let state = h.with_app(|app| {
+        assert!(app.providers().get_run_for_agent(&room, &id).is_none());
+        app.agents()
+            .get_agent(&id)
+            .unwrap()
+            .provider_resume_state()
+            .clone()
+    });
+    assert_eq!(state, resume);
+    state
 }
 
 #[test]
@@ -444,4 +487,15 @@ fn archive_agent_focus_cycle_skips_archived_agents() {
         panic!("cycle")
     };
     assert!(focused.is_none());
+}
+
+#[test]
+fn archived_agents_protocol_636_shape_and_hash() {
+    let value = serde_json::json!({"ListArchivedAgents": {"session_id":"room"}});
+    let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), value);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+        "10baa1309adeacd62815a797d64b96e234c13cfa94a41cae85ee00c88c17a5e1"
+    );
 }

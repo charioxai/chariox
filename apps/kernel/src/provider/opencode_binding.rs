@@ -472,7 +472,7 @@ pub(super) fn abort_opencode_session(
 
 #[cfg(test)]
 #[path = "opencode_binding_permission_tests.rs"]
-mod permission_tests;
+pub(crate) mod permission_tests;
 
 pub(super) fn submit_opencode_prompt(
     run: &RuntimeProviderRun,

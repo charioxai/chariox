@@ -217,6 +217,7 @@ impl CommandRouter {
             | LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_)
             | LocalDaemonRequest::GetRoomEnvironmentEvents(_)
             | LocalDaemonRequest::ListRoomEnvironmentActionHistory(_)
+            | LocalDaemonRequest::ListArchivedAgents(_)
             | LocalDaemonRequest::ListAgents(_)) => boxed_handler(|| async move {
                 execute_session_read_request(&self.runtime_state, request).await
             }),

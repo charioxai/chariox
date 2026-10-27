@@ -33,6 +33,9 @@ impl KernelRuntimeOwnedState {
                     // No projection/history helper may reenter prompt ownership here.
                     let mut agents = self.agent_store.write();
                     let agent = agents.get_agent(&dispatch.agent_id)?;
+                    if agent.archived() {
+                        return Ok(false);
+                    }
                     if !agent.remote_execution().is_some_and(|binding| {
                         binding.worker_kernel_id == dispatch.worker_kernel_id
                             && binding.leased_agent_id == dispatch.leased_agent_id

@@ -83,6 +83,11 @@ impl KernelRuntimeState {
         run: &crate::provider::RuntimeProviderRun,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.user_domain_agent_placement(run)?;
+        if agent.archived() {
+            return Err(host_error(
+                "Unarchive this agent before using the browser".into(),
+            ));
+        }
         let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         if !self.owned.kernel_browser_host.has_grant(&owner, agent.id()) {
             return Err(host_error(
