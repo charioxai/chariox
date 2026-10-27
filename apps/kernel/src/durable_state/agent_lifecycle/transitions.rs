@@ -501,6 +501,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.state = ExecutionState::Blocked;
             t.reason = reason;
             t.revision += 1;
+            if let Some(goal) = &t.goal {
+                migration::audit(
+                    tx,
+                    "goal.blocked",
+                    &t.task_id,
+                    serde_json::json!({
+                        "task_id":t.task_id, "goal_id":goal.id,
+                        "objective_revision":goal.objective_revision,
+                        "work_prompt_id":t.prompt_id, "work_provider_run_id":t.provider_run_id,
+                        "blocked_revision":t.blocked_revision,
+                        "reason":t.reason.chars().take(1024).collect::<String>(),
+                        "reason_complete":t.reason.chars().count()<=1024,
+                    }),
+                )?;
+            }
             save(tx, &t)?;
             Ok(Outcome::Task(t))
         }

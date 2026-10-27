@@ -2057,8 +2057,13 @@ async fn assessment_keeps_recorded_work_across_continuations_and_fences_edits() 
         1,
         "the recorded prior completed invocation must survive check-2"
     );
-    assert_eq!(evidence["prior_work_results"][0]["work_prompt_id"], resumed);
-    assert!(evidence["prior_work_results"][0]["answer_messages"]
+    let resumed_work = evidence["prior_work_results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["work_prompt_id"] == resumed)
+        .unwrap();
+    assert!(resumed_work["answer_messages"]
         .as_array()
         .unwrap()
         .iter()
@@ -2134,4 +2139,130 @@ async fn assessment_keeps_recorded_work_across_continuations_and_fences_edits() 
     assert!(protected["prior_work_results"].is_null());
     assert_eq!(protected["completed_kernel_calls"], serde_json::json!([]));
     assert!(protected["completed_kernel_calls_omitted"].is_null());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the initial blocked work has no evaluation;
+// owner Resume must still retain its conditional recovery evidence for check-1.
+#[tokio::test]
+async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let apply = |op| match store.agent_lifecycle(op).unwrap() {
+        Outcome::Task(task) | Outcome::Settled { task, .. } => task,
+        other => panic!("unexpected {other:?}"),
+    };
+    let append_work = |prompt: &str, answer: &str| {
+        let mut entry = SessionHistoryEntry::user_prompt(
+            &room,
+            "owner",
+            &agent,
+            "ListSessions with conditional sudo recovery",
+        );
+        entry.merge_key = Some(format!("prompt:{prompt}"));
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+        let entry = SessionHistoryEntry::provider_output(
+            &room,
+            "run",
+            Some(&agent),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            answer,
+        );
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    };
+    apply(Operation::Begin {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "conditional".into(),
+        run: Some("run".into()),
+        now: 1,
+    });
+    apply(Operation::StartGoal {task:"conditional".into(), owner:"owner".into(), objective:"Call ListSessions; if sudo is refused, block for fresh passkey, then retry once after Resume. Report only the count. No other tools.".into(), minutes:10, now:1});
+    append_work("conditional", "ListSessions was refused because sudo is missing. Please re-elevate with a fresh passkey, then press Resume.");
+    let task = apply(Operation::Block {
+        task: "conditional".into(),
+        prompt: "conditional".into(),
+        reason: "Fresh owner passkey required after ListSessions refused missing sudo".into(),
+    });
+    let task = apply(Operation::OwnerResponse {
+        task: task.task_id.clone(),
+        revision: task.blocked_revision,
+        resume: true,
+        now: 2,
+    });
+    let resumed = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: resumed.clone(),
+        run: Some("run".into()),
+        now: 3,
+    });
+    append_work(&resumed, "2");
+    let task = apply(Operation::Settle {
+        room,
+        agent,
+        prompt: resumed,
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 4,
+    });
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["2"])
+    );
+    assert_eq!(data["prior_work_results"].as_array().unwrap().len(), 1,
+        "the first assessment after Resume needs the original blocked work, even without an earlier evaluation");
+    assert_eq!(
+        data["prior_work_results"][0]["work_prompt_id"],
+        "conditional"
+    );
+    assert!(data["prior_work_results"][0]["answer_messages"][0]
+        .as_str()
+        .unwrap()
+        .contains("sudo is missing"));
+    assert_eq!(data["owner_recovery"][0]["action"], "resume");
+    assert_eq!(
+        data["prior_work_results"][0]["blocked"]["reason"],
+        "Fresh owner passkey required after ListSessions refused missing sudo"
+    );
+    assert_eq!(data["goal_evidence_coverage"]["journal_complete"], true);
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&task.room_id, "PRIVATE_BLOCKED_RECOVERY_CANARY")
+        .unwrap();
+    let protected = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !protected.contains("Fresh owner passkey required after ListSessions refused missing sudo")
+    );
+    let protected: serde_json::Value = serde_json::from_str(
+        protected
+            .split_once("Untrusted assessment data: ")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert!(protected["prior_work_results"].is_null());
 }

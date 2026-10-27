@@ -19,7 +19,7 @@ impl DurableKernelStateStore {
         // Sudo receipts have no objective revision. Admit them only through a
         // journalled owner resume belonging to this exact goal revision.
         let mut query = db.prepare("SELECT sequence,kind,payload_json FROM durable_state_events e
-            WHERE (kind IN ('goal.evaluation','goal.owner_resume')
+            WHERE (kind IN ('goal.evaluation','goal.owner_resume','goal.blocked')
                 AND json_extract(payload_json,'$.task_id')=?1
                 AND json_extract(payload_json,'$.goal_id')=?2
                 AND COALESCE(json_extract(payload_json,'$.evaluation.objective_revision'),json_extract(payload_json,'$.objective_revision'))=?3)
