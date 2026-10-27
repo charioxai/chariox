@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { BrowserMemory } from "./browser-memory.mjs";
 import test from "node:test";
 
 import {
@@ -85,6 +86,140 @@ test("concurrent reads share fully initialized target sessions", async () => {
   assert.equal(connection.calls.filter(call => call.method === "Page.enable").length, 1);
 });
 
+test("MP-08/MP-10: page and worker response retention fits the bounded body reader", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  try {
+    await browser.ensureConnection();
+    await browser.ensureTargetSession(connection, "target-a");
+    await browser.ensureWriterTargetSession(connection, "worker-a");
+    const enabled = connection.calls.filter(call => call.method === "Network.enable");
+    assert.equal(enabled.length, 2);
+    for (const call of enabled) {
+      assert.equal(call.params.maxResourceBufferSize, 4 * 1024 * 1024);
+      assert.equal(call.params.maxTotalBufferSize, 8 * 1024 * 1024);
+    }
+  } finally { await browser.close(); }
+});
+
+test("MP-08/MP-10: a headed Room paints the full physical desktop at source DPR2", async () => {
+  for (const headed of [false, true]) {
+    const connection = new FakeConnection();
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection,
+      ...(headed ? { applyCanonicalDisplay: async () => {} } : {}) });
+    try {
+      await browser.reconcile({ ...viewport, device_scale_factor: 2, desktop_pixel_width: 2560, desktop_pixel_height: 1600 });
+      const metrics = connection.calls.find(call => call.method === 'Emulation.setDeviceMetricsOverride' && call.params.width > 0).params;
+      assert.equal(metrics.deviceScaleFactor, 2);
+      assert.equal(metrics.scale, headed ? 2 : undefined, 'a 1x X desktop must paint the emulated 2x view at physical size');
+    } finally { await browser.close(); }
+  }
+});
+
+test("MP-08/MP-10: headed visible size follows page metrics through reconcile and layout", async () => {
+  for (const headed of [false, true]) for (const dpr of [1, 2]) {
+    const connection = new FakeConnection();
+    connection.closedTargetIds.add('target-b');
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection,
+      ...(headed ? { applyCanonicalDisplay: async () => {} } : {}) });
+    try {
+      await browser.reconcile({ ...viewport, device_scale_factor: dpr,
+        desktop_pixel_width: 1280 * dpr, desktop_pixel_height: 720 * dpr });
+      const visible = () => connection.calls.filter(call => call.method === 'Emulation.setVisibleSize');
+      assert.deepEqual(visible().map(call => call.params), headed ? [{ width: 1280 * dpr, height: 720 * dpr }] : []);
+      await browser.setLayout('target-a', { width: 640, height: 480 });
+      assert.deepEqual(visible().map(call => call.params), headed
+        ? [{ width: 1280 * dpr, height: 720 * dpr }, { width: 640 * dpr, height: 480 * dpr }] : []);
+      for (const call of visible()) {
+        const index = connection.calls.indexOf(call);
+        assert.equal(connection.calls[index - 1].method, 'Emulation.setDeviceMetricsOverride');
+        assert.equal(call.sessionId, connection.calls[index - 1].sessionId);
+      }
+    } finally { await browser.close(); }
+  }
+});
+
+test("MP-08/MP-10/MP-11: headed page bottom fits below the toolbar at every source density", async () => {
+  for (const [width, height] of [[1280, 800], [1920, 1080]]) for (const dpr of [1, 2]) for (const oversized of [false, true]) {
+    const connection = new FakeConnection(), send = connection.send.bind(connection);
+    connection.closedTargetIds.add('target-b');
+    let toolbar = 87;
+    connection.send = async (method, params, sessionId) => {
+      const result = await send(method, params, sessionId);
+      if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: width * dpr, height: height * dpr + (oversized ? toolbar : 0), windowState: toolbar ? (oversized ? 'normal' : 'maximized') : 'fullscreen' } };
+      if (method === 'Browser.getWindowBounds') return { bounds: { windowState: toolbar ? (oversized ? 'normal' : 'maximized') : 'fullscreen' } };
+      if (method === 'Runtime.evaluate' && params.expression === '({ width: innerWidth, height: innerHeight })') return { result: { value: {
+        width: width * dpr, height: height * dpr - (oversized ? 0 : toolbar),
+      } } };
+      return result;
+    };
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection, applyCanonicalDisplay: async () => {} });
+    const source = { css_width: width, css_height: height, device_scale_factor: dpr,
+      desktop_pixel_width: width * dpr, desktop_pixel_height: height * dpr };
+    const bottomFits = () => {
+      const metrics = connection.calls.filter(c => c.method === 'Emulation.setDeviceMetricsOverride').at(-1).params;
+      const visible = connection.calls.filter(c => c.method === 'Emulation.setVisibleSize').at(-1).params;
+      assert.ok(toolbar + metrics.height * dpr <= source.desktop_pixel_height,
+        `page bottom must remain on the desktop below ${toolbar}px toolbar at DPR${dpr}`);
+      assert.equal(visible.height, Math.round(metrics.height * dpr));
+      assert.equal(visible.width, Math.round(metrics.width * dpr));
+    };
+    try {
+      await browser.reconcile(source, { browserBarVisible: true });
+      bottomFits();
+      await browser.setLayout('target-a', { width: width - 100, height });
+      bottomFits();
+      toolbar = 0;
+      await browser.reconcile(source, { browserBarVisible: false });
+      bottomFits();
+      assert.equal(connection.calls.filter(c => c.method === 'Emulation.setDeviceMetricsOverride').at(-1).params.height, height);
+    } finally { await browser.close(); }
+  }
+});
+
+test("MP-08/MP-10/MP-11: zoomed page content is measured in window units during headed reconcile", async () => {
+  for (const zoom of [1.25, 0.75, 2]) for (const windowState of ['maximized', 'fullscreen', 'normal']) {
+    const toolbar = windowState === 'fullscreen' ? 0 : 87, border = windowState === 'normal' ? 16 : 0;
+    const connection = new FakeConnection(), send = connection.send.bind(connection);
+    connection.closedTargetIds.add('target-b');
+    connection.send = async (method, params, sessionId) => {
+      const result = await send(method, params, sessionId);
+      if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: 1280, height: 800, windowState } };
+      if (method === 'Browser.getWindowBounds') return { bounds: { windowState } };
+      if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { zoom, scale: 1 } };
+      if (method === 'Runtime.evaluate' && params.expression === '({ width: innerWidth, height: innerHeight })') return { result: { value: {
+        width: Math.round((1280 - border) / zoom), height: Math.round((800 - toolbar) / zoom),
+      } } };
+      return result;
+    };
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection, applyCanonicalDisplay: async () => {} });
+    const source = { css_width: 1280, css_height: 800, device_scale_factor: 1, desktop_pixel_width: 1280, desktop_pixel_height: 800 };
+    try {
+      await browser.reconcile(source, { browserBarVisible: true });
+      const metrics = connection.calls.filter(c => c.method === 'Emulation.setDeviceMetricsOverride').at(-1).params;
+      const inset = browser.contentInsetsByWindow.get(1);
+      assert.ok(Math.abs(inset.height - toolbar) <= Math.ceil(zoom), `${windowState} zoom ${zoom} height inset ${inset.height}`);
+      assert.ok(Math.abs(inset.width - border) <= Math.ceil(zoom), `${windowState} zoom ${zoom} width inset ${inset.width}`);
+      assert.ok(metrics.width <= 1280 - border && metrics.width >= 1280 - border - Math.ceil(zoom), `${windowState} zoom ${zoom} width ${metrics.width}`);
+      assert.ok(metrics.height <= 800 - toolbar && metrics.height >= 800 - toolbar - Math.ceil(zoom), `${windowState} zoom ${zoom} height ${metrics.height}`);
+    } finally { await browser.close(); }
+  }
+});
+
+test("MP-08/MP-10: memory pressure refuses navigation before dispatch and still permits closing a tab", async () => {
+  const connection = new FakeConnection();
+  const memory = new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 });
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection, memory });
+  try {
+    await browser.reconcile(viewport);
+    await assert.rejects(browser.navigate({ target_id: "target-a", document_id: "loader-a", url: "https://next.test/" }),
+      error => error.code === 'browser_memory_pressure');
+    assert.equal(connection.calls.filter(call => call.method === 'Page.navigate').length, 0);
+    await browser.manageTab({ action: 'close', target_id: 'target-a', document_id: 'loader-a' });
+    assert.equal(connection.calls.filter(call => call.method === 'Target.closeTarget').length, 1);
+  } finally { await browser.close(); }
+});
+
 test("persistent browser connection returns page identities, focus, and applied viewport", async () => {
   const connection = new FakeConnection();
   let connectionCount = 0;
@@ -166,6 +301,23 @@ test("persistent browser connection returns page identities, focus, and applied 
     "document.visibilityState === 'visible'",
     "active-tab focus must not disappear merely because the browser window loses OS focus",
   );
+});
+
+test("MP-08/MP-10: a crashed renderer is reloaded once without replaying input or replacing another tab", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  try {
+    await browser.reconcile(viewport);
+    connection.emit({ method: 'Inspector.targetCrashed', sessionId: 'session-a', params: {} });
+    connection.emit({ method: 'Target.targetCrashed', params: { targetId: 'target-a', status: 'oom', errorCode: 9 } });
+    await assert.rejects(browser.snapshot({ target_id: 'target-a', document_id: 'loader-a' }),
+      error => error.code === 'browser_renderer_crashed');
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const reloads = connection.calls.filter(call => call.method === 'Page.reload');
+    assert.equal(reloads.length, 1);
+    assert.equal(reloads[0].sessionId, 'session-a');
+    assert.equal(connection.calls.filter(call => call.method === 'Input.dispatchKeyEvent' || call.method === 'Target.closeTarget').length, 0);
+  } finally { await browser.close(); }
 });
 
 test("focus is read in a controller-owned isolated world a page cannot redefine", async () => {
@@ -1239,6 +1391,9 @@ class FakeConnection {
       this.closedTargetIds.add(targetId);
       throw new Error(`Emulation.setDeviceMetricsOverride: Session with given id not found.`);
     }
+    if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { zoom: 1, scale: 1 } };
+    if (method === 'Runtime.evaluate' && params.expression === '({ width: innerWidth, height: innerHeight })') return { result: { value: { width: 3840, height: 2160 } } };
+    if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: 3840, height: 2160 } };
     if (method === "Target.setDiscoverTargets" && this.failDiscovery) {
       throw new Error("discovery failed");
     }

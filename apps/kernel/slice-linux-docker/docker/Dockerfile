@@ -241,7 +241,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-wor
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs /opt/chariox-slice/browser-controller-response-bodies.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs apps/kernel/slice-linux-docker/docker/browser-memory.mjs apps/kernel/slice-linux-docker/docker/browser-renderer-recovery.mjs /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/linux-owned-desktop.mjs /opt/chariox-slice/linux-owned-desktop.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs \
      apps/kernel/slice-linux-docker/docker/desktop-applications.mjs \

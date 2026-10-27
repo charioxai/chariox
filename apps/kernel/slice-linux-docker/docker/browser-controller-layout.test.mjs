@@ -10,7 +10,7 @@ function client() {
   const proto = BrowserCdpClient.prototype;
   const self = { connection, canonical, sent, layoutByTarget: new Map(), viewportByTarget: new Map(), layoutQueue: new Map(),
     ensureTargetSession: async (_c, targetId) => `s-${targetId}`,
-    layoutMetrics: proto.layoutMetrics, layoutViewport: proto.layoutViewport, queueLayout: proto.queueLayout };
+    setPageMetrics: proto.setPageMetrics, layoutMetrics: proto.layoutMetrics, layoutViewport: proto.layoutViewport, queueLayout: proto.queueLayout };
   self.setLayout = proto.setLayout.bind(self);
   self.applyLayout = proto.applyLayout.bind(self);
   self.clearViewport = proto.clearViewport.bind(self);
@@ -42,7 +42,7 @@ test('MP-08/MP-10/MP-11: a native release retires the viewport cache before a de
   const cleared=c.clearViewport('t1');await new Promise(setImmediate);
   const restored=c.setLayout('t1',null);release();await Promise.all([cleared,restored]);
   assert.deepEqual(c.sent.map(s=>s.method),['Emulation.setDeviceMetricsOverride','Emulation.clearDeviceMetricsOverride','Emulation.setDeviceMetricsOverride']);
-  assert.equal(c.viewportByTarget.get('t1'),JSON.stringify(c.layoutMetrics('t1',canonical)));
+  assert.equal(c.viewportByTarget.get('t1')?.key,JSON.stringify(c.layoutMetrics('t1',canonical)));
 });
 
 test("a restore that arrives while a layout override is in flight still ends on the canonical page", async () => {
@@ -52,7 +52,7 @@ test("a restore that arrives while a layout override is in flight still ends on 
   const send = c.connection.send;
   c.connection.send = async (method, params, sessionId) => { await gate; return send(method, params, sessionId); };
   // The canonical metrics are the configured state before the phone's layout arrives.
-  c.viewportByTarget.set("t1", JSON.stringify(c.layoutMetrics("t1", canonical)));
+  c.viewportByTarget.set("t1", { key: JSON.stringify(c.layoutMetrics("t1", canonical)) });
   const narrow = c.setLayout("t1", { width: 400, height: 760 });
   await new Promise(resolve => setImmediate(resolve));
   const restore = c.setLayout("t1", null);
@@ -60,5 +60,5 @@ test("a restore that arrives while a layout override is in flight still ends on 
   await Promise.all([narrow, restore]);
   const last = c.sent.at(-1).params;
   assert.deepEqual([last.width, last.height], [1280, 800], "the Tab ends canonical, as the layout owner left");
-  assert.equal(c.viewportByTarget.get("t1"), JSON.stringify(c.layoutMetrics("t1", canonical)));
+  assert.equal(c.viewportByTarget.get("t1")?.key, JSON.stringify(c.layoutMetrics("t1", canonical)));
 });
