@@ -171,7 +171,10 @@ async fn exec_cancel_settles_even_with_full_output_and_blocked_stdin() {
     let (_, _, outcome) = tokio::time::timeout(Duration::from_secs(5), collect(&service, &id))
         .await
         .unwrap();
-    assert_eq!(outcome, ExecOutcome::Signaled { signal: 9 });
+    assert!(
+        matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("incomplete")),
+        "{outcome:?}"
+    );
     assert!(!service.has_running_work());
     service.close("room", &id).unwrap();
 }
@@ -259,4 +262,23 @@ async fn exec_room_end_cancels_the_whole_owned_process_tree() {
             "owned descendant must be exited"
         );
     }
+}
+
+#[tokio::test]
+async fn exec_cancel_never_reports_truncated_output_as_success() {
+    let service = RoomExecService::default();
+    // The extra pipe read fits in the OS pipe after the bounded buffer fills,
+    // allowing a successful process exit while its output task stays parked.
+    let id = open(&service, "head -c 1081344 /dev/zero");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    service.cancel("room", &id).unwrap();
+    let (stdout, _, outcome) = tokio::time::timeout(Duration::from_secs(5), collect(&service, &id))
+        .await
+        .unwrap();
+    assert!(stdout.len() < 1081344);
+    assert!(
+        matches!(outcome, ExecOutcome::Failed { ref message } if message.contains("incomplete")),
+        "{outcome:?}"
+    );
+    service.close("room", &id).unwrap();
 }

@@ -84,8 +84,8 @@ async fn output(
     loop {
         let length = tokio::select! {
             biased;
-            _ = cancelled(&mut cancel) => return Ok(()),
             read = pipe.read(&mut bytes) => read,
+            _ = cancelled(&mut cancel) => return Err(io::Error::other("output cancelled before EOF")),
         };
         let length = match length {
             Ok(length) => length,
@@ -111,7 +111,7 @@ async fn output(
                 break;
             }
             tokio::select! {
-                _ = cancelled(&mut cancel) => return Ok(()),
+                _ = cancelled(&mut cancel) => return Err(io::Error::other("output cancelled before EOF")),
                 _ = space => {},
             }
         }

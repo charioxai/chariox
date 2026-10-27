@@ -148,8 +148,8 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     if (cancellation) await cancellation
     await request({ operation: "exec_close", exec_id: execId })
     completed = true
-    if (outcome.kind === "failed") throw new Error(outcome.message)
     if (interrupted !== undefined) return 128 + interrupted
+    if (outcome.kind === "failed") throw new Error(outcome.message)
     return outcome.kind === "exited" ? outcome.code : 128 + outcome.signal
   } catch (error) {
     const definiteRefusal = error instanceof LocalIpcError

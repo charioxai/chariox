@@ -231,3 +231,25 @@ test("exec cleanup failure preserves the original open refusal", async () => {
     throw new LocalIpcError("handle kernel response", "open refused", "terminal_refused")
   }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => error instanceof CommandFailure && error.code === "terminal_refused")
 })
+
+
+test("exec preserves the interrupt exit when canceled pipes report incomplete output", async () => {
+  const signals = new EventEmitter() as NodeJS.Process
+  let reading = false
+  let cancelled!: () => void
+  const done = new Promise<void>(resolve => { cancelled = resolve })
+  const code = runExec(options, async body => {
+    if ("RelayStatus" in body) return capabilities()
+    const operation = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    if (operation === "exec_open") return result({ result: "exec_opened", exec_id: "exec-1" })
+    if (operation === "exec_cancel") { cancelled(); return result({ result: "exec_cancelled" }) }
+    if (operation === "exec_read") {
+      reading = true; await done
+      return result({ result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "failed", message: "output stream incomplete" } } })
+    }
+    return result({ result: "exec_closed" })
+  }, { stdin: new PassThrough(), stdout: sink([]), stderr: sink([]), signals })
+  while (!reading) await new Promise(resolve => setImmediate(resolve))
+  signals.emit("SIGINT")
+  assert.equal(await code, 130)
+})
