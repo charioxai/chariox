@@ -12,20 +12,22 @@ export const mirror2ObserverExpression = () => `(${installMirror2.toString()})($
 export function sanitizeMirrorCss(text, base, resource) {
   // Known namespace URIs are identifiers, never fetched; any other @namespace drops.
   const namespaces = new Set(['http://www.w3.org/1999/xhtml', 'http://www.w3.org/2000/svg', 'http://www.w3.org/1998/Math/MathML', 'http://www.w3.org/1999/xlink']);
-  let out = text.replace(/@namespace\s+([a-zA-Z_][\w-]*\s+)?(?:url\(\s*)?["']?([^"')\s;]*)["']?\s*\)?\s*;/gi, (_, prefix = '', uri) => namespaces.has(uri) ? `@namespace ${prefix}"${uri}";` : '');
+  // Each rewrite runs only when its token occurs: most sheets have no escapes, namespaces or legacy constructs.
+  let out = !/@namespace/i.test(text) ? text : text.replace(/@namespace\s+([a-zA-Z_][\w-]*\s+)?(?:url\(\s*)?["']?([^"')\s;]*)["']?\s*\)?\s*;/gi, (_, prefix = '', uri) => namespaces.has(uri) ? `@namespace ${prefix}"${uri}";` : '');
   // Escaped function names (custom properties keep raw tokens: `u\\72l(`) are
-  // decoded first, so the url() rewrite below sees every fetching function.
-  out = out.replace(/((?:[a-zA-Z_-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+)\(/g, (match, name) => {
+  // decoded first, so the url() rewrite below sees every fetching function. A name is matched from its first
+  // character only (a match inside a name implies one a character earlier), not retried at every character of it.
+  if (out.includes('\\')) out = out.replace(/(?<![a-zA-Z_-])((?:[a-zA-Z_-]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n0-9a-fA-F])+)\(/g, (match, name) => {
     if (!name.includes('\\')) return match;
     const plain = name.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, char) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : char);
     return /^[a-zA-Z_-]+$/.test(plain) ? `${plain}(` : 'x-invalid(';
   });
   // Custom properties and var()-bearing declarations keep their source tokens,
   // so every url() spelling occurs; image-set() strings are URLs too.
-  out = out.replace(/((?:-webkit-)?image-set\()([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_, open, body) => `${open}${body.replace(/(^|[,\s(])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, (m, lead, string) => `${lead}url(${string})`)})`);
-  const fontFaces = [...out.matchAll(/@font-face\s*\{[^}]*\}/g)].map(match => [match.index, match.index + match[0].length]);
+  if (/image-set\(/i.test(out)) out = out.replace(/((?:-webkit-)?image-set\()([^()]*(?:\([^()]*\)[^()]*)*)\)/gi, (_, open, body) => `${open}${body.replace(/(^|[,\s(])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, (m, lead, string) => `${lead}url(${string})`)})`);
+  const urls = /url\(/i.test(out), fontFaces = !urls ? [] : [...out.matchAll(/@font-face\s*\{[^}]*\}/g)].map(match => [match.index, match.index + match[0].length]);
   const unescape = value => value.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, char) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : char);
-  out = out.replace(/url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|((?:[^)\s"'\\]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n])*))\s*\)/gi, (_, double, single, bare, at) => {
+  if (urls) out = out.replace(/url\(\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|((?:[^)\s"'\\]|\\[0-9a-fA-F]{1,6}\s?|\\[^\n])*))\s*\)/gi, (_, double, single, bare, at) => {
     const value = unescape(double ?? single ?? bare ?? '');
     if (!value) return 'none';
     if (value.startsWith('#')) return `url("#${value.slice(1).replace(/[^\w-]/g, '')}")`;
@@ -33,16 +35,16 @@ export function sanitizeMirrorCss(text, base, resource) {
     return key ? `url("mr:${key}")` : 'none';
   });
   // `:target` follows the document fragment (protocol 492 `fragment` header): the viewer marks that element.
-  out = out.replace(/(?<!:):target(?![\w-])/gi, '[chariox-target]');
+  if (/:target/i.test(out)) out = out.replace(/(?<!:):target(?![\w-])/gi, '[chariox-target]');
   // `:defined` follows the kernel's definition state (protocol 492 `state.defined`): the viewer marks undefined
   // custom elements instead of registering tags in a registry its next document would reuse.
-  out = out.replace(/(?<!:):defined(?![\w-])/gi, ':not([chariox-undefined])');
+  if (/:defined/i.test(out)) out = out.replace(/(?<!:):defined(?![\w-])/gi, ':not([chariox-undefined])');
   // Invalidates (never rewrites) legacy executable/binding constructs.
-  out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
-  out = out.replace(/@import[^;]*;/gi, '');
+  if (/expression|behavior|-moz-binding|javascript/i.test(out)) out = out.replace(/expression\s*\(/gi, 'x-expr(').replace(/(^|[;{\s])behavior\s*:/gi, '$1x-behavior:').replace(/-moz-binding/gi, 'x-binding').replace(/javascript\s*:/gi, 'x-js:');
+  if (/@import/i.test(out)) out = out.replace(/@import[^;]*;/gi, '');
   // Residual spellings the rewrites cannot parse (an unterminated url( inside a
   // string, a bare @import) are neutralized; the client refuses any that remain.
-  out = out.replace(/url(\s*)\((?!"(?:mr:r[0-9]{1,9}|#[\w-]*)"\))/gi, 'urlx$1(').replace(/@import/gi, '@x-import');
+  if (/url\s*\(|@import/i.test(out)) out = out.replace(/url(\s*)\((?!"(?:mr:r[0-9]{1,9}|#[\w-]*)"\))/gi, 'urlx$1(').replace(/@import/gi, '@x-import');
   return out;
 }
 
@@ -122,7 +124,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Resource keys by URL (and kind: an SVG sprite's bytes are its sanitized symbols, not the image), least
     // recently used first: over the budget the oldest mapping goes (a later use gets a new key). Keys are never
     // reused within a document, below the frame key slot.
-    const urlKeys = new Map(); let keySerial = 0, snapshotted = false;
+    const urlKeys = new Map(), usedKeys = new Set(); let snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
     let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostIterator = null, lastClosedCheck = 0, pressedAt = -Infinity;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
@@ -162,9 +164,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (url.protocol === 'data:' && !/^data:(image\/(png|jpeg|gif|webp|svg\+xml)|font\/|application\/(font|x-font)|application\/octet-stream)/i.test(url.href)) return null;
       const slot = kind === 'sprite' ? `sprite:${url.href}` : url.href;
       const known = urlKeys.get(slot); if (known) { urlKeys.delete(slot); urlKeys.set(slot, known); return known.key; }
-      if (keySerial >= 999999) return null;
+      if (usedKeys.size >= 999999) return null;
       if (urlKeys.size >= RESOURCE_BUDGET) urlKeys.delete(urlKeys.keys().next().value);
-      const key = `r${++keySerial}`; urlKeys.set(slot, { key, kind, url: url.href }); newResources.push({ key, url: url.href, kind }); return key;
+      // A URL's key derives from the URL (r1..r999999; frames rebase by slot), so a sheet that names the same
+      // resources is the same text in every document of a site and the viewer's retained copy serves it.
+      let number = 2166136261; for (let i = 0; i < slot.length; i++) number = Math.imul(number ^ slot.charCodeAt(i), 16777619);
+      number = (number >>> 0) % 999999 + 1;
+      while (usedKeys.has(`r${number}`)) number = number % 999999 + 1;
+      const key = `r${number}`; usedKeys.add(key); urlKeys.set(slot, { key, kind, url: url.href }); newResources.push({ key, url: url.href, kind }); return key;
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
@@ -195,30 +202,42 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Top-level pieces of a selector, split where `at` says (commas, or combinators for the rightmost compound).
     const split = (text, at) => { const out = []; let depth = 0, start = 0; for (let i = 0; i < text.length; i++) { const c = text[i]; if (c === '\\') i++; else if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--; else if (!depth && at(c)) { out.push(text.slice(start, i)); start = i + 1; } } out.push(text.slice(start)); return out; };
     // The document's classes, ids and tags (per root, until the next mutation) reject most unused selectors
-    // without a query: a member whose rightmost compound names one the document lacks cannot match.
+    // without a query: a member whose rightmost compound names one the document lacks cannot match. The index also
+    // lists the elements per class, id and tag, so a member is checked against the few elements its rightmost compound
+    // names instead of a whole-document query per selector (most of a large sheet's pruning time).
     let usedIndex = null;
     const usedBy = root => {
       if (usedIndex?.root !== root || usedIndex.revision !== revision) {
-        const classes = new Set(), ids = new Set(), tags = new Set();
-        for (const element of root.querySelectorAll('*')) { tags.add(element.localName.toLowerCase()); if (element.id) ids.add(element.id); for (const name of element.classList) classes.add(name); }
+        const classes = new Map(), ids = new Map(), tags = new Map();
+        const add = (map, key, element) => { const list = map.get(key); if (list) list.push(element); else map.set(key, [element]); };
+        for (const element of root.querySelectorAll('*')) { add(tags, element.localName.toLowerCase(), element); if (element.id) add(ids, element.id, element); for (const name of element.classList) add(classes, name, element); }
         usedIndex = { root, revision, classes, ids, tags, cache: new Map() };
       }
       const { classes, ids, tags, cache } = usedIndex;
-      const possible = member => {
-        const last = split(member.trim(), c => c === ' ' || c === '>' || c === '+' || c === '~').at(-1);
-        if (/\\[0-9a-fA-F]|\|/.test(last) || document.compatMode === 'BackCompat') return true;
+      // The shortest element list the member's rightmost compound names, [] when the document lacks one of its names,
+      // or null when only a query can tell (escaped or namespaced names, quirks mode, no tag, class or id).
+      const candidates = member => {
+        const last = split(member, c => c === ' ' || c === '>' || c === '+' || c === '~').at(-1);
+        if (/\\[0-9a-fA-F]|\|/.test(last) || document.compatMode === 'BackCompat') return null;
         let flat = '', depth = 0; for (const c of last) { if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') { depth--; continue; } if (!depth) flat += c; }
         const name = token => token.replace(/\\(.)/g, '$1'), tag = /^[a-zA-Z][\w-]*/.exec(flat)?.[0];
-        if (tag && !tags.has(tag.toLowerCase())) return false;
-        for (const [, token] of flat.matchAll(/\.((?:[\w-]|\\.)+)/g)) if (!classes.has(name(token))) return false;
-        for (const [, token] of flat.matchAll(/#((?:[\w-]|\\.)+)/g)) if (!ids.has(name(token))) return false;
-        return true;
+        let best = null;
+        const narrow = list => { if (!list) return false; if (!best || list.length < best.length) best = list; return true; };
+        if (tag && !narrow(tags.get(tag.toLowerCase()))) return [];
+        for (const [, token] of flat.matchAll(/\.((?:[\w-]|\\.)+)/g)) if (!narrow(classes.get(name(token)))) return [];
+        for (const [, token] of flat.matchAll(/#((?:[\w-]|\\.)+)/g)) if (!narrow(ids.get(name(token)))) return [];
+        return best;
+      };
+      // `:scope` and pseudo-elements mean something else to Element.matches than to a document query. A long list
+      // (a common tag or class) is cheaper to check in one native query than element by element.
+      const used = member => {
+        const list = /:scope|::/.test(member) ? null : candidates(member);
+        return list === null || list.length > 64 ? root.querySelector(member) !== null : list.some(element => element.isConnected && element.matches(member));
       };
       const matches = selector => {
         const plain = selector.replace(DYNAMIC, '');
         if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true;
-        if (!split(plain, c => c === ',').some(possible)) return false;
-        try { return root.querySelector(plain) !== null; } catch { return true; }
+        try { return split(plain, c => c === ',').some(member => used(member.trim())); } catch { return true; }
       };
       return selector => { let used = cache.get(selector); if (used === undefined) cache.set(selector, used = matches(selector)); return used; };
     };
@@ -229,12 +248,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // A layer block keeps its place in the layer order.
       return inner || rule instanceof CSSLayerBlockRule ? rule.cssText.slice(0, rule.cssText.indexOf('{') + 1) + inner + '}\n' : '';
     };
-    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map();
+    // Sheets the viewer retains (digests it advertised for this snapshot): they arrive by reference, never pruned.
+    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(); let retained = new Set();
+    const viewerRetains = text => retained.size > 0 && retained.has(sha256(text).slice(0, 24));
     const firstPaintCss = (node, sheet, base, text) => {
       const root = node.getRootNode?.();
       // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
       // root's :host rules cannot be checked by a query.
-      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return text;
+      if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9 || viewerRetains(text)) return text;
       const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
       return used.length < text.length ? used : text;
     };
@@ -357,7 +378,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!html && href.startsWith('#') && /^#[\w-]*$/.test(href)) attrs.href = href;
         // An external sprite (protocol 501): the fragment travels; the file is a sanitized resource (`res`).
         else if (!html && node.localName === 'use' && spriteKey(node) && /^#[\w-]+$/.test(href.slice(href.indexOf('#')))) attrs.href = href.slice(href.indexOf('#'));
-        else if (html && ['a', 'area'].includes(node.localName)) attrs.href = '#'; // keeps :link (an empty href would match :visited), never navigates
+        // `#` keeps :link and never navigates. Protocol 629: a link the kernel saw visited from this origin is sent as
+        // `""` instead, which the viewer draws :visited (its own document's URL).
+        else if (html && ['a', 'area'].includes(node.localName)) attrs.href = visitedLinks?.has(node.href) ? '' : '#';
       }
       if (html && node.localName === 'input' && !INPUT_TYPES.has((attrs.type ?? 'text').toLowerCase())) attrs.type = 'text';
       if (node.hasAttribute('contenteditable')) attrs.contenteditable = ['true', 'false', 'plaintext-only'].includes(node.contentEditable) ? node.contentEditable : (node.isContentEditable ? 'true' : 'false');
@@ -433,27 +456,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       styleNodes.set(record.id, { node, signature: sheet ? sheetSignature(sheet) : '', text: record.css, media: record.attrs.media ?? null, imports: imports(sheet) });
       if (sheet && record.css) { const used = firstPaintCss(node, sheet, sheet.href ?? node.baseURI, record.css); if (used !== record.css) { fullSheets.set(record.id, record.css); record.css = used; } }
     };
-    // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
-    // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
-    const childrenOf = function* (node, id, kind, depth) {
-      const seen = new Set();
-      for (let more = true; more;) {
-        more = false;
-        for (const child of [...node.childNodes]) {
-          if (nodes.get(id) !== node || kindOf.get(id) !== kind) return;
-          if (seen.has(child)) continue;
-          seen.add(child); more = true;
-          if (child.parentNode !== node || node.nodeType === 9 && child.nodeType !== 1) continue;
-          // Published elsewhere and moved here: this parent's diff carries the move once the walk closes it.
-          const existing = mirrored(child);
-          if (existing) { if (parentOf.get(existing) !== id) dirty.children.add(node); continue; }
-          yield* serializeTree(child, id, depth + 1);
-        }
-      }
-    };
-    // Pre-order records; a record's children are the following records naming it.
-    const serializeTree = function* (node, parent, depth = 0) {
-      yield null; // even dropped nodes consume a bounded amount of this task
+    // One node of a walk: its record (null when it is not mirrored) and, in `walk.then`, what follows it (its children).
+    const visit = (node, parent, depth, walk) => {
       if (parent && (!nodes.has(parent) || ['tile', 'mask'].includes(kindOf.get(parent)))) return null;
       const type = node.nodeType;
       if (type !== 1 && type !== 3 && type !== 9 && type !== 11) return null;
@@ -462,18 +466,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (type === 3) {
         if (node.parentNode?.localName === 'style') return null;
         record.kind = 'text'; record.text = node.data;
-        spend(32 + (record.text?.length ?? 0)); remember(record, node); yield record; return id;
+        spend(32 + (record.text?.length ?? 0)); remember(record, node); return record;
       }
       if (type === 9 || type === 11) {
         record.kind = type === 9 ? 'document' : 'shadow';
         const sheets = adopted(node); if (sheets.length) record.adopted = sheets;
         if (type === 9 && node !== document) { const fragment = fragmentOf(node); fragments.set(id, fragment); if (fragment) record.fragment = fragment; }
-        spend(32); remember(record, node); yield record;
-        if (nodes.get(id) !== node) return null;
-        watch(node, id); rootSignatures.set(id, adoptedSignature(node));
-        open.add(id);
-        try { yield* childrenOf(node, id, record.kind, depth); } finally { open.delete(id); }
-        return id;
+        spend(32); remember(record, node);
+        walk.then = { node, id, kind: record.kind, depth, root: true }; return record;
       }
       const tag = node.localName, ns = node.namespaceURI, base = node.baseURI;
       if (ns === HTML) {
@@ -482,11 +482,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       } else if (ns === SVG) { if (!SVG_TAGS.has(tag)) { if (tag !== 'foreignObject') return null; } }
       else if (ns === MATH) { if (!MATH_TAGS.has(tag)) return null; }
       else return null;
-      if (secretElement(node)) { maskRecord(node, record); spend(64); remember(record, node); yield record; return id; }
-      if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); remember(record, node); yield record; return id; }
-      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); remember(record, node); yield record; return id; }
-      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); remember(record, node); yield record; return id; }
-      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); remember(record, node); yield record; return id; }
+      if (secretElement(node)) { maskRecord(node, record); spend(64); remember(record, node); return record; }
+      if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); remember(record, node); return record; }
+      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); remember(record, node); return record; }
+      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); remember(record, node); return record; }
+      if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); remember(record, node); return record; }
       if (ns === HTML && !/^[a-z][a-z0-9-]*$/.test(tag)) { record.tag = 'span'; } else record.tag = tag;
       if (ns === SVG) record.ns = 'svg'; else if (ns === MATH) record.ns = 'math';
       record.attrs = attributes(node, base);
@@ -494,11 +494,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         let nested = null; try { nested = node.contentDocument; } catch {}
         // Cross-origin: the kernel mirrors it through the frame's own CDP session
         // (or paints it as a protected opaque region when that is unavailable).
-        if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); yield record; foreign.add(id); return id; }
+        if (!nested?.documentElement) { const [, , width, height] = box(node); record.kind = 'frame'; record.foreign = true; record.size = [width, height]; spend(64); remember(record, node); foreign.add(id); return record; }
         record.kind = 'frame'; record.tag = 'iframe';
-        spend(64); remember(record, node); yield record;
-        if (!mirrored(nested)) { open.add(id); try { yield* serializeTree(nested, id, depth + 1); } finally { open.delete(id); } }
-        return id;
+        spend(64); remember(record, node);
+        walk.then = { id, depth, nested }; return record;
       }
       if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === SVG && (tag === 'image' || tag === 'use')) { const key = tag === 'image' ? svgImageKey(node) : spriteKey(node); if (key) { record.res = key; resOf.set(id, key); } }
@@ -508,15 +507,156 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       spend(64 + JSON.stringify(record.attrs).length);
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
-      yield record;
-      if (nodes.get(id) !== node || kindOf.get(id) !== record.kind) return null;
-      // Mutations meanwhile are diffed after this node closes (drain).
-      open.add(id);
-      try {
-        yield* childrenOf(node, id, record.kind, depth);
-        if (node.shadowRoot && nodes.get(id) === node && !mirrored(node.shadowRoot)) yield* serializeTree(node.shadowRoot, id, depth + 1);
-      } finally { open.delete(id); }
-      return id;
+      if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
+      walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
+    };
+    // The children a walk reaches: a snapshot of the list, then those appended while it ran (a parsing document).
+    // A child removed, moved or already serialized by a drain's diff meanwhile is skipped, never introduced twice.
+    const nextChild = frame => {
+      const { node, id, list } = frame;
+      while (!frame.done) {
+        if (frame.index === list.length) {
+          // Children appended (or the list changed) while the walk was suspended: walk the ones not seen yet.
+          const live = node.childNodes;
+          if (live.length === list.length && list.every((child, i) => live[i] === child)) { frame.done = true; break; }
+          frame.seen ??= new Set(); for (const child of list) frame.seen.add(child);
+          frame.list = [...live]; frame.index = 0;
+          return nextChild(frame);
+        }
+        if (nodes.get(id) !== node || kindOf.get(id) !== frame.kind) { frame.done = true; break; }
+        const child = list[frame.index++];
+        if (frame.seen?.has(child) || child.parentNode !== node || node.nodeType === 9 && child.nodeType !== 1) continue;
+        // Published elsewhere and moved here: this parent's diff carries the move once the walk closes it.
+        const existing = mirrored(child);
+        if (existing) { if (parentOf.get(existing) !== id) dirty.children.add(node); continue; }
+        return child;
+      }
+      if (frame.shadow) { frame.shadow = false; const root = node.shadowRoot; if (root && nodes.get(id) === node && !mirrored(root)) return root; }
+      return null;
+    };
+    // Pre-order records; a record's children are the following records naming it. An explicit stack (not nested
+    // generators, whose every record passes through each enclosing level). Each visit first yields null: even
+    // dropped nodes consume a bounded amount of the caller's task.
+    // A viewport-first walk (`defer`) queues the frames of deferred elements and walks them, in document order,
+    // once everything else is serialized: `defer.walked` then marks the viewport complete.
+    const serializeTree = (node, parent, depth = 0, defer = null) => {
+      const stack = [], later = [], walk = { then: null, defer };
+      let pending = { node, parent, depth }, fresh = true;
+      const close = frame => { if (frame.opened) open.delete(frame.id); };
+      const iterator = {
+        [Symbol.iterator]() { return iterator; },
+        next() {
+          for (;;) {
+            if (fresh) { fresh = false; return { value: null, done: false }; }
+            const then = walk.then;
+            if (then) {
+              walk.then = null;
+              if (then.nested) { if (!mirrored(then.nested)) { open.add(then.id); stack.push({ id: then.id, depth: then.depth, nested: then.nested, opened: true }); } continue; }
+              if (nodes.get(then.id) !== then.node || !then.root && kindOf.get(then.id) !== then.kind) continue;
+              if (then.root) { watch(then.node, then.id); rootSignatures.set(then.id, adoptedSignature(then.node)); }
+              open.add(then.id);
+              (then.later ? later : stack).push({ node: then.node, id: then.id, kind: then.kind, depth: then.depth, list: [...then.node.childNodes], index: 0, seen: null, done: false, shadow: !then.root, opened: true });
+              continue;
+            }
+            if (pending) {
+              const { node: next, parent: under, depth: at } = pending; pending = null;
+              const record = visit(next, under, at, walk);
+              if (record) return { value: record, done: false };
+              continue;
+            }
+            const frame = stack.at(-1);
+            if (!frame) {
+              if (defer) defer.walked = true;
+              if (later.length) { const next = later.shift(); next.list = [...next.node.childNodes]; stack.push(next); continue; }
+              return { value: undefined, done: true };
+            }
+            let child = null;
+            if (frame.nested) { child = frame.nested; frame.nested = null; } else if (frame.list) child = nextChild(frame);
+            if (child) { pending = { node: child, parent: frame.id, depth: frame.depth + 1 }; fresh = true; continue; }
+            stack.pop(); close(frame);
+          }
+        },
+        return() { for (const frame of [...stack, ...later]) close(frame); stack.length = 0; later.length = 0; pending = null; walk.then = null; fresh = false; return { value: undefined, done: true }; },
+      };
+      return iterator;
+    };
+    // MP-08/MP-10 protocol 629: the elements whose box meets the viewport (a quarter screen above and below), with
+    // their ancestors across shadow roots; every element the scan saw that is not among them may be deferred.
+    // Sheets and SVG definitions style or paint what is on screen from anywhere: they and their ancestors are walked.
+    let viewportFirst = false, deferral = null, visitedLinks = null;
+    // Protocol 629: the kernel saw `url` visited from `origin` after the snapshot; this page's links to it re-mark as
+    // ordinary href changes.
+    const visited = (origin, url) => {
+      if (!visitedLinks || origin !== location.origin || visitedLinks.has(url)) return false;
+      visitedLinks.add(url);
+      let marked = false;
+      for (const root of roots.values()) for (const link of root.querySelectorAll?.('a[href], area[href]') ?? []) {
+        if (link.href !== url || !mirrored(link)) continue;
+        if (!dirty.attrs.has(link)) dirty.attrs.set(link, new Set());
+        dirty.attrs.get(link).add('href'); marked = true;
+      }
+      if (marked) wake();
+      return marked;
+    };
+    const viewportScan = () => {
+      const scanned = new WeakSet(), shown = new WeakSet(), top = -innerHeight / 4, bottom = innerHeight * 1.25, right = innerWidth;
+      const show = element => { for (let n = element; n && !shown.has(n); n = n.parentNode ?? n.host ?? null) shown.add(n); };
+      const scan = list => {
+        for (const element of list) {
+          scanned.add(element);
+          const r = element.getBoundingClientRect();
+          if (r.bottom > top && r.top < bottom && r.right > 0 && r.left < right) show(element);
+          if (element.shadowRoot) scan(element.shadowRoot.querySelectorAll('*'));
+        }
+      };
+      scan(document.getElementsByTagName('*'));
+      if (document.head) show(document.head);
+      for (const element of document.querySelectorAll('style, link[rel~="stylesheet" i], svg defs, svg symbol')) show(element);
+      return { scanned, shown, flow: new Map(), walked: false };
+    };
+    // A deferred element keeps its box while its children wait: [x, y, width, height] in document CSS px, the CSS
+    // height (its own box-sizing) that holds it, and its top and bottom margins with those of the children that
+    // collapse through it; no box (null) for display: none. Only a block-level box in normal block flow whose
+    // off-screen ancestors are too, so its width comes from what stays on screen; the viewer checks every box before
+    // it hands over. Values are layout units (1/64 px): rounding would add up over hundreds of boxes.
+    const deferredBox = (node, defer) => {
+      if (!defer.scanned.has(node) || defer.shown.has(node) || node.shadowRoot || node.getRootNode() !== document) return null;
+      const style = getComputedStyle(node), round = v => Math.round(v * 64) / 64;
+      if (style.display === 'none') return [0, 0, 0, 0, null, 0, 0];
+      const parent = node.parentElement; if (!parent) return null;
+      if (!inFlow(parent, defer) || !['block', 'flow-root', 'list-item', 'flex', 'grid', 'table'].includes(style.display) || style.float !== 'none' || !['static', 'relative'].includes(style.position) || style.transform !== 'none') return null;
+      const r = node.getBoundingClientRect(); if (!r.height) return null;
+      const top = collapsed(node, style, r, 'Top'), bottom = collapsed(node, style, r, 'Bottom'); if (top === null || bottom === null) return null;
+      const edges = style.boxSizing === 'border-box' ? 0 : ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].reduce((sum, name) => sum + parseFloat(style[name]), 0);
+      return [round(r.x + scrollX), round(r.y + scrollY), round(r.width), round(r.height), round(Math.max(0, r.height - edges)), round(top), round(bottom)];
+    };
+    // A container whose children's widths come from it: a block container, on screen or itself sized by such a one.
+    const inFlow = (element, defer) => {
+      let flow = defer.flow.get(element);
+      if (flow === undefined) {
+        const style = getComputedStyle(element), parent = element.parentElement;
+        flow = ['block', 'flow-root', 'list-item'].includes(style.display) && (defer.shown.has(element) || !parent || style.float === 'none' && ['static', 'relative'].includes(style.position) && inFlow(parent, defer));
+        defer.flow.set(element, flow);
+      }
+      return flow;
+    };
+    // The margin a box and its first (last) in-flow children share on one side: a child flush with that edge of a box
+    // without padding or border there collapses through it. A negative margin in the chain is not deferred (null).
+    const collapsed = (node, style, rect, side) => {
+      let margin = parseFloat(style[`margin${side}`]), at = node, atStyle = style, atRect = rect;
+      for (let depth = 0; depth < 32 && margin >= 0; depth++) {
+        if (parseFloat(atStyle[`padding${side}`]) || parseFloat(atStyle[`border${side}Width`])) break;
+        let child = side === 'Top' ? at.firstChild : at.lastChild;
+        while (child && (child.nodeType === 8 || child.nodeType === 3 && !child.data.trim())) child = side === 'Top' ? child.nextSibling : child.previousSibling;
+        if (child?.nodeType !== 1) break;
+        const childStyle = getComputedStyle(child), childRect = child.getBoundingClientRect();
+        if (!['block', 'flow-root', 'list-item', 'flex', 'grid', 'table'].includes(childStyle.display) || childStyle.float !== 'none' || !['static', 'relative'].includes(childStyle.position)) break;
+        if (Math.abs(side === 'Top' ? childRect.top - atRect.top : childRect.bottom - atRect.bottom) > 0.01) break;
+        const own = parseFloat(childStyle[`margin${side}`]); if (own < 0) return null;
+        margin = Math.max(margin, own);
+        at = child; atStyle = childStyle; atRect = childRect;
+      }
+      return margin >= 0 ? margin : null;
     };
     const serialize = (node, parent, out, depth = 0) => {
       for (const record of serializeTree(node, parent, depth)) if (record) out.push(record);
@@ -528,11 +668,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // interleaves every reply in 16 KiB frames; atomic here never means one wire write.
     const chunk = (visits = 4096, minimum = 256) => {
       const atomic = !progressive, limit = atomic ? 8 * 1024 * 1024 : 128 * 1024;
-      const out = [], end = performance.now() + 8; let bytes = budget.bytes;
+      const out = [], end = performance.now() + 8, viewport = deferral && !deferral.walked; let bytes = budget.bytes;
       for (let i = 0; continuation && i < (atomic ? 40000 : visits); i++) {
         const item = continuation.next();
         if (item.done) { continuation = null; break; }
         if (item.value) out.push(item.value);
+        // The viewport is complete: the deferred subtrees follow in bounded credits, after the handover.
+        if (viewport && deferral.walked) { progressive = true; break; }
         // Carry bounded head CSS with the first large-document viewport prefix
         // (browserux 91599e472); ordinary resets count it inside their 8 MiB cap.
         if (!atomic && budget.bytes <= HEAD_BYTES && !(document.body && mirrored(document.body))) bytes = budget.bytes;
@@ -608,7 +750,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
       reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { snapshot_complete: reportedComplete, font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState === 'complete' } : {}), font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
@@ -617,7 +759,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
-    const snapshot = () => {
+    const snapshot = (known = [], options = {}) => {
+      retained = new Set(known); viewportFirst = options.viewport_first === true; visitedLinks = Array.isArray(options.visited_links) ? new Set(options.visited_links) : null;
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the
@@ -626,7 +769,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       reportedRequirements.clear(); absentKeys.clear(); absentOf.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; fullSheets.clear(); hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
-      continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null);
+      // A parsing document has no settled viewport: it is walked in document order.
+      deferral = viewportFirst && document.readyState !== 'loading' ? viewportScan() : null;
+      continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null, 0, deferral);
       progressive = document.getElementsByTagName('*').length > 10000;
       // A slow task must not publish only half a detailed viewport header.
       // The first prefix has a fixed 1024-visit ceiling; later credits yield
@@ -1139,7 +1284,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
     const usedCss = (id, text) => {
       const root = nodes.get(id)?.getRootNode?.();
-      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return null;
+      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9 || viewerRetains(String(text))) return null;
       const sheet = new CSSStyleSheet(); sheet.replaceSync(String(text));
       const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
       return out;
@@ -1205,6 +1350,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

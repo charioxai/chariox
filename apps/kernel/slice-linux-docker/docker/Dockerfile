@@ -380,12 +380,13 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-frames.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-fonts.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-observer.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-visited-links.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-regions.mjs \
-     apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2-preview.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-mirror2.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-motion.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-credit.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-resize.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-readback.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-native-tab-state.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-state-signal.mjs \
@@ -395,6 +396,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-visible-page.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-page-display.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-navigation-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-layout-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \

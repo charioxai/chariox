@@ -671,10 +671,13 @@ impl KernelRuntimeState {
             .await?;
         // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left is read after the
         // serial input lane is free (a read inside it queued every later key) and joins this reply.
+        // The relay's input turn for this lane is given back too: a typed URL otherwise waited one
+        // omnibox read per character, and its Enter reached Chrome 0.3-0.5 s late.
         let follow = input_at
             .and(result.as_object_mut())
             .and_then(|reply| reply.remove("_follow"));
         if let Some(follow) = follow {
+            crate::transport::relay_client::release_input_turn();
             let admission =
                 host.admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
             let params = serde_json::json!({"op":"chrome_window_follow","tab_id":follow["tab_id"],"switches":follow["switches"],"observed_by":actor});

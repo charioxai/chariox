@@ -29,7 +29,7 @@ def copy(source,dest):
 # Fixed public-source allowlist; no daemon/controller configuration or profiles.
 files=subprocess.check_output(['git','ls-files','apps/browser-display'],cwd=checkout,text=True).splitlines()
 assets=(checkout/'apps/kernel/src/runtime/kernel_browser_assets.rs').read_text()
-files += ['apps/kernel/src/runtime/kernel_browser_assets.rs','packages/kernel-client/src/browser-relay-crypto.ts','docs/MULTIDOMAIN_KERNEL_BROWSER.md']
+files += ['apps/kernel/src/runtime/kernel_browser_assets.rs','packages/kernel-client/src/browser-relay-crypto.ts','packages/kernel-client/src/relay-frame-transport.ts','packages/kernel-client/src/browser-mirror2-security.ts','docs/MULTIDOMAIN_KERNEL_BROWSER.md']
 files += [path for path,_ in PROTOCOL_FILES.values()]
 files += ['apps/kernel/slice-linux-docker/docker/'+n for n in re.findall(r'include_bytes!\("../../slice-linux-docker/docker/([^"/]+)"\)',assets)]
 for name in sorted(set(files)):

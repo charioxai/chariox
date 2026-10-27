@@ -435,3 +435,8 @@ test('MP-11 a fenced native source skips the attestation screenshot and records 
  await assert.rejects(source.attest(),/native attestation RGB differed/);
  assert.equal(shots,0);assert.deepEqual(marks,['native_attestation_retired']);
 });
+
+test('MP-08/MP-10/MP-11 resized page capture keeps the exact owned window without fitting it again',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const capture=new LinuxCapture({size:{width:1150,height:592},scale:1,pageWindow:async()=>({xid:42,bounds:{width:1150,height:680},page_rect:{left:0,top:88,width:1150,height:592}}),connection:{send:()=>assert.fail('a resized owned window must not be fitted again')}});
+ assert.deepEqual(await capture.prepareReadback(),{width:1150,height:592,window_region:{id:42,width:1150,height:680,left:0,top:88}});
+});

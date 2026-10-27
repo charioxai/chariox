@@ -5444,3 +5444,46 @@ message that names the steer id, says it was delivered and must not be sent agai
 it is distinct from `prompt_steer_rejected`, which means nothing was delivered.
 Local 591 and relay peer 197 add this event shape, and
 `RelayStatus.status.capabilities` advertises `outside_steer_events_v1` for it.
+### MP-08 / MP-10 / MP-11: live browser layout (629/232)
+
+Allocated local 629/peer 232 adds `KernelBrowser.command={op:"resize",tab_id,generation,width,height}`.
+The result is `{width,height}` in CSS pixels. The current bounds are 320×200 through 1920×1080.
+This is a normal owner/agent mutation on the existing Tab and action ledger. It does not start a
+stopped browser or grant observation/input. Native rectangles retire before the owned window
+changes; fresh captures repeat the ordinary document, policy, ownership and pixel checks.
+Mirror registrations remain attached. Resize sets one shared window layout for every existing
+and subsequently opened Tab until the browser stops or another resize replaces it. This intentionally
+takes precedence over protocol 560 subscription layouts: remote browser observers see the same
+page geometry, and opening or closing a viewer does not restore its previous layout.
+An acknowledgement confirms layout application, not client paint.
+
+The web sends the newest container size per animation frame with one request in flight. It reflows
+mirror CSS without scaling; video retains its old pixels unscaled, cropped/padded until the new
+capture arrives. Kernels below 629 retain the existing fitted layout and receive no resize command.
+Functional and performance acceptance must be recorded separately from this protocol contract.
+
+### MP-08 / MP-10: viewport-first mirror snapshot and `:visited` links (629/232)
+
+Allocated local 629 adds two opt-in `mirror_subscribe` capabilities for `wire:2`; the
+subscribed reply echoes each one it accepted.
+
+`viewport_first:true` lets the reset snapshot carry the on-screen part of the document first.
+An off-screen block-level element in normal flow may arrive without its children and with
+`deferred:[x,y,width,height,height_pin,margin_top,margin_bottom]` in document CSS pixels; the
+viewer holds that box until the children arrive in later `children` ops. Packets carry
+`snapshot_viewport_complete` once every on-screen node has been sent and the document has loaded.
+The web hands over on it only when each kept box sits where the page has it, and otherwise waits
+for `snapshot_complete` as before. A subscription that did not ask receives whole snapshots and no
+viewport flag. Kernels below 629 and older viewers keep the existing behaviour.
+
+`visited_links:true` lets a link the kernel saw visited travel with `href:""` instead of `href:"#"`; the
+viewer draws it `:visited`, because an empty `href` names the viewer document itself. Like Chrome's
+partitioned visited links, a visit counts on the origin whose page started it (a typed URL on its own
+origin). The kernel keeps the 4096 most recent visits of the browser profile in memory, applies them
+at each snapshot and re-marks a link visited later with an ordinary `attr` op, without a reset. A
+viewer that did not ask never receives an empty `href`, and its validator keeps refusing one.
+
+The relay never parses mirror records, which travel inside `KernelBrowser` results; peer 232 is
+raised for the resize command above. The web offers the new fields only to kernels at local 629 or
+later. The 629/232 union keeps 614 as a reciprocal managed-upgrade predecessor and retires the
+unshipped branch protocol 588 from the 32-entry list.

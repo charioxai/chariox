@@ -15,9 +15,9 @@ import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
 // Protocol 530: mirrored undo/redo as named mirror keys (the renderer never sends raw modifiers here).
+const LAYOUT_MOVED = /mirror layout changed during observation/;
 const HISTORY_CHORDS = new Map([['Ctrl+Z', 2], ['Ctrl+Shift+Z', 10]]);
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
-import {waitForNavigationPreview} from './kernel-browser-mirror2-preview.mjs';
 
 const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 // MP-08/MP-10: packet age does not establish loss on a shaped link. Only an
@@ -174,12 +174,34 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 // border-color:red) as empty longhands (`border-top-width: ;`), which a viewer parser drops. A rule whose
 // text came out that way is kept as its source text.
 const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const chunks=text=>{const out=[];let depth=0,start=0,quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}}return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=chunk.indexOf('{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const parse=serialize;`;
+// CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
+export class ParsedSheets {
+  constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
+  take(key) { const body = this.bodies.get(key); if (body !== undefined) { this.bodies.delete(key); this.bodies.set(key, body); } return body; }
+  put(key, body) {
+    if (body.length > this.chars) return;
+    const old = this.bodies.get(key); if (old !== undefined) { this.bodies.delete(key); this.size -= old.length; }
+    this.bodies.set(key, body); this.size += body.length;
+    for (const [first, text] of this.bodies) { if (this.bodies.size <= this.entries && this.size <= this.chars) break; this.bodies.delete(first); this.size -= text.length; }
+  }
+}
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
+  // Protocol 629: what the subscription negotiated for its snapshots; `visited_links` lists the URLs visited from the page's origin.
+  snapshotOptions(stream, world) {
+    if (!stream.viewportFirst && !stream.visitedLinks) return null;
+    let origin = null; try { origin = new URL(world.frame?.url).origin; } catch {}
+    return { ...(stream.viewportFirst ? { viewport_first: true } : {}), ...(stream.visitedLinks ? { visited_links: this.host.visitedLinks?.from(origin) ?? [] } : {}) };
+  }
+  // Protocol 629: a page visited after a snapshot re-marks the links to it in each subscription that asked (best effort: a gone world has no links).
+  visited(origin, url) {
+    const expression = stream => `${stream.world.ref}.visited(${JSON.stringify(origin)},${JSON.stringify(url)})`;
+    for (const stream of this.service.streams.values()) if (stream.wire === 2 && stream.visitedLinks && stream.world) this.evaluate(stream.world, expression(stream)).catch(() => {});
+  }
   async world(tab, stream, patience) {
     const targetAt = timestamp();
     const cached = this.host.browser.currentPageFrame?.(tab.target_id);
@@ -212,23 +234,27 @@ export class Mirror2 {
   }
   // One snapshot per world in flight. A snapshot the page has not answered keeps running in the renderer; the credit
   // that gave up on it leaves it pending and the next credit takes its answer instead of queueing a second one.
-  async snapshotOnce(world, policy, patience) {
+  // `known`: digests of sheets the viewer retains; the page sends those whole (by reference) instead of pruning them.
+  async snapshotOnce(world, policy, patience, known = [], options = null) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
-    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot()`, false, SNAPSHOT_MS) };
+    const args = options ? `${JSON.stringify(known)},${JSON.stringify(options)}` : known.length ? JSON.stringify(known) : '';
+    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${args})`, false, SNAPSHOT_MS, true) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
     const late = new Promise((_, reject) => { const ms = patience(); timer = setTimeout(() => reject(Object.assign(new Error(`browser CDP method Runtime.evaluate timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })), ms); });
     try { const snap = await Promise.race([pending.promise, late]); if (world.snapshotPending === pending) world.snapshotPending = null; return snap; }
     finally { clearTimeout(timer); }
   }
-  async evaluate(world, expression, awaitPromise = false, timeoutMs) {
-    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
+  // `json`: the page returns the value as one JSON string. A large snapshot or drain crosses CDP several times faster
+  // that way than as a by-value object (the inspector's object serialization runs on the renderer's main thread).
+  async evaluate(world, expression, awaitPromise = false, timeoutMs, json = false) {
+    const reply = await world.connection.send('Runtime.evaluate', { expression: json ? `JSON.stringify(${expression})` : expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
       const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
     }
     if (!Object.hasOwn(reply.result ?? {}, 'value')) throw new Error('MP-11: mirror observation unavailable');
-    return reply.result.value;
+    return json ? JSON.parse(reply.result.value) : reply.result.value;
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
   // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
@@ -317,7 +343,16 @@ export class Mirror2 {
     const hurry = stream.hurry;
     // The credit's own clock starts here: waiting behind an earlier credit of the subscription spends it too.
     const hard = arrival + Math.min(wait + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), KERNEL_CONTROLLER_DEADLINE_MS - 1000);
-    const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry, hard));
+    const build = () => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry, hard);
+    // A live resize can land while a packet is observed: that packet describes the old size. The viewer gets the
+    // reset at the new size on this same credit instead of an error that retires its mirror mid-drag. A drag can
+    // retire each replacement too, so keep observing until the credit's own deadline or cancellation.
+    const observe = async () => {
+      for (;;) {
+        try { return await build(); } catch (error) { if (!LAYOUT_MOVED.test(error?.message ?? '') || signal?.aborted || Date.now() >= hard) throw error; }
+      }
+    };
+    const run = stream.chain.then(observe);
     stream.chain = run.catch(() => {});
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
@@ -340,6 +375,8 @@ export class Mirror2 {
       snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
       scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
+    // The viewer answers this packet with a native page display: start it now, while the packet travels.
+    this.host.navigationDisplays?.start(scope, tabId, documentId);
     this.host.timing?.('mirror2_navigation_preview', started);
     return packet;
   }
@@ -392,13 +429,8 @@ export class Mirror2 {
       this.regions.retireStream(stream);
       return this.previewPacket(stream, command, scope, tab.tab_id, tab.document_id, started);
     }
-    if(stream.navigationPreview&&stream.previewDocument===tab.document_id&&stream.document_id!==tab.document_id&&stream.previewWaitedDocument!==tab.document_id){
-      const previewAt=timestamp(),document=tab.document_id;
-      await waitForNavigationPreview(this.host,{tab_id:tab.tab_id,document_id:document,generation:command.generation,scope},signal);
-      assertNotCancelled(signal);this.service.require(command.subscription_id,scope,command.generation);
-      if(this.host.generation!==command.generation||tab.document_id!==document)throw new Error('MP-11: navigation preview document retired');
-      stream.previewWaitedDocument=document;this.host.timing?.('mirror2_preview_wait',previewAt);
-    }
+    // MP-08/MP-10: native preview and mirror preparation run concurrently.
+    // An optional producer that never starts must not delay the usable mirror.
     const browser = this.host.browser;
     const world = kept?.world ?? await this.world(tab, stream, patience), policy = this.host.protection;
     stream.world = world;
@@ -422,7 +454,8 @@ export class Mirror2 {
     // still keeps the previous page. A new subscription has no previous page to keep.
     // A document the native preview already covers needs no hold: the viewer keeps the preview until its own handover gate.
     if (stream.previewDocument !== tab.document_id && (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint)) { await this.evaluate(world, paintHoldExpression(Math.max(0, PAINT_HOLD_MS - (world.navigatedAt ? timestamp() - world.navigatedAt : 0))), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
-    if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
+    // Recent input guards its echo in the document it targeted: a followed link's click must not hold the new page's bytes.
+    if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; stream.inputAt = 0; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
@@ -448,7 +481,7 @@ export class Mirror2 {
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.snapshotOnce(world, policy, patience);
+        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
@@ -468,14 +501,14 @@ export class Mirror2 {
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
-      return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
+      return processDelta(await this.evaluate(world, `${world.ref}.drain()`, false, undefined, true));
     };
     const processDelta = async delta => {
       assertDocument();
       if (Number.isInteger(delta.full_pending)) stream.fullPending = delta.full_pending;
       // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
       if (delta.closed_candidates && await this.markClosedHosts(world, delta)) {
-        delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`));
+        delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`, false, undefined, true));
       }
       if (delta.resync) { this.host.timing?.(`mirror2_reset drain_${delta.resync}`, started); return delta; }
       const ops = [], resources = [...delta.resources];
@@ -508,7 +541,7 @@ export class Mirror2 {
       // Legacy viewers retain first-packet fonts. Resource bytes otherwise
       // travel only without DOM changes, so an echo never queues behind them.
       const fontsAt = timestamp();
-      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
+      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) || this.streamingRest(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
@@ -571,7 +604,7 @@ export class Mirror2 {
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
-    const header = { snapshot_complete: source?.snapshot_complete === true, font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
+    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
     const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
       sequence, base_sequence: null, reset, css_width: this.host.pageSize(tab.tab_id).width, css_height: this.host.pageSize(tab.tab_id).height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
@@ -650,10 +683,13 @@ export class Mirror2 {
   empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
   }
   // A document that keeps streaming never has an empty credit: its font bytes, which fence the viewer's handover, travel with the DOM chunks.
   fontsDue(stream) { if (stream.fontRequirements !== true) return false; for (const entry of stream.resources.values()) if (entry.kind === 'font' && !entry.sent) return true; return false; }
+  // Protocol 629: the off-screen rest of a viewport-first snapshot streams on every credit, and the viewer's handover waits
+  // for the on-screen images: their bytes travel with the rest's chunks unless viewer input is recent.
+  streamingRest(stream, source) { return stream.viewportFirst && source.snapshot_viewport_complete === true && source.snapshot_complete !== true && !this.recentInput(stream); }
   // A packet's resource budget; smaller within a second of viewer input.
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }
@@ -837,7 +873,16 @@ export class Mirror2 {
       return true;
     };
     if (!await read(url, '', '', 0)) return null;
-    return this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return ${usedBy === null ? 'out' : `out.length<${FIRST_PAINT_SHEET}?out:[out,${world.ref}.usedCss(${JSON.stringify(usedBy)},out)]`}})(${JSON.stringify(sheets)})`);
+    // A same-site navigation reads the same sheets again. Their normalized text (a lossy sheet's chunk-by-chunk
+    // re-parse is most of a large sheet's cost) comes from the last document that parsed the same source under the
+    // same wrapper, origin and compatibility mode. Sanitizing (per-document resource keys) and pruning still run here.
+    world.quirks ??= await this.evaluate(world, "document.compatMode === 'BackCompat'");
+    const origin = (() => { try { return new URL(world.frame?.url ?? '').origin; } catch { return ''; } })();
+    const keys = sheets.map(sheet => createHash('sha256').update(JSON.stringify([origin, world.quirks, sheet.open, sheet.close, sheet.text])).digest('base64'));
+    const input = sheets.map(({ text, url, open, close }, i) => { const body = this.parsedSheets.take(keys[i]); return body === undefined ? { text, url, open, close } : { body, url }; });
+    const reply = await this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';const parsed=[];for(const s of sheets){let body=s.body;if(body===undefined){body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);parsed.push(body)}else parsed.push(null);out+=${world.ref}.sanitize(body,s.url)}return {css:out,parsed,used:${usedBy === null ? 'null' : `out.length<${FIRST_PAINT_SHEET}?null:${world.ref}.usedCss(${JSON.stringify(usedBy)},out)`}}})(${JSON.stringify(input)})`);
+    reply.parsed.forEach((body, i) => { if (typeof body === 'string') this.parsedSheets.put(keys[i], body); });
+    return reply.used === null ? reply.css : [reply.css, reply.used];
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed
