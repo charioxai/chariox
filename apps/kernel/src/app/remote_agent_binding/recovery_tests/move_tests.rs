@@ -2630,3 +2630,6 @@ async fn mk04_locked_required_vault_rejects_before_publication_and_activation() 
         "TOKEN=synthetic-selected-input\n"
     );
 }
+
+#[path = "move_setup_tests.rs"]
+mod move_setup_tests;

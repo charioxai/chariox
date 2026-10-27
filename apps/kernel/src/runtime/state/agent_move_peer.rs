@@ -287,13 +287,14 @@ impl KernelRuntimeState {
         &self,
         capture: AgentMoveCapture,
     ) -> Result<(), DaemonError> {
+        // Test Projects must stay outside kernel HOME, like ordinary Moves.
         #[cfg(test)]
         let parent = self
             .owned
             .config_projection
             .snapshot()
             .private_runtime_state_root()
-            .join("move-workspaces");
+            .with_extension("move-workspaces");
         #[cfg(not(test))]
         let parent = std::env::var_os("HOME")
             .map(PathBuf::from)

@@ -215,6 +215,11 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .prepare_provider_launch_request_with_vault(request.clone(), "ordinary remote launch")
         .await
         .is_err());
+    assert!(app
+        .lock()
+        .await
+        .prepare_app_provider_launch_request(request.clone(), "ordinary remote app launch",)
+        .is_err());
     request.agent_move_preparation = Some(identity.operation_id.clone());
     let prepared = runtime
         .prepare_provider_launch_request_with_vault(
@@ -223,6 +228,10 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         )
         .await
         .expect("the captured Return must prepare before clearing its remote route");
+    app.lock()
+        .await
+        .prepare_app_provider_launch_request(prepared.clone(), "prepare fenced Return setup")
+        .expect("app admission must accept the exact fenced Return");
     assert_eq!(prepared.working_directory, request.working_directory);
     assert_eq!(
         runtime
@@ -244,6 +253,11 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
     let mut wrong_directory = request.clone();
     wrong_directory.working_directory = Some(worktree.path().join("other"));
     for invalid in [wrong_operation, wrong_directory] {
+        assert!(app
+            .lock()
+            .await
+            .prepare_app_provider_launch_request(invalid.clone(), "invalid Return app preparation",)
+            .is_err());
         assert!(runtime
             .prepare_provider_launch_request_with_vault(invalid, "invalid Return preparation")
             .await
