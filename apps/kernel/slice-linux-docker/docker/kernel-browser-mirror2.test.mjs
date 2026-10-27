@@ -130,18 +130,18 @@ test('MP-10: a repeated large stylesheet travels once per snapshot epoch', () =>
 });
 
 test('MP-10: opaque region area is clipped to the viewport for the 25% handoff budget', () => {
-  assert.equal(regionArea([{ box: [0, 0, 640, 400] }]), 256000);
-  assert.equal(regionArea([{ box: [-100, 700, 400, 400] }]), 300 * 100);
-  assert.ok(regionArea([{ box: [0, 0, 1280, 300] }]) > 0.25 * 1280 * 800);
-  assert.ok(regionArea([{ box: [10, 10, 300, 168] }]) < 0.25 * 1280 * 800);
+  assert.equal(regionArea([{ box: [0, 0, 640, 400] }],pageSize()), 256000);
+  assert.equal(regionArea([{ box: [-100, 700, 400, 400] }],pageSize()), 300 * 100);
+  assert.ok(regionArea([{ box: [0, 0, 1280, 300] }],pageSize()) > 0.25 * 1280 * 800);
+  assert.ok(regionArea([{ box: [10, 10, 300, 168] }],pageSize()) < 0.25 * 1280 * 800);
 });
 
 test('MP-08/MP-10: an article lead video stays a region of the mirrored page; only a media-dominated viewport hands off', () => {
   // Real BBC article (c32l4ekpvzl8o, 1280x800): the lead video is 721x406 CSS px (29% of the viewport).
-  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }]), false);
-  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }, { box: [957, 124, 300, 250] }]), false);
-  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 800] }]), true);
-  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 480] }, { box: [0, 480, 1280, 40] }]), true);
+  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }],pageSize()), false);
+  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }, { box: [957, 124, 300, 250] }],pageSize()), false);
+  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 800] }],pageSize()), true);
+  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 480] }, { box: [0, 480, 1280, 40] }],pageSize()), true);
 });
 
 test('MP-08/MP-10: a credit replayed after a reconnect gets its original packet, not a new sequence', async () => {
@@ -1033,4 +1033,19 @@ test('MP-08/MP-10: sanitizing a sheet with a long inline data URL and an escape 
  const started = performance.now(), out = sanitizeMirrorCss(css, 'https://x/', () => 'r1');
  assert(performance.now() - started < 100, `took ${Math.round(performance.now() - started)} ms`);
  assert.equal(out, '.a{content:"\\2022"}.b{background:url("mr:r1")}.c{background:url("mr:r1")}');
+});
+
+test('MP-08/MP-10: opaque area and stills use the live viewport beyond 1280 by 800', async () => {
+  const size={width:1610,height:900}, boxes=[{id:'n3',box:[1400,820,80,40]}];
+  assert.equal(regionArea(boxes,size),3200);
+  assert.equal(regionOverBudget([{box:[0,0,1280,800]}],size),true);
+  assert.equal(regionOverBudget([{box:[0,0,1000,800]}],size),false);
+  const {encodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),async screenshot(tab,clip){
+    shots.push(clip);return {data_base64:encodePng(clip.width,clip.height,Buffer.alloc(clip.width*clip.height*4,255))};
+  }};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>null;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,[{x:1400,y:820,width:80,height:40,scale:1}]);
+  assert.equal(tiles.length,1); assert.equal(tiles[0].width,80); assert.equal(tiles[0].height,40);
 });
