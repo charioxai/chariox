@@ -55,7 +55,10 @@ impl KernelRuntimeState {
         match request {
             Request::Probe { native, .. } => {
                 self.probe_agent_move_target(native, None).await?;
-                Ok(Response::Compatible)
+                Ok(Response::Compatible {
+                    relay_peer_protocol_version:
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                })
             }
             Request::CreateLease {
                 home_agent_metaagent,
@@ -102,7 +105,11 @@ impl KernelRuntimeState {
                             &source.backing_agent_id,
                         )
                         .await?;
-                    return Ok(Response::SourceCompatible { native });
+                    return Ok(Response::SourceCompatible {
+                        native,
+                        relay_peer_protocol_version:
+                            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    });
                 }
                 let capture = self
                     .prepare_agent_move_source(

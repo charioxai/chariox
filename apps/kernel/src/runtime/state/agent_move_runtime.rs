@@ -215,10 +215,19 @@ impl KernelRuntimeState {
                             context,
                         },
                     )
-                    .await?;
-                let Response::SourceCompatible { native } = response else {
+                    .await.map_err(|error| move_error(format!("Move source compatibility could not be verified: {error}. Update/restart both selected kernels before retrying")))?;
+                let Response::SourceCompatible {
+                    native,
+                    relay_peer_protocol_version,
+                } = response
+                else {
                     return Err(move_error("Source does not support durable Return; upgrade both kernels before retrying"));
                 };
+                if relay_peer_protocol_version
+                    < crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
+                {
+                    return Err(move_error("Source peer cannot prove composed Move readiness; update/restart both kernels before moving this session"));
+                }
                 native
             } else {
                 self.probe_agent_move_source(session_id, operation.original_agent.id())
@@ -233,8 +242,10 @@ impl KernelRuntimeState {
                             native,
                         },
                     )
-                    .await?;
-                if reply != Response::Compatible {
+                    .await.map_err(|error| move_error(format!("Move target compatibility could not be verified: {error}. Update/restart both selected kernels before retrying")))?;
+                if !matches!(reply, Response::Compatible { relay_peer_protocol_version }
+                    if relay_peer_protocol_version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION)
+                {
                     return Err(move_error("Target does not support durable Move; upgrade both kernels before retrying"));
                 }
             } else {
@@ -283,7 +294,14 @@ impl KernelRuntimeState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         loop {
             self.authorize_current_external_command()?;
-            if operation.phase.is_pending() && operation.composition.commit.is_none() {
+            if matches!(
+                &operation.phase,
+                HomeMovePhase::Fenced
+                    | HomeMovePhase::SourceStopped
+                    | HomeMovePhase::Captured { .. }
+                    | HomeMovePhase::Materialized { .. }
+                    | HomeMovePhase::Bound { .. }
+            ) {
                 self.verify_agent_move_requirements(&operation).await?;
             }
             operation = match operation.phase.clone() {

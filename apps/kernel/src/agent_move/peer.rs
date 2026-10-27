@@ -107,8 +107,11 @@ impl AgentMovePeerRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentMovePeerResponse {
-    Compatible,
+    Compatible {
+        relay_peer_protocol_version: u32,
+    },
     SourceCompatible {
+        relay_peer_protocol_version: u32,
         native: Option<crate::provider::NativeMoveCompatibility>,
     },
     SourceCaptured,
@@ -149,7 +152,7 @@ mod tests {
         let bytes = include_bytes!("protocol-634-237.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "1d37057027ced7f3a43e54bf9f438c084301c113d2e7590c7210e03cc3325c71"
+            "c8515b401db4cf7cd8eb124f10b228f4786daa68fc7f05d182b9a4708ba02c81"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(

@@ -212,7 +212,8 @@
         "source_os": "linux",
         "cli_version": "codex-cli 0.159.3",
         "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-      }
+      },
+      "relay_peer_protocol_version": 237
     },
     {
       "result": "source_captured"

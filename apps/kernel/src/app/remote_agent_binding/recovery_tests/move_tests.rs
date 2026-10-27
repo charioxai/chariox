@@ -2411,3 +2411,206 @@ async fn mk04_corrupt_captured_archive_rejects_before_target_activation() {
         b"checkpointed workspace\n"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_locked_required_vault_rejects_before_publication_and_activation() {
+    use crate::managed_context::development::*;
+    use crate::project_environment::*;
+    use std::collections::BTreeMap;
+    let (fixture, session, source) = crash_fixture().await;
+    std::fs::write(source.join("app.js"), "console.log(process.env.TOKEN)\n").unwrap();
+    std::fs::write(
+        source.join(".env.local"),
+        "TOKEN=synthetic-selected-input\n",
+    )
+    .unwrap();
+    let (mut source_config, owner, source_project_id) = {
+        let home = fixture.home.lock().await;
+        (
+            home.config.clone(),
+            home.agents()
+                .get_agent(&fixture.agent_id)
+                .unwrap()
+                .owner_user_id()
+                .to_string(),
+            home.sessions()
+                .get_session(&session)
+                .unwrap()
+                .project_id()
+                .to_string(),
+        )
+    };
+    source_config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::ProcessMemory;
+    let target_config = {
+        let mut worker = fixture.workers[0].lock().await;
+        worker.config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        worker.config.user_config.credential_vault.path = fixture
+            .workspace_root
+            .join("required-target-vault.json")
+            .display()
+            .to_string();
+        worker.config.clone()
+    };
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        &target_config.user_config.credential_vault.path,
+        "synthetic-fixture-passphrase",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &target_config.user_config.credential_vault.path,
+        "synthetic-fixture-passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    reboot_app(&fixture.workers[0]).await;
+    crate::secret::lock_chariox_encrypted_vault(&target_config.user_config.credential_vault.path)
+        .unwrap();
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(
+            &target_config.user_config.credential_vault.path
+        )
+        .unwrap()
+        .unlocked
+    );
+    let roots = BTreeMap::from([(source.display().to_string(), source.clone())]);
+    let index = index_project_environment(&roots, &BTreeMap::new()).unwrap();
+    let project_id = format!("move-project-{:032x}", rand::random::<u128>());
+    let manifest = ProjectEnvironmentManifest {
+        schema_version: 1,
+        project_id: project_id.clone(),
+        evidence_digest: index.evidence.digest(),
+        entries: index.references,
+        private_files: Vec::new(),
+        toolchain_hints: Vec::new(),
+        package_hints: Vec::new(),
+        service_hints: Vec::new(),
+    };
+    let vault = crate::secret::project_environment_vault(&source_config).unwrap();
+    let resolved =
+        resolve_project_environment(&manifest, &roots, &BTreeMap::new(), vault.as_ref()).unwrap();
+    assert_eq!(
+        resolved.values.len(),
+        1,
+        "A selected value must require the target Vault"
+    );
+    let operation = format!("move-{:032x}", rand::random::<u128>());
+    let sealed = seal_project_environment(
+        &operation,
+        &source_config.daemon_id,
+        &target_config.daemon_id,
+        &source_config.relay_private_key,
+        &target_config.relay_public_key,
+        &manifest,
+        &resolved,
+    )
+    .unwrap();
+    let source_id = source.display().to_string();
+    let exported = export_development_context_with_environment(
+        DevelopmentContextExportRequest {
+            project_id: project_id.clone(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: source_id.clone(),
+                worktree_id: None,
+                worktree_path: source.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: fixture.workspace_root.join("required-environment.tar.gz"),
+        },
+        Some(DevelopmentProjectEnvironment {
+            sealed,
+            evidence: index.evidence,
+            repository_workspaces: BTreeMap::new(),
+        }),
+    )
+    .unwrap();
+    let thumb = crate::runtime::terminal_pairings::public_key_thumbprint;
+    let identity = crate::agent_move::AgentMoveIdentity {
+        operation_id: operation,
+        generation: 1,
+        home_kernel_id: source_config.daemon_id.clone(),
+        home_session_id: session,
+        home_agent_id: fixture.agent_id.clone(),
+        owner_user_id: owner,
+        source_kernel_id: source_config.daemon_id.clone(),
+        target_kernel_id: target_config.daemon_id.clone(),
+        home_key_thumbprint: thumb(&source_config.relay_public_key),
+        source_key_thumbprint: thumb(&source_config.relay_public_key),
+        target_key_thumbprint: thumb(&target_config.relay_public_key),
+        target_public_key: target_config.relay_public_key.clone(),
+    };
+    let bytes = std::fs::read(&exported.archive_path).unwrap();
+    let capture = crate::agent_move::AgentMoveCapture {
+        identity: identity.clone(),
+        source_project_id,
+        archive_project_id: project_id,
+        source_provider_run_id: None,
+        source_repositories: vec![DevelopmentSourceRepositoryBinding {
+            workspace_id: source_id,
+            worktree_id: None,
+            role: DevelopmentRepositoryRole::Primary,
+        }],
+        workspace: crate::agent_move::AgentMoveArtifact {
+            sha256: exported.archive_sha256,
+            size_bytes: bytes.len() as u64,
+        },
+        native: None,
+        checkpoint_binding: None,
+    };
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        fixture.workers[0].clone(),
+        8,
+    );
+    use crate::agent_move::peer::{AgentMoveChunk, AgentMovePeerRequest as Request};
+    router
+        .relay_agent_move(
+            Request::BeginTarget {
+                capture: Box::new(capture),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    for (index, chunk) in bytes
+        .chunks(crate::agent_move::MOVE_CHUNK_BYTES)
+        .enumerate()
+    {
+        router
+            .relay_agent_move(
+                Request::WriteChunk {
+                    identity: identity.clone(),
+                    kind: crate::agent_move::AgentMoveArtifactKind::Workspace,
+                    chunk: AgentMoveChunk {
+                        offset: (index * crate::agent_move::MOVE_CHUNK_BYTES) as u64,
+                        bytes: chunk.to_vec(),
+                    },
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let error = router
+        .relay_agent_move(
+            Request::PublishTarget {
+                identity: identity.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.to_lowercase().contains("vault") && message.to_lowercase().contains("locked"),
+        "Must reach the required Vault gate: {message}"
+    );
+    assert!(!message.contains("synthetic-selected-input"));
+    let worker = fixture.workers[0].lock().await;
+    let target = worker.agent_moves.target(&identity.operation_id).unwrap();
+    assert!(!target.active && target.receipt.is_none() && target.composition.readiness.is_none());
+    assert_eq!(
+        std::fs::read_to_string(source.join(".env.local")).unwrap(),
+        "TOKEN=synthetic-selected-input\n"
+    );
+}
