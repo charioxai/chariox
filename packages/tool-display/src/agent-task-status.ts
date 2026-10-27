@@ -14,6 +14,10 @@ function records(value: unknown): Record<string, unknown>[] {
 }
 const STATES = new Set(["working", "waiting", "blocked", "done", "cancelled"])
 const ARMED = new Set(["scheduled", "starting", "running", "cancelling"])
+export function agentObligationRequiresResolution(item: { status?: unknown; dispatch_state?: unknown }): boolean {
+  return item.status === "open" || item.status === "settling"
+    || (item.status === "failed" && item.dispatch_state !== "rejected")
+}
 function date(value: unknown): string | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 8.64e15
     ? new Date(value).toISOString() : null
@@ -25,7 +29,7 @@ export function agentTaskStatus(session: AgentTaskStatusSession | null | undefin
   const task = unfinished.find((task) => task.state === "blocked")
     ?? unfinished.find((task) => task.state === "working") ?? unfinished[0] ?? tasks[tasks.length - 1]!
   const open = tasks.flatMap((task) => records(task.obligations))
-    .filter((item) => ["open", "settling", "failed"].includes(String(item.status))).length
+    .filter(agentObligationRequiresResolution).length
   const suffix = open ? ` (${open} obligations)` : ""
   const state = task.state as AgentTaskStatus["state"]
   const reason = typeof task.reason === "string" ? task.reason : "result"

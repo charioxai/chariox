@@ -146,7 +146,7 @@ impl KernelRuntimeOwnedState {
                 || task
                     .obligations
                     .iter()
-                    .any(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
+                    .any(ledger::AgentObligation::requires_resolution)
                 || self.agent_task_resources_unsettled(&task)?
             {
                 return Ok(true);

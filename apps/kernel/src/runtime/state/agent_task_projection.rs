@@ -186,7 +186,7 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
     let with = |status: &str| {
         task.obligations
             .iter()
-            .filter(|o| o.status == status)
+            .filter(|o| o.status == status && o.requires_resolution())
             .collect::<Vec<_>>()
     };
     let (settling, running, failed) = (with("settling"), with("open"), with("failed"));

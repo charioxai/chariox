@@ -19,7 +19,7 @@ import {
   sessionPromptStateRecordForAgent,
   type SessionAgentPromptStateLike,
 } from "./session-agent-prompt-state.js"
-import { agentTaskStatus, agentWaitCountdown } from "@chariox/tool-display/agent-task-status"
+import { agentObligationRequiresResolution, agentTaskStatus, agentWaitCountdown } from "@chariox/tool-display/agent-task-status"
 
 export type AgentRuntimeProjectionContext = {
   readonly agentActivity?: Record<string, AgentRuntimeActivityBusyInput> | null | undefined
@@ -361,7 +361,7 @@ function sessionAgentStatusTask(session: RuntimeSession | null | undefined, agen
     ?? unfinished.find((task) => task.state === "blocked")
     ?? unfinished.find((task) => task.state === "working")
     ?? unfinished[0] ?? goals[goals.length - 1] ?? tasks[tasks.length - 1]!
-  const open = (task.goal ? task.obligations : tasks.flatMap((task) => task.obligations)).filter((item) => ["open", "settling", "failed"].includes(item.status)).length
+  const open = (task.goal ? task.obligations : tasks.flatMap((task) => task.obligations)).filter(agentObligationRequiresResolution).length
   return { task, open }
 }
 
