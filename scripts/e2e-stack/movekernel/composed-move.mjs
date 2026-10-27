@@ -76,8 +76,12 @@ try {
     assert.ok(operation.composition.readiness.environment_setup_operation_id, 'Target-native Project setup receipt is required');
     const primary = receipt.repositories.find(r => r.repository_id === receipt.primary_repository_id).destination_path;
     assert.equal((await readFile(primary + '/.mk04-env-ready', 'utf8')).trim(), primary, 'Source setup output must have been rewritten by target setup');
-    const profiles = variant(await target.client.send({ListProviderAccountProfiles: {provider: 'codex'}}), 'ProviderAccountProfilesListed').profiles;
-    assert.equal(profiles.filter(p => p.auth_state === 'authenticated').length, 1, 'Move must transfer exactly its selected authenticated account');
+    const profiles = variant(await source.client.send({ListProviderAccountProfiles: {provider: 'codex'}}), 'ProviderAccountProfilesListed').profiles;
+    const selected = profiles.find(p => p.profile_id === source.accountProfile.profile_id);
+    const replicas = selected.materializations.filter(m => m.target_kind === 'worker' && m.target_ref === target.status.daemon_id);
+    assert.equal(replicas.length, 1, 'Move must materialize its selected account once for this worker');
+    assert.equal(replicas[0].state, 'materialized');
+    assert.equal(operation.composition.readiness.target_account_profile, source.accountProfile.profile_id);
     await record('resource-receipts', {requirements: operation.composition.requirements, readiness: operation.composition.readiness, commit: operation.composition.commit, accountTransferred: true, targetNativeSetup: true});
     const result = await turn(source, 'Perform the MK04 proof using the granted mk04-proof skill, call the mk04_ping tool with our remembered marker, then run pwd. Reply with the remembered marker. Do not create agents.', 'target-turn');
     assert.equal(await readFile(primary + '/mk04-skill-proof.txt', 'utf8'), 'mk04-skill-executed');
