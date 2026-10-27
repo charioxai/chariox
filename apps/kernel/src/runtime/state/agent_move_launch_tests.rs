@@ -629,3 +629,69 @@ async fn mk03_restart_promotes_queue_of_already_rolled_back_move() {
         "restart recovery must start its provider"
     );
 }
+
+#[tokio::test]
+async fn mk03_environment_discovery_does_not_borrow_the_fenced_move_agent() {
+    use crate::agent_move::*;
+    use crate::managed_context::development::*;
+
+    let worktree = crate::test_support::TestWorktree::new("move-discovery-identity");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let config = app.config().clone();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .agent_moves
+        .save_home(HomeMoveOperation {
+            composition: Default::default(),
+            identity: AgentMoveIdentity {
+                operation_id: "discovery-identity".into(),
+                generation: 1,
+                home_kernel_id: config.daemon_id.clone(),
+                home_session_id: session.id().into(),
+                home_agent_id: agent.id().into(),
+                owner_user_id: agent.owner_user_id().into(),
+                source_kernel_id: config.daemon_id.clone(),
+                target_kernel_id: "worker".into(),
+                home_key_thumbprint: "home-key".into(),
+                source_key_thumbprint: "home-key".into(),
+                target_key_thumbprint: "worker-key".into(),
+                target_public_key: "worker-public-key".into(),
+            },
+            revision: 0,
+            original_agent: agent.clone(),
+            target_ref: None,
+            source_remote: None,
+            phase: HomeMovePhase::Fenced,
+        })
+        .unwrap();
+    let project = runtime
+        .owned
+        .session_store
+        .get_project(session.project_id())
+        .unwrap();
+    let repositories = vec![DevelopmentRepositorySelection {
+        workspace_id: session.workspace_id().into(),
+        worktree_id: None,
+        worktree_path: worktree.path().to_path_buf(),
+        role: DevelopmentRepositoryRole::Primary,
+    }];
+    let (utility_session, utility_agent, cleanup) = runtime
+        .environment_utility_identity(&project, &repositories)
+        .await
+        .unwrap();
+    assert_ne!(
+        utility_agent,
+        agent.id(),
+        "a fenced move agent cannot run utilities"
+    );
+    assert_ne!(utility_session, session.id());
+    assert!(
+        cleanup.is_some(),
+        "the replacement utility session is temporary"
+    );
+}

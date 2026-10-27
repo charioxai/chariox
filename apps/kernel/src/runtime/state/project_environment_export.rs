@@ -461,7 +461,7 @@ impl KernelRuntimeState {
         Ok(manifest)
     }
 
-    async fn environment_utility_identity(
+    pub(super) async fn environment_utility_identity(
         &self,
         project: &crate::session::RuntimeProject,
         repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
@@ -474,6 +474,12 @@ impl KernelRuntimeState {
                 .into_iter()
                 .find(|agent| {
                     agent.remote_execution().is_none()
+                        // A moving agent holds provider admission, so it cannot run discovery.
+                        && self
+                            .owned
+                            .agent_moves
+                            .with_admission(session.id(), Some(agent.id()), None, || Ok(()))
+                            .is_ok()
                         && !session
                             .active_interactions()
                             .iter()
@@ -563,7 +569,7 @@ pub(crate) struct PreparedProjectEnvironmentExport {
 }
 
 // MP-08 / MP-11: Only the temporary session created by this utility is retired.
-struct EnvironmentUtilityCleanup {
+pub(super) struct EnvironmentUtilityCleanup {
     runtime: KernelRuntimeState,
     session_id: String,
 }
