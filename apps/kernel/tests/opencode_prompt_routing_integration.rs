@@ -4,9 +4,10 @@ use std::thread;
 use std::time::Duration;
 
 use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
+use chariox_kernel::error::ProviderProfileRefusal;
 use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
 use chariox_kernel::session::{PromptStatus, PromptSubmissionOutcome};
-use chariox_kernel::{DaemonApp, DaemonConfig};
+use chariox_kernel::{DaemonApp, DaemonConfig, DaemonError};
 
 mod support;
 use support::kernel_websocket::ExecutionWorkspace;
@@ -31,12 +32,16 @@ fn mock_opencode_without_fixture_credentials_cannot_launch() {
             .with_agent_id(agent.id()),
     );
     fs::remove_file(&fixture_path).expect("remove fixture executable");
+    let error = result.unwrap_err();
     assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("is not authenticated"),
-        "a successful mock auth command alone must not bypass credential validation"
+        matches!(
+            error,
+            DaemonError::ProviderProfileRefused {
+                reason: ProviderProfileRefusal::Unauthenticated,
+                ..
+            }
+        ),
+        "a successful mock auth command alone must not bypass credential validation, got: {error}"
     );
 }
 
