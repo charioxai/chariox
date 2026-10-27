@@ -145,7 +145,9 @@ pub(crate) fn missing_output_is_final(
 }
 
 /// The reminder turn is the last chance: it ending without output and
-/// without a wait ends the node.
+/// without a wait ends the node. Ending a task that still has an obligation
+/// leaves it Blocked with `EXHAUSTED_REASON`; a settlement retried after a
+/// failed durable write must keep reading that as exhausted, not as supervision.
 pub(crate) fn output_follow_up_exhausted(
     durable: &DurableKernelStateStore,
     session_id: &str,
@@ -155,6 +157,17 @@ pub(crate) fn output_follow_up_exhausted(
 ) -> Result<bool, DaemonError> {
     if has_output || !prompt.id().starts_with(FOLLOW_UP_PREFIX) {
         return Ok(false);
+    }
+    if durable
+        .agent_tasks(Some(session_id), Some(prompt.target_agent_id()))?
+        .iter()
+        .any(|task| {
+            task.prompt_id == prompt.id()
+                && task.state == crate::durable_state::agent_lifecycle::ExecutionState::Blocked
+                && task.reason == EXHAUSTED_REASON
+        })
+    {
+        return Ok(true);
     }
     missing_output_is_final(durable, session_id, prompt, provider_failed)
 }

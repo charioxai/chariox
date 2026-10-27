@@ -880,32 +880,37 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
 
 #[tokio::test]
 async fn workflow_missing_output_gets_one_follow_up_before_failure() {
-    assert_workflow_output_follow_up(false, false, false, HelperWait::None).await;
+    assert_workflow_output_follow_up(false, false, false, HelperWait::None, false).await;
 }
 
 #[tokio::test]
 async fn workflow_missing_output_follow_up_can_complete_run() {
-    assert_workflow_output_follow_up(false, true, false, HelperWait::None).await;
+    assert_workflow_output_follow_up(false, true, false, HelperWait::None, false).await;
 }
 
 #[tokio::test]
 async fn workflow_valid_first_output_sends_no_follow_up() {
-    assert_workflow_output_follow_up(true, false, false, HelperWait::None).await;
+    assert_workflow_output_follow_up(true, false, false, HelperWait::None, false).await;
 }
 
 #[tokio::test]
 async fn workflow_missing_output_with_helpers_still_fails_after_one_follow_up() {
-    assert_workflow_output_follow_up(false, false, true, HelperWait::None).await;
+    assert_workflow_output_follow_up(false, false, true, HelperWait::None, false).await;
 }
 
 #[tokio::test]
 async fn workflow_yield_wait_preserves_supervision_until_helper_completes() {
-    assert_workflow_output_follow_up(false, true, true, HelperWait::FirstTurn).await;
+    assert_workflow_output_follow_up(false, true, true, HelperWait::FirstTurn, false).await;
+}
+
+#[tokio::test]
+async fn workflow_retried_exhausted_reminder_completion_still_fails_node() {
+    assert_workflow_output_follow_up(false, false, true, HelperWait::None, true).await;
 }
 
 #[tokio::test]
 async fn workflow_yield_during_reminder_keeps_supervision_until_helper_completes() {
-    assert_workflow_output_follow_up(false, true, true, HelperWait::Reminder).await;
+    assert_workflow_output_follow_up(false, true, true, HelperWait::Reminder, false).await;
 }
 
 /// Which turn of the node Yields on the live helper.
@@ -921,6 +926,7 @@ async fn assert_workflow_output_follow_up(
     valid_follow_up: bool,
     helpers: bool,
     wait: HelperWait,
+    fail_reminder_completion_once: bool,
 ) {
     let wait_for_helper = wait == HelperWait::FirstTurn;
     let yield_in_reminder = wait == HelperWait::Reminder;
@@ -1198,6 +1204,17 @@ async fn assert_workflow_output_follow_up(
                 )
                 .unwrap();
         }
+        if fail_reminder_completion_once {
+            fail_exhausted_reminder_completion_once(
+                &runtime,
+                session.id(),
+                agent.id(),
+                run.id(),
+                workflow_run.id(),
+                follow_up.id(),
+            )
+            .await;
+        }
         runtime
             .apply_owned_structured_output_batch(
                 session.id(),
@@ -1307,6 +1324,68 @@ async fn assert_workflow_output_follow_up(
         }),
         !valid_first && !valid_follow_up
     );
+}
+
+/// The reminder turn ends without output or a wait while its helper
+/// obligation is live, and the first durable completion write fails. The retry
+/// must still end the node, although the first attempt already moved the task
+/// ledger to Blocked.
+async fn fail_exhausted_reminder_completion_once(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    run_id: &str,
+    workflow_run_id: &str,
+    reminder_id: &str,
+) {
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_exhausted_reminder_completion
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'workflow.runtime.updated'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected reminder completion failure');
+             END;",
+        )
+        .expect("completion failure trigger should install");
+    let error = runtime
+        .settle_owned_provider_prompt(session_id, run_id, true, false, true)
+        .await
+        .expect_err("the failed durable write must reject the reminder settlement");
+    assert!(
+        error
+            .to_string()
+            .contains("injected reminder completion failure"),
+        "{error}"
+    );
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session_id), Some(agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == reminder_id)
+        .expect("the reminder turn keeps its task");
+    assert_eq!(
+        task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Blocked,
+        "the first attempt must leave the exhausted task blocked: {}",
+        task.reason
+    );
+    assert!(
+        runtime
+            .owned
+            .session_snapshot(session_id)
+            .unwrap()
+            .workflow_run(workflow_run_id)
+            .is_some(),
+        "the failed write must leave the run for the retry"
+    );
+    connection
+        .execute_batch("DROP TRIGGER fail_exhausted_reminder_completion;")
+        .expect("completion failure trigger should clear");
 }
 
 /// A turn that Yielded on a live helper settles to Waiting; the helper's
