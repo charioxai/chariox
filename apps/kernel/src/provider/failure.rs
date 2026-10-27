@@ -370,10 +370,30 @@ mod tests {
             "Usage limit reached. You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC). Wait for the limit to reset (the message gives the time when the provider does) or switch this agent to another account, then send the request again."
         );
         for (adapter, text, headline, recovery) in [
-            ("claude", "API Error: 529 Overloaded. This is a server-side issue", "Provider overloaded.", "send the request again in a moment"),
-            ("claude", "Not logged in \u{b7} Please run /login", "Sign-in required.", "Sign in again in Provider Accounts"),
-            ("claude", "API Error: Connection refused (ECONNREFUSED)", "Network problem.", "Check the connection to the provider"),
-            ("claude", "Claude Code exited before completing the active turn: exit status: 1", "Provider stopped unexpectedly.", "send the request again to start it"),
+            (
+                "claude",
+                "API Error: 529 Overloaded. This is a server-side issue",
+                "Provider overloaded.",
+                "send the request again in a moment",
+            ),
+            (
+                "claude",
+                "Not logged in \u{b7} Please run /login",
+                "Sign-in required.",
+                "Sign in again in Provider Accounts",
+            ),
+            (
+                "claude",
+                "API Error: Connection refused (ECONNREFUSED)",
+                "Network problem.",
+                "Check the connection to the provider",
+            ),
+            (
+                "claude",
+                "Claude Code exited before completing the active turn: exit status: 1",
+                "Provider stopped unexpectedly.",
+                "send the request again to start it",
+            ),
         ] {
             let notice = ProviderFailure::classify(adapter, text).notice();
             assert!(notice.starts_with(headline), "{notice}");

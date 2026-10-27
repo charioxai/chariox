@@ -632,13 +632,7 @@ impl KernelRuntimeState {
         // Every client renders this one entry: the cause, the harness's own
         // words and what to do next.
         let failure_notice = terminal_failure.as_deref().map(|message| {
-            provider_termination
-                .as_ref()
-                .and_then(|termination| termination.failure.clone())
-                .unwrap_or_else(|| {
-                    crate::provider::ProviderFailure::classify(&adapter_key, message)
-                })
-                .notice()
+            crate::provider::ProviderFailure::classify(&adapter_key, message).notice()
         });
         project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
