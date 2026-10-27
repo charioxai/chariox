@@ -1363,6 +1363,10 @@ done
             result_error(overloaded),
             expected(Overloaded, true, overloaded)
         );
+        // The official CLI's result of an exhausted subscription (api_error
+        // `usage_limit_reached`, HTTP 429), recorded 2026-10-27 (failwhy/r1).
+        let weekly = "You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC)";
+        assert_eq!(result_error(weekly), expected(UsageLimit, false, weekly));
         let refused =
             "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)";
         assert_eq!(result_error(refused), expected(Network, true, refused));

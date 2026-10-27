@@ -147,7 +147,7 @@ pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
     classify_provider_terminal_failure_text, claude_native_stop_failure,
     provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
-    PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,

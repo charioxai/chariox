@@ -365,11 +365,20 @@ impl KernelRuntimeState {
             self.owned.provider_run_projection.update(diagnosed);
         }
         if attempt.project_failure_output {
+            let failure = attempt
+                .termination
+                .and_then(|termination| termination.failure.clone())
+                .unwrap_or_else(|| {
+                    crate::provider::ProviderFailure::classify(
+                        provider_run.adapter_key(),
+                        attempt.message,
+                    )
+                });
             self.owned.record_provider_failure_output(
                 session_id,
                 provider_run.id(),
                 attempt.agent_id,
-                attempt.safe_message,
+                &failure.notice(),
             );
         }
         self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run.id())
