@@ -280,6 +280,17 @@ fn import_checkpoint(
     )
 }
 
+/// A cancelled Move never ran a user turn on the target, so everything after
+/// the imported checkpoint is the readiness probe's own append.
+#[cfg(unix)]
+pub(super) fn discard_probe_appends(
+    checkpoint: &ProviderNativeCheckpoint,
+    profile_root: &Path,
+) -> Result<(), Failure> {
+    super::files::Directory::open(profile_root)?
+        .rewind(&checkpoint.relative_path, &checkpoint.contents)
+}
+
 #[cfg(unix)]
 fn prepare_existing_artifact(
     directory: &super::files::Directory,
@@ -361,6 +372,11 @@ pub(super) fn import(
     _: &ProviderNativeCheckpoint,
     _: &RuntimeProviderRun,
 ) -> Result<ProviderResumeState, Failure> {
+    Err(Failure::UnsupportedPlatform)
+}
+
+#[cfg(not(unix))]
+pub(super) fn discard_probe_appends(_: &ProviderNativeCheckpoint, _: &Path) -> Result<(), Failure> {
     Err(Failure::UnsupportedPlatform)
 }
 

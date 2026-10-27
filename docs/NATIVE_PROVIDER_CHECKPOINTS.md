@@ -98,9 +98,12 @@ profile. Native import extends the stopped home rollout only when every old
 byte is a complete-record prefix of the incoming history; divergent history
 is preserved and refused. Resolve that divergence before retrying, or cancel
 the pending Move until its target activates. Cancelling retires the target's
-lease and backing agent and restores the agent's previous route and workspace;
-the abandoned native import stays on the target, so a retry after the source
-has advanced may still report divergence. Ordinary checkpoint import
+lease and backing agent, restores the agent's previous route and workspace, and
+rewinds the target's native thread to exactly the imported checkpoint, dropping
+only the readiness probe's appends (no user turn can have run there). A retry
+after the source has advanced therefore extends that thread. If the thread is no
+longer an extension of the checkpoint it is left untouched, the cancellation
+still completes, and the retry reports the divergence. Ordinary checkpoint import
 remains strict and accepts only its required original prefix plus native
 appends from the readiness probe, including an unindexed rollout.
 

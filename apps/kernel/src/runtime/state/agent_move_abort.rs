@@ -155,7 +155,46 @@ impl KernelRuntimeState {
         &self,
         identity: &AgentMoveIdentity,
     ) -> Result<(), DaemonError> {
+        self.discard_agent_move_native_probe(identity).await;
         self.with_app_side_effect(|app| app.abort_agent_move_target(identity))
             .await
+    }
+
+    /// The retry must find the imported thread as a prefix of the source history, which
+    /// may advance before it. Cancelling stays possible when this cannot be done: the
+    /// retry then reports the divergence itself.
+    async fn discard_agent_move_native_probe(&self, identity: &AgentMoveIdentity) {
+        let Some(target) = self.owned.agent_moves.target(&identity.operation_id) else {
+            return;
+        };
+        let (true, false, Some(agent_id)) = (
+            target.ready,
+            target.active || target.retired,
+            target.backing_agent_id.clone(),
+        ) else {
+            return;
+        };
+        let result = async {
+            let Some(checkpoint) = self.owned.agent_moves.native_checkpoint(&target.capture)?
+            else {
+                return Ok(());
+            };
+            let agent = self.owned.agent_store.get_agent(&agent_id)?;
+            let request = self
+                .agent_move_native_launch_request(&target, &agent)
+                .await?;
+            tokio::task::spawn_blocking(move || checkpoint.discard_probe_appends(&request))
+                .await
+                .map_err(|_| move_error("Native target cleanup stopped"))?
+                .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)
+        }
+        .await;
+        if let Err(error) = result {
+            crate::logging::warn_with_fields(
+                "agent_move.abort",
+                "Native target import was left as the probe wrote it",
+                serde_json::json!({"operation_id": identity.operation_id, "error": error.to_string()}),
+            );
+        }
     }
 }

@@ -146,6 +146,18 @@ impl Directory {
         self.publish_file(path, bytes, Some(&previous))
     }
 
+    /// Drops everything after `bytes`; the file must still begin with them.
+    pub(super) fn rewind(&self, path: &str, bytes: &[u8]) -> Result<(), Failure> {
+        let current = self.read(path)?;
+        if current == bytes {
+            return Ok(());
+        }
+        if !current.starts_with(bytes) {
+            return Err(Failure::TargetConflict);
+        }
+        self.publish_file(path, bytes, Some(&current))
+    }
+
     fn publish_file(
         &self,
         path: &str,
