@@ -74,7 +74,7 @@ fn fixture_events() -> serde_json::Value {
     };
     serde_json::json!({
         "items": ["MP-08", "MP-10", "MP-11"],
-        "local_protocol": 629,
+        "local_protocol": LOCAL_DAEMON_PROTOCOL_VERSION,
         "allocation": "614/220 union (feature predecessor 596/202): agent_turn_changed, home_extension_audit_appended, home_extension_audit_lagged, heartbeat_interval_ms",
         "agent_turn_changed": serde_json::to_value(turn_changed).unwrap(),
         "home_extension_audit_appended": serde_json::to_value(audit_appended).unwrap(),
@@ -90,7 +90,7 @@ fn session_feed_596_shapes_are_pinned() {
     let bytes = include_bytes!("session-feed-596.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "d666ddb8ba99166b2a0aea2ba987adfb6ccabb0964d4d549180b51c9a4414634"
+        "bb1ff523079c9c3270c9e7ab9aded84cd797622687572c300f285e80b15e19bc"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture, fixture_events());

@@ -1,4 +1,4 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 629
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 631
 
 export type * from "./kernel-types-apps.js"
 
@@ -38,6 +38,7 @@ export type OutsideEvent = {
   | { type: "steer"; value: { steer_id: string } }
   | { type: "session"; value: { state: "agent_added" | "agent_removed" | "ended" } }
   | { type: "gap"; value: { kernel: string; dropped: number; from: number; to: number } }
+  | { type: "kernel_health"; value: { online: boolean; reason: string } }
   | { type: "subscription_ended"; value: { reason: string } }
 )
 export type EventsBatch = { events: OutsideEvent[]; next_cursor: number; oldest_cursor: number; timed_out: boolean }

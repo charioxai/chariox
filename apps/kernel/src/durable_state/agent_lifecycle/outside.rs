@@ -2,6 +2,7 @@
 use super::*;
 use crate::local::{EventSubscription, EventTarget, EventsBatch, OutsideEvent, OutsideEventValue};
 
+mod health;
 mod retention;
 mod validation;
 pub(super) use retention::bound;
@@ -128,11 +129,20 @@ fn end(tx: &Transaction<'_>, part: &mut Part, reason: &str) -> Result<(), Daemon
     }
     part.targets.clear();
     part.run_states.clear();
+    part.kernel_health.clear();
     Ok(())
 }
 
 pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome, DaemonError> {
     match mutation {
+        Mutation::KernelHealth {
+            id,
+            kernel,
+            online,
+            reason,
+        } => {
+            health::record(tx, &id, &kernel, online, reason)?;
+        }
         Mutation::RunStates { states } => {
             let Some((kernel, machine)) = identity(tx)? else {
                 return Ok(Outcome::Saved);
@@ -270,7 +280,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                     }
                     part.targets.retain(|t| !targets.contains(t));
                 }
-                prune_run_states(&mut part)?;
+                prune_target_state(&mut part)?;
                 put(tx, &part)?;
             }
         }
@@ -450,13 +460,15 @@ fn remove_ended_target(
                 || t.agent_id != event.agent_id
         });
     }
-    prune_run_states(part)
+    prune_target_state(part)
 }
 fn run_state_key(event: &OutsideEvent) -> Result<String, DaemonError> {
     serde_json::to_string(&(&event.kernel, &event.session_id, &event.agent_id))
         .map_err(|_| error("event run-state key could not be encoded"))
 }
-fn prune_run_states(part: &mut Part) -> Result<(), DaemonError> {
+fn prune_target_state(part: &mut Part) -> Result<(), DaemonError> {
+    part.kernel_health
+        .retain(|kernel, _| part.targets.iter().any(|target| &target.kernel == kernel));
     let mut kept = std::collections::BTreeMap::new();
     for (key, state) in std::mem::take(&mut part.run_states) {
         let (kernel, session, agent): (String, String, Option<String>) =

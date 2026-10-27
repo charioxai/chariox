@@ -101,6 +101,12 @@ pub enum OutsideEventValue {
         from: u64,
         to: u64,
     },
+    /// Gateway observation of a followed kernel; `reason` is a public error code
+    /// or `connected`, never a remote error message.
+    KernelHealth {
+        online: bool,
+        reason: String,
+    },
     SubscriptionEnded {
         reason: String,
     },
