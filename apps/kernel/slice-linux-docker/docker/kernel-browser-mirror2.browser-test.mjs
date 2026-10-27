@@ -1962,21 +1962,23 @@ test("protocol 560/168: a layout changed and restored is a different layout key"
     assert.notEqual(v2.layoutKey(tabId), key, "400 -> 600 -> 400 is not the layout the credit started with");
     await a.next();
   }));
-test("protocol 560/168: a credit whose page size changed while it was observed publishes nothing and re-bases the stream", () => mirrored(
+test("protocol 629: a layout change while observed retries the credit with a reset", () => mirrored(
   "<p id='p'>page</p>", async ({ subscribe, host, evaluate }) => {
     const a = await subscribe({ layout_width: 400, layout_height: 700 });
-    await a.next();
-    // Another viewer resizes the Tab after this credit read the size but before it published (and back: A->B->A).
+    const first = await a.next();
+    // Another viewer changes layout after the credit reads its size and before publication.
     const v2 = host.mirror.v2, real = v2.layoutKey.bind(v2), tiles = v2.tiles.bind(v2);
     let moved = false;
     v2.layoutKey = tabId => (moved ? "600x700" : real(tabId));
     v2.tiles = (...args) => { moved = true; return tiles(...args); };
     await evaluate("document.getElementById('p').textContent='changed'");
-    await assert.rejects(a.next(2000), /layout changed during observation/);
-    v2.layoutKey = real; v2.tiles = tiles;
-    const next = await a.next(2000);
-    assert.equal(next.reset, true, "the observer's consumed change is not delivered by a delta: the next credit re-snapshots");
-    assert.match(JSON.stringify(next), /changed/, "the changed text reaches the viewer");
+    try {
+      const next = await a.next(2000);
+      assert.equal(moved, true, "the observation crossed the injected layout change");
+      assert.equal(next.reset, true, "the same credit retries with a fresh snapshot");
+      assert.equal(next.sequence, first.sequence + 1, "the retired observation publishes no sequence");
+      assert.match(JSON.stringify(next), /changed/, "the consumed change reaches the viewer in the reset");
+    } finally { v2.layoutKey = real; v2.tiles = tiles; }
   }));
 
 test('MP-08/MP-10/MP-11: typing already sent survives a same-document mirror reset', () => mirrored(
