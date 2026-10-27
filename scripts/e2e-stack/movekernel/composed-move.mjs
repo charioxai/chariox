@@ -68,7 +68,28 @@ try {
     assert.ok(nativeId, 'Source must have a durable native session');
     const account = await accountIdentity(sourceRun);
     await setupProject(source, projectId, sessionId, agentId);
-    await source.client.send({MoveAgentToRemote: {session_id: sessionId, agent_ref: agentId, machine_ref: target.status.machine_id}});
+    const move = () => source.client.send({MoveAgentToRemote: {session_id: sessionId, agent_ref: agentId, machine_ref: target.status.machine_id}});
+    try { await move(); }
+    catch (error) {
+        const operation = await journal(source, 1), operationId = operation?.identity.operation_id + '-setup';
+        const response = await target.client.send({GetProjectEnvironmentSetupStatus: {operationId}});
+        const status = variant(response, 'ProjectEnvironmentSetupStatus').status;
+        await record('target-setup-retry', {operationId, phase: status.phase, failureCode: status.failure_code, message: status.failure_message, retryable: status.retryable});
+        if (!status.retryable) throw error;
+        await target.client.send({RetryProjectEnvironmentSetup: {operationId, sessionId: status.session_id}});
+        let ready = false;
+        for (let n = 0; n < 480; n++) {
+            const next = variant(await target.client.send({GetProjectEnvironmentSetupStatus: {operationId}}), 'ProjectEnvironmentSetupStatus').status;
+            if (next.phase === 'ready') { ready = true; break; }
+            if (['failed', 'cancelled'].includes(next.phase)) {
+                await record('target-setup-retry-failed', {phase: next.phase, failureCode: next.failure_code, message: next.failure_message});
+                throw error;
+            }
+            await sleep(250);
+        }
+        assert.ok(ready, 'Target setup retry must settle within its deadline');
+        await move();
+    }
     await assertTuiRoute(source, agentId, target.status.daemon_id, 'composed-move');
     const operation = await journal(source, 1), receipt = operation.phase.receipt;
     assert.equal(operation.phase.phase, 'complete');
