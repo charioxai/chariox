@@ -26,7 +26,7 @@ export async function resizeBrowserPage(host,tab,command,signal){
  // Tab layouts commit one by one: a resize that failed part-way is complete only once all its steps ran again.
  const complete=!host.windowLayout||host.resizeSettled===host.windowLayout;
  if(complete&&previous.width===width&&previous.height===height&&bounds.width===outer.width&&bounds.height===outer.height)return {width,height};
- // Measure the owned window's real inset. A guessed87-DIP toolbar can leave
+ // Measure the owned window's real inset. A guessed 87-DIP toolbar can leave
  // an odd native band, which the video producer correctly refuses.
  host.chromeWindows?.retire('viewport_resize');
  await host.closeCompositors();current();

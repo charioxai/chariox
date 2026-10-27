@@ -18,3 +18,17 @@ test('MP-10: local display drill serves every relative viewer module import',asy
  }
  assert(seen.has('presenter.mjs'),'MP-10: start at the real harness entry');
 });
+
+test('MP-10: mirror cleanup preserves the original drill failure',async()=>{
+ const {drillLayout}=await import('./drill-layout.mjs');
+ const failure=Error('original mirror failure');
+ let closed=false;
+ const page={evaluate:async(_callback,command)=>{
+  if(command.op==='mirror_subscribe')return {KernelBrowser:{result:{subscription_id:'owned'}}};
+  if(command.op==='mirror_next')throw failure;
+  if(command.op==='mirror_close'){closed=true;throw Error('cleanup failure');}
+  throw Error('unexpected command');
+ }};
+ await assert.rejects(drillLayout({page,ready:{protocol:629,tab_id:'tab',generation:1},output:'.'}),error=>error===failure);
+ assert.equal(closed,true);
+});

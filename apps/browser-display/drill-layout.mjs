@@ -105,6 +105,6 @@ export async function drillLayout({page,ready,output}) {
   await capture(400,700,first.device_scale_factor,'layout-final');
   return result;
  } finally {
-  for(const subscription_id of subscriptions)await request({op:'mirror_close',subscription_id,generation:ready.generation});
+  for(const subscription_id of subscriptions)await request({op:'mirror_close',subscription_id,generation:ready.generation}).catch(()=>{});
  }
 }
