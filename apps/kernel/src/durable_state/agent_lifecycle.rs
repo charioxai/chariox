@@ -18,6 +18,7 @@ mod delivery_waits;
 #[cfg(test)]
 mod fault_tests;
 pub(crate) mod faults;
+mod goal_evidence;
 #[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;

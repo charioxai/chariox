@@ -266,6 +266,49 @@ pub(super) fn task_public_output_entries<'a>(
         .collect()
 }
 
+/// The same bounded message projection is used for current and prior goal work.
+pub(super) struct PublicTaskAnswer {
+    pub messages: Vec<String>,
+    pub shown_chars: usize,
+    pub total_chars: usize,
+}
+
+pub(super) fn task_public_answer(
+    entries: &[crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+    limit: usize,
+) -> PublicTaskAnswer {
+    let output = task_public_output_entries(entries, prompt, task_answer_history_run(run));
+    let total_chars = output.iter().map(|e| e.text.chars().count()).sum();
+    let mut remaining = limit;
+    let mut messages: Vec<(Option<&str>, String)> = Vec::new();
+    // IDs distinguish commentary from a later answer. Without an ID, keep
+    // adjacent deltas together instead of inventing message boundaries.
+    for entry in output.into_iter().rev() {
+        if remaining == 0 {
+            break;
+        }
+        let count = entry.text.chars().count();
+        let shown = count.min(remaining);
+        if shown == 0 {
+            continue;
+        }
+        let tail = entry.text.chars().skip(count - shown).collect::<String>();
+        let key = entry.merge_key.as_deref();
+        match messages.last_mut() {
+            Some((last_key, text)) if *last_key == key => text.insert_str(0, &tail),
+            _ => messages.push((key, tail)),
+        }
+        remaining -= shown;
+    }
+    PublicTaskAnswer {
+        messages: messages.into_iter().rev().map(|(_, text)| text).collect(),
+        shown_chars: limit - remaining,
+        total_chars,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

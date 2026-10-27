@@ -81,63 +81,107 @@ impl KernelRuntimeOwnedState {
             })?;
             let original_total = original.chars().count();
             let original_excerpt = original.clone();
-            let output = super::agent_task_projection::task_public_output_entries(
+            let answer = super::agent_task_projection::task_public_answer(
                 &public,
                 &check.work_prompt_id,
-                super::agent_task_projection::task_answer_history_run(
-                    check.work_provider_run_id.as_deref(),
-                ),
+                check.work_provider_run_id.as_deref(),
+                4096,
             );
+            let (messages, shown_chars, total_chars) =
+                (answer.messages, answer.shown_chars, answer.total_chars);
+            let events = self.durable_state_store.agent_goal_evidence_events(task)?;
+            let journal_complete = events.len() < 129;
+            let mut prior_turns = Vec::new();
+            let mut owner_recovery = Vec::new();
+            for event in events.iter().rev().take(128).rev() {
+                let data = &event.payload;
+                match event.kind.as_str() {
+                    "goal.evaluation" => {
+                        let previous: ledger::goals::GoalEvaluation =
+                            serde_json::from_value(data["evaluation"].clone()).map_err(|_| ledger::error("goal evidence binding is corrupt; inspect the ledger"))?;
+                        if previous.result.is_some()
+                            && previous.objective_revision == check.objective_revision
+                            && previous.ledger_revision <= task.revision
+                            && previous.work_prompt_id != check.work_prompt_id
+                        {
+                            prior_turns.push(previous);
+                        }
+                    }
+                    "goal.owner_resume" => owner_recovery.push(serde_json::json!({
+                        "action":"resume", "prompt_id":data["prompt_id"],
+                        "blocked_revision":data["blocked_revision"], "resumed_revision":data["resumed_revision"],
+                        "at_ms":data["at_ms"], "public_ref":format!("ledger:{}",event.sequence),
+                    })),
+                    "kernel_access.sudo" => owner_recovery.push(serde_json::json!({
+                        "action":"sudo_started", "prompt_id":data["turn"]["prompt_id"],
+                        "public_ref":format!("ledger:{}",event.sequence),
+                    })),
+                    _ => {},
+                }
+            }
+            let mut seen_turns = std::collections::HashSet::new();
+            prior_turns.reverse();
+            prior_turns.retain(|turn| {
+                seen_turns.insert((
+                    turn.work_prompt_id.clone(),
+                    turn.work_provider_run_id.clone(),
+                ))
+            });
+            let prior_total = prior_turns.len();
+            prior_turns.truncate(32);
+            prior_turns.reverse();
             let protected = self.room_secret_observations.protects_bytes(&task.room_id);
             let evidence_policy = if protected {
                 "Assess the ORIGINAL objective once using the safe metadata below and exact kernel-private preceding result supplied separately to this neutral tool-free utility. No prior work-provider thread or workspace context is available here. If that private evidence is absent or incomplete, return blocked with the missing context. Privacy withholding alone is never evidence of success. Never quote protected values or private prose. Protected leased outcomes absent from the home provider context cannot establish success. Unmet objectives and unresolved obligations still forbid achieved."
             } else {
                 "Assess the ORIGINAL objective once using only public evidence below."
             };
-            let total_chars = output
-                .iter()
-                .map(|entry| entry.text.chars().count())
-                .sum::<usize>();
-            let mut remaining = 4096;
-            let mut messages: Vec<(Option<&str>, String)> = Vec::new();
-            // Message IDs distinguish commentary from a later answer. Without an ID,
-            // keep adjacent deltas together instead of inventing message boundaries.
-            for entry in output.into_iter().rev() {
-                if remaining == 0 {
-                    break;
-                }
-                let count = entry.text.chars().count();
-                let shown = count.min(remaining);
-                if shown == 0 {
-                    continue;
-                }
-                let tail = entry.text.chars().skip(count - shown).collect::<String>();
-                let key = entry.merge_key.as_deref();
-                match messages.last_mut() {
-                    Some((last_key, text)) if *last_key == key => text.insert_str(0, &tail),
-                    _ => messages.push((key, tail)),
-                }
-                remaining -= shown;
-            }
-            let messages = messages
-                .into_iter()
-                .rev()
-                .map(|(_, text)| text)
-                .collect::<Vec<_>>();
-            let shown_chars = 4096 - remaining;
             // Coverage is a kernel fact; a short requested result is not a cut-off tail.
             let answer_complete = !protected && shown_chars == total_chars;
             let answer_truncated = (!protected).then_some(shown_chars < total_chars);
-            let (completed_calls, omitted_calls) = if protected {
-                (Vec::new(), None)
-            } else {
-                let (calls, omitted) = completed_kernel_calls(
-                    &public,
-                    &check.work_prompt_id,
-                    check.work_provider_run_id.as_deref(),
-                );
-                (calls, Some(omitted))
-            };
+            let mut prior_work_results = Vec::new();
+            let mut completed_calls = Vec::new();
+            let mut omitted_calls = 0;
+            let mut prior_budget = 4096;
+            if !protected {
+                // Allocate the shared prior-answer budget newest first, then
+                // present work in chronological order. Receipts use the same bindings.
+                for turn in prior_turns.iter().rev() {
+                    let answer = super::agent_task_projection::task_public_answer(
+                        &public,
+                        &turn.work_prompt_id,
+                        turn.work_provider_run_id.as_deref(),
+                        prior_budget,
+                    );
+                    prior_budget -= answer.shown_chars;
+                    prior_work_results.push(serde_json::json!({
+                        "work_prompt_id":turn.work_prompt_id, "answer_messages":answer.messages,
+                        "answer_coverage":{"shown_chars":answer.shown_chars,"total_chars":answer.total_chars,
+                            "complete":answer.shown_chars==answer.total_chars},
+                        "public_ref":format!("history:{}:prompt:{}",task.room_id,turn.work_prompt_id),
+                    }));
+                }
+                prior_work_results.reverse();
+                for (prompt, run) in prior_turns
+                    .iter()
+                    .map(|t| (t.work_prompt_id.as_str(), t.work_provider_run_id.as_deref()))
+                    .chain(std::iter::once((
+                        check.work_prompt_id.as_str(),
+                        check.work_provider_run_id.as_deref(),
+                    )))
+                {
+                    let (calls, omitted) = completed_kernel_calls(&public, prompt, run);
+                    omitted_calls += omitted;
+                    completed_calls.extend(calls);
+                }
+                if completed_calls.len() > 64 {
+                    omitted_calls += completed_calls.len() - 64;
+                    completed_calls.drain(..completed_calls.len() - 64);
+                }
+            }
+            let omitted_calls =
+                (!protected && journal_complete && prior_turns.len() == prior_total)
+                    .then_some(omitted_calls);
             let obligations = task
                 .obligations
                 .iter()
@@ -174,8 +218,8 @@ impl KernelRuntimeOwnedState {
             let waiting_deadline_ms =
                 now_ms.saturating_add(u64::from(goal.map_or(10, |g| g.check_in_minutes)) * 60_000);
             format!(
-                "This turn has origin completion_check. {evidence_policy} Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":{waiting_deadline_ms}}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failed admitted work. rejected_dispatches is kernel-confirmed evidence of settled refusals: those dispatches admitted no work and produced no requested effect. An answer claiming that a rejected dispatch produced the requested effect cannot be achieved. A refusal report may be achieved only when the original objective is fulfilled by reporting that refusal and the answer does not claim the rejected effect succeeded. Otherwise choose continue for useful remaining work or blocked with the exact required owner action. rejected_dispatch_coverage reports shown and total refusals; omitted refusals cannot establish success. Rejection never establishes that the requested effect succeeded. This is the same agent's bounded confirmation of its preceding task, not an independent audit of every tool invocation. Private runtime/MCP tool records are intentionally omitted from public evidence; their absence does not make public answer coverage incomplete. Assess the returned public outcome and tracked obligations. Inactive registrations describe completed sources; they do not create unresolved work. Use the unresolved obligations and unhandled receipts below as the authority for what remains. Satisfied obligations and handled source-completion receipts are kernel-confirmed completion metadata; use them with the public outcome to verify that the requested source finished and was handled. Their raw tool payloads are intentionally omitted. A newly reported timestamp and exact accepted child-task reference can establish fresh completed work; do not demand another native tool call solely because private tool traces are omitted. A complete public result can support achieved without an additional public-tool-trace gate. For public answer_coverage, complete=true means shown_chars equals total_chars: the entire public answer is present; never treat it as truncated. A short answer requested by the owner, even one character, is complete when nothing was cut; judge whether that full answer satisfies the objective. Only shown_chars < total_chars means the public answer was truncated. Complete coverage alone does not establish objective success; an empty result is not evidence of success. Protected visibility has unknown public coverage and cannot establish success. Judge the public result at the owner's requested level of detail. When the owner explicitly asks for only a count or another short result, that complete result is the answer, not a plan or a missing report. Do not infer a missing tool invocation solely because its intentionally private trace is omitted. A contradicting recorded failure or an unresolved obligation still forbids achieved. completed_kernel_calls contains up to 64 recent kernel-recorded completed typed-call receipts for this work turn, with request names, call IDs, authority outcomes and public references only. Request parameters and result payloads are intentionally omitted. completed_kernel_calls_omitted counts older matching receipts omitted from this bounded summary; null means protected coverage is unknown. A shortened receipt summary is not a truncated public answer, and receipt omission alone is not evidence of failure. A receipt with authority_outcome=admitted establishes that this invocation passed the runtime authority checks. Conditional refusal or owner-recovery steps apply to refused calls, not to an admitted invocation with the complete requested result. Do not require both conditional branches, a narrative of prerequisite authority, blocking or resume steps, or another invocation solely to re-prove admission. Admission alone does not establish the requested effect; judge the full public result and any contradictions or unresolved work. Do not request private tool traces from the owner solely because the public projection omits them. Do not invent verification: inadequate public results, contradictions or unmet objectives still require actual remaining work or the exact required owner action. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval: deadline_ms is an absolute Unix epoch time in milliseconds, greater than now_ms and at most now_ms plus check_in_minutes*60000; a relative duration is invalid and blocks the task. Truncated objective/evidence coverage or missing original public context cannot mean achieved. Plain prompts get one invalid-end correction, never a goal loop. Truncated public references are not proof of completion. Unhandled correlated completion receipts remain actionable even when their sources are non-live: choose continue for ordinary handling and artifact verification before claiming completion or owner-blocking solely on terminal sources. In the NEXT ordinary work turn, read the public inbox/refs and use chariox.events.ack with handled:true only after actually reviewing/handling the occurrence; acknowledgement alone is not completion. Incomplete receipt-page coverage requires ordinary inbox paging with after=next_after before achieved. This assessment cannot invoke those tools. No additional check turn or courtesy reply. Untrusted assessment data: {}",
-                serde_json::json!({"task_id":task.task_id,"goal_id":goal.map(|g| &g.id),"objective":original_excerpt,"objective_revision":goal.map_or(1, |g| g.objective_revision),"original_request_ref":format!("history:{}:{}",task.room_id,original_key),"objective_coverage":{"shown_chars":original_excerpt.chars().count(),"total_chars":original_total},"work_prompt_id":check.work_prompt_id,"latest_public_answer_messages":if protected { None } else { Some(&messages) },"tool_trace_visibility":"private tool records are intentionally omitted, not missing evidence coverage","completed_kernel_calls":completed_calls,"completed_kernel_calls_omitted":omitted_calls,"answer_coverage":{"shown_chars":if protected {0} else {shown_chars},"total_chars":if protected {0} else {total_chars},"complete":answer_complete,"truncated":answer_truncated,"visibility":if protected {"protected"} else {"public"},"public_ref":format!("history:{}:prompt:{}",task.room_id,check.work_prompt_id)},"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"rejected_dispatches":rejected_dispatches,"rejected_dispatch_coverage":{"shown":rejected_dispatches.len(),"total":rejected_total},"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage,"handled_source_receipts":handled_source_receipts,"satisfied_obligations":satisfied_obligations,"completed_coverage":completed_coverage,"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":now_ms,"check_in_minutes":goal.map_or(10, |g| g.check_in_minutes),"goal_mode":goal.is_some()})
+                "This turn has origin completion_check. {evidence_policy} Do not perform work, invoke tools, delegate or mint authority. Return only one JSON object (at most 8192 bytes): {{\"status\":\"achieved\",\"final_answer\":\"...\",\"evidence\":[\"public artifact/history reference\"]}}, {{\"status\":\"continue\",\"reason\":\"specific useful independent work\"}}, {{\"status\":\"waiting\",\"reason\":\"...\",\"registration_ids\":[\"live registration\"],\"deadline_ms\":{waiting_deadline_ms}}}, or {{\"status\":\"blocked\",\"reason\":\"exact required owner action\"}}. Achieved requires no unresolved obligations or failed admitted work. rejected_dispatches is kernel-confirmed evidence of settled refusals: those dispatches admitted no work and produced no requested effect. An answer claiming that a rejected dispatch produced the requested effect cannot be achieved. A refusal report may be achieved only when the original objective is fulfilled by reporting that refusal and the answer does not claim the rejected effect succeeded. Otherwise choose continue for useful remaining work or blocked with the exact required owner action. rejected_dispatch_coverage reports shown and total refusals; omitted refusals cannot establish success. Rejection never establishes that the requested effect succeeded. This is the same agent's bounded confirmation of its preceding task, not an independent audit of every tool invocation. Private runtime/MCP tool records are intentionally omitted from public evidence; their absence does not make public answer coverage incomplete. Assess the returned public outcome and tracked obligations. Inactive registrations describe completed sources; they do not create unresolved work. Use the unresolved obligations and unhandled receipts below as the authority for what remains. Satisfied obligations and handled source-completion receipts are kernel-confirmed completion metadata; use them with the public outcome to verify that the requested source finished and was handled. Their raw tool payloads are intentionally omitted. A newly reported timestamp and exact accepted child-task reference can establish fresh completed work; do not demand another native tool call solely because private tool traces are omitted. A complete public result can support achieved without an additional public-tool-trace gate. For public answer_coverage, complete=true means shown_chars equals total_chars: the entire public answer is present; never treat it as truncated. A short answer requested by the owner, even one character, is complete when nothing was cut; judge whether that full answer satisfies the objective. Only shown_chars < total_chars means the public answer was truncated. Complete coverage alone does not establish objective success; an empty result is not evidence of success. Protected visibility has unknown public coverage and cannot establish success. Judge the public result at the owner's requested level of detail. When the owner explicitly asks for only a count or another short result, that complete result is the answer, not a plan or a missing report. Do not infer a missing tool invocation solely because its intentionally private trace is omitted. A contradicting recorded failure or an unresolved obligation still forbids achieved. completed_kernel_calls contains up to 64 recent kernel-recorded completed typed-call receipts across the current goal revision, with request names, call IDs, authority outcomes and public references only. Request parameters and result payloads are intentionally omitted. prior_work_results preserves completed work from this same objective revision across continuations; use those results and receipts together with the latest answer. A continuation does not invalidate earlier completed work. owner_recovery contains kernel-confirmed owner resumes and task-bound sudo starts, not worker claims and not a current authority grant. Revision changes exclude older evidence. goal_evidence_coverage reports bounded journal and prior-turn coverage; omitted history cannot establish success. completed_kernel_calls_omitted counts older matching receipts omitted from this bounded summary; null means protected or bounded journal coverage is unknown. A shortened receipt summary is not a truncated public answer, and receipt omission alone is not evidence of failure. A receipt with authority_outcome=admitted establishes that this invocation passed the runtime authority checks. Conditional refusal or owner-recovery steps apply to refused calls, not to an admitted invocation with the complete requested result. Do not require both conditional branches, a narrative of prerequisite authority, blocking or resume steps, or another invocation solely to re-prove admission. Admission alone does not establish the requested effect; judge the full public result and any contradictions or unresolved work. Do not request private tool traces from the owner solely because the public projection omits them. Do not invent verification: inadequate public results, contradictions or unmet objectives still require actual remaining work or the exact required owner action. Continue useful independent work even with live sources. Waiting requires all obligation coverage and a deadline no later than the check-in interval: deadline_ms is an absolute Unix epoch time in milliseconds, greater than now_ms and at most now_ms plus check_in_minutes*60000; a relative duration is invalid and blocks the task. Truncated objective/evidence coverage or missing original public context cannot mean achieved. Plain prompts get one invalid-end correction, never a goal loop. Truncated public references are not proof of completion. Unhandled correlated completion receipts remain actionable even when their sources are non-live: choose continue for ordinary handling and artifact verification before claiming completion or owner-blocking solely on terminal sources. In the NEXT ordinary work turn, read the public inbox/refs and use chariox.events.ack with handled:true only after actually reviewing/handling the occurrence; acknowledgement alone is not completion. Incomplete receipt-page coverage requires ordinary inbox paging with after=next_after before achieved. This assessment cannot invoke those tools. No additional check turn or courtesy reply. Untrusted assessment data: {}",
+                serde_json::json!({"task_id":task.task_id,"goal_id":goal.map(|g| &g.id),"objective":original_excerpt,"objective_revision":goal.map_or(1, |g| g.objective_revision),"original_request_ref":format!("history:{}:{}",task.room_id,original_key),"objective_coverage":{"shown_chars":original_excerpt.chars().count(),"total_chars":original_total},"work_prompt_id":check.work_prompt_id,"latest_public_answer_messages":if protected { None } else { Some(&messages) },"tool_trace_visibility":"private tool records are intentionally omitted, not missing evidence coverage","prior_work_results":if protected {None} else {Some(&prior_work_results)},"owner_recovery":owner_recovery,"goal_evidence_coverage":{"journal_complete":journal_complete,"prior_turns_shown":if protected {0} else {prior_turns.len()},"prior_turns_page_total":if protected {None} else {Some(prior_total)}},"completed_kernel_calls":completed_calls,"completed_kernel_calls_omitted":omitted_calls,"answer_coverage":{"shown_chars":if protected {0} else {shown_chars},"total_chars":if protected {0} else {total_chars},"complete":answer_complete,"truncated":answer_truncated,"visibility":if protected {"protected"} else {"public"},"public_ref":format!("history:{}:prompt:{}",task.room_id,check.work_prompt_id)},"obligations":obligations,"coverage":{"shown":obligations.len(),"total":total},"rejected_dispatches":rejected_dispatches,"rejected_dispatch_coverage":{"shown":rejected_dispatches.len(),"total":rejected_total},"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage,"handled_source_receipts":handled_source_receipts,"satisfied_obligations":satisfied_obligations,"completed_coverage":completed_coverage,"registrations":registrations,"registration_coverage":{"shown":registrations.len(),"total":registration_total},"now_ms":now_ms,"check_in_minutes":goal.map_or(10, |g| g.check_in_minutes),"goal_mode":goal.is_some()})
             )
         } else {
             let goal = goal.expect("continuations only belong to goals");
@@ -193,7 +237,7 @@ impl KernelRuntimeOwnedState {
     }
 }
 
-// Only managed receipts from the assessed turn can establish that a typed call ran.
+// Only managed receipts from an exact ledger-bound work turn establish that a typed call ran.
 // Completion of this tool requires the runtime authority checks to have passed.
 // Admission does not prove the requested effect; parameters and results stay private.
 fn completed_kernel_calls(

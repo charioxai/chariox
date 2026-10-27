@@ -442,6 +442,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            let blocked_revision = t.blocked_revision;
             super::goals::clock(&mut t, now);
             t.state = if resume {
                 ExecutionState::Working
@@ -467,6 +468,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.revision
                 ));
                 t.last_progress_at_ms = now;
+                if let Some(goal) = &t.goal {
+                    migration::audit(
+                        tx,
+                        "goal.owner_resume",
+                        &t.task_id,
+                        serde_json::json!({
+                            "task_id":t.task_id, "goal_id":goal.id,
+                            "objective_revision":goal.objective_revision,
+                            "prompt_id":t.pending_prompt_id, "action":"resume",
+                            "blocked_revision":blocked_revision, "resumed_revision":t.revision,
+                            "at_ms":now,
+                        }),
+                    )?;
+                }
             }
             save(tx, &t)?;
             Ok(Outcome::Task(t))

@@ -1896,3 +1896,242 @@ async fn completion_check_keeps_notes_and_current_deadlines_in_hidden_context() 
         assert!(envelope.hidden_system_context.contains(private));
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: r13 guard3 check-2 forgot a completed
+// receipt after check-1 asked for more work. Replay those real work messages.
+#[tokio::test]
+async fn assessment_keeps_recorded_work_across_continuations_and_fences_edits() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let captured: serde_json::Value =
+        serde_json::from_str(include_str!("goal_assessment_continuation.json")).unwrap();
+    assert_eq!(captured["recorded_lost_receipts"], serde_json::json!([]));
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let apply = |op| match store.agent_lifecycle(op).unwrap() {
+        Outcome::Task(task) | Outcome::Settled { task, .. } => task,
+        other => panic!("unexpected {other:?}"),
+    };
+    let append = |prompt: &str, group: &str| {
+        for item in captured[group].as_array().unwrap() {
+            let entry = if item["kind"] == "user_prompt" {
+                let mut entry = SessionHistoryEntry::user_prompt(
+                    &room,
+                    "owner",
+                    &agent,
+                    item["text"].as_str().unwrap(),
+                );
+                entry.merge_key = Some(format!("prompt:{prompt}"));
+                entry
+            } else {
+                SessionHistoryEntry::provider_output(
+                    &room,
+                    "run",
+                    Some(&agent),
+                    if item["kind"] == "provider_tool" {
+                        TerminalOutputKind::ProviderTool
+                    } else {
+                        TerminalOutputKind::ProviderOutput
+                    },
+                    item["merge_key"].as_str().map(str::to_owned),
+                    item["text"].as_str().unwrap(),
+                )
+            };
+            runtime
+                .owned
+                .append_operational_history_entry(&entry, None, None, None);
+        }
+    };
+    apply(Operation::Begin {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "recorded-goal".into(),
+        run: Some("run".into()),
+        now: 1,
+    });
+    apply(Operation::StartGoal {
+        task: "recorded-goal".into(),
+        owner: "owner".into(),
+        objective: captured["objective"].as_str().unwrap().into(),
+        minutes: 10,
+        now: 1,
+    });
+    let task = apply(Operation::Block {
+        task: "recorded-goal".into(),
+        prompt: "recorded-goal".into(),
+        reason: "Owner must renew authority".into(),
+    });
+    let task = apply(Operation::OwnerResponse {
+        task: task.task_id.clone(),
+        revision: task.blocked_revision,
+        resume: true,
+        now: 2,
+    });
+    let resumed = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: resumed.clone(),
+        run: Some("run".into()),
+        now: 3,
+    });
+    append(&resumed, "work");
+    let task = apply(Operation::Settle {
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: resumed.clone(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 4,
+    });
+    let check = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: check.clone(),
+        run: Some("run".into()),
+        now: 4,
+    });
+    let task = apply(Operation::EvaluateGoal {
+        task: task.task_id.clone(),
+        prompt: check,
+        result: captured["recorded_assessment"].to_string(),
+        now: 5,
+    });
+    // An unrelated prompt on the reused provider run is outside the goal binding.
+    let mut unrelated =
+        SessionHistoryEntry::user_prompt(&room, "owner", &agent, "Independent request");
+    unrelated.merge_key = Some("prompt:unrelated-work".into());
+    runtime
+        .owned
+        .append_operational_history_entry(&unrelated, None, None, None);
+    let unrelated = SessionHistoryEntry::provider_output(
+        &room,
+        "run",
+        Some(&agent),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "UNRELATED_ANSWER",
+    );
+    runtime
+        .owned
+        .append_operational_history_entry(&unrelated, None, None, None);
+    let next = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: next.clone(),
+        run: Some("run".into()),
+        now: 6,
+    });
+    append(&next, "continuation");
+    let task = apply(Operation::Settle {
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: next,
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 7,
+    });
+    let data = |task: &crate::durable_state::agent_lifecycle::AgentTaskExecution| {
+        let text = runtime
+            .owned
+            .goal_continuation_context(task)
+            .unwrap()
+            .unwrap();
+        serde_json::from_str::<serde_json::Value>(
+            text.split_once("Untrusted assessment data: ").unwrap().1,
+        )
+        .unwrap()
+    };
+    let evidence = data(&task);
+    assert_eq!(
+        evidence["completed_kernel_calls"].as_array().unwrap().len(),
+        1,
+        "the recorded prior completed invocation must survive check-2"
+    );
+    assert_eq!(evidence["prior_work_results"][0]["work_prompt_id"], resumed);
+    assert!(evidence["prior_work_results"][0]["answer_messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|text| text == "2"));
+    assert_eq!(evidence["owner_recovery"][0]["action"], "resume");
+    assert_eq!(evidence["owner_recovery"][0]["prompt_id"], resumed);
+    assert_eq!(evidence["goal_evidence_coverage"]["journal_complete"], true);
+    assert!(!evidence.to_string().contains("UNRELATED_ANSWER"));
+    let prior_task = task.clone();
+    // An edited objective starts a new evidence scope, even with a reused run.
+    let task = apply(Operation::ControlGoal {
+        task: task.task_id.clone(),
+        owner: "owner".into(),
+        revision: task.revision,
+        action: "edit".into(),
+        value: Some("New objective".into()),
+        now: 8,
+    });
+    let task = apply(Operation::OwnerResponse {
+        task: task.task_id.clone(),
+        revision: task.blocked_revision,
+        resume: true,
+        now: 9,
+    });
+    let next = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: next.clone(),
+        run: Some("run".into()),
+        now: 10,
+    });
+    append(&next, "continuation");
+    let task = apply(Operation::Settle {
+        room,
+        agent,
+        prompt: next,
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 11,
+    });
+    let evidence = data(&task);
+    assert_eq!(evidence["objective_revision"], 2);
+    assert_eq!(evidence["completed_kernel_calls"], serde_json::json!([]));
+    assert_eq!(evidence["prior_work_results"], serde_json::json!([]));
+    assert_eq!(evidence["owner_recovery"].as_array().unwrap().len(), 1);
+    assert_ne!(evidence["owner_recovery"][0]["prompt_id"], resumed);
+    // A bounded journal cannot claim a known zero omitted-call count.
+    for _ in 0..130 {
+        store
+            .append_event(
+                "goal.owner_resume",
+                Some(task.task_id.clone()),
+                serde_json::json!({
+                    "task_id":task.task_id, "goal_id":task.goal.as_ref().unwrap().id,
+                    "objective_revision":2, "prompt_id":task.prompt_id,
+                }),
+            )
+            .unwrap();
+    }
+    let bounded = data(&task);
+    assert_eq!(bounded["goal_evidence_coverage"]["journal_complete"], false);
+    assert!(bounded["completed_kernel_calls_omitted"].is_null());
+    assert!(bounded["owner_recovery"].as_array().unwrap().len() <= 128);
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&prior_task.room_id, "PRIVATE_PRIOR_WORK_CANARY")
+        .unwrap();
+    let protected = data(&prior_task);
+    assert!(protected["prior_work_results"].is_null());
+    assert_eq!(protected["completed_kernel_calls"], serde_json::json!([]));
+    assert!(protected["completed_kernel_calls_omitted"].is_null());
+}
