@@ -577,6 +577,14 @@ export class BrowserCdpClient {
           width: 0, height: 0, deviceScaleFactor: 0, scale: 1, mobile: false, dontSetVisibleSize: true,
         }, sessionId);
         await connection.send("Emulation.clearDeviceMetricsOverride", {}, sessionId);
+        // innerWidth/innerHeight are CSS pixels and follow the user's page zoom;
+        // window bounds are not. Convert to window units, rounding down by the
+        // half CSS pixel the page may have rounded up so content never overshoots.
+        const { cssVisualViewport } = await connection.send("Page.getLayoutMetrics", {}, sessionId);
+        const zoom = cssVisualViewport?.zoom;
+        if (!Number.isFinite(zoom) || zoom <= 0) throw new BrowserControllerError("viewport_apply_failed", "Chromium page zoom is unavailable; retry the browser viewport");
+        const slack = zoom === 1 ? 0 : Math.ceil(zoom);
+        const windowUnits = (cssPixels) => zoom === 1 ? cssPixels : Math.floor((cssPixels - 0.5) * zoom);
         const tree = await connection.send("Page.getFrameTree", {}, sessionId);
         const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
           frameId: tree.frameTree.frame.id, worldName: "chariox-content-viewport",
@@ -586,16 +594,21 @@ export class BrowserCdpClient {
           const { result } = await connection.send("Runtime.evaluate", {
             expression: "({ width: innerWidth, height: innerHeight })", contextId: executionContextId, returnByValue: true,
           }, sessionId);
-          content = result?.value;
-          if (!maximized() || content?.width === bounds.width) break;
+          const measured = result?.value;
+          content = { width: windowUnits(measured?.width), height: windowUnits(measured?.height) };
+          if (!maximized() || Math.abs(content.width - bounds.width) <= slack) break;
           if (performance.now() >= deadline) throw new BrowserControllerError("viewport_apply_failed", "Chromium content resize is still pending; retry the browser viewport");
           await new Promise(resolve => setTimeout(resolve, 25));
           ({ bounds } = await connection.send("Browser.getWindowForTarget", {}, sessionId));
         }
-        if (![content?.width, content?.height].every(n => Number.isFinite(n) && n > 0)
-            || content.width > bounds.width || content.height > bounds.height) {
+        if (![content.width, content.height].every(n => Number.isFinite(n) && n > 0)
+            || content.width > bounds.width + slack || content.height > bounds.height + slack) {
           throw new BrowserControllerError("viewport_apply_failed", "Chromium content area is unavailable; retry the browser viewport");
         }
+        // A settled maximized window has no side chrome; the rounding is not an inset.
+        if (maximized()) content.width = bounds.width;
+        content.width = Math.min(content.width, bounds.width);
+        content.height = Math.min(content.height, bounds.height);
         insets = { state: bounds.windowState, width: bounds.width - content.width, height: bounds.height - content.height };
         this.contentInsetsByWindow.set(windowId, insets);
       }

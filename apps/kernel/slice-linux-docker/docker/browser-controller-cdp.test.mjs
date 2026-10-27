@@ -177,6 +177,35 @@ test("MP-08/MP-10/MP-11: headed page bottom fits below the toolbar at every sour
   }
 });
 
+test("MP-08/MP-10/MP-11: zoomed page content is measured in window units during headed reconcile", async () => {
+  for (const zoom of [1.25, 0.75, 2]) for (const windowState of ['maximized', 'fullscreen', 'normal']) {
+    const toolbar = windowState === 'fullscreen' ? 0 : 87, border = windowState === 'normal' ? 16 : 0;
+    const connection = new FakeConnection(), send = connection.send.bind(connection);
+    connection.closedTargetIds.add('target-b');
+    connection.send = async (method, params, sessionId) => {
+      const result = await send(method, params, sessionId);
+      if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: 1280, height: 800, windowState } };
+      if (method === 'Browser.getWindowBounds') return { bounds: { windowState } };
+      if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { zoom, scale: 1 } };
+      if (method === 'Runtime.evaluate' && params.expression === '({ width: innerWidth, height: innerHeight })') return { result: { value: {
+        width: Math.round((1280 - border) / zoom), height: Math.round((800 - toolbar) / zoom),
+      } } };
+      return result;
+    };
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection, applyCanonicalDisplay: async () => {} });
+    const source = { css_width: 1280, css_height: 800, device_scale_factor: 1, desktop_pixel_width: 1280, desktop_pixel_height: 800 };
+    try {
+      await browser.reconcile(source, { browserBarVisible: true });
+      const metrics = connection.calls.filter(c => c.method === 'Emulation.setDeviceMetricsOverride').at(-1).params;
+      const inset = browser.contentInsetsByWindow.get(1);
+      assert.ok(Math.abs(inset.height - toolbar) <= Math.ceil(zoom), `${windowState} zoom ${zoom} height inset ${inset.height}`);
+      assert.ok(Math.abs(inset.width - border) <= Math.ceil(zoom), `${windowState} zoom ${zoom} width inset ${inset.width}`);
+      assert.ok(metrics.width <= 1280 - border && metrics.width >= 1280 - border - Math.ceil(zoom), `${windowState} zoom ${zoom} width ${metrics.width}`);
+      assert.ok(metrics.height <= 800 - toolbar && metrics.height >= 800 - toolbar - Math.ceil(zoom), `${windowState} zoom ${zoom} height ${metrics.height}`);
+    } finally { await browser.close(); }
+  }
+});
+
 test("MP-08/MP-10: memory pressure refuses navigation before dispatch and still permits closing a tab", async () => {
   const connection = new FakeConnection();
   const memory = new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 });
@@ -1362,6 +1391,7 @@ class FakeConnection {
       this.closedTargetIds.add(targetId);
       throw new Error(`Emulation.setDeviceMetricsOverride: Session with given id not found.`);
     }
+    if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { zoom: 1, scale: 1 } };
     if (method === 'Runtime.evaluate' && params.expression === '({ width: innerWidth, height: innerHeight })') return { result: { value: { width: 3840, height: 2160 } } };
     if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: 3840, height: 2160 } };
     if (method === "Target.setDiscoverTargets" && this.failDiscovery) {
