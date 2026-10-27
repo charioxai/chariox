@@ -189,6 +189,34 @@ impl KernelRuntimeState {
                 },
             )
             .await;
+        // The worker answered with a refusal. Without a receipt, nothing ran.
+        let result = match result {
+            Err(refusal @ DaemonError::RelayTransport { .. }) => {
+                let receipt = self
+                    .leased_process_request(
+                        &wake,
+                        &binding,
+                        Action::Query {
+                            wake_id: wake.id.clone(),
+                            binding: binding.clone(),
+                        },
+                    )
+                    .await;
+                if matches!(receipt, Ok(None)) {
+                    drop(admission);
+                    self.settle_failed_process_launch(
+                        &wake,
+                        format!(
+                            "launch refused: {}",
+                            crate::secret_redaction::redact_secrets(&refusal.to_string())
+                        ),
+                    );
+                    return Err(refusal);
+                }
+                Err(refusal)
+            }
+            other => other,
+        };
         // Lost transport never retries Start. Poll the original identity only.
         if let Ok(Some(receipt)) = &result {
             self.project_leased_process_receipt(&wake, receipt)?;

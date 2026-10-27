@@ -39,6 +39,7 @@ mod permission_prompt;
 mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
+pub(in crate::runtime::state) use remote_extension_control_plane::OWNER_DECISION_FORWARD_TIMEOUT;
 mod script;
 mod skill_package_response;
 mod slice;
