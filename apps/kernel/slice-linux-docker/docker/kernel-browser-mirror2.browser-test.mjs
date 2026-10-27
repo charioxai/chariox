@@ -2277,3 +2277,10 @@ test("bbcframes: a nested frame without area stays opaque and does not use the f
     const urls = [...host.mirror.streams.get(subscription_id).frames.values()].map(entry => new URL(entry.child.frame.url).pathname);
     assert.deepEqual(urls, ["/outer", "/creative"], "the 0x0 tracker frame is not attached");
   }, { "/outer": { type: "text/html", body: '<!doctype html><body><iframe src="http://b.localhost:PORT/tracker" style="border:0;width:0;height:0"></iframe><iframe src="http://a.localhost:PORT/creative" style="width:300px;height:90px"></iframe>' }, "/creative": creativePage, "/tracker": { type: "text/html", body: '<!doctype html><b id="tracker">t</b>' } }));
+test("bbcframes: a web font used inside a nested cross-origin frame is delivered", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => {
+    const delivered = []; for (let n = 0; n < 12; n++) { const packet = await next(n ? 500 : 0, n === 0); delivered.push(...packet.resources.map(r => [r.key, r.mime_type])); if (delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6)) break; }
+    assert(delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6), `the nested frame's font arrived in its own slot (${JSON.stringify(delivered)})`);
+  }, { "/outer": nestedOuter2("/inner"), "/inner": { type: "text/html", body: '<!doctype html><style>@font-face{font-family:T;src:url(http://a.localhost:PORT/t.woff2) format("woff2")}b{font-family:T}</style><b id="creative">Truth matters</b>' }, "/t.woff2": { type: "font/woff2", headers: { "Access-Control-Allow-Origin": "*" }, body: "wOF2" + "\u0001".repeat(60) } }));
+function nestedOuter2(path) { return { type: "text/html", body: `<!doctype html><body><iframe src="http://a.localhost:PORT${path}" style="width:300px;height:90px"></iframe>` }; }
