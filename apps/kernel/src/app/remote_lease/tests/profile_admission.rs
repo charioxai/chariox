@@ -852,10 +852,7 @@ fn fresh_leased_agent_resume_state_clears_stale_backing_thread_and_preserves_liv
     else {
         panic!("fresh launch")
     };
-    assert!(request
-        .resume_state
-        .as_ref()
-        .is_some_and(crate::provider::ProviderResumeState::is_empty));
+    assert!(request.resume_state.is_none());
     let run = app
         .providers_mut()
         .launch_run_detached(request.with_resume_state(worker_state.clone()))
