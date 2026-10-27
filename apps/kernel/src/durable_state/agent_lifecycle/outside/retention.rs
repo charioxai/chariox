@@ -26,7 +26,7 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         return Ok(());
     }
     let mut drop_count = count - limit + 1;
-    let (groups, last) = loop {
+    let (groups, last, health_floor) = loop {
         let mut query=tx.prepare("SELECT sequence,payload FROM agent_inbox WHERE room_id='' AND agent_id=?1 ORDER BY sequence LIMIT ?2").map_err(sql)?;
         let rows = query
             .query_map(params![part.id, drop_count as i64], |row| {
@@ -36,12 +36,24 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
             .collect::<Result<Vec<_>, _>>()
             .map_err(sql)?;
         let mut groups: BTreeMap<String, Dropped> = BTreeMap::new();
+        let mut health_only = BTreeMap::new();
         let last = rows
             .last()
             .ok_or_else(|| error("inbox retention range missing"))?
             .0;
         for (sequence, payload) in rows {
             let event: OutsideEvent = decode(&payload)?;
+            // Health is observed by the home kernel, outside the source's
+            // sequence space. It advances cursor coverage, not source loss.
+            if matches!(event.value, OutsideEventValue::KernelHealth { .. }) {
+                if let Some(group) = groups.get_mut(&event.kernel) {
+                    group.sequence = sequence;
+                } else {
+                    health_only.insert(event.kernel, sequence);
+                }
+                continue;
+            }
+            health_only.remove(&event.kernel);
             let source = if event.cursor == 0 {
                 sequence
             } else {
@@ -76,7 +88,9 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         }
         let retained = count - drop_count + groups.len();
         if retained <= limit {
-            break (groups, last);
+            // A health-only kernel has no source gap to carry its lost transition.
+            let health_floor = health_only.into_values().max().unwrap_or(0);
+            break (groups, last, health_floor);
         }
         if drop_count == count {
             return Err(error(
@@ -90,11 +104,12 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         params![part.id, sql_integer(last)?],
     )
     .map_err(sql)?;
-    let oldest = groups
+    let floor = groups
         .values()
-        .map(|group| group.sequence)
+        .map(|group| group.sequence.saturating_sub(1))
         .min()
-        .ok_or_else(|| error("inbox retention range missing"))?;
+        .unwrap_or(last)
+        .max(health_floor);
     for group in groups.into_values() {
         let mut event = group.event;
         event.cursor = group.sequence;
@@ -113,6 +128,6 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         // A gap occupies the source's last removed sequence, before every retained event.
         tx.execute("INSERT INTO agent_inbox(sequence,room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,'',?2,?3,?4,?5)",params![sql_integer(group.sequence)?,part.id,event.kernel,format!("gap-{}",group.sequence),encode(&event)?]).map_err(sql)?;
     }
-    part.floor = part.floor.max(oldest.saturating_sub(1));
+    part.floor = part.floor.max(floor);
     Ok(())
 }

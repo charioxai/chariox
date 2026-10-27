@@ -220,6 +220,101 @@ fn outside_retention_returns_an_expired_cursor_and_an_ordered_gap() {
 }
 
 #[test]
+fn outside_retention_excludes_health_from_remote_gap_ranges() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    for (n, online) in [(1000, true), (1001, false), (1002, true), (1003, false)] {
+        f.store
+            .outside_mutate(Mutation::KernelHealth {
+                id: "grant".into(),
+                kernel: "kernel-a".into(),
+                online,
+                reason: "test".into(),
+            })
+            .unwrap();
+        let mut e = event("x", "x1");
+        e.cursor = n;
+        f.store
+            .outside_mutate(Mutation::Import {
+                id: "grant".into(),
+                kernel: "kernel-a".into(),
+                events: vec![e],
+            })
+            .unwrap();
+    }
+    for (limit, expected) in [(4, (1000, 1001, 2)), (2, (1000, 1002, 3))] {
+        f.store
+            .outside_mutate(Mutation::Bound {
+                id: "grant".into(),
+                limit,
+            })
+            .unwrap();
+        let oldest = f
+            .store
+            .outside_list("grant", Some(0), 1000)
+            .unwrap()
+            .unwrap_err();
+        let batch = f
+            .store
+            .outside_list("grant", Some(oldest - 1), 1000)
+            .unwrap()
+            .unwrap();
+        assert!(batch.events.len() <= limit);
+        let gap = batch.events.iter().find_map(|e| match e.value {
+            OutsideEventValue::Gap {
+                from, to, dropped, ..
+            } => Some((from, to, dropped)),
+            _ => None,
+        });
+        assert_eq!(
+            gap,
+            Some(expected),
+            "remote gap metadata must only count remote source events"
+        );
+        assert!(batch.events.windows(2).all(|p| p[0].cursor < p[1].cursor));
+    }
+}
+
+#[test]
+fn outside_retention_can_drop_only_health_without_a_source_gap() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    for online in [false, true, false, true, false, true] {
+        f.store
+            .outside_mutate(Mutation::KernelHealth {
+                id: "grant".into(),
+                kernel: "kernel-a".into(),
+                online,
+                reason: "test".into(),
+            })
+            .unwrap();
+    }
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 2,
+        })
+        .unwrap();
+    let oldest = f
+        .store
+        .outside_list("grant", Some(0), 1000)
+        .unwrap()
+        .unwrap_err();
+    let batch = f
+        .store
+        .outside_list("grant", Some(oldest - 1), 1000)
+        .unwrap()
+        .unwrap();
+    assert!(batch.events.len() <= 2);
+    assert!(batch
+        .events
+        .iter()
+        .all(|e| matches!(e.value, OutsideEventValue::KernelHealth { .. })));
+    let part = f.store.outside_part("grant").unwrap().unwrap();
+    assert!(part.kernel_health["kernel-a"]);
+}
+
+#[test]
 fn outside_retention_identifies_each_kernel_and_preserves_the_cap() {
     let f = Fixture::new();
     subscribe(&f, "grant", true, vec![target("x", None)]);
@@ -485,4 +580,267 @@ fn a_producer_without_a_subscription_does_not_wait_for_the_durable_writer() {
     subscribe(&f, "grant", true, vec![target("x", None)]);
     publish_session_event().unwrap();
     assert_eq!(list(&f, "grant").events.len(), 1);
+}
+
+#[test]
+fn outside_health_is_durable_ordered_and_scoped_to_followed_home_parts() {
+    let f = Fixture::new();
+    subscribe(&f, "home", true, vec![target("room", None)]);
+    subscribe(&f, "other", true, vec![target("room", None)]);
+    subscribe(&f, "source", false, vec![target("room", None)]);
+    let health = |id: &str, online| Mutation::KernelHealth {
+        id: id.into(),
+        kernel: "kernel-a".into(),
+        online,
+        reason: if online {
+            "connected"
+        } else {
+            "kernel_offline"
+        }
+        .into(),
+    };
+    f.store.outside_mutate(health("home", true)).unwrap();
+    assert!(list(&f, "home").events.is_empty());
+    publish(&f, "before-health", event("room", "agent"));
+    f.store.outside_mutate(health("home", false)).unwrap();
+    f.store.outside_mutate(health("source", false)).unwrap();
+    let first = list(&f, "home");
+    assert_eq!(first.events.len(), 2);
+    assert!(matches!(
+        first.events[0].value,
+        OutsideEventValue::Agent { .. }
+    ));
+    assert!(matches!(
+        first.events[1].value,
+        OutsideEventValue::KernelHealth { online: false, .. }
+    ));
+    assert!(first.events[1].cursor > first.events[0].cursor);
+    assert_eq!(first.next_cursor, first.events[1].cursor);
+    assert_eq!(list(&f, "other").events.len(), 1);
+    assert_eq!(list(&f, "source").events.len(), 1);
+
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    reopened.outside_mutate(health("home", false)).unwrap();
+    assert_eq!(list(&f, "home"), first);
+    reopened.outside_mutate(health("home", true)).unwrap();
+    let recovered = list(&f, "home");
+    assert_eq!(recovered.events.len(), 3);
+    assert!(
+        matches!(&recovered.events[2].value, OutsideEventValue::KernelHealth { online: true, reason } if reason == "connected")
+    );
+    assert!(recovered.next_cursor > first.next_cursor);
+    reopened
+        .outside_mutate(Mutation::Ack {
+            id: "home".into(),
+            cursor: first.next_cursor,
+        })
+        .unwrap();
+    assert_eq!(list(&f, "home").events, recovered.events[2..]);
+}
+
+#[test]
+fn outside_health_ignores_removed_targets_and_ended_subscriptions() {
+    let f = Fixture::new();
+    subscribe(
+        &f,
+        "home",
+        true,
+        vec![target("one", None), target("two", None)],
+    );
+    let health = |kernel: &str, online| Mutation::KernelHealth {
+        id: "home".into(),
+        kernel: kernel.into(),
+        online,
+        reason: if online {
+            "connected"
+        } else {
+            "kernel_offline"
+        }
+        .into(),
+    };
+    f.store.outside_mutate(health("unknown", false)).unwrap();
+    assert!(list(&f, "home").events.is_empty());
+    // An initial failure is observable even if this part never connected.
+    f.store.outside_mutate(health("kernel-a", false)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 1);
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: "home".into(),
+            targets: vec![target("one", None)],
+            all: false,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    f.store.outside_mutate(health("kernel-a", true)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 2);
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: "home".into(),
+            targets: vec![target("two", None)],
+            all: false,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    f.store.outside_mutate(health("kernel-a", false)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 2);
+    assert!(f
+        .store
+        .outside_part("home")
+        .unwrap()
+        .unwrap()
+        .kernel_health
+        .is_empty());
+    subscribe(&f, "home", true, vec![target("three", None)]);
+    f.store.outside_mutate(health("kernel-a", true)).unwrap();
+    assert_eq!(list(&f, "home").events.len(), 2);
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: "home".into(),
+            targets: vec![],
+            all: true,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    f.store.outside_mutate(health("kernel-a", false)).unwrap();
+    let events = list(&f, "home").events;
+    assert_eq!(events.len(), 3);
+    assert!(matches!(
+        events[2].value,
+        OutsideEventValue::SubscriptionEnded { .. }
+    ));
+}
+
+// A client may list a source event without acknowledging it before retention.
+fn listed_terminal_at_ten(f: &Fixture, kernels: &[&str]) -> u64 {
+    let targets = kernels
+        .iter()
+        .map(|kernel| EventTarget {
+            kernel: (*kernel).into(),
+            ..target("x", None)
+        })
+        .collect();
+    subscribe(f, "grant", true, targets);
+    for n in 1..=9 {
+        publish(f, &n.to_string(), event("x", "x1"));
+    }
+    f.store
+        .outside_mutate(Mutation::Ack {
+            id: "grant".into(),
+            cursor: 9,
+        })
+        .unwrap();
+    import_terminal(f, "kernel-a", 1000);
+    let listed = list(f, "grant");
+    assert_eq!(listed.next_cursor, 10);
+    assert_eq!(listed.events.len(), 1);
+    10
+}
+fn import_terminal(f: &Fixture, kernel: &str, cursor: u64) {
+    let mut e = event("x", "x1");
+    e.kernel = kernel.into();
+    e.cursor = cursor;
+    e.value = OutsideEventValue::Terminal {
+        exit_code: Some(23),
+    };
+    f.store
+        .outside_mutate(Mutation::Import {
+            id: "grant".into(),
+            kernel: kernel.into(),
+            events: vec![e],
+        })
+        .unwrap();
+}
+fn offline(f: &Fixture, kernel: &str) {
+    f.store
+        .outside_mutate(Mutation::KernelHealth {
+            id: "grant".into(),
+            kernel: kernel.into(),
+            online: false,
+            reason: "test".into(),
+        })
+        .unwrap();
+}
+
+#[test]
+fn outside_retention_keeps_health_after_the_listed_source_cursor_covered() {
+    let f = Fixture::new();
+    let listed = listed_terminal_at_ten(&f, &["kernel-a"]);
+    offline(&f, "kernel-a"); // health@11 between terminal@10 and terminal@12
+    import_terminal(&f, "kernel-a", 1001);
+    import_terminal(&f, "kernel-a", 1002);
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 3,
+        })
+        .unwrap();
+    let resumed = f
+        .store
+        .outside_list("grant", Some(listed), 1000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resumed.events[0].cursor, 11,
+        "the gap must cover the dropped health row after cursor 10"
+    );
+    assert!(matches!(
+        resumed.events[0].value,
+        OutsideEventValue::Gap {
+            dropped: 1,
+            from: 1000,
+            to: 1000,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn outside_retention_covers_later_health_for_each_kernel() {
+    check_other_kernel_health(true);
+}
+
+#[test]
+fn outside_retention_health_only_kernel_expires_past_other_gaps() {
+    check_other_kernel_health(false);
+}
+
+fn check_other_kernel_health(source_before_health: bool) {
+    let f = Fixture::new();
+    let mut listed = listed_terminal_at_ten(&f, &["kernel-a", "kernel-b"]);
+    if source_before_health {
+        import_terminal(&f, "kernel-b", 2000);
+        listed = list(&f, "grant").next_cursor;
+    }
+    offline(&f, "kernel-b");
+    for cursor in 1001..=1003 {
+        import_terminal(&f, "kernel-a", cursor);
+    }
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 4,
+        })
+        .unwrap();
+    let resumed = f.store.outside_list("grant", Some(listed), 1000).unwrap();
+    if source_before_health {
+        let resumed = resumed.unwrap();
+        assert!(
+            resumed.events.iter().any(|e| e.kernel == "kernel-b"
+                && matches!(
+                    e.value,
+                    OutsideEventValue::Gap {
+                        dropped: 1,
+                        from: 2000,
+                        to: 2000,
+                        ..
+                    }
+                )),
+            "kernel B's health after the listed cursor must be covered by its gap"
+        );
+    } else {
+        assert!(
+            resumed.is_err(),
+            "health-only kernel B must expire the cursor past its lost transition"
+        );
+    }
 }

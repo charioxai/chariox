@@ -5444,6 +5444,63 @@ message that names the steer id, says it was delivered and must not be sent agai
 it is distinct from `prompt_steer_rejected`, which means nothing was delivered.
 Local 591 and relay peer 197 add this event shape, and
 `RelayStatus.status.capabilities` advertises `outside_steer_events_v1` for it.
+
+MP-08 / MP-09 / MP-10 / MP-11, local 631 / peer 234: the gateway records
+per-kernel health transitions in the same grant-owned inbox:
+`{ "type": "kernel_health", "value": { "online": false,
+"reason": "kernel_offline" } }`. `kernel` identifies the followed source;
+`session_id` and `machine` are empty for this kernel-level control record, and
+`agent_id` is absent. `reason` is the gateway error code (a reason class, without
+error details), `events_part_failed` for a remote part failure, or `connected` on
+recovery. A non-retryable refusal of a caller's `SubscribeEvents` is returned
+without changing the health baseline or appending a health event. Background
+pump failures still update subscription health and append a transition, including
+persistent non-retryable refusals. The first successful connection
+establishes a baseline; an initial failure and each later online/offline change
+append a durable event. Repeated failures, including a different failure reason,
+do not append duplicates; `GetEventSubscription` retains the current full error.
+The health observation and inbox append commit together. Events have home
+cursors, retain normal ordering and acknowledgement rules, wake an outstanding
+`WaitEvents`, and never enter another grant's inbox. Removed targets and ended
+subscriptions collect no later health events. Callers that depend on these wakes
+require gateway protocol 631; existing CLI callers keep their supported minimum.
+Retention excludes home-observed health records from source gap ranges and
+dropped counts. A kernel's gap position still advances through its dropped
+health records so an unacknowledged listed cursor cannot silently skip a lost
+transition. Health-only loss advances the home cursor floor, even when other
+kernels retain source gaps, without fabricating source loss; subscription status
+retains the current health.
+The relay remains an opaque carrier and clients need no health polling.
+
+File writes and file transfers alone are not inbox events. Lane coordination
+uses the existing explicit interaction primitive: follow the lane's Room/agent,
+then have that agent call `request_popup` with the question, fixed choice ids and
+exact replies, and a bounded timeout. The outside inbox receives the pending
+interaction with `refs.interaction_id`; read that Room's interaction through
+`GetSessionState`, then answer using `RespondToInteraction { session_id,
+interaction_id, choice_id }` on the event's kernel. Follow resolution normally.
+Do not use a handoff file's appearance as an implicit question. This keeps
+ordinary files and transfers independent from request/reply coordination and
+adds no filesystem watch lifecycle or path authorization surface. In the c3
+coordinator, file-only asks in `flat`/`lanewait`/`watch` must move to this path;
+file/resource monitoring that is not a lane question keeps its explicit watcher.
+With a 631 gateway, `c3-wait.sh` can invoke `chariox events wait` directly and
+delete its post-wait `events subscription` request and synthetic exit-4 branch:
+health changes now return exit 0 with an event and the next cursor, even during
+a long wait. Inspect `value.online` and retain the subscription on disconnect;
+never replay an uncertain command automatically.
+
+Focused red/green drill: `scripts/drills/outside-health-events.mjs` takes private
+`--kernel-binary`, `--cli-binary`, `--relay-binary`, `--state-root` and
+`--evidence-dir` paths. `--binary-manifest` names JSON containing `expectation`
+(`base` or `green`) and a `head` (40 hex characters) and `sha256` for each of
+`kernel`, `cli` and `relay`; binary hashes must match before anything starts.
+It runs the native CLI against two real kernels and a local scoped relay,
+checks a terminal exit, interrupts a drained wait by stopping the worker, and
+starts recovery while a second wait is outstanding. `--expect-base` asserts
+the old timeout behavior; without it both health wakes and increasing cursors
+are required. The drill removes its state and stops only its recorded children.
+
 ### MP-08 / MP-10 / MP-11: live browser layout (629/232)
 
 Allocated local 629/peer 232 adds `KernelBrowser.command={op:"resize",tab_id,generation,width,height}`.

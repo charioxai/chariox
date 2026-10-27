@@ -1,6 +1,6 @@
 {
-  "local_protocol": 629,
-  "peer_protocol": 232,
+  "local_protocol": 631,
+  "peer_protocol": 234,
   "requests": [
     {
       "SubscribeEvents": {
@@ -169,9 +169,37 @@
             "value": {
               "reason": "cancelled"
             }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "",
+            "session_id": "",
+            "at_ms": 1,
+            "summary": "kernel offline",
+            "refs": {},
+            "cursor": 8,
+            "type": "kernel_health",
+            "value": {
+              "online": false,
+              "reason": "kernel_offline"
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "",
+            "session_id": "",
+            "at_ms": 1,
+            "summary": "kernel online",
+            "refs": {},
+            "cursor": 9,
+            "type": "kernel_health",
+            "value": {
+              "online": true,
+              "reason": "connected"
+            }
           }
         ],
-        "next_cursor": 7,
+        "next_cursor": 9,
         "oldest_cursor": 1,
         "timed_out": false
       }
