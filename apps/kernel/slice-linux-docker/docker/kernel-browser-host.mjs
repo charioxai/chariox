@@ -372,6 +372,14 @@ export class KernelBrowserHost {
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
     if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;
+    if(this.chromium.desktop) {
+      const native=await this.browser.nativeViewport?.(tab.target_id);
+      if(native?.target_id!==tab.target_id||![native?.width,native?.height].every(n=>Number.isSafeInteger(n)&&n>=2))throw new UserDomainRefusal('stale_reference');
+      // The shared desktop includes Chrome's band and window decorations.
+      // Emulation beyond its real page produces uncapturable canvas margins.
+      const requested=layout??{width:this.viewport().css_width,height:this.viewport().css_height};
+      layout={width:Math.min(requested.width,2*Math.floor(native.width/2)),height:Math.min(requested.height,2*Math.floor(native.height/2))};
+    }
     const before = this.pageSize(tab.tab_id);
     await this.browser.setLayout?.(tab.target_id, layout);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);

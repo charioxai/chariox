@@ -2763,3 +2763,27 @@ test('MP-08 / MP-10 opening and reopening an App refresh its native window befor
   assert.equal(reopened.ok,true,JSON.stringify(reopened));
   assert.equal(nativeTarget,reopened.result.target_id);
 }));
+
+test('MP-08 / MP-10 a mirror stays inside the owned native page viewport', () => using(async ({host,chromium}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
+  process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+  try {
+    const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),applied=[];
+    chromium.desktop={};
+    host.browser.nativeViewport=async target=>({target_id:target,width:1272,height:709});
+    host.browser.setLayout=async(target,layout)=>{applied.push({target,layout})};
+    host.mirror.v2.begin=()=>{};
+    const subscribe=options=>host.request({op:'mirror_subscribe',tab_id:tab.tab_id,generation:host.generation,device_scale_factor:1,wire:2,...options});
+    await subscribe({layout_width:1920,layout_height:1080});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:1272,height:708},'the native viewport, rounded inward for the codec, bounds the canonical page');
+    assert.deepEqual(applied.at(-1),{target:tab.target_id,layout:{width:1272,height:708}});
+    await subscribe({layout_width:900,layout_height:500});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:500},'a smaller viewer keeps its requested layout');
+    host.browser.nativeViewport=async()=>null;
+    await assert.rejects(subscribe({}),{code:'user_domain_stale_reference'});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:500},'an unavailable native query does not publish a partial layout');
+  } finally {
+    delete chromium.desktop;
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=previous;
+  }
+}));
