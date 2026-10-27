@@ -236,6 +236,8 @@ RUN groupadd --gid 1001 slice \
 
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
+COPY --chmod=0555 apps/kernel/slice-linux-docker/docker/check-runtime.sh /opt/chariox-slice/check-runtime.sh
+RUN /opt/chariox-slice/check-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/install-display-codec.py apps/kernel/slice-linux-docker/docker/display-codec-pin.json /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs

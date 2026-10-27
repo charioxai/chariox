@@ -243,7 +243,22 @@ probe and rejects the slice before use if the namespace cannot be created.
 The first managed Docker slice builds its runtime image lazily from the complete
 signed context, using the builder-attested kernel and relay binaries rather than
 compiling them again on the managed host. Ordinary local source builds retain
-the Cargo build path. The cache fingerprint covers the Dockerfile and all build
+the Cargo build path. MP-08/MP-10/MP-11: prebuilt runtime binaries must target
+Debian 12's glibc 2.36 and runtime libraries. Ubuntu 24.04 binaries can require
+glibc 2.39 and cannot be copied into this image. The final image executes both
+binaries during its build and fails with a rebuild instruction if either cannot
+load. Build compatible binaries inside the image by leaving
+`CHARIOX_PREBUILT_RUNTIME` at its default `0`:
+
+```sh
+docker build -f apps/kernel/slice-linux-docker/docker/Dockerfile \
+  -t chariox-slice:local .
+```
+
+For a development build, add `--build-arg CHARIOX_RUNTIME_BUILD_PROFILE=dev`.
+Both profiles compile against the slice's Debian 12 libraries; running a binary's
+protocol-version probe on the host alone does not establish slice compatibility.
+The cache fingerprint covers the Dockerfile and all build
 inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
 integrity lock are pinned. Host provider commands are installed with `npm ci`
 from the same signed lock. Provider CLI policy lives in
