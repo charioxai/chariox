@@ -238,19 +238,19 @@ export async function updateAgentSubstitutes(
   }
 }
 
-/** The kernel keeps this request open while the agent's turn finishes, so the answer can arrive much later. */
+/** While the agent's turn runs the kernel answers at once with the agent holding the waiting Move. */
 export async function moveAgent(
   client: LocalIpcClient,
   sessionId: string,
   agentId: string,
   destination: string | null,
-): Promise<void> {
+): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
     destination === null
       ? moveAgentToLocalRequest(sessionId, agentId)
       : moveAgentToRemoteRequest(sessionId, agentId, destination),
   )
-  expectVariant<{ agent: AgentInstance }>(response, destination === null ? "AgentMovedToLocal" : "AgentMovedToRemote")
+  return expectVariant<{ agent: AgentInstance }>(response, destination === null ? "AgentMovedToLocal" : "AgentMovedToRemote").agent
 }
 
 export async function cancelAgentMove(

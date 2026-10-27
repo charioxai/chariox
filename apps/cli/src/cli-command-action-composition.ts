@@ -982,6 +982,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     moveAgent: (agentId, destination) => moveAgentApi(client, sessionState().id, agentId, destination),
     cancelAgentMove: (agentId) => cancelAgentMoveApi(client, sessionState().id, agentId),
+    pause: ms => new Promise(resolve => setTimeout(resolve, ms)),
     destroyAgent: async (agentId) => {
       await destroyAgentApi(client, sessionState().id, agentId)
       return getSessionState(client, sessionState().id)
