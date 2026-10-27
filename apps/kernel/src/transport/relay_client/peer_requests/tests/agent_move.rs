@@ -112,7 +112,7 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
     assert!(app.lock().await.agent_moves.targets().is_empty());
     assert!(!target
         .private_runtime_state_root()
-        .join("move-workspaces")
+        .with_extension("move-workspaces")
         .exists());
     assert!(!app
         .lock()

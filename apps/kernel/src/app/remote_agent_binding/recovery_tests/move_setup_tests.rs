@@ -7,6 +7,7 @@ async fn install_move_setup_definition(fixture: &Fixture, session_id: &str) {
     let mut agent = home.agents().get_agent(&fixture.agent_id).unwrap();
     agent.set_provider("dev-stub");
     agent.set_account_profile(None);
+    agent.set_model(Some("default".into()));
     home.agents().restore_agent(agent);
     let definition = serde_json::from_value(serde_json::json!({
         "schema_version": 1,
