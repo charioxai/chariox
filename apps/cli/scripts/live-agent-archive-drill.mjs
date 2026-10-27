@@ -125,6 +125,17 @@ try {
   check('real provider thread established', !!savedThread)
   results.agent_id = agent
   results.provider_thread_sha256 = createHash('sha256').update(savedThread).digest('hex')
+  let siblingWakes = []
+  if (opts['sibling-wake']) {
+    stage = 'sibling-work'
+    await client.send(api.submitPromptRequest(room, attachment, other.id,
+      'Use chariox.events.timer once to arm a 10-minute timer labelled sibling-retained. Then use chariox.events.yield to wait for that timer. Keep this task waiting; another agent will be archived during this drill.', []))
+    await until('sibling durable work', async () => {
+      await pump()
+      siblingWakes = ((await snapshot()).agent_wakes ?? []).filter(value => value.agent_id === other.id && value.state === 'scheduled').map(value => value.wake_id ?? value.id)
+      return siblingWakes.length > 0
+    })
+  }
   stage = 'running-and-queued'
   await submit('Use chariox.events.timer once to arm a 10-minute timer labelled archive-drill. Then write a long numbered list of 500 short words. Keep the timer armed. This is an archive cancellation drill.')
   let timer = false
@@ -143,6 +154,8 @@ try {
   check('target active and queued work cleared', !promptState(archived).active_prompt && promptState(archived).queued_prompts.length === 0)
   check('target wakes settled', !(archived.agent_wakes ?? []).some(wake => wake.agent_id === agent && ['scheduled', 'starting', 'running', 'cancelling'].includes(wake.state)))
   check('sibling and Room retained', archived.status !== 'Ended' && archived.agents.some(value => value.id === other.id && !value.archived))
+  if (opts['sibling-wake']) check('other agent durable work remains armed', siblingWakes.every(id => (archived.agent_wakes ?? []).some(value => (value.wake_id ?? value.id) === id && value.state === 'scheduled')))
+
   const listed = unwrap(await client.send(api.listAgentsRequest(room)), 'AgentsListed').agents
   check('default list excludes target', !listed.some(value => value.id === agent))
   stage = 'restart'
