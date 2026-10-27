@@ -604,6 +604,105 @@ async fn count_messages_assessment_context(answers: &[(Option<&str>, &str)]) -> 
         .unwrap()
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: real r12 guard3 check-1 recognized the
+// answer and receipt, but continued for an unproven conditional authority branch.
+#[tokio::test]
+async fn assessment_replays_admitted_call_without_requiring_authority_narrative() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let captured: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("goal_assessment_authority.json")).unwrap();
+    let objective: serde_json::Value = serde_json::from_str(
+        captured[0]["text"]
+            .as_str()
+            .unwrap()
+            .split_once("Goal objective and preceding assessment are public data: ")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let prompt = "task-resume-prompt-1793069960226-5";
+    let run = "provider-run-3";
+    for item in &captured {
+        let text = item["text"].as_str().unwrap();
+        let entry = if item["kind"] == "user_prompt" {
+            let mut entry = SessionHistoryEntry::user_prompt(&room, "owner", &agent, text);
+            entry.merge_key = Some(format!("prompt:{prompt}"));
+            entry
+        } else {
+            SessionHistoryEntry::provider_output(
+                &room,
+                run,
+                Some(&agent),
+                if item["kind"] == "provider_tool" {
+                    TerminalOutputKind::ProviderTool
+                } else {
+                    TerminalOutputKind::ProviderOutput
+                },
+                item["merge_key"].as_str().map(str::to_owned),
+                text,
+            )
+        };
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    }
+    let store = &runtime.owned.durable_state_store;
+    for op in [
+        Operation::Begin {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: Some(run.into()),
+            now: 1,
+        },
+        Operation::StartGoal {
+            task: prompt.into(),
+            owner: "owner".into(),
+            objective: objective["objective"].as_str().unwrap().into(),
+            minutes: 10,
+            now: 1,
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: run.into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["2"])
+    );
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["completed_kernel_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        data["completed_kernel_calls"][0]["authority_outcome"],
+        "admitted"
+    );
+    assert_eq!(data["coverage"]["total"], 0);
+    assert!(context.contains("Conditional refusal or owner-recovery steps apply to refused calls"));
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: r11 check-1 received 91 characters ending
 // in `sudo window.2`; the last message must stay distinct from the retry plan.
 #[tokio::test]
@@ -689,9 +788,7 @@ async fn assessment_marks_the_full_one_character_count_as_complete() {
     assert!(context.contains("even one character"));
     assert!(context.contains("never treat it as truncated"));
     assert!(context.contains("that complete result is the answer, not a plan or a missing report"));
-    assert!(context.contains(
-        "Do not require a narrative of prerequisite authority, blocking or resume steps"
-    ));
+    assert!(context.contains("a narrative of prerequisite authority, blocking or resume steps"));
 }
 
 #[tokio::test]
