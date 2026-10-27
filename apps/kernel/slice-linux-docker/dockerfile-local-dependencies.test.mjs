@@ -28,6 +28,24 @@ test("slice images copy and fingerprint every kernel package path dependency", a
   }
 })
 
+test("slice images copy and fingerprint every workspace member", async () => {
+  const [manifest, dockerfile, runtimeSourceRoots] = await Promise.all([
+    readFile(new URL("../../../Cargo.toml", import.meta.url), "utf8"),
+    readFile(dockerfilePath, "utf8"),
+    readFile(runtimeSourceRootsPath, "utf8"),
+  ])
+  const roots = runtimeSourceRoots.split("\n").filter(Boolean)
+  const members = [...manifest.match(/\nmembers\s*=\s*\[([^\]]*)\]/)[1].matchAll(/"([^"]+)"/g)]
+    .map((match) => match[1])
+  assert.ok(members.length > 0, "fixture should discover workspace members")
+  // Cargo resolves the whole workspace, so a member missing from the build stage fails `cargo build --locked`.
+  for (const member of members) {
+    assert.ok(dockerfile.split("\n").includes(`COPY ${member} ${member}`),
+      `Rust build stage omits workspace member ${member}`)
+    assert.ok(roots.includes(member), `runtime source roots omit workspace member ${member}`)
+  }
+})
+
 test("slice images copy and fingerprint workspace path patches", async () => {
   const [manifest, dockerfile, runtimeSourceRoots] = await Promise.all([
     readFile(new URL("../../../Cargo.toml", import.meta.url), "utf8"),
