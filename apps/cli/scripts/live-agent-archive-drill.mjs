@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import * as api from '../../../packages/kernel-client/dist/index.js'
 import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
 
@@ -43,7 +43,8 @@ for (const name of ['CHARIOX_KERNEL_LOCAL_AUTH_TOKEN', 'CHARIOX_KERNEL_LOCAL_AUT
   delete process.env[name]
   delete env[name]
 }
-await writeIsolatedKernelConfig({ xdgConfigHome: env.XDG_CONFIG_HOME, storageRoot: path.join(stateRoot, 'storage') })
+const vaultPhrase = randomBytes(24).toString('hex')
+await writeIsolatedKernelConfig({ xdgConfigHome: env.XDG_CONFIG_HOME, storageRoot: path.join(stateRoot, 'storage'), extraToml: ['[credential_vault]', `path = ${JSON.stringify(path.join(stateRoot, 'vault'))}`, 'unlock_policy = "kernel_init"'] })
 let child, client, room, agent, attachment, stage = 'bootstrap'
 const children = []
 const secret = opts['credential-stdin'] ? readFileSync(0, 'utf8').trim() : null
@@ -91,14 +92,31 @@ async function pump() {
   }
   return output
 }
+async function unlockDrillVault() {
+  if (!room || !client) return
+  const state = await snapshot()
+  for (const interaction of state.active_interactions ?? []) {
+    if (interaction.id.startsWith('vault-unlock-') && !interaction.id.startsWith('vault-unlock-lease-')) {
+      await client.send(api.respondToInteractionRequest(room, interaction.id, 'passphrase', vaultPhrase))
+    }
+  }
+}
+async function sendWithDrillVault(request) {
+  let done = false, response, failure
+  const pending = client.send(request).then(value => { response = value }, error => { failure = error }).finally(() => { done = true })
+  while (!done) { await pause(50); if (!done) await unlockDrillVault() }
+  await pending
+  if (failure) throw failure
+  return response
+}
 async function until(name, predicate, timeout = 120000) {
   const deadline = Date.now() + timeout
-  while (Date.now() < deadline) { if (await predicate()) return; await pause(150) }
+  while (Date.now() < deadline) { await unlockDrillVault(); if (await predicate()) return; await pause(150) }
   const state = room ? await snapshot().catch(() => null) : null
   results.last_state = state ? { status: state.status, active: !!promptState(state).active_prompt, queued: promptState(state).queued_prompts?.length, wakes: (state.agent_wakes ?? []).filter(value => value.agent_id === agent).map(value => ({ state: value.state, kind: value.kind })) } : null
   throw new Error(`${name} timeout`)
 }
-async function submit(text) { return client.send(api.submitPromptRequest(room, attachment, agent, text, [])) }
+async function submit(text) { return sendWithDrillVault(api.submitPromptRequest(room, attachment, agent, text, [])) }
 try {
   await start()
   stage = 'account'
@@ -106,7 +124,6 @@ try {
   if (provider === 'claude') {
     assert.ok(secret, 'Claude needs the documented setup token on stdin')
     profile = unwrap(await client.send(api.createProviderAccountProfileRequest('claude', 'archive-drill')), 'ProviderAccountProfile').profile.profile_id
-    await client.send(api.setProviderAccountCredentialRequest('claude', profile, secret, true))
   } else {
     const source = provider === 'codex'
       ? '/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex'
@@ -121,6 +138,10 @@ try {
   room = created.session.id; agent = created.agent.id
   const other = unwrap(await client.send(api.spawnAgentRequest(room, runtimeProvider, 'retained-sibling', model, opts.workspace, 'low', 'build', provider === 'claude' ? 'required' : 'yolo', undefined, undefined, undefined, profile)), 'AgentSpawned').agent
   attachment = unwrap(await client.send(api.attachToSessionRequest(room, 'archive-drill')), 'SessionAttached').attachment.id
+  if (provider === 'claude') {
+    stage = 'credential-enrollment'
+    await sendWithDrillVault(api.setProviderAccountCredentialRequest('claude', profile, secret, true, { sessionId: room, agentId: agent }))
+  }
   stage = 'warm-thread'
   await submit(`Remember this marker for later: ${marker}. Reply only READY. Do not use tools.`)
   let observed = ''
@@ -190,7 +211,7 @@ try {
   results.status = 'FAIL'; results.stage = stage
   const message = String(error?.message ?? error)
   if (error?.code === 'ERR_ASSERTION') results.failure_check = message
-  results.failure_reason = (secret ? message.split(secret).join('<redacted>') : message).replace(/[A-Za-z0-9_+/=.:@-]{20,}/g, '<redacted>').slice(0, 400)
+  results.failure_reason = (secret ? message.split(secret).join('<redacted>') : message).split(vaultPhrase).join('<redacted>').replace(/[A-Za-z0-9_+/=.:@-]{20,}/g, '<redacted>').slice(0, 400)
   results.failure_class = ['429', 'unauthorized', 'quota', 'model', 'credential', 'timeout', 'assertion'].find(value => message.toLowerCase().includes(value)) ?? error?.code ?? error?.name ?? 'error'
   console.error(JSON.stringify({ stage, status: 'FAIL', failure_class: results.failure_class }))
   process.exitCode = 1

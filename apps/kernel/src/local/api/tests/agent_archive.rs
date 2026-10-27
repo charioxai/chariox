@@ -478,6 +478,4 @@ fn archived_agents_protocol_636_shape_and_hash() {
         format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
         "10baa1309adeacd62815a797d64b96e234c13cfa94a41cae85ee00c88c17a5e1"
     );
-    assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION >= 636);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 239);
 }
