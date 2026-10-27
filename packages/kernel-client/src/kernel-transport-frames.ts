@@ -15,6 +15,8 @@ export type KernelTransportResponseFrame<TResponse> = {
 export type KernelTransportEventFrame<TEvent = KernelEvent> = {
   type: "event"
   event_id: number
+  /** Set when the local kernel relays another machine's stream; `event_id` counts on that stream. */
+  machine?: string
   event: TEvent
 }
 
@@ -77,6 +79,8 @@ export type RelaySubscribeFrame = {
   client_public_key: string
   subscription_scope?: string
   resume_from_event_id: number | null
+  /** Protocol 596: ask for `heartbeat` events this often (at least 500). */
+  heartbeat_interval_ms?: number
 }
 
 export type RelayUnsubscribeFrame = {

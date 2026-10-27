@@ -72,6 +72,9 @@ impl KernelRuntimeOwnedState {
             crate::session::effective_agent_execution_config(&session, Some(&next_agent));
         let effective_config_changed = previous_config.mode != next_config.mode
             || previous_config.permission_level != next_config.permission_level;
+        let working_directory_changed = next_agent.workspace_id() != agent.workspace_id()
+            || next_agent.worktree_id() != agent.worktree_id();
+        let scope_changed = effective_config_changed || working_directory_changed;
         let remote_update = effective_config_changed
             .then(|| {
                 agent
@@ -87,42 +90,16 @@ impl KernelRuntimeOwnedState {
             })
             .flatten();
 
-        let mut terminated_run_ids = Vec::new();
-        if effective_config_changed && remote_update.is_none() {
-            if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
-                match run.state() {
-                    crate::provider::ProviderRunState::Starting
-                    | crate::provider::ProviderRunState::Running
-                    | crate::provider::ProviderRunState::Parked => {
-                        if self
-                            .provider_store
-                            .adapter_supports_turn_scoped_execution_config(run.adapter_key())
-                        {
-                            let updated = self.provider_store.update_run_execution_config(
-                                run.id(),
-                                next_config.mode,
-                                next_config.permission_level,
-                            )?;
-                            self.provider_run_projection.update(updated);
-                        } else {
-                            let outcome = self
-                                .provider_store
-                                .terminate_run_provider_only(session_id, run.id())?;
-                            self.clear_active_provider_run_session_pointer(
-                                session_id,
-                                outcome.run().id(),
-                            )?;
-                            let ended = outcome.into_run();
-                            terminated_run_ids.push(ended.id().to_string());
-                            self.provider_run_projection.update(ended);
-                        }
-                    }
-                    crate::provider::ProviderRunState::Ended => {
-                        self.provider_store.clear_runtime(run.id());
-                    }
-                }
-            }
-        }
+        let terminated_run_ids = if scope_changed && remote_update.is_none() {
+            self.apply_agent_execution_config_to_provider(
+                session_id,
+                agent_id,
+                next_config,
+                working_directory_changed,
+            )?
+        } else {
+            Vec::new()
+        };
         let agent = if remote_update.is_some() {
             next_agent
         } else {
@@ -141,7 +118,56 @@ impl KernelRuntimeOwnedState {
             agent,
             terminated_run_ids,
             remote_update,
+            scope_changed,
         })
+    }
+
+    /// Apply the next scope to the provider too: its process may hold session rules.
+    pub(super) fn apply_agent_execution_config_to_provider(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        next_config: crate::session::EffectiveAgentExecutionConfig,
+        working_directory_changed: bool,
+    ) -> Result<Vec<String>, DaemonError> {
+        let mut terminated_run_ids = Vec::new();
+        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+            match run.state() {
+                crate::provider::ProviderRunState::Starting
+                | crate::provider::ProviderRunState::Running
+                | crate::provider::ProviderRunState::Parked => {
+                    // A turn-scoped config update cannot revoke rules held by a process
+                    // whose working directory just changed.
+                    if !working_directory_changed
+                        && self
+                            .provider_store
+                            .adapter_supports_turn_scoped_execution_config(run.adapter_key())
+                    {
+                        let updated = self.provider_store.update_run_execution_config(
+                            run.id(),
+                            next_config.mode,
+                            next_config.permission_level,
+                        )?;
+                        self.provider_run_projection.update(updated);
+                    } else {
+                        let outcome = self
+                            .provider_store
+                            .terminate_run_provider_only(session_id, run.id())?;
+                        self.clear_active_provider_run_session_pointer(
+                            session_id,
+                            outcome.run().id(),
+                        )?;
+                        let ended = outcome.into_run();
+                        terminated_run_ids.push(ended.id().to_string());
+                        self.provider_run_projection.update(ended);
+                    }
+                }
+                crate::provider::ProviderRunState::Ended => {
+                    self.provider_store.clear_runtime(run.id());
+                }
+            }
+        }
+        Ok(terminated_run_ids)
     }
 
     pub(super) fn commit_remote_agent_config_update(

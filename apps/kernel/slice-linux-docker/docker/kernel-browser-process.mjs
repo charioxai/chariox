@@ -1,4 +1,4 @@
-import {displayGeometry as geometry, chromeBandHeight} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readlink, open } from "node:fs/promises";
@@ -131,7 +131,7 @@ export class HostChromium {
       if (alive) throw new Error("MD-2: browser profile is already owned by a live process");
     }
     const binary=await executable(environment);
-    const headedRenderer = environment.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' || environment.CHARIOX_KERNEL_BROWSER_MIRROR === '1';
+    const headedRenderer = featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY',environment) || featureOn('CHARIOX_KERNEL_BROWSER_MIRROR',environment);
     if (this.desktop && environment.CHARIOX_KERNEL_BROWSER_HEADLESS !== "1") {
       environment = (await this.desktop.start()).environment;
       this.display = this.desktop;
@@ -152,7 +152,7 @@ export class HostChromium {
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", this.desktop?.binding() ? 1 : this.scale);
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale);
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
     const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };

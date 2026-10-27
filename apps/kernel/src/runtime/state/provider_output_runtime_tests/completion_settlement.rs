@@ -165,6 +165,101 @@ async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
     assert_eq!(delivered.state, "accepted");
 }
 
+// accam A02-S03: an explicitly stopped agent stays stopped. A later urgent
+// message stays pending; it runs once the owner prompts the agent again.
+#[tokio::test]
+async fn stopped_agent_keeps_messages_pending_until_the_owner_prompts_it() {
+    use crate::durable_state::agent_lifecycle::{occurrence, ExecutionState, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("a02-s03-stopped-receiver");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    app.launch_provider(
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id()),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let turn = |prompt: &str, cancelled: bool| {
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: prompt.into(),
+                run: Some("run".into()),
+                now: 1,
+            })
+            .unwrap();
+        let Outcome::Settled { task, .. } = store
+            .agent_lifecycle(Operation::Settle {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: prompt.into(),
+                run: "run".into(),
+                has_answer: !cancelled,
+                cancelled,
+                now: 2,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        task
+    };
+    assert_eq!(turn("stopped-turn", true).state, ExecutionState::Cancelled);
+    let mut message = occurrence(
+        session.id(),
+        agent.id(),
+        "peer",
+        "urgent-message",
+        "message",
+        serde_json::json!({"message":"Urgent: rerun the build"}),
+    );
+    message.urgent = true;
+    let Outcome::Event(event) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
+        panic!()
+    };
+    let prompt = format!("agent-event-{}-{}", agent.id(), event.sequence);
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    assert!(
+        store
+            .agent_event_for_prompt(session.id(), agent.id(), &prompt)
+            .unwrap()
+            .is_none(),
+        "a stopped agent must not run the message"
+    );
+    assert!(store
+        .agent_pending_inbox_recipients()
+        .unwrap()
+        .contains(&(session.id().to_string(), agent.id().to_string())));
+    assert_eq!(turn("owner-prompt", false).state, ExecutionState::Done);
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .agent_event_for_prompt(session.id(), agent.id(), &prompt)
+            .unwrap()
+            .expect("the owner's prompt ends the stop")
+            .state,
+        "accepted"
+    );
+}
+
 // MP-08/MP-10/MP-11 #914 round 3: exercise admission, withdrawal and periodic retry.
 #[tokio::test]
 async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
@@ -333,9 +428,166 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
             .terminal_stream
             .drain_notice_records(session.id(), attachment.id())
             .iter()
-            .any(|r| r.message.contains("Blocked:")),
+            .any(|r| r.message.contains("Needs your help.")),
         "the timeout must emit a notice to the attached client"
     );
+}
+
+// A person cannot resume a task whose agent is archived: the choice is refused with a
+// reason, nothing is committed, and the same decision comes back after unarchive.
+#[tokio::test]
+async fn owner_resume_of_an_archived_agents_task_is_refused_until_unarchive() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("owner-resume-archived");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let owner = session.owner_user_id().to_string();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.update_provider_run_projection(run);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: owner.clone(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: "archived-task".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: "archived-task".into(),
+            prompt: "archived-task".into(),
+            reason: "Owner clarification required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let interaction = format!(
+        "task-blocked-{}-{}",
+        blocked.task_id, blocked.blocked_revision
+    );
+    runtime
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    let archive = |archived| crate::local::ArchiveAgentRequest {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+        archived,
+    };
+    runtime
+        .archive_agent_in_session(&archive(true), &owner)
+        .await
+        .unwrap();
+
+    runtime
+        .owned
+        .resolve_runtime_interaction(
+            session.id(),
+            &interaction,
+            "resume",
+            None,
+            Some(&owner),
+            false,
+        )
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let history = runtime
+                .owned
+                .operational_history_store
+                .load_session_history_entries(session.id(), Some(agent.id()))
+                .unwrap();
+            if history
+                .iter()
+                .any(|entry| entry.text.contains("unarchive this agent"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a refused resume must tell the person why");
+    let task = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .remove(0);
+    assert_eq!(task.state, ExecutionState::Blocked);
+    assert_eq!(task.pending_prompt_id, None, "nothing may be committed");
+
+    runtime
+        .archive_agent_in_session(&archive(false), &owner)
+        .await
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|i| i.id() == interaction),
+        "the same decision must be offered again once the agent is back"
+    );
+    runtime
+        .owned
+        .resolve_runtime_interaction(
+            session.id(),
+            &interaction,
+            "resume",
+            None,
+            Some(&owner),
+            false,
+        )
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let task = store
+                .agent_tasks(Some(session.id()), Some(agent.id()))
+                .unwrap()
+                .remove(0);
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap();
+            if task.state == ExecutionState::Working
+                && runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("resume after unarchive must submit the continuation prompt");
 }
 
 #[tokio::test]
@@ -572,6 +824,9 @@ async fn assert_workflow_completion_failure_is_retryable(
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), agent.id())
         .expect("workflow node should be added");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("durability fixture should have a final output");
     let endpoint = app
         .sessions_mut()
         .create_workflow_endpoint(
@@ -605,6 +860,19 @@ async fn assert_workflow_completion_failure_is_retryable(
     app.sessions_mut()
         .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
         .expect("workflow node should start");
+    // Keep this drill about completion persistence; missing output now takes
+    // the independent bounded-reminder path before completion is attempted.
+    app.sessions_mut()
+        .submit_workflow_run_final_output(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            crate::session::WorkflowOutputPayload::new("{}", Vec::new()),
+            true,
+            None,
+        )
+        .expect("final output should be staged before the append failure");
+
     let prompt = crate::session::PromptQueueItem::new(
         app.sessions_mut().reserve_prompt_id(),
         crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
@@ -2397,6 +2665,89 @@ fn invoke_single_node_workflow(
     (run, node_run_id)
 }
 
+// MP-08 / MP-10 / MP-11: a prompt (for example a completion check) that waited behind another turn
+// is admitted without a run; promotion must bind the run that carries it, or the check's private
+// result is dropped and its verdict is lost.
+#[tokio::test]
+async fn promoted_queued_prompt_binds_its_task_to_the_provider_run() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    let worktree = crate::test_support::TestWorktree::new("promotion-binds-task-run");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "promotion-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "slow-structured",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    for prompt in ["active turn", "queued turn"] {
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            prompt,
+            Vec::new(),
+        )
+        .expect("prompt should be admitted");
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let queued = runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap(),
+            agent.id(),
+        )
+        .expect("the second prompt should be queued");
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: queued.id().into(),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .expect("the queued prompt is admitted without a run");
+
+    settle_and_promote_next_queued_prompt(&runtime, session.id(), agent.id(), run.id()).await;
+
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == queued.id())
+        .expect("the promoted prompt keeps its task");
+    assert_eq!(task.provider_run_id.as_deref(), Some(run.id()));
+}
+
 async fn settle_and_promote_next_queued_prompt(
     runtime: &KernelRuntimeState,
     session_id: &str,
@@ -3355,4 +3706,146 @@ async fn a12_destroyed_bound_goal_source_reconciles_without_periodic_poll() {
         .remove(0);
     assert_eq!(task.obligations[0].status, "failed");
     assert!(task.goal.is_some());
+}
+
+/// G18: a durable write refused while a completed turn settles keeps that turn
+/// pending; after the writer recovers the retry settles it instead of leaving
+/// the agent busy for good.
+#[tokio::test]
+async fn g18_completed_turn_settles_after_a_refused_durable_write() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let faults =
+        std::env::temp_dir().join(format!("chariox-g18-faults-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir_all(&faults).unwrap();
+    let guard = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&faults);
+    let worktree = crate::test_support::TestWorktree::new("g18-refused-settlement");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "g18-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "status\n",
+        Vec::new(),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    drop(guard);
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&snapshot, agent.id())
+        .expect("the turn is running");
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: Some(run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+
+    runtime
+        .owned
+        .structured_output_records
+        .mark_poll_enqueued(run.id(), Some(prompt.id().to_string()));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    std::fs::write(faults.join("writer-fail"), "").unwrap();
+    let pumped = runtime
+        .pump_owned_structured_provider_output(session.id(), run.id(), Vec::new())
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+    ))
+    .await;
+    // Whether the refusal hits the signal itself or its deferred settlement,
+    // the completed turn must stay pending.
+    let deferred = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await;
+    assert!(
+        pumped.is_err() || deferred.is_err(),
+        "the refused write is reported"
+    );
+    std::fs::remove_file(faults.join("writer-fail")).unwrap();
+
+    // No new provider signal arrives: only the kernel's own retry can settle
+    // it, through the ready-run pump the runtime loop drives.
+    let active = |runtime: &KernelRuntimeState| {
+        let snapshot = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id())
+            .is_some()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    while active(&runtime) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        for ready in runtime.take_ready_provider_output_run_ids(crate::session::unix_epoch_ms()) {
+            runtime.pump_ready_provider_output_run(&ready).await;
+        }
+    }
+    assert!(
+        !active(&runtime),
+        "the completed turn settles once the writer recovers"
+    );
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.prompt_id == prompt.id())
+        .unwrap();
+    assert_ne!(task.state, ExecutionState::Working, "{task:?}");
+    let _ = std::fs::remove_dir_all(&faults);
 }

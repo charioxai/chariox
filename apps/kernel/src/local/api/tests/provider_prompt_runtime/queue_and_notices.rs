@@ -10,7 +10,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let a = match harness
@@ -249,7 +249,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 

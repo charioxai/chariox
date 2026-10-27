@@ -53,6 +53,15 @@ pub enum KernelBrowserCommand {
         /// MP-08/MP-10/MP-11: protocol 567/175 asks for the `fonts` op's `absent` list (needs `font_requirements`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font_absent: Option<bool>,
+        /// MP-08/MP-10: protocol 629 viewport-first snapshot: off-screen subtrees follow as continuations, their
+        /// elements first travel as `deferred` records that keep the native box, and the header reports
+        /// `snapshot_viewport_complete` (needs `wire: 2`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        viewport_first: Option<bool>,
+        /// MP-08/MP-10: protocol 629: links the kernel saw visited from the page's origin travel with an empty
+        /// `href`, which the viewer draws `:visited` (needs `wire: 2`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visited_links: Option<bool>,
         /// Protocol 560/168: the person's display in CSS px; the Tab lays out at this size.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layout_width: Option<u32>,
@@ -167,6 +176,13 @@ pub enum KernelBrowserCommand {
     Close {
         tab_id: String,
         generation: u64,
+    },
+    /// MP-08/MP-10: protocol 629 live layout mutation, preserving mirror attachments.
+    Resize {
+        tab_id: String,
+        generation: u64,
+        width: u32,
+        height: u32,
     },
     Navigate {
         tab_id: String,

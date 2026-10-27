@@ -20,6 +20,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Task(t))
         }
+        Operation::DelegateUnavailable {
+            room,
+            agent,
+            reason,
+            now,
+        } => {
+            replies::recipient_lost(tx, &room, &agent, now, Some(&reason.answer(&agent)))?;
+            Ok(Outcome::Saved)
+        }
         Operation::SourceOutcome {
             mut public_answer,
             room,
@@ -116,6 +125,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             replies::reconcile_source(tx, &room, &source)?;
+            if !success {
+                replies::recipient_lost(tx, &room, &source, now, public_answer.as_ref())?;
+            }
             Ok(Outcome::Saved)
         }
         Operation::Sweep {
@@ -396,7 +408,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     g.continuation_sequence += 1;
                     g.next_check_in_ms = None;
                 }
-                t.pending_prompt_id = Some(format!("task-resume-{}-{}", t.task_id, t.revision));
+                t.pending_prompt_id = Some(format!(
+                    "{}{}-{}",
+                    super::goals::OWNER_RESUME_PROMPT_PREFIX,
+                    t.task_id,
+                    t.revision
+                ));
                 t.last_progress_at_ms = now;
             }
             save(tx, &t)?;
@@ -405,6 +422,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         _ => Err(error("invalid supervision operation")),
     }
 }
+pub(super) const OWNER_CANCELLED_REASON: &str =
+    "Owner cancelled; owned resource cancellation remains supervised until physical settlement";
 pub(super) fn cancel_intent(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
@@ -415,9 +434,7 @@ pub(super) fn cancel_intent(
     }
     task.state = ExecutionState::Cancelled;
     task.wait = None;
-    task.reason =
-        "Owner cancelled; owned resource cancellation remains supervised until physical settlement"
-            .into();
+    task.reason = OWNER_CANCELLED_REASON.into();
     for obligation in &mut task.obligations {
         if matches!(obligation.status.as_str(), "failed" | "settling")
             || matches!(obligation.kind.as_str(), "reply" | "message")

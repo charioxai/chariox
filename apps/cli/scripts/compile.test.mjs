@@ -1,7 +1,19 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { parseCompileArgs, pinOpenTuiPlatform, targets } from "./compile.mjs"
+import { compileCli, parseCompileArgs, pinOpenTuiPlatform, targets } from "./compile.mjs"
+import { requireBunVersion } from "./compile-runtime.mjs"
+
+test("CLI compilation requires the stable Bun release with Unix WebSocket support", () => {
+  for (const version of [undefined, "1.2.99", "1.3.10", "1.3.11", "1.3.12", "1.3.13-canary", "invalid"]) {
+    assert.throws(() => requireBunVersion(version), /requires stable Bun >= 1\.3\.13.*rebuild the CLI/)
+  }
+  for (const version of ["1.3.13", "1.3.14", "1.4.0", "1.4.2", "2.0.0"]) requireBunVersion(version)
+})
+
+test("compilation checks its runtime before building an executable", async () => {
+  await assert.rejects(compileCli({ target: "linux-x64", outfile: "unused" }), /requires stable Bun >= 1\.3\.13.*no Bun runtime/)
+})
 
 test("the release targets are exactly the Phase 1 platforms", () => {
   assert.deepEqual(Object.keys(targets).sort(), ["darwin-arm64", "linux-x64"])

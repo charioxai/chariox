@@ -92,7 +92,9 @@ pub(crate) mod invite_tokens;
 mod kernel_browser_actors;
 mod kernel_browser_assets;
 mod kernel_browser_display_gate;
+pub(crate) mod kernel_browser_features;
 pub(crate) mod kernel_browser_host;
+pub(crate) mod kernel_files;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod kernel_process_identity;
 pub(crate) mod kernel_runtime_role_policy;
@@ -153,7 +155,9 @@ pub(crate) mod user_config_policy;
 pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
+mod waiting_room_launch_directory;
 pub(crate) mod waiting_room_public_projection;
+pub(crate) mod waiting_room_sessions;
 pub mod workflow_actor;
 pub(crate) mod workflow_projection;
 pub(crate) mod workspace_command_executor;
@@ -169,6 +173,7 @@ pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;
 
 pub(crate) mod kernel_access;
+pub(crate) mod kernel_gateway;
 
 pub(crate) mod relay_peer_authority;
 pub(crate) mod self_host_terminal_grants;

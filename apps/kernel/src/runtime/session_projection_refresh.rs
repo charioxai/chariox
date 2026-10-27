@@ -42,6 +42,9 @@ pub(crate) fn focus_projection_refresh(request: &LocalDaemonRequest) -> FocusPro
                 session_id: request.session_id.clone(),
             }
         }
+        LocalDaemonRequest::ArchiveAgent(request) => FocusProjectionRefresh::SnapshotSession {
+            session_id: request.session_id.clone(),
+        },
         LocalDaemonRequest::DestroyAgent(request) => FocusProjectionRefresh::SnapshotSession {
             session_id: request.session_id.clone(),
         },
@@ -62,11 +65,11 @@ pub(crate) async fn apply_focus_projection_refresh(
     match refresh {
         FocusProjectionRefresh::None => {}
         FocusProjectionRefresh::AgentSpawn => {
-            if let Ok(LocalDaemonResponse::AgentSpawned { agent }) = result {
+            if let Ok(LocalDaemonResponse::AgentSpawned { agent, .. }) = result {
                 focus_projection
                     .update(agent.session_id(), Some(agent.id()))
                     .await;
-            } else if let Ok(LocalDaemonResponse::AgentsSpawned { agents }) = result {
+            } else if let Ok(LocalDaemonResponse::AgentsSpawned { agents, .. }) = result {
                 if let Some(agent) = agents.last() {
                     focus_projection
                         .update(agent.session_id(), Some(agent.id()))
@@ -103,10 +106,14 @@ impl SessionProjectionRefresh {
         match self {
             SessionProjectionRefresh::None => Vec::new(),
             SessionProjectionRefresh::SnapshotAgentResponse => match response {
-                LocalDaemonResponse::AgentSpawned { agent }
+                LocalDaemonResponse::AgentSpawned {
+                    agent,
+                    event_subscription_error: None,
+                }
                 | LocalDaemonResponse::AgentAliased { agent, .. }
                 | LocalDaemonResponse::AgentConfigUpdated { agent, .. }
                 | LocalDaemonResponse::AgentProfileUpdated { agent, .. }
+                | LocalDaemonResponse::AgentArchived { agent, .. }
                 | LocalDaemonResponse::AgentDestroyed { agent }
                 | LocalDaemonResponse::AgentFocused { agent } => {
                     vec![agent.session_id().to_string()]
@@ -117,7 +124,7 @@ impl SessionProjectionRefresh {
                 LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) } => {
                     vec![agent.session_id().to_string()]
                 }
-                LocalDaemonResponse::AgentsSpawned { agents } => agents
+                LocalDaemonResponse::AgentsSpawned { agents, .. } => agents
                     .iter()
                     .map(|agent| agent.session_id().to_string())
                     .collect(),
@@ -129,7 +136,8 @@ impl SessionProjectionRefresh {
 
 pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> SessionProjectionRefresh {
     match request {
-        LocalDaemonRequest::AttachToSession(_)
+        LocalDaemonRequest::SetRoomPinned(_)
+        | LocalDaemonRequest::AttachToSession(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::FocusAgent(_)
         | LocalDaemonRequest::AcknowledgeAgentOutputSeen(_)
@@ -140,6 +148,7 @@ pub(crate) fn session_projection_refresh(request: &LocalDaemonRequest) -> Sessio
         | LocalDaemonRequest::UpdateAgentConfig(_)
         | LocalDaemonRequest::UpdateAgentProfile(_)
         | LocalDaemonRequest::UpdateAgentSubstitutes(_)
+        | LocalDaemonRequest::ArchiveAgent(_)
         | LocalDaemonRequest::DestroyAgent(_) => SessionProjectionRefresh::SnapshotAgentResponse,
         LocalDaemonRequest::CompletePrompt(_) | LocalDaemonRequest::CancelActivePrompt(_) => {
             SessionProjectionRefresh::None
@@ -237,7 +246,8 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
     match response {
         LocalDaemonResponse::ProjectArchived { sessions, .. }
         | LocalDaemonResponse::ProjectRestored { sessions, .. } => sessions.clone(),
-        LocalDaemonResponse::SessionCreated { session, .. }
+        LocalDaemonResponse::RoomPinned { session }
+        | LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session, .. }
         | LocalDaemonResponse::InteractionResponded { session, .. }
@@ -407,6 +417,7 @@ mod tests {
         );
         assert_eq!(
             focus_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                no_subscribe: false,
                 session_id: "session-1".to_string(),
                 agents: Vec::new(),
             })),
@@ -441,6 +452,7 @@ mod tests {
         );
         assert_eq!(
             session_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                no_subscribe: false,
                 session_id: "session-1".to_string(),
                 agents: Vec::new(),
             })),
@@ -543,6 +555,7 @@ mod tests {
 
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: "session-1".to_string(),
             alias: None,

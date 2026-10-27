@@ -18,11 +18,34 @@ and reduced software motion scale are implemented; exact settled pixels stay
 native DPR. Current results remain RED and the flag stays off; source-bound
 measurement receipts stay outside the repository.
 
-The optional Linux `native-display` kernel feature links X11, Xext, Xdamage,
-Xcomposite and Xtst. x264 and libavcodec/libavutil are loaded at runtime;
-libyuv and libwebp are static (SharpYUV only where WebP ships that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and
-`CHARIOX_NATIVE_DISPLAY_LIB` are build-only search paths. Builds without it keep
-the CDP capture and portable encoder path.
+The Linux `native-display` kernel feature loads X11, Xext, Xdamage,
+Xcomposite and Xtst lazily. A kernel starts without them; a native capture or
+inventory request reports `native display unavailable` and names the missing
+library. Setup installs `libx11-6 libxext6 libxdamage1 libxcomposite1 libxtst6`,
+the owned Xvfb/Openbox desktop and Python Xlib/Pillow/GI/AT-SPI helpers.
+Linux release and slice kernels include this feature; on Linux the Room browser's
+resize and window inventory run through its worker. Without the runtime display
+libraries those operations are unavailable; ordinary kernel and DOM browser
+operations remain available. Featureless builds refuse every native resize.
+
+OpenH264, x264 and libavcodec/libavutil are also loaded at runtime. The codec uses
+public `AVCodecContext`, `AVFrame`, `AVPacket` and `AVHWFramesContext` fields:
+FFmpeg majors 58, 59, 60 and 61 do **not** share those struct layouts. Only the
+major used at compilation is accepted. Missing codec libraries produce a diagnostic
+with the required soname and instructions to install it or rebuild for the host
+distribution; renaming a newer library is unsafe. In particular, a Jammy release
+build requires `libavcodec.so.58` always (the output-guard decoder, including with
+the default OpenH264 encoder) and `libx264.so.163` only when x264 is selected.
+Debian 12/Ubuntu 24.04's newer codec majors cannot substitute for them.
+`install-browser-dependencies.sh` installs the browser/display dependencies, but
+does not provision this codec ABI: `libavcodec58` is not available in every supported
+host archive. On Jammy install `libavcodec58`; on other distributions provision
+the matching runtime libraries or rebuild the native codec for that distribution. Codec
+availability does not gate window inventory or resize. The default encoder needs
+OpenH264 2.6 ABI 8 (`CHARIOX_BROWSER_DISPLAY_OPENH264` can name its absolute path);
+x264 remains opt-in. libyuv and libwebp are static (SharpYUV only where WebP ships
+that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and `CHARIOX_NATIVE_DISPLAY_LIB`
+are build-only search paths.
 
 MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
 1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
@@ -103,7 +126,8 @@ outside this first kernel-browser implementation.
 
 ## MD-DISPLAY-04: enablement and ownership
 
-Default off. Set `CHARIOX_KERNEL_BROWSER_DISPLAY=1` on the home kernel. The
+On by default on every kernel. `CHARIOX_KERNEL_BROWSER_DISPLAY=0` is the kill
+switch; the kernel passes the resolved value to the browser host. The
 normal host browser still requires a non-root Unix user and sandbox-capable
 Chromium. Its existing per-user profile, focused runtime MCP tools, tab registry,
 input cancellation and Vault observation barrier remain authoritative.
@@ -550,7 +574,7 @@ and multi-hour validation remain separate required gates.
 
 ### MP-08/MP-10/MP-11 adapter and native-input review gates
 
-Before enabling `CHARIOX_KERNEL_BROWSER_DISPLAY`, the Cloud adapter must use
+Because the display is on by default, the Cloud adapter must use
 `decryptRelayEvent` for authenticated CXD1 events, pass the connected kernel's
 version as `kernelProtocolVersion`, and declare `displayEventEncoding: 'CXD1'`.
 The presenter refuses missing/older versions and JSON-only adapters before any

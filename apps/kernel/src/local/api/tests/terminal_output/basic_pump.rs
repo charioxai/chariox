@@ -56,7 +56,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -74,6 +74,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
     };
     let worker_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("worker".to_string()),
@@ -90,7 +91,7 @@ fn structured_output_pump_applies_finished_jobs_from_other_runs() {
         }))
         .expect("worker agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 

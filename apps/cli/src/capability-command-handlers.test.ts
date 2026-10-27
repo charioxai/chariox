@@ -145,6 +145,15 @@ test("a vault passphrase change reports its own outcome", async () => {
   assert.deepEqual(harness.footers, ["info:vault passphrase changed"])
 })
 
+for (const kind of ["app", "mcp", "skill", "script"]) {
+  test(`extension ${kind} footer uses the agent alias`, async () => {
+    const harness = capabilityHarness(agent({ agent_ref: "a1b2c3d4", alias: "agent-2" }))
+    await handleExtensionSlashCommand(harness.deps,
+      parseSlashCommand(`/extension grant ${kind} a1b2c3d4 lookup${kind === "script" ? " --env py" : ""}`) as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+    assert.deepEqual(harness.footers, [`info:${kind === "app" ? "bound App" : `granted ${kind === "mcp" ? "MCP" : kind}`} lookup to agent-2`])
+  })
+}
+
 function capabilityHarness(agent: AgentInstance, options: {
   readonly auditEvents?: Record<string, unknown>[]
   readonly retriedAgent?: AgentInstance

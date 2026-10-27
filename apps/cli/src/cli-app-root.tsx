@@ -449,7 +449,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     restoreWaitingRoomProject, renameWaitingRoomProject,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
     reconcileWaitingRoom, reconcileWaitingRoomProjection, refreshWaitingRoomData,
-    refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
+    loadWaitingRoomSessionHistory, refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
     onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
@@ -591,6 +591,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client, renderer, dimensions, appLogger,
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
+    loadSessions: loadWaitingRoomSessionHistory,
     isAttached, availableSessions, waitingRoomProjects, sessionBrowserIndex, setSessionBrowserIndex,
     currentFocusedRenderable, promptInputRefController, describeRenderableDebug,
     scheduleTimer: startTimeout,
@@ -1050,13 +1051,27 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleRoomWorkflowsKey: roomWorkflows.handleKey,
     roomWorkflowsOwnsInput: roomWorkflows.ownsInput,
     appHostTerminal: createAppHostTerminal(renderer),
+    // The terminal program gets plain keys: kitty key reports would turn Ctrl-C into an escape sequence.
+    roomTerminalScreen: (() => {
+      let kittyKeyboard = false
+      return {
+        suspend: () => {
+          kittyKeyboard = renderer.useKittyKeyboard
+          if (kittyKeyboard) renderer.disableKittyKeyboard()
+          renderer.suspend()
+        },
+        resume: () => {
+          renderer.resume()
+          if (kittyKeyboard) renderer.enableKittyKeyboard()
+        },
+      }
+    })(),
     lastViewedAppHostOperationId: kernelApprovals.lastViewedAppHostOperationId,
     client, cloudClient, kernelConnected, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
     isAttached, sessionHydrating, anyTurnWork, sessionState, attachmentState, providerRunState,
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
-    currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },

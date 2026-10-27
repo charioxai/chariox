@@ -210,6 +210,7 @@ impl LocalRouterTestHarness {
     ) -> AgentInstance {
         match self
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                no_subscribe: false,
                 account_profile: None,
                 session_id: session_id.to_string(),
                 alias: Some(alias.to_string()),
@@ -226,7 +227,7 @@ impl LocalRouterTestHarness {
             }))
             .expect("workflow test agent should spawn")
         {
-            LocalDaemonResponse::AgentSpawned { agent } => agent,
+            LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
             _ => panic!("unexpected local response"),
         }
     }

@@ -110,6 +110,8 @@ impl SessionAgentDefaults {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_subscribe: bool,
     pub workspace_id: String,
     pub worktree_id: String,
     pub alias: Option<String>,
@@ -138,6 +140,7 @@ pub struct CreateSessionRequest {
 impl CreateSessionRequest {
     pub fn new(workspace_id: impl Into<String>, worktree_id: impl Into<String>) -> Self {
         Self {
+            no_subscribe: false,
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.into(),
             alias: None,

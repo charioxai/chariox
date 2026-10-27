@@ -33,7 +33,7 @@ impl RemoteProviderAccountProvisioning {
                 .any(|file| file.relative_path == ".credentials.json")
         {
             return Err(DaemonError::LocalTransport {
-                operation: "ensure remote provider account",
+                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 message: "Claude provider credentials cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path".to_string(),
             });
         }
@@ -84,10 +84,10 @@ impl RemoteProviderAccountProvisioning {
                     &profile.provider,
                     &profile.profile_id,
                     None,
-                    "ensure remote provider account",
+                    crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                 )?;
                 let observed_identity = observed_identity.ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "ensure remote provider account",
+                    operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                     message: "authenticated legacy account root was absent before provider observation".to_string(),
                 })?;
                 registry.pin_validated_legacy_replica(
@@ -143,10 +143,17 @@ impl RemoteProviderAccountProvisioning {
                         previous_default_profile_id.as_deref(),
                     )
                 {
+                    let message = match &error {
+                        DaemonError::ProviderProfileRefused { reason, .. } => {
+                            crate::error::external_request_failure_message(reason.code())
+                                .to_string()
+                        }
+                        _ => error.to_string(),
+                    };
                     return Err(DaemonError::LocalTransport {
-                        operation: "ensure remote provider account",
+                        operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
                         message: format!(
-                            "{error}; additionally failed to roll back the new provider-account replica: {rollback_error}"
+                            "{message}; additionally failed to roll back the new provider-account replica: {rollback_error}"
                         ),
                     });
                 }
@@ -197,7 +204,7 @@ impl RemoteProviderAccountProvisioning {
             &profile.provider,
             &profile.profile_id,
             None,
-            "ensure remote provider account",
+            crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
         )
     }
 }

@@ -346,6 +346,12 @@ pub(super) fn compose_command_router(
         provider_run_projection.clone(),
         terminal_stream.clone(),
     );
+    let kernel_gateway = Arc::new(crate::runtime::kernel_gateway::KernelGateway::new(
+        runtime_state.clone(),
+        config_projection.clone(),
+        remote_relay_inventory_projection.clone(),
+    ));
+    kernel_gateway.resume_event_parts();
     CommandRouter {
         _native_interaction_bridge: native_interaction_bridge,
         app,
@@ -381,5 +387,6 @@ pub(super) fn compose_command_router(
         terminal_output_executor,
         workspace_coordinator,
         provider_launch_pending,
+        kernel_gateway,
     }
 }

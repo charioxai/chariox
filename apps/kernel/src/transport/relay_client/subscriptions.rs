@@ -2,10 +2,14 @@
 
 use std::future::Future;
 
-use super::request_errors::map_relay_error;
+use super::request_errors::{map_relay_error, relay_error};
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
-use crate::transport::kernel_protocol::WaitingRoomInventoryEventProjection;
+use crate::transport::agent_turn_feed::AgentTurnFeed;
+use crate::transport::home_audit_feed::HomeAuditFeed;
+use crate::transport::kernel_protocol::{
+    requested_heartbeat_interval, WaitingRoomInventoryEventProjection,
+};
 use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
 use chariox_relay::protocol::RelayCallerIdentity;
 
@@ -17,6 +21,8 @@ pub(super) struct RelaySubscriber {
     pub(super) caller: crate::runtime::command::KernelCaller,
     pub(super) user_id: String,
     pub(super) connection_class: crate::local::KernelConnectionClass,
+    /// Protocol 596: the interval of this subscription's `heartbeat` events.
+    pub(super) heartbeat_interval: Duration,
 }
 
 pub(super) struct RelaySubscriptionTask {
@@ -80,8 +86,9 @@ pub(super) async fn handle_relay_subscribe(
     client_public_key: String,
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
+    heartbeat_interval_ms: Option<u64>,
 ) -> Result<(), DaemonError> {
-    let paired = match router.admit_self_host_terminal(&client_public_key) {
+    let paired = match router.admit_relay_stream(&client_public_key) {
         Ok(grant) => grant.is_some(),
         Err(error) => {
             send_outgoing_envelope(
@@ -114,7 +121,25 @@ pub(super) async fn handle_relay_subscribe(
         )
         .await;
     }
+    let heartbeat_interval = match requested_heartbeat_interval(
+        heartbeat_interval_ms,
+        relay_subscription_heartbeat_interval(),
+    ) {
+        Ok(interval) => interval,
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(relay_error(&error.code, &error.message, error.retryable)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
     let subscriber = RelaySubscriber {
+        heartbeat_interval,
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
         user_id: if paired {
             crate::session::DEFAULT_LOCAL_USER_ID.into()
@@ -444,10 +469,12 @@ pub(super) async fn run_relay_subscription_loop(
     let mut next_snapshot_reconciliation_at = Instant::now();
     let mut next_attachment_heartbeat_at = Instant::now();
     let mut next_heartbeat_at = Instant::now();
+    let mut agent_turns = AgentTurnFeed::default();
+    let mut home_audit = HomeAuditFeed::new(&router);
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
-        if router.admit_self_host_terminal(&client_public_key).is_err() {
+        if router.admit_relay_stream(&client_public_key).is_err() {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {
@@ -551,6 +578,7 @@ pub(super) async fn run_relay_subscription_loop(
                             previous_snapshot.as_ref(),
                             !workflow_run_updates.is_empty(),
                         );
+                        agent_turns.observe_snapshot(&snapshot);
                         previous_snapshot = Some(snapshot);
                         events
                     })
@@ -570,6 +598,12 @@ pub(super) async fn run_relay_subscription_loop(
                     {
                         return;
                     }
+                }
+                for agent_id in records
+                    .iter()
+                    .filter_map(|record| record.agent_id.as_deref())
+                {
+                    agent_turns.mark_changed(agent_id);
                 }
                 if !records.is_empty() {
                     let mut terminal_output_failed = false;
@@ -610,6 +644,9 @@ pub(super) async fn run_relay_subscription_loop(
                     break;
                 }
                 for completion in completions {
+                    if let Some(agent_id) = completion.agent_id.as_deref() {
+                        agent_turns.mark_changed(agent_id);
+                    }
                     if emit_relay_event(
                         &router,
                         &outgoing_tx,
@@ -671,6 +708,65 @@ pub(super) async fn run_relay_subscription_loop(
                         break;
                     }
                 }
+                let Some(feed_events) =
+                    crate::runtime_transport::await_subscription_work_with_heartbeats(
+                        async {
+                            let mut events = agent_turns.flush(&router, &session_id).await;
+                            events.extend(
+                                home_audit
+                                    .next_events(
+                                        &router,
+                                        &session_id,
+                                        &attachment_id,
+                                        agent_turns.session_agents(),
+                                    )
+                                    .await,
+                            );
+                            events
+                        },
+                        &mut next_heartbeat_at,
+                        subscriber.heartbeat_interval,
+                        || async {
+                            emit_relay_event(
+                                &router,
+                                &outgoing_tx,
+                                &subscription_id,
+                                &client_public_key,
+                                &event_runtime,
+                                &event_stream_id,
+                                KernelEvent::Heartbeat {
+                                    session_id: session_id.clone(),
+                                },
+                            )
+                            .await
+                            .is_ok()
+                        },
+                    )
+                    .await
+                else {
+                    break;
+                };
+                let mut turn_event_failed = false;
+                for event in feed_events {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        event,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        turn_event_failed = true;
+                        break;
+                    }
+                }
+                if turn_event_failed {
+                    break;
+                }
 
                 if Instant::now() >= next_heartbeat_at {
                     if emit_relay_event(
@@ -691,7 +787,7 @@ pub(super) async fn run_relay_subscription_loop(
                     }
                     next_heartbeat_at = advance_relay_subscription_deadline(
                         next_heartbeat_at,
-                        relay_subscription_heartbeat_interval(),
+                        subscriber.heartbeat_interval,
                     );
                 }
             }
@@ -716,7 +812,11 @@ pub(super) async fn run_relay_subscription_loop(
         let _ = timeout(
             next_relay_subscription_wait_duration(
                 next_heartbeat_at,
-                next_snapshot_reconciliation_at,
+                agent_turns
+                    .next_due()
+                    .map_or(next_snapshot_reconciliation_at, |due| {
+                        due.min(next_snapshot_reconciliation_at)
+                    }),
             ),
             async {
                 tokio::select! {
@@ -738,6 +838,7 @@ pub(super) async fn run_relay_subscription_loop(
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
+                    _ = home_audit.changed() => {}
                 }
             },
         )
@@ -861,7 +962,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
     loop {
-        if router.admit_self_host_terminal(&client_public_key).is_err() {
+        if router.admit_relay_stream(&client_public_key).is_err() {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {
@@ -974,7 +1075,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             }
             next_heartbeat_at = advance_relay_subscription_deadline(
                 next_heartbeat_at,
-                relay_subscription_heartbeat_interval(),
+                subscriber.heartbeat_interval,
             );
         }
         if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {

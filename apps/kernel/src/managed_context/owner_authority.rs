@@ -63,7 +63,7 @@ async fn kernel_cloud_request<T: serde::de::DeserializeOwned + Send + 'static>(
             .as_deref()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| admission_error("Kernel enrollment credential is required"))?;
-        let agent = ureq::AgentBuilder::new()
+        let agent = crate::outbound_dial::agent_builder()
             .timeout(std::time::Duration::from_secs(15))
             .redirects(0)
             .build();
@@ -276,3 +276,34 @@ pub(crate) async fn authorize_import(
 #[cfg(test)]
 #[path = "owner_authority_tests.rs"]
 mod tests;
+
+/// MP-08/MP-09/MP-10/MP-11: read the existing same-owner enrolled-peer
+/// directory before resolving an account secret. This does not create a context
+/// ticket or change credential-free owner Copy.
+pub(crate) async fn authorize_account_copy_peer(
+    config: &DaemonConfig,
+    binding: &crate::provider_account_copy::ProviderAccountCopyBinding,
+) -> Result<ManagedContextTransferTarget, DaemonError> {
+    let denied = || crate::provider_account_copy::failure("provider_account_copy_unauthorized");
+    let profile = config.cloud_relay.as_ref().ok_or_else(denied)?;
+    let source = source_peer(config).map_err(|_| denied())?;
+    let directory: Directory =
+        kernel_cloud_request(profile, "/v1/owner-managed-context-tickets/peers", None)
+            .await
+            .map_err(|_| denied())?;
+    if !directory.peers.iter().any(|peer| peer.peer == source) {
+        return Err(denied());
+    }
+    directory
+        .peers
+        .into_iter()
+        .map(|peer| peer.peer)
+        .find(|peer| {
+            peer.kernel_id == binding.target_kernel_id
+                && peer.relay_realm_id == profile.realm_id
+                && peer.key_thumbprint == binding.target_key_thumbprint
+                && crate::runtime::terminal_pairings::public_key_thumbprint(&peer.relay_public_key)
+                    == binding.target_key_thumbprint
+        })
+        .ok_or_else(denied)
+}

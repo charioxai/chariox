@@ -236,7 +236,8 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
     drop(locked);
     service.stop_blocking("alice", "installed").unwrap();
     assert!(old.is_stopped());
-    assert!(all_reaped(&observations));
+    // Reaping follows the worker status asynchronously; wait for it instead of racing it.
+    wait(|| all_reaped(&observations));
     assert!(control.active_app_lease("alice", "installed").is_none());
     let stopped = store
         .app_worker_status("alice", "installed")
@@ -257,7 +258,7 @@ fn recovery_starts_without_view_serializes_restart_and_preserves_manual_stop_aft
         scope.spawn(move || first.shutdown_blocking().unwrap());
         scope.spawn(move || second.shutdown_blocking().unwrap());
     });
-    assert!(all_reaped(&observations));
+    wait(|| all_reaped(&observations));
     assert!(
         store
             .app_worker_status("alice", "installed")
@@ -328,7 +329,7 @@ fn revocation_stops_actual_owner_and_failed_generation_does_not_autoregrant() {
             .is_some_and(|s| s.phase == WorkerPhase::Failed)
     });
     assert!(lease.is_stopped());
-    assert!(all_reaped(&observations));
+    wait(|| all_reaped(&observations));
     assert!(store
         .app_worker_recovery_candidates(None)
         .unwrap()
@@ -449,7 +450,7 @@ fn concurrent_starts_queue_for_the_preparation_slot_instead_of_refusing_busy() {
     assert_eq!(observations.lock().unwrap().len(), 2);
     assert!(control.active_app_lease("alice", "third").is_none());
     service.shutdown_blocking().unwrap();
-    assert!(all_reaped(&observations));
+    wait(|| all_reaped(&observations));
     assert_eq!(service.0.live.available_permits(), LIVE_LIMIT);
     assert_eq!(service.0.preparation.available_permits(), 1);
     assert_eq!(service.0.admission.available_permits(), 8);
@@ -662,7 +663,7 @@ fn stale_manual_stop_selection_cannot_stop_a_foreground_replacement() {
     });
     service.stop_blocking("alice", "installed").unwrap();
     service.shutdown_blocking().unwrap();
-    assert!(all_reaped(&observations));
+    wait(|| all_reaped(&observations));
 }
 
 #[test]
@@ -746,7 +747,7 @@ fn validated_manual_stop_retry_holds_foreground_gate_until_durable_completion() 
     });
     service.stop_blocking("alice", "installed").unwrap();
     service.shutdown_blocking().unwrap();
-    assert!(all_reaped(&observations));
+    wait(|| all_reaped(&observations));
 }
 
 #[test]
@@ -1067,7 +1068,7 @@ fn assert_call_waits_at_start_checkpoint(checkpoint: StartCheckpoint) {
     ));
     assert!(after_stop.is_none());
     control.lifecycle().shutdown_blocking().unwrap();
-    assert!(all_reaped(&observations));
+    wait(|| all_reaped(&observations));
 }
 
 #[test]
@@ -1200,7 +1201,7 @@ fn full_receipt_journal_stops_and_reaps_a_live_worker() {
         );
     });
     assert!(old.is_stopped());
-    assert!(all_reaped(&observations));
+    wait(|| all_reaped(&observations));
     assert!(control.active_app_lease("alice", "installed").is_none());
     let stopped = store
         .app_worker_status("alice", "installed")

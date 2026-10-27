@@ -173,13 +173,32 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
             },
         )
         .await?;
-    let target_daemon_alias = relay_kernel_target_alias(&kernel);
+    let connection = kernel_client_connection(
+        runtime_state,
+        config_projection,
+        &kernel,
+        request.client_id.clone(),
+        request.session_id.clone(),
+        request.public_key_thumbprint.clone(),
+    )
+    .await?;
+    Ok(LocalDaemonResponse::KernelClientConnectionResolved { connection })
+}
+
+/// How a client reaches `kernel`: the hosted relay with a fresh key-bound token,
+/// or the configured self-hosted relay. Shared by terminals and the machine gateway.
+pub(crate) async fn kernel_client_connection(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    kernel: &chariox_relay::protocol::RelayKernelPresence,
+    client_id: Option<String>,
+    session_id: Option<String>,
+    public_key_thumbprint: Option<String>,
+) -> Result<KernelClientConnection, DaemonError> {
+    let target_daemon_alias = relay_kernel_target_alias(kernel);
     let config = config_projection.snapshot();
     let connection = if config.cloud_relay.is_some() {
-        let client_id = request
-            .client_id
-            .clone()
-            .unwrap_or_else(|| format!("chariox-cli-{}", std::process::id()));
+        let client_id = client_id.unwrap_or_else(|| format!("chariox-cli-{}", std::process::id()));
         let (_, token) = issue_cloud_relay_client_token(
             runtime_state,
             config_projection,
@@ -189,8 +208,8 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
                 // connections to the exact kernel id.
                 target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
-                session_id: request.session_id.clone(),
-                public_key_thumbprint: request.public_key_thumbprint.clone(),
+                session_id,
+                public_key_thumbprint,
             },
         )
         .await?;
@@ -222,7 +241,7 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
             kernel_id: Some(kernel.kernel_id.clone()),
         }
     };
-    Ok(LocalDaemonResponse::KernelClientConnectionResolved { connection })
+    Ok(connection)
 }
 
 async fn issue_cloud_relay_client_token(

@@ -23,6 +23,7 @@ pub(super) async fn run(
         RelayOutgoingSender::channel(SESSION_QUEUE_LIMIT);
     let subscription_tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
     let mut requests = JoinSet::new();
+    let input_order = super::super::browser_input_order::BrowserInputOrder::default();
     let (mut writer, mut reader) = socket.split();
     let mut shutdown = direct.shutdown.clone();
     let mut authority = direct.authority.subscribe();
@@ -98,6 +99,7 @@ pub(super) async fn run(
                     &identity,
                     &outgoing_tx,
                     &subscription_tasks,
+                    &input_order,
                     &mut requests,
                     &payload,
                 )).await
@@ -173,6 +175,7 @@ async fn handle_client_frame(
     identity: &RelayCallerIdentity,
     outgoing_tx: &RelayOutgoingSender,
     subscription_tasks: &RelaySubscriptionTasks,
+    input_order: &super::super::browser_input_order::BrowserInputOrder,
     requests: &mut JoinSet<()>,
     payload: &str,
 ) -> Result<(), &'static str> {
@@ -188,24 +191,45 @@ async fn handle_client_frame(
                 return respond(outgoing_tx, request_id, error);
             }
             let direct = Arc::clone(direct);
-            let identity = identity.clone();
-            let outgoing_tx = outgoing_tx.clone();
             let subscription_tasks = Arc::clone(subscription_tasks);
+            let sender = encrypted_request.sender_public_key.clone();
+            // Reserve in socket order, with the same authenticated preparation as WSS.
+            let prepared =
+                prepare_daemon_request(&direct.router, Some(identity.clone()), encrypted_request);
+            let (turn, read) = match prepared.as_ref().ok().and_then(|p| p.browser_input_key()) {
+                Some((key, read)) => {
+                    let Some(turn) = input_order.reserve(key) else {
+                        return respond(
+                            outgoing_tx,
+                            request_id,
+                            relay_error("request_busy", "MP-08: browser input queue full", false),
+                        );
+                    };
+                    (Some(turn), read)
+                }
+                None => (None, false),
+            };
+            let outgoing_tx = outgoing_tx.clone();
             requests.spawn(async move {
-                let display_sender = encrypted_request.sender_public_key.clone();
-                let mut outcome = handle_daemon_request(
-                    &direct.router,
-                    &direct.command_sequence,
-                    Some(identity),
-                    encrypted_request,
-                    &direct.command_result_cache,
-                    &subscription_tasks,
-                    None,
-                )
-                .await;
+                let turn = match turn {
+                    Some(turn) => turn.enter(read).await,
+                    None => None,
+                };
+                let mut outcome = match prepared {
+                    Ok(prepared) => handle_prepared_daemon_request(
+                        &direct.router,
+                        &direct.command_sequence,
+                        prepared,
+                        &direct.command_result_cache,
+                        &subscription_tasks,
+                        None,
+                    ).await,
+                    Err(outcome) => *outcome,
+                };
+                drop(turn);
                 if let Some((display_id, event_id, encrypted_event)) = outcome.display_event {
                     if let Some(subscription_id) = super::super::browser_display::browser_display_delivery_id(
-                        &subscription_tasks, &display_id, &display_sender,
+                        &subscription_tasks, &display_id, &sender,
                     ).await {
                         if outgoing_tx.send_display_event(RelayEnvelope::DaemonEvent {
                             subscription_id, event_id, encrypted_event,
@@ -235,6 +259,7 @@ async fn handle_client_frame(
             client_public_key,
             subscription_scope,
             resume_from_event_id,
+            heartbeat_interval_ms,
         } => {
             if let Some(error) = invalid_request(direct, &request_id, &target, 0)
                 .or_else(|| empty_identifier("subscription_id", &subscription_id))
@@ -257,6 +282,7 @@ async fn handle_client_frame(
                 client_public_key,
                 subscription_scope,
                 resume_from_event_id,
+                heartbeat_interval_ms,
             )
             .await
             .map_err(|_| "local browser outgoing queue overloaded")

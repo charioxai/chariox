@@ -176,6 +176,7 @@ start_slice_kernel() {
   : >"$LOGS/kernel.log"
   chmod 600 "$LOGS/kernel.log"
   screen -L -Logfile "$LOGS/kernel.log" -dmS chariox-slice-kernel env \
+    SHELL=/bin/bash \
     "${default_provider_env[@]}" \
     CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
     CHARIOX_MCP_PORT="$MCP_PORT" \

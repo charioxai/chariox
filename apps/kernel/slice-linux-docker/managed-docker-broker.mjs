@@ -279,24 +279,30 @@ fi
 const SCREEN_ACTIONS = new Set(["start", "stop", "status", "prepare", "interact"])
 const VIEWER_BACKENDS = new Set(["novnc", "selkies"])
 
+// A Room Environment slice adds its session id as a fourth `-e` field so the
+// desktop starts without the taskbar.
 function validateConfiguredScreenExec(args) {
-  if (
-    args.length !== 12 || args[3] !== "-e" || args[5] !== "-e" ||
-    args[7] !== "-u" || args[8] !== "slice" ||
-    args[10] !== "/opt/chariox-slice/slice-screen.sh" || !SCREEN_ACTIONS.has(args[11])
-  ) fail("Docker screen command shape is invalid")
   const fields = ["CHARIOX_SLICE_VIEWER_BACKEND", "CHARIOX_SLICE_NOVNC_PORT", "CHARIOX_SLICE_DISPLAY_MODE"]
+  if (args.length === 14) fields.push("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID")
+  const user = 1 + fields.length * 2
+  if (
+    (args.length !== 12 && args.length !== 14) ||
+    fields.some((_, index) => args[1 + index * 2] !== "-e") ||
+    args[user] !== "-u" || args[user + 1] !== "slice" ||
+    args[user + 3] !== "/opt/chariox-slice/slice-screen.sh" || !SCREEN_ACTIONS.has(args[user + 4])
+  ) fail("Docker screen command shape is invalid")
   const values = fields.map((name, index) => {
     const argument = args[2 + index * 2]
     if (!argument.startsWith(`${name}=`)) fail("Docker screen environment field is invalid")
     return argument.slice(name.length + 1)
   })
-  const [backend, port, mode] = values
+  const [backend, port, mode, roomSessionId] = values
   if (
     !VIEWER_BACKENDS.has(backend) || !["headed", "headless"].includes(mode) ||
-    port.length < 1 || port.length > 5 || /[^0-9]/.test(port) || Number(port) > 65535
+    port.length < 1 || port.length > 5 || /[^0-9]/.test(port) || Number(port) > 65535 ||
+    (roomSessionId !== undefined && !/^[a-zA-Z0-9_.:-]{1,180}$/.test(roomSessionId))
   ) fail("Docker screen environment value is invalid")
-  validateSliceContainer(args[9], "Docker screen container")
+  validateSliceContainer(args[user + 2], "Docker screen container")
 }
 
 function validateDockerExec(args) {

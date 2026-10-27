@@ -24,7 +24,7 @@ export type KernelBrowserCommand =
   // Protocol 556: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
   | { op: "state_wait"; after: string; wait_ms: number }
   | { op: "revoke_grants"; agent_id: string | null }
-  | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
+  | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; wait_ms?: number; resend?: true; flush?: true }
   | { op: "mirror_close"; subscription_id: string; generation: number }
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
@@ -40,6 +40,7 @@ export type KernelBrowserCommand =
   | { op: "start" | "state" | "stop" }
   | { op: "open"; url: string }
   | { op: "close" | "snapshot" | "screenshot" | "subscribe"; tab_id: string; generation: number }
+  | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
   | { op: "poll" | "unsubscribe"; subscription_id: string; generation: number }

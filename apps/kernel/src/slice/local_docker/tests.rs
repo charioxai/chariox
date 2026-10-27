@@ -1718,8 +1718,12 @@ elif args and args[0] == 'inspect' and not any(flag in args for flag in ['-f','-
 elif args and args[0] == 'exec' and any('profileProcessCount' in arg for arg in args):
     print(json.dumps({'disposition':'clear','profileProcessCount':0}))
 elif args == ['system','dial-stdio']:
-    sys.stdin.buffer.read()
-    sys.stdout.buffer.write(b'HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+    # Docker keeps its HTTP input open while waiting for the reply.
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line or line in (b'\r\n', b'\n'):
+            break
+    sys.stdout.buffer.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
 else:
     sys.exit(1)
 "#,
@@ -3300,4 +3304,125 @@ fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
         "single-line log projection is unbounded"
     );
     assert!(projected.truncated);
+}
+
+#[cfg(unix)]
+#[test]
+fn screen_start_tells_the_desktop_about_a_bound_room() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = crate::env_lock::lock();
+    let root = test_root("screen-start-room-binding");
+    let bin = root.join("bin");
+    let log = root.join("docker.log");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    let docker = bin.join("docker");
+    std::fs::write(
+        &docker,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\nexit 0\n",
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+    let previous_path = std::env::var_os("PATH");
+    let mut paths = vec![bin];
+    if let Some(path) = &previous_path {
+        paths.extend(std::env::split_paths(path));
+    }
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("fake Docker PATH should join"),
+    );
+    std::env::set_var("DOCKER_LOG", &log);
+
+    let mut record = test_record();
+    run_local_docker_slice_screen(&record, "start", "slice.test")
+        .expect("an unbound desktop should start");
+    record.environment_session_id = Some("room-1".to_string());
+    run_local_docker_slice_screen(&record, "start", "slice.test")
+        .expect("a bound desktop should start");
+
+    match previous_path {
+        Some(path) => std::env::set_var("PATH", path),
+        None => std::env::remove_var("PATH"),
+    }
+    std::env::remove_var("DOCKER_LOG");
+    let calls = std::fs::read_to_string(&log).expect("fake Docker log should read");
+    let calls: Vec<&str> = calls.lines().collect();
+    assert_eq!(calls.len(), 2);
+    assert!(!calls[0].contains("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID"));
+    assert!(calls[1].contains("-e CHARIOX_ROOM_ENVIRONMENT_SESSION_ID=room-1 "));
+    // The managed broker validates the same command before running it.
+    for call in calls {
+        use std::io::Write;
+        let request = serde_json::json!({
+            "kind": "docker",
+            "args": call.split_whitespace().collect::<Vec<_>>(),
+        });
+        let mut broker = std::process::Command::new("node")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/slice-linux-docker/managed-docker-broker.mjs"
+            ))
+            .arg("--validate-request")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("broker validator should start");
+        broker
+            .stdin
+            .take()
+            .expect("broker validator stdin")
+            .write_all(request.to_string().as_bytes())
+            .expect("broker validator request should write");
+        let result = broker
+            .wait_with_output()
+            .expect("broker validator should finish");
+        assert!(
+            result.status.success(),
+            "broker rejected `{call}`: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn browser_admission_http_fixture_replies_before_input_eof() {
+    use std::io::{Read, Write};
+    let root = test_root("browser-http-before-eof");
+    let fixture = browser_admission_docker_fixture(&root);
+    let mut child = Command::new(fixture)
+        .args(["system", "dial-stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"GET /_ping HTTP/1.1\r\nHost: docker\r\n\r\n")
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut response = String::new();
+        let result = stdout.read_to_string(&mut response).map(|_| response);
+        let _ = send.send(result);
+    });
+    let reply = receive.recv_timeout(std::time::Duration::from_secs(2));
+    drop(child.stdin.take());
+    if child.try_wait().unwrap().is_none() && child.id() > 1 {
+        let _ = child.kill();
+    }
+    child.wait().unwrap();
+    reader.join().unwrap();
+    let response = reply
+        .expect("HTTP fixture must answer without waiting for stdin EOF")
+        .unwrap();
+    assert!(response.starts_with("HTTP/1.1 404"));
+    let _ = std::fs::remove_dir_all(root);
 }

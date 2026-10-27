@@ -161,7 +161,7 @@ pub(super) struct HttpBootstrapCloudClient {
 impl Default for HttpBootstrapCloudClient {
     fn default() -> Self {
         Self {
-            agent: ureq::AgentBuilder::new()
+            agent: crate::outbound_dial::agent_builder()
                 .timeout(Duration::from_secs(20))
                 .build(),
         }

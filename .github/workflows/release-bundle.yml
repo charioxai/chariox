@@ -78,6 +78,8 @@ jobs:
             # The oldest supported runner sets the glibc floor (2.35).
             runner: ubuntu-22.04
             libexec: chariox-app-storage chariox-app-runtime-install
+            # The Room browser's resize and native capture run through this kernel ELF's native display worker.
+            kernel_features: --features chariox-kernel/native-display
           - platform: darwin-arm64
             runner: macos-15
             libexec: chariox-app-runtime-install
@@ -102,13 +104,21 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Install native display build dependencies
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
       - name: Build the kernel, relay and helpers
         run: |
           bins=(chariox-kernel chariox-relay chariox-app-package ${{ matrix.libexec }})
-          cargo build --release --locked -p chariox-kernel -p chariox-relay -p chariox-app-package -p chariox-app-runtime "${bins[@]/#/--bin=}"
+          cargo build --release --locked ${{ matrix.kernel_features }} -p chariox-kernel -p chariox-relay -p chariox-app-package -p chariox-app-runtime "${bins[@]/#/--bin=}"
           mkdir -p unsigned/bin unsigned/libexec
           cp target/release/{chariox-kernel,chariox-relay,chariox-app-package} unsigned/bin/
           for name in ${{ matrix.libexec }}; do cp "target/release/$name" unsigned/libexec/; done
+      - name: Check Linux kernel startup without display libraries
+        if: matrix.platform == 'linux-x64'
+        run: docker run --rm -v "$PWD/unsigned/bin:/bundle:ro" ubuntu:22.04 /bundle/chariox-kernel --help
       - name: Compile the CLI/TUI into one executable
         run: |
           pnpm install --frozen-lockfile

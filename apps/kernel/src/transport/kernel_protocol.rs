@@ -43,6 +43,9 @@ pub(crate) enum KernelIncomingFrame {
         causation_id: Option<String>,
         #[serde(default)]
         correlation_id: Option<String>,
+        /// Protocol 568: forward this request through the kernel gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
         request: LocalDaemonRequest,
     },
     Subscribe {
@@ -53,6 +56,13 @@ pub(crate) enum KernelIncomingFrame {
         subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
+        /// Protocol 596: how often the subscription's `heartbeat` arrives; at least
+        /// `MIN_SUBSCRIPTION_HEARTBEAT_MS`. Left out, the default interval applies.
+        #[serde(default)]
+        heartbeat_interval_ms: Option<u64>,
+        /// Protocol 568: subscribe on this machine through the gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
     },
     Unsubscribe {
         request_id: String,
@@ -71,11 +81,19 @@ pub(crate) struct KernelTransportError {
 pub(crate) enum KernelOutgoingFrame {
     Response {
         request_id: String,
+        /// Protocol 568: the kernel that answered a forwarded request, so a
+        /// client can tell a forwarded answer from a local one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
         response: Box<Option<Value>>,
         error: Option<KernelTransportError>,
     },
     Event {
         event_id: u64,
+        /// Protocol 568: the kernel whose subscription produced this event; its
+        /// `event_id` counts on that machine's stream. Absent for this kernel's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernel: Option<String>,
         event: Box<KernelEvent>,
     },
 }
@@ -100,6 +118,26 @@ pub(crate) enum KernelEvent {
         recipient_attachment_ids: Vec<String>,
         message_id: String,
         completed_at_ms: u64,
+    },
+    /// Protocol 596: the agent's latest turn changed. `turn` is what
+    /// `GetSessionHistoryOutline` answers for that turn at `history_revision`.
+    AgentTurnChanged {
+        session_id: String,
+        agent_id: String,
+        history_revision: u64,
+        turn: Box<crate::local::SessionHistoryOutlineTurn>,
+    },
+    /// Protocol 596: a row `ListHomeExtensionAudit` returns for the agent was appended. The row is
+    /// `audit_event`: `event` is the tag of every kernel event.
+    HomeExtensionAuditAppended {
+        session_id: String,
+        agent_id: String,
+        audit_event: Box<crate::durable_state::DurableStateEvent>,
+    },
+    /// Protocol 596: audit rows were lost. Re-read `ListHomeExtensionAudit` for the watched agents
+    /// once, replacing their lists; appends after this signal continue normally.
+    HomeExtensionAuditLagged {
+        session_id: String,
     },
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
@@ -156,6 +194,10 @@ pub(crate) enum KernelEvent {
         inventory_version: String,
     },
     WaitingRoomRowsChanged {
+        #[serde(default)]
+        sessions_total: usize,
+        #[serde(default)]
+        sessions_next_cursor: Option<String>,
         inventory_version: String,
         structural_version: String,
         activity_revision: String,
@@ -240,6 +282,28 @@ pub(crate) enum KernelSubscriptionScope {
     WaitingRoomInventory,
 }
 
+pub(crate) const MIN_SUBSCRIPTION_HEARTBEAT_MS: u64 = 500;
+pub(crate) const INVALID_HEARTBEAT_INTERVAL_CODE: &str = "invalid_heartbeat_interval";
+
+/// The interval a subscription asked for, or `default` when it did not ask.
+pub(crate) fn requested_heartbeat_interval(
+    requested_ms: Option<u64>,
+    default: std::time::Duration,
+) -> Result<std::time::Duration, KernelTransportError> {
+    match requested_ms {
+        None => Ok(default),
+        Some(ms) if ms >= MIN_SUBSCRIPTION_HEARTBEAT_MS => Ok(std::time::Duration::from_millis(ms)),
+        Some(ms) => Err(KernelTransportError {
+            code: INVALID_HEARTBEAT_INTERVAL_CODE.to_string(),
+            message: format!(
+                "heartbeat_interval_ms {ms} is below the minimum of {MIN_SUBSCRIPTION_HEARTBEAT_MS}; leave it out for the default of {} ms",
+                default.as_millis()
+            ),
+            retryable: false,
+        }),
+    }
+}
+
 pub(crate) fn kernel_subscription_scope(scope: Option<&str>) -> KernelSubscriptionScope {
     if scope == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE) {
         KernelSubscriptionScope::WaitingRoomInventory
@@ -288,6 +352,37 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "provider_run_id": provider_run.as_ref().as_ref().map(|run| run.id()),
             "agent_activity": agent_activity,
             "agent_activity_revision": agent_activity_revision,
+        }),
+        KernelEvent::AgentTurnChanged {
+            session_id,
+            agent_id,
+            history_revision,
+            turn,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "agent_turn_changed",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "history_revision": history_revision,
+            "turn_id": turn.turn_id,
+            "lifecycle": turn.lifecycle,
+        }),
+        KernelEvent::HomeExtensionAuditAppended {
+            session_id,
+            agent_id,
+            audit_event: audit,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "home_extension_audit_appended",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "kind": audit.kind,
+            "sequence": audit.sequence,
+        }),
+        KernelEvent::HomeExtensionAuditLagged { session_id } => serde_json::json!({
+            "event_id": event_id,
+            "event": "home_extension_audit_lagged",
+            "session_id": session_id,
         }),
         KernelEvent::AgentTaskUpdated { session_id, task } => serde_json::json!({
             "event_id": event_id, "event": "agent_task_updated", "session_id": session_id,
@@ -420,6 +515,8 @@ pub(crate) fn waiting_room_rows_changed_event(
             && previous.launch_target == snapshot.launch_target
             && previous.projects == snapshot.projects
             && previous.sessions == snapshot.sessions
+            && previous.sessions_total == snapshot.sessions_total
+            && previous.sessions_next_cursor == snapshot.sessions_next_cursor
     }) {
         return None;
     }
@@ -484,6 +581,8 @@ pub(crate) fn waiting_room_rows_changed_event(
         })
         .unwrap_or_default();
     Some(KernelEvent::WaitingRoomRowsChanged {
+        sessions_total: snapshot.sessions_total,
+        sessions_next_cursor: snapshot.sessions_next_cursor,
         inventory_version: snapshot.inventory_version,
         structural_version: snapshot.structural_version,
         activity_revision: snapshot.activity_revision,
@@ -651,6 +750,10 @@ pub(crate) fn can_skip_session_snapshot(
             if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
                 return false;
             }
+            // Wake changes have no event of their own.
+            if previous.session.agent_wakes() != snapshot.session.agent_wakes() {
+                return false;
+            }
             if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
                 return true;
             }
@@ -751,6 +854,9 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::TerminalOutput { .. } => "terminal_output",
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
+        KernelEvent::AgentTurnChanged { .. } => "agent_turn_changed",
+        KernelEvent::HomeExtensionAuditAppended { .. } => "home_extension_audit_appended",
+        KernelEvent::HomeExtensionAuditLagged { .. } => "home_extension_audit_lagged",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
@@ -785,6 +891,9 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
             notices.first().map(|notice| notice.session_id.as_str())
         }
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::AgentTurnChanged { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::HomeExtensionAuditAppended { session_id, .. }
+        | KernelEvent::HomeExtensionAuditLagged { session_id } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
@@ -849,7 +958,10 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         } => recipient_attachment_ids
             .iter()
             .any(|id| id == attachment_id),
-        KernelEvent::RoomWorkflowsChanged { .. }
+        KernelEvent::AgentTurnChanged { .. }
+        | KernelEvent::HomeExtensionAuditAppended { .. }
+        | KernelEvent::HomeExtensionAuditLagged { .. }
+        | KernelEvent::RoomWorkflowsChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }
@@ -933,17 +1045,46 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 }
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
+    if crate::runtime::kernel_access::Refusal::grant_ended(error) {
+        return crate::runtime::kernel_access::Refusal::Ended.transport_error();
+    }
     match error {
+        DaemonError::ProviderAccountCopy {
+            code, retryable, ..
+        } => kernel_error(code, error, *retryable),
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
         }
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
+        DaemonError::MachineRequest { code, .. } => kernel_error(code.as_str(), error, false),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();
             mapped
         }
+        DaemonError::ProviderProfileRefused { reason, .. } => {
+            kernel_error(reason.code(), error, false)
+        }
+        DaemonError::AgentNotInSession { .. } => kernel_error("agent_not_in_session", error, false),
+        DaemonError::AgentNotFound { .. } => kernel_error("agent_not_found", error, false),
+        DaemonError::NoActivePrompt { .. } => kernel_error("no_active_prompt", error, false),
+        DaemonError::ProviderPromptSteerRejected { .. } => {
+            kernel_error("prompt_steer_rejected", error, false)
+        }
+        DaemonError::LocalTransport {
+            operation: "steer active prompt",
+            ..
+        } => kernel_error("prompt_steer_rejected", error, false),
+        DaemonError::SteerDeliveredEventUnrecorded { .. } => {
+            kernel_error("prompt_steer_event_unrecorded", error, false)
+        }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
+        DaemonError::SessionAliasConflict { .. } => {
+            kernel_error("session_alias_conflict", error, false)
+        }
+        DaemonError::InvalidSessionAlias { .. } => {
+            kernel_error("invalid_session_alias", error, false)
+        }
         DaemonError::AttachmentNotFound { .. } => {
             kernel_error("attachment_not_found", error, false)
         }
@@ -970,6 +1111,31 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        DaemonError::RelayTransport {
+            operation: "dictation",
+            code,
+            retryable,
+            ..
+        } => kernel_error(code, error, *retryable),
+        // A terminal on another kernel refuses in the terminal service's own words; they
+        // are passed on as they came, so the caller that sent the id reads them.
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } if crate::room_terminal::is_public_code(code) => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
+        DaemonError::RelayTransport {
+            code, retryable, ..
+        } if crate::error::actionable_refusal_message(code).is_some() => KernelTransportError {
+            code: code.clone(),
+            message: crate::error::external_request_failure_message(code).into(),
+            retryable: *retryable,
+        },
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {
@@ -983,7 +1149,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::LocalTransport { operation, .. }
             if *operation == "resolve account profile" =>
         {
-            kernel_error("local_transport_error", error, false)
+            kernel_error("provider_profile_unavailable", error, false)
         }
         // MP-08 / MP-10 / MP-11: absent Projects need setup, not transport retries.
         DaemonError::LocalTransport {

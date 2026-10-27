@@ -68,6 +68,7 @@ impl KernelRuntimeState {
     pub(crate) fn managed_activity_report_snapshot_with_transition(
         &self,
     ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
+        self.owned.room_terminals.report_work();
         let _mutation = self
             .owned
             .managed_activity_mutation_lock
@@ -170,6 +171,24 @@ impl KernelRuntimeState {
     }
 }
 
+impl KernelRuntimeState {
+    /// Terminal commands are work: they keep a managed kernel from stopping,
+    /// and the stop fence refuses new ones.
+    pub(super) fn link_room_terminals_to_managed_kernel(&mut self) {
+        let Some(gate) = self.owned.managed_kernel_quiescence.clone() else {
+            return;
+        };
+        let owned = self.owned.clone();
+        let callback = self.managed_terminal_activity.insert(Arc::new(move || {
+            owned.begin_managed_activity_mutation().record();
+            owned.runtime_projection_changes.record_change();
+        }));
+        self.owned
+            .room_terminals
+            .link_managed_kernel(gate, Arc::downgrade(callback));
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn managed_running_agent_count_unlocked(&self) -> u8 {
         // MP-09 A03: a live owned process is work; a future timer alone is not.
@@ -179,6 +198,7 @@ impl KernelRuntimeOwnedState {
             .session_store
             .list_non_ended_sessions_including_hidden();
         running_agent_count(active_turn_count, sessions)
+            .max(u8::from(self.room_terminals.has_running_work()))
     }
 
     pub(super) fn record_managed_activity_transition(&self) {
@@ -234,6 +254,13 @@ impl KernelRuntimeOwnedState {
     }
 
     fn record_managed_activity_transition_at_unlocked(&self, observed_at_ms: Option<u64>) {
+        if let Err(error) = self.publish_outside_runtime_activity() {
+            crate::logging::error_with_fields(
+                "outside.events",
+                "agent run-state transition could not be persisted",
+                serde_json::json!({"error":error.to_string()}),
+            );
+        }
         #[cfg(test)]
         self.managed_activity_record_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

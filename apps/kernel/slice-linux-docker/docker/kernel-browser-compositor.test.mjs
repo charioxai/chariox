@@ -72,28 +72,32 @@ test('MP-11 protection retirement keeps the renderer lease and rejects a late ol
  await f.source.close();
 });
 
-test('MP-11 DOM churn keeps publishing bound captures; only a changed mask set retires frames',async()=>{
- const f=fixture();await f.source.start();let captures=0,release;const held=new Promise(r=>release=r);
- const grey=encodePng(8,8,Buffer.alloc(8*8*4,128)),black=encodePng(8,8,Buffer.alloc(8*8*4,0)),mask=[{x:0,y:0,width:2,height:2}];
- f.source.protect=async()=>{
-  if(++captures===1){f.emit('DOM.childNodeInserted',{});return {data_base64:grey,[displayMaskRegions]:[]};}
-  if(captures===2){await held;return {data_base64:black,[displayMaskRegions]:mask};}
-  return {data_base64:black,[displayMaskRegions]:mask};
- };
+// MP-11 UX-first refinement2026-10-19: no Vault-filled target is present in
+// this fixture. A DOM marker or what the person types never enables masking.
+test('MP-11 unprotected DOM churn keeps the current frame without extra protected captures',async()=>{
+ const f=fixture();await f.source.start();let captures=0;const before=f.source.sample();
+ f.source.protect=async()=>{captures++;return {data_base64:encodePng(8,8,Buffer.alloc(8*8*4,128)),[displayMaskRegions]:[]};};
  f.emit('DOM.childNodeInserted',{});await new Promise(r=>setTimeout(r,0));
- assert.equal(f.source.sample()?.data_base64,grey,'a capture bound before/after its own masks survives later tree churn');
- assert.equal(f.source.regionRevision,0);
- release();await new Promise(r=>setTimeout(r,0));
- assert.equal(f.source.sample().data_base64,black);assert.equal(f.source.regionRevision,1,'a changed mask set retires older frames');
- await f.source.close();
+ assert.equal(captures,0);assert.equal(f.source.sample(),before);assert.equal(f.source.regionRevision,0);await f.source.close();
 });
-
-test('MP-11 style/class churn wakes captures only while protected regions exist',async()=>{
+test('MP-11 unprotected style, class and person-created markers never enable a guard',async()=>{
  const f=fixture();await f.source.start();let captures=0;
  f.source.protect=async()=>{captures++;return {data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255)),[displayMaskRegions]:[]};};
- f.emit('DOM.attributeModified',{name:'style'});await new Promise(r=>setTimeout(r,0));
- assert.equal(captures,0);assert.equal(f.source.sample().serial,1);
- f.emit('DOM.attributeModified',{name:'data-chariox-secret'});await new Promise(r=>setTimeout(r,0));
- assert.equal(captures,1,'declared protection still recaptures');assert.equal(f.source.regionRevision,1);
- await f.source.close();
+ for(const name of ['style','class','data-chariox-secret'])f.emit('DOM.attributeModified',{name});
+ await new Promise(r=>setTimeout(r,0));assert.equal(captures,0);assert.equal(f.source.sample().serial,1);await f.source.close();
+});
+
+test('MP-11 a known Vault mask still retires and recaptures a changed field type',async()=>{
+ const f=fixture();await f.source.start();let captures=0;const masks=[{x:0,y:0,width:2,height:2}];
+ f.source.masks=JSON.stringify(masks);
+ f.source.protect=async()=>{captures++;return {data_base64:encodePng(8,8,Buffer.alloc(8*8*4,0)),[displayMaskRegions]:masks};};
+ f.emit('DOM.attributeModified',{name:'type'});assert.equal(f.source.sample(),null);await new Promise(r=>setTimeout(r,0));
+ assert.equal(captures,1);assert.equal(f.source.regionRevision,1);assert(f.source.sample());await f.source.close();
+});
+
+test('MP-08/MP-10 resized DPR2 compositor attests the complete current viewport',async()=>{
+ const f=fixture(),send=f.source.connection.send;f.source.scale=2;let attested=false;
+ f.source.connection.send=async(method,params)=>{if(method==='Page.startScreencast'){assert.equal(params.maxWidth,8);assert.equal(params.maxHeight,8)}return send(method,params)};
+ f.source.screenshot=async clip=>{assert.equal(clip,null,'physical raster dimensions must never be reused as a CSS crop');attested=true;return {data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))}};
+ await f.source.start();assert(attested);assert.equal(f.source.sample().width,8);await f.source.close();
 });

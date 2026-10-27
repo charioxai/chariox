@@ -35,7 +35,7 @@ async function mirrored(html, run, routes = {}) {
     const evaluate = async expression => {
       const { connection, sessionId } = await host.browser.resolvePageTarget(host.tabs.get(opened.tab_id).target_id);
       const reply = await connection.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
-      assert(!reply.exceptionDetails, "MP-10: credential-free fixture evaluation failed");
+      assert(!reply.exceptionDetails, `MP-10: credential-free fixture evaluation failed: ${reply.exceptionDetails?.exception?.description}`);
       return reply.result.value;
     };
     // about:blank is "complete" too: wait for the fixture document itself.
@@ -45,8 +45,8 @@ async function mirrored(html, run, routes = {}) {
       const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2, ...extra });
       // Protocol 489: bodies may be deflated in the subscription's context (in order, fresh per reset).
       let applied = 0, context = Buffer.alloc(0);
-      const next = async (wait_ms = 0, reset = false) => {
-        let packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms }); applied = packet.sequence;
+      const next = async (wait_ms = 0, reset = false, extra = {}) => {
+        let packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms, ...extra }); applied = packet.sequence;
         if (packet.reset) context = Buffer.alloc(0);
         if (packet.encoding === "deflate") { context = Buffer.concat([context, Buffer.from(packet.packet_base64, "base64")]); const out = inflateRawSync(context, { finishFlush: zlib.Z_SYNC_FLUSH }); packet = { ...JSON.parse(out.subarray(out.length - packet.packet_bytes)), resources: packet.resources ?? [], tiles: packet.tiles ?? [] }; }
         return { ops: [], resources: [], tiles: [], ...packet };
@@ -881,12 +881,62 @@ test("MP-10: a subscription whose observer instance was evicted resyncs (reset w
   assert.match(JSON.stringify(packet.nodes), /changed/);
 }));
 
+// MP-08/MP-10: a lazy image far below the view has no bytes yet, but it is an image: Chromium lays it out by its
+// width/height, never as its alt text. Its source travels as a key, so the viewer keeps it an image.
+test("MP-10: a lazy image that has not loaded yet still travels with its source key", () => mirrored(
+  `<p>top</p><div style="height:6000px"></div><img id="lazy" loading="lazy" src="/lazy.png" width="30" height="40" alt="A long alternative text">`, async ({ next, evaluate }) => {
+    assert.equal(await evaluate("document.getElementById('lazy').currentSrc"), "", "MP-10: the fixture image has not started loading");
+    const image = (await next()).nodes.find(row => row[2] === "img");
+    assert.match(image?.[4]?.res ?? "", /^r[0-9]+$/, "MP-10: the pending image has a source key");
+  }));
+
+// MP-08/MP-10: currentSrc changes on load without a src/srcset mutation.
+for (const picture of [false, true]) test(`MP-10: a lazy ${picture ? 'picture' : 'srcset image'} updates its key to the selected resource`, () => mirrored(
+  `<p>top</p><div style="height:6000px"></div>${picture ? '<picture><source srcset="/candidate.svg">' : ''}<img id="lazy" loading="lazy" src="/fallback.svg" ${picture ? '' : 'srcset="/candidate.svg 1x, /retina.svg 2x"'} width="30" height="40" alt="lazy">${picture ? '</picture>' : ''}`, async ({ next, evaluate }) => {
+    assert.equal(await evaluate("document.getElementById('lazy').currentSrc"), "");
+    const snapshot = await next(), image = rows(snapshot.nodes).find(row => row.attrs?.id === 'lazy');
+    let key = image.res, delivered = [...snapshot.resources];
+    await evaluate("document.getElementById('lazy').scrollIntoView(); true");
+    for (let i = 0; i < 20; i++) {
+      const packet = await next(500);
+      for (const op of packet.ops) if (op.op === 'res' && op.id === image.id) key = op.res;
+      delivered.push(...packet.resources);
+      if (delivered.some(resource => resource.key === key && Buffer.from(resource.data_base64, 'base64').toString().includes('#c0ffee'))) break;
+    }
+    assert.match(await evaluate("document.getElementById('lazy').currentSrc"), /candidate\.svg$/);
+    assert(delivered.some(resource => resource.key === key && Buffer.from(resource.data_base64, 'base64').toString().includes('#c0ffee')), 'MP-10: the mirrored image key has the selected candidate bytes');
+  }, { '/candidate.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#c0ffee" d="M0 0h30v40H0z"/></svg>' } }));
+
 test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
   `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {
     const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");
     assert.equal(images.length, 4200);
     assert.equal(images.filter(row => typeof row[4]?.res === "string").length, 4200, "MP-10: every image has a key");
     assert.equal(new Set(images.map(row => row[4].res)).size, 4200, "MP-10: keys are never reused");
+  }));
+
+// browserperf r10: every record of a nested-generator walk passed through each enclosing level, so a deep page cost
+// time in proportion to records times depth (the walk is now one explicit stack).
+test("MP-08/MP-10: a snapshot of a deeply nested page costs about what a flat one does", () => mirrored(
+  `<div id="deep"></div><div id="flat"></div><script>let d=document.getElementById("deep");for(let i=0;i<400;i++){const c=document.createElement("div");d.append(c);d=c}for(let i=0;i<6000;i++)d.append(document.createElement("b"));const f=document.getElementById("flat");for(let i=0;i<6000;i++)f.append(document.createElement("i"))</script>`, async ({ next, host }) => {
+    assert.equal((await next()).reset, true);
+    const stream = [...host.mirror.streams.values()][0], time = away => host.mirror.v2.evaluate(stream.world, `(() => { const away = document.getElementById(${JSON.stringify(away)}); away.remove(); const t = performance.now(); ${stream.world.ref}.snapshot(); const ms = performance.now() - t; document.body.append(away); return ms; })()`);
+    const deep = [], flat = [];
+    for (let i = 0; i < 3; i++) { flat.push(await time("deep")); deep.push(await time("flat")); }
+    const median = list => list.sort((a, b) => a - b)[1];
+    assert(median(deep) < 3 * median(flat) + 20, `deep ${median(deep).toFixed(1)} ms vs flat ${median(flat).toFixed(1)} ms`);
+  }));
+
+// #1073 review: a URL evicted from the key budget keeps its key reserved, so a later URL whose hash lands on it gets another.
+const urlKeyNumber = url => { let n = 2166136261; for (let i = 0; i < url.length; i++) n = Math.imul(n ^ url.charCodeAt(i), 16777619); return (n >>> 0) % 999999 + 1; };
+const GIF = "data:image/gif;base64,R0lGODlhAQABAAAAACw=#k";
+const [evicted, colliding] = (() => { const seen = new Map(); for (let i = 0; ; i++) { const n = urlKeyNumber(GIF + i); if (seen.has(n)) return [seen.get(n), i]; seen.set(n, i); } })();
+test("MP-10: a URL whose key hash matches an evicted URL's key gets its own key while the evicted image is still mirrored", () => mirrored(
+  `<div id="g"></div><script>const g=document.getElementById("g"),add=k=>{const img=document.createElement("img");img.width=1;img.height=1;img.src="${GIF}"+k;g.append(img)};add(${evicted});for(let i=0;i<4200;i++)add("f"+i);add(${colliding})</script>`, async ({ next }) => {
+    const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");
+    assert.equal(images.length, 4202);
+    const [first, last] = [images[0][4].res, images.at(-1)[4].res];
+    assert.notEqual(first, last, "MP-10: the evicted image's key is never handed to another URL in the same document");
   }));
 
 // Audit 2026-10-10 §4.7: opaque regions as element pixels, not viewport screenshots (R8-3, item 15).
@@ -1102,6 +1152,48 @@ test("MP-10: a linked sheet whose CSSOM serialization drops var() shorthand long
     assert(css.includes("var(--w)"), `MP-10: the var() shorthand reaches the viewer: ${css.slice(0, 300)}`);
     assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/.test(css), `MP-10: no empty longhand reaches the viewer: ${css.slice(0, 300)}`);
   }, { "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" } }));
+
+test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
+    const first = [await next()];
+    for (let i = 0; i < 5; i++) first.push(await next(500));
+    assert(mirroredCss(first).includes("var(--w)"), "MP-10: the first document reads the lossy sheet as source text");
+    await evaluate("location.href = '/b'").catch(() => {});
+    for (let i = 0; i < 400 && await evaluate("location.pathname === '/b' && document.readyState === 'complete'").catch(() => false) !== true; i++) await settle(25);
+    await host.request({ op: 'state' });
+    let reset;
+    for (let i = 0; i < 40 && reset === undefined; i++) { const packet = await next(300).catch(() => null); if (packet?.reset && packet.nodes.some(row => row[2] === 0 && row[3] === 'b')) reset = packet; }
+    const packets = [reset];
+    for (let i = 0; i < 5; i++) packets.push(await next(500));
+    const css = mirroredCss(packets);
+    assert(css.includes("var(--w)"), `MP-10: the next document's var() shorthand reaches the viewer: ${css.slice(0, 300)}`);
+    assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/.test(css), `MP-10: no empty longhand reaches the viewer: ${css.slice(0, 300)}`);
+  }, {
+    "/b": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">b</div>' },
+    "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" },
+  }));
+
+// #1073 review: a linked sheet read as source text in one document is still read live in the next one, so a CSSOM
+// edit that makes it serializable reaches the viewer.
+test("MP-08/MP-10: a CSSOM edit of a linked sheet the previous document read as source text reaches the viewer", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
+    const first = [await next()];
+    for (let i = 0; i < 5; i++) first.push(await next(500));
+    assert(mirroredCss(first).includes("var(--w)"), "MP-10: the first document reads the lossy sheet as source text");
+    await evaluate("location.href = '/b'").catch(() => {});
+    for (let i = 0; i < 400 && await evaluate("location.pathname === '/b' && document.readyState === 'complete'").catch(() => false) !== true; i++) await settle(25);
+    await host.request({ op: 'state' });
+    let reset;
+    for (let i = 0; i < 40 && reset === undefined; i++) { const packet = await next(300).catch(() => null); if (packet?.reset && packet.nodes.some(row => row[2] === 0 && row[3] === 'b')) reset = packet; }
+    const packets = [reset];
+    for (let i = 0; i < 3; i++) packets.push(await next(500));
+    await evaluate("const s=document.styleSheets[0];s.deleteRule(0);s.insertRule('.b{color:rgb(1, 2, 3)}',0);true");
+    for (let i = 0; i < 6 && !mirroredCss(packets).includes("rgb(1, 2, 3)"); i++) packets.push(await next(500));
+    assert(mirroredCss(packets).includes("rgb(1, 2, 3)"), `MP-10: the edited rule reaches the viewer: ${mirroredCss(packets).slice(0, 300)}`);
+  }, {
+    "/b": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">b</div>' },
+    "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" },
+  }));
 
 test("MP-10: an inline style attribute and a <style> element keep var() shorthand borders too", () => mirrored(
   '<style>.s{--w:3px;border:var(--w) solid;border-color:red}</style><div class="s" id="a" style="--w:3px;border:var(--w) solid;border-color:blue;width:40px">x</div>', async ({ next }) => {
@@ -1702,6 +1794,23 @@ test("GATE-bytes: a first paint sends only the used rules of large sheets; their
     assert(later.includes("a-unused-1999") && later.includes("b-unused-1999"), "both full sheets follow");
   }, { "/a.css": { type: "text/css", body: bulkCss("a") }, "/b.css": { type: "text/css", body: bulkCss("b") } }));
 
+// browserperf r6 (CPU): pruning a large sheet checks a selector against the few elements its rightmost compound names,
+// not with a whole-document query per selector (most of the in-page sheet cost of every navigation's first paint).
+const narrowCss = "p.used{color:rgb(1, 2, 3)}" + Array.from({ length: 1500 }, (_, i) => `.absent-${i % 7} .c${i % 300}{padding:${i}px}`).join("");
+test("MP-08/MP-10 CPU: a first paint prunes a large sheet without a document query per selector", () => mirrored(
+  '<link rel="stylesheet" href="/n.css"><p class="used">text</p>' + Array.from({ length: 300 }, (_, i) => `<span class="c${i}">${i}</span>`).join(""), async ({ next, evaluate, host, subscription_id }) => {
+    await next();
+    const world = host.mirror.streams.get(subscription_id).world;
+    await host.mirror.v2.evaluate(world, "(()=>{const query=Document.prototype.querySelector;globalThis.queries=0;Document.prototype.querySelector=function(...args){globalThis.queries++;return query.apply(this,args)};return true})()");
+    // A mutation retires the pruning index of the first packet, so the reset prunes afresh.
+    await evaluate("document.body.append(document.createElement('i'));true"); await next(300);
+    const first = JSON.stringify(await next(0, true));
+    assert(first.includes("rgb(1, 2, 3)"), "the used rule reaches the first paint");
+    assert(!first.includes(".absent-0 .c0"), "rules whose ancestor the document lacks wait");
+    const queries = await host.mirror.v2.evaluate(world, "globalThis.queries");
+    assert(queries < 50, `${queries} document queries for 1500 rules`);
+  }, { "/n.css": { type: "text/css", body: narrowCss } }));
+
 // Review #1016 @c5dfd2e31 item 3: a published node moved into a parent the continuation has not reached yet.
 test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during a continuation stays mirrored', () => mirrored(
   '<main id="m"><p id="moved">Move me</p>' + '<p>middle</p>'.repeat(10000) + '<section id="destination"></section></main>', async ({ next, evaluate }) => {
@@ -1853,21 +1962,23 @@ test("protocol 560/168: a layout changed and restored is a different layout key"
     assert.notEqual(v2.layoutKey(tabId), key, "400 -> 600 -> 400 is not the layout the credit started with");
     await a.next();
   }));
-test("protocol 560/168: a credit whose page size changed while it was observed publishes nothing and re-bases the stream", () => mirrored(
+test("protocol 629: a layout change while observed retries the credit with a reset", () => mirrored(
   "<p id='p'>page</p>", async ({ subscribe, host, evaluate }) => {
     const a = await subscribe({ layout_width: 400, layout_height: 700 });
-    await a.next();
-    // Another viewer resizes the Tab after this credit read the size but before it published (and back: A->B->A).
+    const first = await a.next();
+    // Another viewer changes layout after the credit reads its size and before publication.
     const v2 = host.mirror.v2, real = v2.layoutKey.bind(v2), tiles = v2.tiles.bind(v2);
     let moved = false;
     v2.layoutKey = tabId => (moved ? "600x700" : real(tabId));
     v2.tiles = (...args) => { moved = true; return tiles(...args); };
     await evaluate("document.getElementById('p').textContent='changed'");
-    await assert.rejects(a.next(2000), /layout changed during observation/);
-    v2.layoutKey = real; v2.tiles = tiles;
-    const next = await a.next(2000);
-    assert.equal(next.reset, true, "the observer's consumed change is not delivered by a delta: the next credit re-snapshots");
-    assert.match(JSON.stringify(next), /changed/, "the changed text reaches the viewer");
+    try {
+      const next = await a.next(2000);
+      assert.equal(moved, true, "the observation crossed the injected layout change");
+      assert.equal(next.reset, true, "the same credit retries with a fresh snapshot");
+      assert.equal(next.sequence, first.sequence + 1, "the retired observation publishes no sequence");
+      assert.match(JSON.stringify(next), /changed/, "the consumed change reaches the viewer in the reset");
+    } finally { v2.layoutKey = real; v2.tiles = tiles; }
   }));
 
 test('MP-08/MP-10/MP-11: typing already sent survives a same-document mirror reset', () => mirrored(
@@ -1886,3 +1997,173 @@ test('MP-08/MP-10/MP-11: typing already sent survives a same-document mirror res
     await input(first.sequence, { kind: 'key', key: 'Enter' });
     assert.equal(await evaluate('window.submitted'), 'abc');
   }));
+
+// browserperf r9: resource keys follow URLs, so a site's shared sheet is the same text in each of its documents (the
+// viewer's retained copy can serve it) even when each document registers other resources first.
+test('MP-08/MP-10: a shared stylesheet is the same mirrored text in two documents of a site', () => mirrored(
+  '<img src="/x.svg"><img src="/y.svg"><link rel="stylesheet" href="/s.css"><p>a</p>',
+  async ({ next, evaluate, host }) => {
+    const sheetOf = packet => { const extra = packet.nodes.find(row => row[2] === 'style')?.[4]; return extra ? extra.css ?? packet.sheets?.[extra.css_ref] : undefined; };
+    const first = await next();
+    const before = sheetOf(first);
+    assert.match(before ?? '', /url\("mr:r[0-9]+"\)/, 'the sheet names its images by resource key');
+    await evaluate("location.href = '/b'").catch(() => {});
+    for (let i = 0; i < 400 && await evaluate("location.pathname === '/b' && document.readyState === 'complete'").catch(() => false) !== true; i++) await settle(25);
+    await host.request({ op: 'state' });
+    let after;
+    for (let i = 0; i < 40 && after === undefined; i++) { const packet = await next(300).catch(() => null); if (packet?.reset && packet.nodes.some(row => row[2] === 0 && row[3] === 'b')) after = sheetOf(packet); }
+    assert.equal(after, before, 'the second document mirrors the shared sheet as the same text');
+  }, {
+    '/b': { type: 'text/html', body: '<!doctype html><img src="/z.svg"><img src="/w.svg"><img src="/v.svg"><link rel="stylesheet" href="/s.css"><p>b</p>' },
+    '/s.css': { type: 'text/css', body: `.i{background:url(/i1.svg)}.j{background:url(/i2.svg)}${'.k{color:rgb(1, 2, 3)}'.repeat(150)}` },
+    ...Object.fromEntries(['x', 'y', 'z', 'w', 'v', 'i1', 'i2'].map(name => [`/${name}.svg`, { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>' }])),
+  }));
+
+// browserperf r9: pruning a large sheet for first paint costs the page a rule-by-rule match; a sheet the viewer already
+// retains (it advertised the digest) arrives whole by reference instead, and nothing is left to send later.
+test('MP-08/MP-10: a large sheet the viewer retains reaches the next document whole by reference, not pruned', () => mirrored(
+  '<link rel="stylesheet" href="/big.css"><p class="k">a</p>',
+  async ({ next, evaluate, host }) => {
+    const digest = text => createHash('sha256').update(text).digest('hex').slice(0, 24);
+    const style = packet => packet.nodes.find(row => row[2] === 'style');
+    const textOf = (packet, extra) => extra?.css ?? packet.sheets?.[extra?.css_ref];
+    const first = await next(), pruned = textOf(first, style(first)[4]);
+    let full;
+    for (let i = 0; i < 40 && full === undefined; i++) { const packet = await next(300); const op = packet.ops.find(op => op.op === 'css'); if (op) full = textOf(packet, op); }
+    assert(full && pruned.length < full.length, 'the first document gets the pruned sheet first, its full text later');
+    await evaluate("location.href = '/b'").catch(() => {});
+    for (let i = 0; i < 400 && await evaluate("location.pathname === '/b' && document.readyState === 'complete'").catch(() => false) !== true; i++) await settle(25);
+    await host.request({ op: 'state' });
+    let reset;
+    for (let i = 0; i < 40 && reset === undefined; i++) { const packet = await next(300, false, { known_sheets: [digest(full)] }).catch(() => null); if (packet?.reset && packet.nodes.some(row => row[2] === 0 && row[3] === 'b')) reset = packet; }
+    assert.equal(style(reset)?.[4]?.css_ref, digest(full), 'the retained sheet is referenced whole');
+    assert.equal(reset.sheets?.[digest(full)], undefined, 'its text does not travel again');
+    for (let i = 0; i < 6; i++) assert(!(await next(300)).ops.some(op => op.op === 'css'), 'no full text follows later');
+  }, {
+    '/b': { type: 'text/html', body: '<!doctype html><link rel="stylesheet" href="/big.css"><p class="k">b</p>' },
+    '/big.css': { type: 'text/css', body: `.k{color:rgb(1, 2, 3)}${Array.from({ length: 2500 }, (_, i) => `.unused${i}{color:rgb(4, 5, 6)}`).join('')}` },
+  }));
+
+// Protocol 629/199 viewport-first snapshot. Compact rows: [idDelta, parentBack, tag | kind, attrs | text | 0, extra].
+const viewportRows = rows => { let id = 0; return rows.map(row => { id += row[0]; return { id: `n${id}`, element: typeof row[2] === "string", attrs: typeof row[3] === "object" && row[3] ? row[3] : {}, extra: row[4] ?? {} }; }); };
+const keyed = (count, body) => `<style>body{margin:8px;font:16px/20px sans-serif}p{margin:0 0 12px}</style>${body}`.replace(/<(\w+)(?=[\s>])/g, (tag, name) => `${tag} data-k="${name}${++count.n}"`);
+// The viewer's view of a viewport-first snapshot, emulated on the page itself: deferred children absent, each kept box
+// pinned to its CSS height. `placed` is the viewer's check (every kept box where the page had it); `same` is rule C
+// (every element on screen where it was, and the same scrollbar).
+const placeholderExpression = deferred => `(() => {
+  const keys = ${JSON.stringify(deferred)}, onScreen = () => [...document.querySelectorAll('[data-k]')].map(e => [e.dataset.k, e.getBoundingClientRect()]).filter(([, r]) => r.bottom > 0 && r.top < innerHeight && r.width > 0).map(([k, r]) => [k, Math.round(r.x * 4), Math.round(r.y * 4), Math.round(r.width * 4), Math.round(r.height * 4)].join(':'));
+  const before = onScreen(), width = document.documentElement.clientWidth;
+  for (const [k, box] of keys) { const e = document.querySelector('[data-k="' + k + '"]'); e.replaceChildren(); if (box[4] !== null) { e.style.setProperty('height', box[4] + 'px', 'important'); e.style.setProperty('margin-top', box[5] + 'px', 'important'); e.style.setProperty('margin-bottom', box[6] + 'px', 'important'); } }
+  const placed = keys.every(([k, box]) => { if (box[4] === null) return true; const r = document.querySelector('[data-k="' + k + '"]').getBoundingClientRect(); return Math.abs(r.x + scrollX - box[0]) <= 1 && Math.abs(r.y + scrollY - box[1]) <= 1 && Math.abs(r.width - box[2]) <= 1 && Math.abs(r.height - box[3]) <= 1; });
+  const after = onScreen();
+  return { placed, same: JSON.stringify(before) === JSON.stringify(after) && width === document.documentElement.clientWidth, shown: before.length };
+})()`;
+const article = keyed({ n: 0 }, `<h1>Title</h1>${Array.from({ length: 80 }, (_, i) => `<p>Paragraph ${i} <b>bold</b> text that wraps across the line a few times so the article is long enough to scroll far below the fold of the viewport.</p>`).join("")}<div id="dock"><div id="banner" style="position:fixed;bottom:0;left:0;right:0;height:30px;background:#ccc">cookie banner</div></div><div id="hidden" style="display:none"><p>hidden</p></div><div id="sheet"><style>b{color:#a00}</style><p>styled</p></div>`);
+
+test("MP-08/MP-10 protocol 629: a viewport-first snapshot defers off-screen blocks with their boxes and fills them later", () => mirrored(article, async ({ subscribe, evaluate }) => {
+  const viewer = await subscribe({ viewport_first: true });
+  const first = await viewer.next();
+  assert.equal(first.reset, true);
+  assert.equal(first.snapshot_viewport_complete, true, "the viewport part is in the first packet");
+  assert.equal(first.snapshot_complete, false, "the off-screen part follows");
+  const rows = viewportRows(first.nodes), deferred = rows.filter(row => row.extra.deferred).map(row => [row.attrs["data-k"], row.extra.deferred]);
+  assert(deferred.length >= 40, `off-screen paragraphs are deferred (${deferred.length})`);
+  const named = name => rows.find(row => row.attrs.id === name);
+  assert(named("dock") && !named("dock").extra.deferred, "the fixed banner's wrapper is walked");
+  assert(named("banner"), "the fixed banner travels in the first packet");
+  assert.deepEqual(named("hidden")?.extra.deferred, [0, 0, 0, 0, null, 0, 0], "a display:none block is deferred without a box");
+  assert(named("sheet") && !named("sheet").extra.deferred, "a block holding a sheet is walked");
+  assert(!rows.some(row => !row.attrs["data-k"] && row.extra.deferred), "only page blocks are deferred (never the head)");
+  const native = await evaluate(`JSON.stringify(${JSON.stringify(deferred)}.map(([k]) => { const r = document.querySelector('[data-k="' + k + '"]').getBoundingClientRect(); return [k, r.top < innerHeight * 1.25 && r.bottom > 0] }))`);
+  assert(JSON.parse(native).every(([, near]) => !near), "nothing on screen is deferred");
+  for (const [k, box] of deferred) if (box[4] !== null) { const r = JSON.parse(await evaluate(`JSON.stringify(document.querySelector('[data-k="${k}"]').getBoundingClientRect())`)); assert(Math.abs(r.y + 0 - box[1]) < 0.01 && Math.abs(r.height - box[3]) < 0.01 && box[4] === box[3], `${k} keeps its native box`); }
+  // The deferred subtrees fill in later credits; every element arrives once, and the snapshot then completes.
+  const filled = new Set(); let packet = first, guard = 0, elements = rows.filter(row => row.element).length;
+  while (!packet.snapshot_complete && guard++ < 200) { packet = await viewer.next(300); for (const op of packet.ops) if (op.op === "children") { filled.add(op.id); elements += viewportRows(op.nodes).filter(row => row.element).length; } }
+  assert.equal(packet.snapshot_complete, true);
+  const ids = new Map(rows.map(row => [row.attrs["data-k"], row.id]));
+  assert(deferred.every(([k]) => filled.has(ids.get(k))), "every deferred element gets its children");
+  assert.equal(elements, await evaluate("document.getElementsByTagName('*').length"), "the same elements as a whole snapshot");
+  const placeholders = await evaluate(placeholderExpression(deferred));
+  assert.deepEqual({ placed: placeholders.placed, same: placeholders.same }, { placed: true, same: true }, "kept boxes hold the article's layout");
+}));
+
+test("MP-08/MP-10 protocol 629: a kept box the viewer cannot place is caught before a handover (tables, grids, shrink-to-fit, scrollbar)", async () => {
+  const cases = {
+    table: `<table><tr><td>a</td><td>b</td></tr>${Array.from({ length: 60 }, (_, i) => `<tr><td><div>cell ${i}</div></td><td><div>${i % 7 ? "x" : "a much longer cell text that widens the auto column"}</div></td></tr>`).join("")}</table>`,
+    grid: `<div style="display:grid;grid-template-columns:auto auto">${Array.from({ length: 60 }, (_, i) => `<div><p>${i % 9 ? "g" : "grid auto track content that is wide"}</p></div><div><p>right ${i}</p></div>`).join("")}</div>`,
+    shrink: `<div style="float:left;border:1px solid"><p>short</p>${Array.from({ length: 60 }, (_, i) => `<div><p>${i === 59 ? "the widest line of this floated shrink-to-fit box sits at the end" : "row " + i}</p></div>`).join("")}</div><p>after</p>`,
+    scrollbar: `<div style="height:calc(100vh - 60px)">top</div><div><p>just</p><p>below</p><p>the fold</p></div>`,
+    margins: `${Array.from({ length: 40 }, (_, i) => `<div><p style="margin:${i % 3 ? 0 : 30}px 0">collapsing ${i}</p></div>`).join("")}`,
+  };
+  for (const [name, body] of Object.entries(cases)) await mirrored(keyed({ n: 0 }, body), async ({ subscribe, evaluate }) => {
+    const viewer = await subscribe({ viewport_first: true }), first = await viewer.next();
+    const deferred = viewportRows(first.nodes).filter(row => row.extra.deferred).map(row => [row.attrs["data-k"], row.extra.deferred]);
+    const { placed, same, shown } = await evaluate(placeholderExpression(deferred));
+    assert(shown > 0, name);
+    assert(!placed || same, `${name}: the viewer's check passes only when the screen is unchanged (${deferred.length} deferred)`);
+    // Collapsing child margins travel with the kept box: the common heading wrapper still hands over early.
+    if (name === "margins") assert(placed && deferred.length > 0, "collapsed margins are kept");
+  });
+});
+
+test("MP-08/MP-10 protocol 629: an on-screen image travels while the off-screen rest still streams", () => mirrored(`<img src="/top.svg" width="40" height="40">${Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} <b>bold</b></p>`).join("")}`, async ({ subscribe }) => {
+  const viewer = await subscribe({ viewport_first: true }), wanted = r => Buffer.from(r.data_base64, "base64").toString().includes("#0a0b0c");
+  let packet = await viewer.next(), early = false, guard = 0;
+  assert.equal(packet.snapshot_complete, false, "the off-screen part follows");
+  while (!packet.snapshot_complete && guard++ < 400) { packet = await viewer.next(300); if (!packet.snapshot_complete && packet.resources.some(wanted)) early = true; }
+  assert.equal(packet.snapshot_complete, true);
+  assert(early, "the image the viewer's handover waits for does not queue behind every off-screen chunk");
+}, { "/top.svg": { type: "image/svg+xml", body: svg("#0a0b0c") } }));
+
+test("MP-08/MP-10 protocol 629: a followed link's new page gets its on-screen image while its off-screen rest streams", () => mirrored('<a href="/next">Go</a>', async ({ subscribe }) => {
+  const viewer = await subscribe({ viewport_first: true }), wanted = r => Buffer.from(r.data_base64, "base64").toString().includes("#0d0e0f");
+  const first = await viewer.next(), go = texts(first).get("Go");
+  await viewer.input(first.sequence, { kind: "click", node_id: `n${Number(go.slice(1)) - 1}`, x: 5, y: 5 });
+  let packet = await viewer.next(2000), early = false, guard = 0;
+  while (!(packet.reset && packet.snapshot_viewport_complete) && guard++ < 100) packet = await viewer.next(300);
+  assert.equal(packet.snapshot_complete, false, "the new page's off-screen part follows");
+  while (!packet.snapshot_complete && guard++ < 400) { packet = await viewer.next(300); if (!packet.snapshot_complete && packet.resources.some(wanted)) early = true; }
+  assert.equal(packet.snapshot_complete, true);
+  assert(early, "the click on the previous page does not hold the new page's on-screen image behind every off-screen chunk");
+}, { "/next": { type: "text/html", body: `<!doctype html><img src="/top.svg" width="40" height="40">${Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} <b>bold</b></p>`).join("")}` }, "/top.svg": { type: "image/svg+xml", body: svg("#0d0e0f") } }));
+test("MP-08/MP-10 protocol 629: a subscription that did not ask gets a whole snapshot and no viewport flag", () => mirrored(article, async ({ next }) => {
+  const first = await next();
+  assert.equal(first.snapshot_complete, true);
+  assert.equal("snapshot_viewport_complete" in first, false);
+  assert.equal(viewportRows(first.nodes).some(row => row.extra.deferred), false);
+}));
+const visitedPage = `<style>a{color:rgb(0,0,255)} a:visited{color:rgb(255,0,0)}</style><p><a id="b" href="/b">B</a> <a id="other" href="/other">other</a> <a id="part" href="#section">part</a></p><h2 id="section">Part</h2>`;
+const visitedRoutes = { "/b": { type: "text/html", body: "<!doctype html><p>B</p>" } };
+const linkHrefs = packet => Object.fromEntries(viewportRows(packet.nodes).filter(row => ["b", "other", "part"].includes(row.attrs.id)).map(row => [row.attrs.id, [row.id, row.attrs.href]]));
+// Follow A's link to B and come back, through the page itself (a renderer-started navigation, as a user's click).
+const visitB = async evaluate => {
+  const at = async (path, tries = 400) => { for (let i = 0; i < tries; i++) { if (await evaluate(`location.pathname === ${JSON.stringify(path)} && document.readyState === 'complete'`).catch(() => false) === true) return; await new Promise(resolve => setTimeout(resolve, 25)); } assert.fail(`MP-10: the page did not reach ${path}`); };
+  await evaluate("document.getElementById('b').click(), true"); await at("/b");
+  await evaluate("history.back(), true"); await at("/");
+};
+test("MP-08/MP-10 protocol 629: a link the kernel saw visited from this origin is sent as an empty href to a subscription that asked", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
+  await visitB(evaluate);
+  const first = await (await subscribe({ visited_links: true })).next();
+  const hrefs = linkHrefs(first);
+  assert.equal(hrefs.b?.[1], "", "A's link to the visited B draws :visited in the viewer");
+  assert.equal(hrefs.other?.[1], "#", "an unvisited link keeps :link");
+  assert.equal(hrefs.part?.[1], "#", "an unvisited fragment link keeps :link");
+  const old = await (await subscribe()).next();
+  assert.equal(linkHrefs(old).b?.[1], "#", "a subscription that did not ask never receives an empty href");
+}, visitedRoutes));
+
+test("MP-08/MP-10 protocol 629: a link visited after the snapshot re-marks without a reset", () => mirrored(visitedPage, async ({ subscribe, evaluate }) => {
+  const viewer = await subscribe({ visited_links: true });
+  const first = await viewer.next(), part = linkHrefs(first).part;
+  assert.equal(part?.[1], "#");
+  await evaluate("document.getElementById('part').click(), true");
+  let marked = null;
+  for (let i = 0; i < 20 && !marked; i++) {
+    const packet = await viewer.next(500);
+    assert.notEqual(packet.reset, true, "re-marking needs no reset");
+    marked = packet.ops.find(op => op.op === "attr" && op.id === part[0] && op.name === "href");
+  }
+  assert.deepEqual(marked, { op: "attr", id: part[0], name: "href", value: "" });
+}, visitedRoutes));
+

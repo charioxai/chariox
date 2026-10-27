@@ -95,7 +95,10 @@ impl KernelRuntimeState {
             return Err(denied("registry request is outside the caller room"));
         }
         let (room, target_id, deleting) = match request {
+            LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
+            LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
+            LocalDaemonRequest::ArchiveAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::UpdateAgentProfile(r) => (&r.session_id, &r.agent_id, false),
@@ -143,13 +146,13 @@ impl KernelRuntimeState {
             // MP-08/MP-11 A05: App bindings only for self or an immutable direct
             // child; the binding path checks request causation and the subset.
             LocalDaemonRequest::GrantAgentExtension(r) => {
-                return self.authorize_room_extension_target(&actor, &r.agent_ref)
+                return self.authorize_room_extension_target(&actor, &r.agent_ref);
             }
             LocalDaemonRequest::RevokeAgentExtension(r) => {
-                return self.authorize_room_extension_target(&actor, &r.agent_ref)
+                return self.authorize_room_extension_target(&actor, &r.agent_ref);
             }
             LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_) => {
-                return Err(denied("agents cannot change user focus"))
+                return Err(denied("agents cannot change user focus"));
             }
             LocalDaemonRequest::SpawnAgent(r) => {
                 if r.session_id != actor.session_id() {

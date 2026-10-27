@@ -27,7 +27,7 @@ import {
   handleCycleAgentFocus,
   type AgentLifecycleCommandHandlerDeps,
 } from "./agent-lifecycle-command-handlers.js"
-import type { AgentForkPayload, RuntimeSession, TurnUndoResult } from "./cli-types.js"
+import type { AgentForkPayload, RuntimeSession, TranscriptEntry, TurnUndoResult } from "./cli-types.js"
 
 export type AgentCommandHandlerDeps =
   & AgentConfigCommandHandlerDeps
@@ -36,6 +36,7 @@ export type AgentCommandHandlerDeps =
   & AgentSubstituteCommandHandlerDeps
   & AgentTaskCommandHandlerDeps
   & {
+    appendNotice: (message: string, emphasis?: TranscriptEntry["emphasis"], mergeKey?: string) => void
     undoTurn?: (agentRef?: string | null, turnRef?: string | null) => Promise<TurnUndoResult>
     forkAgent?: (sourceAgentRef?: string | null, alias?: string | null) => Promise<AgentForkPayload>
     refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
@@ -175,7 +176,12 @@ export async function handleAgentSlashCommand(
         deps.flashFooter(resolved.error ?? "usage: /agent wakes [agent-ref]", "error")
         return
       }
-      deps.appendNotice(formatAgentWakeLines(deps.sessionState(), resolved?.agent?.id ?? null).join("\n"))
+      const session = deps.sessionState()
+      deps.appendNotice(
+        formatAgentWakeLines(session, resolved?.agent?.id ?? null).join("\n"),
+        "muted",
+        `agent-wakes:${encodeURIComponent(session.id)}:${Date.now()}`,
+      )
       return
     }
     default:

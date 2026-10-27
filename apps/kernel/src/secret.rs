@@ -348,7 +348,7 @@ impl RuntimeSecretService {
                 "max_response_bytes must be greater than zero".to_string(),
             ));
         }
-        let agent = ureq::AgentBuilder::new()
+        let agent = crate::outbound_dial::agent_builder()
             .timeout(std::time::Duration::from_millis(request.timeout_ms))
             .build();
         let mut http_request = match method.as_str() {
@@ -503,6 +503,18 @@ impl RuntimeSecretService {
             UserCredentialSourceConfig::Vault { key } => Some(key.as_str()),
             _ => None,
         })
+    }
+
+    /// A kernel speech request resolves its owner-scoped handle just for this request.
+    /// Do not populate or consult the process cache: relocking/deleting a Vault entry applies immediately.
+    pub(crate) fn vault_secret_for_dictation(
+        &self,
+        key: &str,
+    ) -> Result<Option<Zeroizing<String>>, DaemonError> {
+        validate_vault_key(key)?;
+        self.vault_store
+            .find_secret(self.vault_service_name()?, key)
+            .map(|value| value.map(Zeroizing::new))
     }
 
     pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {

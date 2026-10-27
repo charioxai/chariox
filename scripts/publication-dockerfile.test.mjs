@@ -55,6 +55,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
   assert.ok(kernelBuild >= 0, "the kernel must build with the committed Cargo.lock")
   for (const requiredCopy of [
     "COPY Cargo.toml Cargo.lock ./",
+    "COPY patches/ureq patches/ureq",
     "COPY apps/relay apps/relay",
     "COPY packages/event-protocol packages/event-protocol",
     "COPY packages/aegs-sdk packages/aegs-sdk",

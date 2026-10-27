@@ -380,3 +380,129 @@ fn agent_prompt_schedule_state_survives_session_serialization() {
         session.agent_prompt_schedules()
     );
 }
+
+async fn archive_test_agent(
+    router: &CommandRouter,
+    session_id: &str,
+    agent_id: &str,
+    archived: bool,
+) {
+    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "ArchiveAgent": {"session_id": session_id, "agent_id": agent_id, "archived": archived}
+    }))
+    .expect("ArchiveAgent must be part of the shared protocol");
+    let command = KernelCommand::from_local_request("archive-agent", None, None, &request);
+    boxed_schedule_future(|| router.dispatch(command, request))
+        .await
+        .expect("idle agent archive state should change");
+}
+
+#[tokio::test]
+async fn archived_agent_keeps_its_one_shot_wait_and_runs_it_after_unarchive() {
+    let worktree = crate::test_support::TestWorktree::new("agent-prompt-schedules-archived");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let mut schedules = Vec::new();
+    for (kind, prompt) in [
+        (
+            crate::session::AgentPromptScheduleKind::Once,
+            "Resume the audit.",
+        ),
+        (
+            crate::session::AgentPromptScheduleKind::Recurring,
+            "Check whether more work remains.",
+        ),
+    ] {
+        let request = LocalDaemonRequest::CreateAgentPromptSchedule(
+            crate::local::CreateAgentPromptScheduleRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                kind,
+                interval_seconds: 60,
+                prompt: Some(prompt.to_string()),
+            },
+        );
+        let command = KernelCommand::from_local_request("create-wait", None, None, &request);
+        match boxed_schedule_future(|| router.dispatch(command, request))
+            .await
+            .expect("schedule should create")
+        {
+            LocalDaemonResponse::AgentPromptScheduleCreated { schedule, .. } => {
+                schedules.push(schedule)
+            }
+            response => panic!("unexpected schedule response: {response:?}"),
+        }
+    }
+    let (once, recurring) = (&schedules[0], &schedules[1]);
+    let due_at_ms = once.next_run_at_ms().max(recurring.next_run_at_ms());
+
+    archive_test_agent(&router, session.id(), agent.id(), true).await;
+    boxed_schedule_future(|| {
+        router
+            .runtime_state
+            .dispatch_due_agent_prompt_schedules(due_at_ms)
+    })
+    .await;
+
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("archived agent snapshot should stay readable");
+    assert!(snapshot.active_prompt_for_agent(agent.id()).is_none());
+    let retained = snapshot
+        .agent_prompt_schedules()
+        .iter()
+        .find(|schedule| schedule.id() == once.id())
+        .expect("a one-shot wait that comes due while archived must stay pending");
+    assert!(!retained.dispatch_in_flight());
+    assert_eq!(retained.runs_dispatched(), 0);
+    let coalesced = snapshot
+        .agent_prompt_schedules()
+        .iter()
+        .find(|schedule| schedule.id() == recurring.id())
+        .expect("recurring wait should remain");
+    assert_eq!(
+        (coalesced.runs_dispatched(), coalesced.next_run_at_ms()),
+        (0, due_at_ms + 60_000),
+        "a recurring wait keeps coalescing while its agent is archived"
+    );
+
+    archive_test_agent(&router, session.id(), agent.id(), false).await;
+    boxed_schedule_future(|| {
+        router
+            .runtime_state
+            .dispatch_due_agent_prompt_schedules(due_at_ms + 1)
+    })
+    .await;
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("unarchived agent snapshot should stay readable");
+    assert_eq!(
+        snapshot
+            .active_prompt_for_agent(agent.id())
+            .map(|prompt| prompt.prompt()),
+        Some("Resume the audit.")
+    );
+    assert!(
+        snapshot
+            .agent_prompt_schedules()
+            .iter()
+            .all(|schedule| schedule.id() != once.id()),
+        "the retained one-shot wait runs exactly once after unarchive"
+    );
+}

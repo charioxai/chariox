@@ -3,6 +3,13 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
+    AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
+    EventSubscription { subscription: EventSubscription },
+    EventsListed { events: Vec<OutsideEvent>, next_cursor: u64, oldest_cursor: u64, timed_out: bool },
+    EventsAcknowledged { cursor: u64 },
+    EventsCursorExpired { oldest_cursor: u64 },
+    AgentDeadline { deadline: Option<AgentDeadline> },
     SshMachine { machine: SshMachineResult },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -23,13 +30,28 @@ pub enum LocalDaemonResponse {
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
+    /// Protocol 569: whether the target still knows the requester (false: it ended there).
+    KernelSudoRequesterRenewed { renewed: bool, },
+    GatewayKernelsListed { kernels: Vec<GatewayKernel>, },
+    /// Protocol 568: the attachments that no longer exist on this kernel.
+    AttachmentsHeartbeated { lapsed: Vec<String>, },
+    /// Protocol 568: the gateway paired with a self-hosted kernel.
+    GatewayKernelJoined { kernel: GatewayKernel, },
+    GatewayKernelForgotten { kernel_id: String, },
+    /// Protocol 568: the machine file requests.
+    KernelFileStat { stat: KernelFileStat, },
+    KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
+    KernelFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
+    KernelFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
     /// Protocol 477: the safe outcome of the owner's hand-off action.
     HandoffResolved { outcome: HandoffOutcome },
     /// MD-2: operation result; no CDP endpoints or profile paths.
     KernelBrowser { result: serde_json::Value, },
     Notes { result: NoteResult, },
+    Dictation { result: DictationResult, },
     VisibleRegionCaptured { capture: VisibleRegionCapture },
+    RoomTerminal { result: RoomTerminalResult },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },
     AppPackageUploadStatus { upload: AppPackageUploadSummary, },
@@ -69,7 +91,7 @@ pub enum LocalDaemonResponse {
     AppFileGrantsRevoked { installation_id: String, requests: u32, files: u32, },
     AppHostActionAccepted { operation_id: String, action: AppHostAction, },
     AppInboxOccurrenceAccepted { installation_id: String, route_id: String, occurrence_id: String, duplicate: bool, },
-    SessionCreated { session: RuntimeSession, agent: AgentInstance, },
+    SessionCreated { session: RuntimeSession, agent: AgentInstance, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
     SessionAttached { attachment: RuntimeAttachment, },
     SessionViewAttached {
         attachment: RuntimeAttachment,
@@ -284,6 +306,7 @@ pub enum LocalDaemonResponse {
         kernels: Vec<RelayKernelPresence>,
     },
     WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
+    WaitingRoomSessionsListed { page: WaitingRoomSessionPage, },
     WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
@@ -347,6 +370,7 @@ pub enum LocalDaemonResponse {
     ProviderAccountProfile { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileRemoved { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileDataDeleted { profile: crate::account_profile::ProviderAccountProfile, },
+    ProviderAccountCopied { receipt: crate::provider_account_copy::ProviderAccountCopyReceipt, },
     ProviderAccountCredentialStored { provider: String, account_profile: String, credential_id: String, replaced: bool, },
     ProviderProcessesListed { processes: Vec<ProviderProcessInfo>, },
     ProviderProcessesTornDown { processes: Vec<ProviderProcessInfo>, },
@@ -370,6 +394,7 @@ pub enum LocalDaemonResponse {
         answer: Option<String>,
     },
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
+    RoomPinned { session: RuntimeSession, },
     KernelAccessDecisionResponded { interaction_id: String, },
     InteractionResponded { interaction_id: String, session: RuntimeSession, },
     DeploymentCredentialEnrollmentArmed {
@@ -442,8 +467,8 @@ pub enum LocalDaemonResponse {
     SessionAliased { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
     AgentProfileUpdated { agent: AgentInstance, session: RuntimeSession, },
-    AgentSpawned { agent: AgentInstance, },
-    AgentsSpawned { agents: Vec<AgentInstance>, },
+    AgentSpawned { agent: AgentInstance, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
+    AgentsSpawned { agents: Vec<AgentInstance>, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
     TurnUndone { result: TurnUndoResult, },
     AgentForked {
         source_agent_id: String,
@@ -456,6 +481,7 @@ pub enum LocalDaemonResponse {
     RemoteExtensionManifestSynced { agent: AgentInstance, },
     HomeExtensionAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },
     SliceAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },
+    AgentArchived { session: RuntimeSession, agent: AgentInstance, },
     AgentDestroyed { agent: AgentInstance, },
     AgentFocused { agent: AgentInstance, },
     AgentOutputSeenAcknowledged { session_id: String, agent_id: String, },

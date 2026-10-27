@@ -1,0 +1,171 @@
+{
+  "local": 629,
+  "relayPeer": 232,
+  "requests": [
+    {
+      "StartManagedContextTransfer": {
+        "interactive": true,
+        "ownerManaged": {
+          "target": {
+            "relayRealmId": "realm",
+            "machineId": "machine",
+            "kernelId": "kernel",
+            "relayPublicKey": "public",
+            "keyThumbprint": "thumbprint"
+          },
+          "contextSelection": {
+            "kernelContext": "source_kernel_without_credentials",
+            "developmentSetup": {
+              "kind": "source_project",
+              "projectId": "project",
+              "repositories": [
+                {
+                  "role": "primary",
+                  "workspaceId": "workspace",
+                  "worktreeId": null
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "responses": [
+    {
+      "ManagedContextLaunchTarget": {
+        "target": {
+          "destination": {
+            "kind": "owner_managed_machine",
+            "machineId": "machine",
+            "kernelId": "kernel"
+          },
+          "kernelId": "kernel",
+          "contextId": "context",
+          "planDigest": "digest",
+          "development": {
+            "kind": "empty",
+            "workspacePath": "/home/user/chariox-contexts/context/workspace"
+          }
+        }
+      }
+    },
+    {
+      "AgentTaskUpdated": {
+        "session_id": "room",
+        "task": {
+          "task_id": "task",
+          "room_id": "room",
+          "owner_user_id": "owner",
+          "agent_id": "agent",
+          "prompt_id": "prompt",
+          "provider_run_id": null,
+          "revision": 2,
+          "blocked_revision": 0,
+          "state": "working",
+          "reason": "work",
+          "obligations": [],
+          "wait": null,
+          "last_progress_at_ms": 1,
+          "progress_sequence": 0,
+          "no_progress_wakes": 0,
+          "correction_used": false,
+          "pending_prompt_id": null
+        }
+      }
+    }
+  ],
+  "peerRequests": [
+    {
+      "kind": "arm_managed_context_import",
+      "plan": {
+        "contextId": "context",
+        "planDigest": "digest",
+        "destination": {
+          "kind": "owner_managed_machine",
+          "machineId": "machine",
+          "kernelId": "kernel"
+        },
+        "kernelContext": "source_kernel_without_credentials",
+        "development": {
+          "kind": "empty"
+        },
+        "providerAccounts": {
+          "kind": "none"
+        },
+        "gitCredentials": {
+          "kind": "none"
+        }
+      },
+      "destination": {
+        "kind": "owner_managed_machine",
+        "machineId": "machine",
+        "kernelId": "kernel"
+      },
+      "target_kernel_id": "kernel",
+      "target_key_thumbprint": "thumbprint",
+      "capability": "capability",
+      "archive_sha256": "archive",
+      "archive_size_bytes": 128
+    },
+    {
+      "kind": "leased_watched_process",
+      "leased_agent_id": "leased",
+      "action": {
+        "Query": {
+          "wake_id": "wake",
+          "binding": {
+            "worker_kernel_id": "worker",
+            "worker_machine_id": "machine",
+            "execution_lease_id": "lease",
+            "leased_agent_id": "leased",
+            "home_prompt_id": "prompt",
+            "worker_provider_run_id": "run"
+          }
+        }
+      }
+    }
+  ],
+  "events": [
+    {
+      "event": "agent_task_updated",
+      "session_id": "room",
+      "task": {
+        "task_id": "task",
+        "room_id": "room",
+        "owner_user_id": "owner",
+        "agent_id": "agent",
+        "prompt_id": "prompt",
+        "provider_run_id": null,
+        "revision": 2,
+        "blocked_revision": 0,
+        "state": "working",
+        "reason": "work",
+        "obligations": [],
+        "wait": null,
+        "last_progress_at_ms": 1,
+        "progress_sequence": 0,
+        "no_progress_wakes": 0,
+        "correction_used": false,
+        "pending_prompt_id": null
+      }
+    }
+  ],
+  "replyOutcomes": [
+    {
+      "kind": "delegate_gone",
+      "delegate_id": "helper",
+      "reason": "deleted"
+    },
+    {
+      "kind": "delegate_gone",
+      "delegate_id": "helper",
+      "reason": "failed_start"
+    },
+    {
+      "kind": "delegate_gone",
+      "delegate_id": "helper",
+      "reason": "source_lost"
+    }
+  ]
+}

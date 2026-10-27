@@ -1,0 +1,23 @@
+{
+  "local_protocol": 629,
+  "peer_protocol": 232,
+  "request": {
+    "KernelBrowser": {
+      "command": {
+        "op": "resize",
+        "tab_id": "t",
+        "generation": 7,
+        "width": 900,
+        "height": 600
+      }
+    }
+  },
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "width": 900,
+        "height": 600
+      }
+    }
+  }
+}

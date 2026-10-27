@@ -7,6 +7,8 @@ import { materializeMirrorResources,mirrorHash } from './kernel-browser-mirror-r
 import { encodePng,decodePng } from './kernel-browser-pixels.mjs';
 import { displayGeometry as geometry,hostViewport } from './kernel-browser-geometry.mjs';
 import { spawnSync } from 'node:child_process';
+// These fixtures exercise the host with the mirror and display kill-switched; tests that need them on set "1" themselves.
+process.env.CHARIOX_KERNEL_BROWSER_MIRROR ??= '0'; process.env.CHARIOX_KERNEL_BROWSER_DISPLAY ??= '0';
 function fixture() {
   const tab={tab_id:'t',target_id:'target',document_id:'d'},state={document:'d',snapshot:{root:'n1',nodes:[{id:'n1',parent:null,children:['n2'],kind:'element',tag:'div',box:{x:0,y:0,width:80,height:40}},{id:'n2',parent:'n1',children:[],kind:'text',text:'fixture'}],fonts:[],resources:[],scroll:{x:0,y:0},focused:null,selection:null}};
   const calls=[],connection={async send(method,params){

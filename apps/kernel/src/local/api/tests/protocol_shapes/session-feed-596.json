@@ -1,0 +1,97 @@
+{
+  "agent_turn_changed": {
+    "agent_id": "agent-1",
+    "event": "agent_turn_changed",
+    "history_revision": 12,
+    "session_id": "session-1",
+    "turn": {
+      "blobs": [
+        {
+          "blob_id": "history:11:11",
+          "entry_count": 1,
+          "kind": "provider_tool",
+          "sequence_end": 11,
+          "sequence_start": 11,
+          "summary": "$ ls",
+          "timestamp_ms": 43,
+          "title": "bash · COMPLETED",
+          "total_chars": 20
+        }
+      ],
+      "completed_at_ms": 99,
+      "entries": [
+        {
+          "entry": {
+            "agent_id": "agent-1",
+            "kind": "provider_output",
+            "provider_run_id": "provider-run-1",
+            "session_id": "session-1",
+            "source_attachment_id": "attachment-1",
+            "text": "Two files.",
+            "timestamp_ms": 54
+          },
+          "entry_index": 12,
+          "fragment_end": 10,
+          "fragment_start": 0,
+          "total_chars": 10
+        }
+      ],
+      "lifecycle": "completed",
+      "prompt_id": "prompt-1",
+      "prompt_origin": "chariox",
+      "started_at_ms": 42,
+      "turn_id": "prompt-1",
+      "user_prompt": {
+        "entry": {
+          "agent_id": "agent-1",
+          "kind": "user_prompt",
+          "prompt_origin": "chariox",
+          "provider_run_id": "provider-run-1",
+          "session_id": "session-1",
+          "source_attachment_id": "attachment-1",
+          "text": "list the files",
+          "timestamp_ms": 52
+        },
+        "entry_index": 10,
+        "fragment_end": 14,
+        "fragment_start": 0,
+        "total_chars": 14
+      }
+    }
+  },
+  "allocation": "614/220 union (feature predecessor 596/202): agent_turn_changed, home_extension_audit_appended, home_extension_audit_lagged, heartbeat_interval_ms",
+  "home_extension_audit_appended": {
+    "agent_id": "agent-1",
+    "audit_event": {
+      "event_id": "state_evt_1",
+      "kind": "home_extension.grant.created",
+      "payload": {
+        "name": "tool-1"
+      },
+      "sequence": 7,
+      "subject_id": "agent-1",
+      "timestamp_ms": 50
+    },
+    "event": "home_extension_audit_appended",
+    "session_id": "session-1"
+  },
+  "home_extension_audit_lagged": {
+    "event": "home_extension_audit_lagged",
+    "session_id": "session-1"
+  },
+  "items": [
+    "MP-08",
+    "MP-10",
+    "MP-11"
+  ],
+  "local_protocol": 629,
+  "subscribe_with_heartbeat_interval": {
+    "attachment_id": "__waiting_room_inventory__",
+    "heartbeat_interval_ms": 1000,
+    "request_id": "request-1",
+    "resume_from_event_id": null,
+    "session_id": "__waiting_room_inventory__",
+    "subscription_scope": "waiting_room_inventory",
+    "type": "subscribe"
+  }
+}

@@ -71,6 +71,11 @@ static void runtime_load(void) {
     runtime_x264=ready;ready=1;
     CX_AV_FUNCTIONS(CX_RESOLVE_AV)
     runtime_av=ready;
+    /* AVCodecContext, AVFrame, AVPacket and AVHWFramesContext are accessed
+     * directly below. Their offsets are only compatible within this major;
+     * trying another distribution's soname can corrupt memory. */
+    if(!runtime_av)fprintf(stderr,"MD-DISPLAY: native codec unavailable: requires libavcodec.so." CX_TEXT(LIBAVCODEC_VERSION_MAJOR) " and its matching libavutil ABI; install that library or rebuild the kernel for this distribution (other FFmpeg majors are incompatible)\n");
+    if(encoder&&!strcmp(encoder,"libx264")&&!runtime_x264)fprintf(stderr,"MD-DISPLAY: native codec unavailable: requires libx264.so." CX_TEXT(X264_BUILD) " ABI; install that library or rebuild the kernel for this distribution\n");
 }
 static int runtime_available(void) {
     pthread_once(&runtime_once,runtime_load);

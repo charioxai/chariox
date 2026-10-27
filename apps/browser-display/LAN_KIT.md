@@ -140,3 +140,26 @@ probe these paths here. Record actual encoder use on the laptop; a requested
 hardware mode is not proof of acceleration. Keep GPU results unmeasured until
 that run. Baseline receipts name their public upstream revision/version and
 retain startup failures. They never establish Chariox runtime acceptance.
+
+## MP-08 / MP-10 / MP-11: focused layout protocol drill
+
+The existing local runner also exercises protocol 629 resize and viewport-first
+snapshots through a real kernel, scoped encrypted relay and Chromium viewer:
+
+```sh
+MD_LAYOUT_PROTOCOL=1 MD_NATIVE_WORKER=/absolute/chariox-kernel \
+  node apps/browser-display/drill.mjs /absolute/kernel-test-ELF \
+  /absolute/evidence /absolute/node-tools /absolute/pyav-tools
+```
+
+Use matching source-built binaries with `native-display`; the test ELF runs
+`runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill`.
+The runner records binary/source identities, resources, logs and screenshots and
+cleans up its disposable state and processes. It asserts three live resize sizes (including 1920×1080),
+the real shared client packet validator, attached-viewer resets, persistence
+across protocol 560 observer subscriptions,
+and deferred viewport-first completion. This focused local fixture is a protocol
+regression check; hosted public-site, real-provider and stability acceptance are
+separate. To check that the drill can fail, run the same runner with explicit
+`MD_SOURCE_ASSETS=1` against a source tree with the resize operation or
+viewport-first observer behavior disabled; retain that patch with the results.

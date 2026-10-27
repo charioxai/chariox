@@ -288,8 +288,8 @@ tags/attributes, any fetching CSS refused).
 
 ## Contract and authority
 
-Local protocol **433**, relay peer **79**. Set `CHARIOX_KERNEL_BROWSER_MIRROR=1`
-on the kernel. The shared client requires 433 only when attaching this feature;
+Local protocol **433**, relay peer **79**. The mirror is on by default;
+`CHARIOX_KERNEL_BROWSER_MIRROR=0` on the kernel is the kill switch. The shared client requires 433 only when attaching this feature;
 older unrelated feature minima remain unchanged. Commands are terminal-only:
 `mirror_subscribe`, `mirror_next`, `mirror_close`, and `mirror_input`.
 The kernel derives the user and terminal actor; the caller cannot supply either.

@@ -220,7 +220,7 @@ async fn connect_once(
                 .map_err(|error| format!("invalid AEDS token header: {error}"))?,
         );
     }
-    let (websocket, _) = tokio_tungstenite::connect_async(request)
+    let (websocket, _) = crate::outbound_dial::connect_websocket(request)
         .await
         .map_err(|error| format!("failed to connect to AEDS: {error}"))?;
     let (mut sink, mut stream) = websocket.split();

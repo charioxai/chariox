@@ -349,7 +349,7 @@ test("Cloud pairing bootstrap uses the receiving client profile and refuses a fo
   const identity = createCliRelayIdentityStore().getOrCreate()
   const client = new CloudClient()
   try {
-    await assert.rejects(issueCloudPairingBootstrapToken("ws://fixture", "remote-a", identity), /signed-in terminal/)
+    await assert.rejects(issueCloudPairingBootstrapToken("ws://fixture", "remote-a", identity), authCode("login_required"))
     const publicProfile = await client.login(cloud.apiUrl, () => {})
     await assert.rejects(issueCloudPairingBootstrapToken("wss://foreign.invalid", "remote-a", identity), authCode("profile_conflict"))
     assert.equal(cloud.metrics.grants, 0)

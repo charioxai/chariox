@@ -173,8 +173,8 @@ fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     );
 }
 
-#[test]
-fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
+#[tokio::test]
+async fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
     let worktree = crate::test_support::TestWorktree::new("workflow-tool-idle-provider");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -292,6 +292,68 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
 
     assert_ne!(workflow_provider.id(), ordinary.id());
     assert!(workflow_provider.workflow_tools_enabled());
+    runtime
+        .owned
+        .provider_store
+        .mark_run_running(workflow_provider.id())
+        .unwrap();
+    runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), workflow_provider.id())
+        .unwrap()
+        .expect("workflow turn should start");
+    let before = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&before, agent.id())
+        .unwrap();
+    runtime
+        .owned
+        .ensure_agent_task(
+            session.id(),
+            agent.id(),
+            &active,
+            Some(workflow_provider.id()),
+        )
+        .unwrap();
+    let tasks_before = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap(),
+        tasks_before
+    );
+    assert!(runtime
+        .owned
+        .durable_state_store
+        .agent_wakes(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .is_empty());
+    assert!(runtime
+        .owned
+        .agent_task_context_hint(session.id(), agent.id(), active.id())
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .workflow_runs(),
+        before.workflow_runs()
+    );
     assert!(matches!(
         runtime
             .owned

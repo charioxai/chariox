@@ -883,14 +883,40 @@ impl KernelRuntimeState {
             .load_subject_events(agent.id(), limit)?;
         Ok(events
             .into_iter()
-            .filter(|event| {
-                event.kind.starts_with("home_extension.")
-                    || event.kind.starts_with("agent.extension")
-                    || event.kind.starts_with("agent.mcp_")
-                    || event.kind.starts_with("agent.skill_")
-                    || event.kind.starts_with("extension.registration.")
-            })
+            .filter(is_home_extension_audit_event)
             .collect())
+    }
+
+    /// Whether a freshly appended event is a row `list_home_extension_audit_events` would return
+    /// to this caller.
+    pub(crate) fn is_readable_home_extension_audit_event(
+        &self,
+        event: &crate::durable_state::DurableStateEvent,
+        caller_user_id: &str,
+    ) -> bool {
+        is_home_extension_audit_event(event)
+            && event.subject_id.as_deref().is_some_and(|agent_id| {
+                self.owned
+                    .ensure_agent_extension_authority(
+                        agent_id,
+                        caller_user_id,
+                        "home extension audit",
+                    )
+                    .is_ok()
+            })
+    }
+
+    async fn remove_terminated_provider_processes(&self, terminated_run_ids: Vec<String>) {
+        for provider_run_id in terminated_run_ids {
+            let (_, process_key) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            self.owned
+                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+        }
     }
 
     pub(crate) async fn update_session_config(
@@ -900,8 +926,46 @@ impl KernelRuntimeState {
         values: std::collections::BTreeMap<String, String>,
         requires_idle: bool,
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
+        let scopes = self.session_agent_execution_configs(session_id);
+        let config =
+            self.owned
+                .update_session_config(session_id, attachment_id, values, requires_idle)?;
+        let changed = self.session_agent_execution_configs(session_id);
+        let mut terminated_run_ids = Vec::new();
+        for (agent_id, scope) in scopes {
+            if let Some(next_scope) = changed.get(&agent_id).filter(|next| **next != scope) {
+                self.claude_session_grants.forget(&agent_id);
+                terminated_run_ids.extend(self.owned.apply_agent_execution_config_to_provider(
+                    session_id,
+                    &agent_id,
+                    *next_scope,
+                    false,
+                )?);
+            }
+        }
+        self.remove_terminated_provider_processes(terminated_run_ids)
+            .await;
+        Ok(config)
+    }
+
+    /// What each agent of the session runs under, as the session's own configuration decides it.
+    fn session_agent_execution_configs(
+        &self,
+        session_id: &str,
+    ) -> std::collections::BTreeMap<String, crate::session::EffectiveAgentExecutionConfig> {
+        let Ok(session) = self.owned.session_store.get_session(session_id) else {
+            return Default::default();
+        };
         self.owned
-            .update_session_config(session_id, attachment_id, values, requires_idle)
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .map(|agent| {
+                let scope =
+                    crate::session::effective_agent_execution_config(&session, Some(&agent));
+                (agent.id().to_string(), scope)
+            })
+            .collect()
     }
 
     #[allow(
@@ -928,16 +992,11 @@ impl KernelRuntimeState {
             workspace_id,
             worktree_id,
         )?;
-        for provider_run_id in update.terminated_run_ids {
-            let (_, process_key) = self
-                .with_app_side_effect(|app| {
-                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
-                })
-                .await
-                .unwrap_or((false, None));
-            self.owned
-                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+        if update.scope_changed && update.remote_update.is_none() {
+            self.claude_session_grants.forget(agent_id);
         }
+        self.remove_terminated_provider_processes(update.terminated_run_ids)
+            .await;
         let mut agent = update.agent;
         if let Some(remote_update) = update.remote_update {
             let mut config = self.config_snapshot().await;
@@ -994,6 +1053,9 @@ impl KernelRuntimeState {
                 execution_mode_override,
                 permission_level_override,
             )?;
+            if update.scope_changed {
+                self.claude_session_grants.forget(agent_id);
+            }
         }
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;
@@ -1136,6 +1198,8 @@ impl KernelRuntimeState {
         let agent = self
             .owned
             .alias_agent(session_id, agent_id, caller_user_id, alias)?;
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
     }
@@ -1215,3 +1279,11 @@ fn static_runtime_tool_names() -> std::collections::BTreeSet<String> {
 
 #[cfg(test)]
 mod tests;
+
+fn is_home_extension_audit_event(event: &crate::durable_state::DurableStateEvent) -> bool {
+    event.kind.starts_with("home_extension.")
+        || event.kind.starts_with("agent.extension")
+        || event.kind.starts_with("agent.mcp_")
+        || event.kind.starts_with("agent.skill_")
+        || event.kind.starts_with("extension.registration.")
+}

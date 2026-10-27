@@ -1,7 +1,12 @@
 use super::*;
 
 impl SessionService {
-    pub fn next_scheduled_runtime_wake_at_ms(&self) -> Option<u64> {
+    /// `archived_agent_ids` names agents whose one-shot schedules stay pending
+    /// instead of waking the runtime, because nothing can admit them yet.
+    pub fn next_scheduled_runtime_wake_at_ms(
+        &self,
+        archived_agent_ids: &std::collections::BTreeSet<String>,
+    ) -> Option<u64> {
         self.store
             .non_ended_sessions()
             .flat_map(|session| {
@@ -19,6 +24,7 @@ impl SessionService {
                     .agent_prompt_schedules()
                     .iter()
                     .filter(|schedule| !schedule.dispatch_in_flight())
+                    .filter(|schedule| !is_held_for_archived_agent(schedule, archived_agent_ids))
                     .map(|schedule| schedule.next_run_at_ms());
                 watchdogs.chain(agent_prompts)
             })
@@ -96,11 +102,15 @@ impl SessionService {
     pub fn claim_due_agent_prompt_schedules(
         &mut self,
         now_ms: u64,
+        archived_agent_ids: &std::collections::BTreeSet<String>,
     ) -> AgentPromptScheduleCollection {
         let mut collection = AgentPromptScheduleCollection::default();
         for session in self.store.non_ended_sessions_mut() {
             let session_id = session.id().to_string();
             for schedule in session.agent_prompt_schedules_mut() {
+                if is_held_for_archived_agent(schedule, archived_agent_ids) {
+                    continue;
+                }
                 if schedule.claim_dispatch(now_ms) {
                     collection.dispatches.push(AgentPromptScheduleDispatch {
                         session_id: session_id.clone(),
@@ -138,6 +148,30 @@ impl SessionService {
         }
         let schedule = &mut session.agent_prompt_schedules_mut()[index];
         schedule.mark_dispatch_succeeded(now_ms);
+        Ok(Some(schedule.clone()))
+    }
+
+    /// Unclaims a one-shot schedule that could not be admitted because its
+    /// agent is archived, so it is still pending when the agent returns.
+    pub(crate) fn release_agent_prompt_schedule_claim(
+        &mut self,
+        session_id: &str,
+        schedule_id: &str,
+    ) -> Result<Option<AgentPromptSchedule>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let Some(schedule) = session
+            .agent_prompt_schedules_mut()
+            .iter_mut()
+            .find(|schedule| schedule.id() == schedule_id)
+        else {
+            return Ok(None);
+        };
+        schedule.release_dispatch_claim();
         Ok(Some(schedule.clone()))
     }
 
@@ -193,9 +227,23 @@ impl SessionService {
     }
 }
 
+/// A one-shot wait is a single promise: coalescing it away while its agent is
+/// archived would lose it. Recurring waits coalesce and try again next interval.
+fn is_held_for_archived_agent(
+    schedule: &AgentPromptSchedule,
+    archived_agent_ids: &std::collections::BTreeSet<String>,
+) -> bool {
+    schedule.kind() == AgentPromptScheduleKind::Once
+        && archived_agent_ids.contains(schedule.agent_id())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn no_archived_agents() -> std::collections::BTreeSet<String> {
+        std::collections::BTreeSet::new()
+    }
 
     #[test]
     fn due_agent_prompt_schedule_is_claimed_once_until_dispatch_settles() {
@@ -215,12 +263,16 @@ mod tests {
             .expect("schedule should create");
         let due_at_ms = schedule.next_run_at_ms();
 
-        let first = service.claim_due_agent_prompt_schedules(due_at_ms);
-        let overlapping = service.claim_due_agent_prompt_schedules(due_at_ms);
+        let first = service.claim_due_agent_prompt_schedules(due_at_ms, &no_archived_agents());
+        let overlapping =
+            service.claim_due_agent_prompt_schedules(due_at_ms, &no_archived_agents());
 
         assert_eq!(first.dispatches.len(), 1);
         assert!(overlapping.dispatches.is_empty());
-        assert_eq!(service.next_scheduled_runtime_wake_at_ms(), None);
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(&no_archived_agents()),
+            None
+        );
 
         service
             .mark_agent_prompt_schedule_failed(
@@ -231,7 +283,7 @@ mod tests {
             )
             .expect("failed dispatch should release the claim");
         assert_eq!(
-            service.next_scheduled_runtime_wake_at_ms(),
+            service.next_scheduled_runtime_wake_at_ms(&no_archived_agents()),
             Some(due_at_ms.saturating_add(1_000))
         );
     }
@@ -255,7 +307,7 @@ mod tests {
         let due_at_ms = schedule.next_run_at_ms();
         assert_eq!(
             service
-                .claim_due_agent_prompt_schedules(due_at_ms)
+                .claim_due_agent_prompt_schedules(due_at_ms, &no_archived_agents())
                 .dispatches
                 .len(),
             1
@@ -266,7 +318,7 @@ mod tests {
         let next_due_at_ms = due_at_ms + 600_000;
         assert_eq!(
             service
-                .claim_due_agent_prompt_schedules(next_due_at_ms)
+                .claim_due_agent_prompt_schedules(next_due_at_ms, &no_archived_agents())
                 .dispatches
                 .len(),
             1
@@ -278,16 +330,53 @@ mod tests {
         assert_eq!(coalesced.runs_dispatched(), 1);
         assert_eq!(coalesced.last_triggered_at_ms(), Some(due_at_ms));
         assert_eq!(
-            service.next_scheduled_runtime_wake_at_ms(),
+            service.next_scheduled_runtime_wake_at_ms(&no_archived_agents()),
             Some(next_due_at_ms + 600_000)
         );
         assert!(service
-            .claim_due_agent_prompt_schedules(next_due_at_ms)
+            .claim_due_agent_prompt_schedules(next_due_at_ms, &no_archived_agents())
             .dispatches
             .is_empty());
         assert_eq!(
             service
-                .claim_due_agent_prompt_schedules(next_due_at_ms + 600_000)
+                .claim_due_agent_prompt_schedules(next_due_at_ms + 600_000, &no_archived_agents())
+                .dispatches
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn one_shot_schedule_of_an_archived_agent_is_neither_claimed_nor_waking() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut service = SessionService::new(&config);
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .unwrap();
+        let once = service
+            .create_agent_prompt_schedule(
+                session.id(),
+                "agent-1",
+                AgentPromptScheduleKind::Once,
+                60,
+                Some("Resume.".to_string()),
+            )
+            .unwrap();
+        let archived = std::collections::BTreeSet::from(["agent-1".to_string()]);
+        let due_at_ms = once.next_run_at_ms();
+
+        assert!(service
+            .claim_due_agent_prompt_schedules(due_at_ms, &archived)
+            .dispatches
+            .is_empty());
+        assert_eq!(service.next_scheduled_runtime_wake_at_ms(&archived), None);
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(&no_archived_agents()),
+            Some(due_at_ms)
+        );
+        assert_eq!(
+            service
+                .claim_due_agent_prompt_schedules(due_at_ms, &no_archived_agents())
                 .dispatches
                 .len(),
             1

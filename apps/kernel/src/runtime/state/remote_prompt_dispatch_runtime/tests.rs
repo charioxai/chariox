@@ -5546,3 +5546,335 @@ async fn a10_settled_remote_cancellation_cancels_only_its_durable_task() {
         ExecutionState::Working
     );
 }
+
+mod lost_worker_run {
+    use super::*;
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+
+    async fn delivered_fixture(
+        relay_url: &str,
+        suffix: &str,
+        worker_run: &str,
+    ) -> ReceiptReconciliationFixture {
+        let fixture = make_receipt_reconciliation_fixture(relay_url, suffix).await;
+        let owned = &fixture.runtime.owned;
+        let mut config = owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        owned.config_projection.update(config);
+        owned
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(worker_run.to_string()),
+                None,
+            )
+            .expect("the worker accepted the home prompt");
+        owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(
+                &fixture.agent_id,
+                Some(worker_run.to_string()),
+            )
+            .expect("the agent binding names the accepted worker run");
+        let owner = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .expect("home session should exist")
+            .owner_user_id()
+            .to_string();
+        owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner,
+                room: fixture.session_id.clone(),
+                agent: fixture.agent_id.clone(),
+                prompt: fixture.dispatch.prompt_id.clone(),
+                run: Some(crate::provider::projected_leased_provider_run_id(
+                    &fixture.leased_agent_id,
+                    worker_run,
+                )),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the accepted turn has a working task");
+        fixture
+    }
+
+    async fn send_fake_worker_peer_error(
+        request: FakeRelayPeerRequest,
+        worker_id: &str,
+        code: &str,
+        message: &str,
+    ) {
+        let mut socket = request.socket;
+        send_fake_relay_envelope(
+            &mut socket,
+            RelayEnvelope::DaemonPeerResponse {
+                request_id: request.request_id,
+                from_daemon_id: worker_id.to_string(),
+                encrypted_response: None,
+                error: Some(chariox_relay::protocol::RelayError {
+                    code: code.to_string(),
+                    message: message.to_string(),
+                    retryable: false,
+                }),
+            },
+        )
+        .await;
+    }
+
+    fn submitted(prompt_id: &str, leased_agent_id: &str, run: &str) -> RelayPeerResponse {
+        RelayPeerResponse::LeasedPromptSubmitted {
+            provider_run_id: run.to_string(),
+            outcome: crate::session::PromptSubmissionOutcome::Started {
+                prompt: crate::session::PromptQueueItem::new(
+                    format!("worker-{prompt_id}"),
+                    "worker-attachment",
+                    leased_agent_id,
+                    "worker copy",
+                    crate::session::PromptStatus::Running,
+                ),
+            },
+        }
+    }
+
+    fn submitted_home_prompt(request: &RelayPeerRequest) -> Option<(&str, &str)> {
+        let RelayPeerRequest::SubmitLeasedPrompt {
+            leased_agent_id,
+            git_context,
+            ..
+        } = request
+        else {
+            return None;
+        };
+        Some((
+            leased_agent_id.as_str(),
+            git_context.as_ref()?.home_prompt_id.as_str(),
+        ))
+    }
+
+    // MP-08 / MP-10 / MP-11 A10-S02: a worker that restarts during an accepted
+    // turn loses it. Home never runs that instruction again on its own: the
+    // turn ends, its task waits for the owner, and the queue moves on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_lost_accepted_turn_blocks_its_task_instead_of_replaying_it() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let lost_run = "worker-run-lost";
+        let fixture = delivered_fixture(&relay_url, "lost-run", lost_run).await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let successor_prompt_id = fixture.successor_prompt_id.clone();
+        let server_successor_prompt_id = successor_prompt_id.clone();
+        let server = tokio::spawn(async move {
+            let successor_prompt_id = server_successor_prompt_id;
+            let drain = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                None,
+            )
+            .await;
+            assert!(matches!(
+                &drain.request,
+                RelayPeerRequest::DrainLeasedRuntimeProjection { provider_run_id, .. }
+                    if provider_run_id == lost_run
+            ));
+            send_fake_worker_peer_error(
+                drain,
+                &worker_id,
+                "leased_agent_not_found",
+                &format!("leased agent `{leased_agent_id}` was not found"),
+            )
+            .await;
+            let next = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                None,
+            )
+            .await;
+            assert_eq!(
+                submitted_home_prompt(&next.request).map(|(_, prompt)| prompt),
+                Some(successor_prompt_id.as_str()),
+                "after a lost turn home may only submit its queued successor: {:?}",
+                next.request
+            );
+            send_fake_worker_peer_response(
+                next,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                submitted(
+                    &successor_prompt_id,
+                    &leased_agent_id,
+                    "worker-run-successor",
+                ),
+            )
+            .await;
+        });
+
+        assert!(fixture
+            .runtime
+            .drain_remote_prompt_projection_once(&fixture.session_id, &fixture.agent_id)
+            .await
+            .expect("the drain reports the lost lease"));
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("fake worker should see the drain and the successor")
+            .expect("fake worker assertions should hold");
+
+        let owned = &fixture.runtime.owned;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let session = owned
+                .session_store
+                .get_session(&fixture.session_id)
+                .unwrap();
+            let active = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &fixture.agent_id);
+            let blocked = owned
+                .durable_state_store
+                .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
+                .unwrap()
+                .into_iter()
+                .find(|task| task.prompt_id == fixture.dispatch.prompt_id)
+                .filter(|task| task.state == ExecutionState::Blocked);
+            let interaction = blocked.as_ref().is_some_and(|task| {
+                let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
+                session.active_interactions().iter().any(|i| i.id() == id)
+            });
+            if active.as_ref().map(|prompt| prompt.id()) == Some(successor_prompt_id.as_str())
+                && interaction
+            {
+                let reason = blocked.unwrap().reason;
+                assert!(
+                    reason.contains("did not run it again") && reason.contains("Resume"),
+                    "{reason}"
+                );
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "lost turn must end with an owner decision and the successor active; active={:?} blocked={blocked:?}",
+                active.map(|prompt| prompt.id().to_string()),
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    // MP-08 / MP-10 / MP-11 A10-S02: a check replayed onto a refreshed lease is
+    // acknowledged there, so its completion drains instead of the prompt staying
+    // Dispatching with an unreconcilable receipt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replayed_prompt_is_acknowledged_on_its_refreshed_lease() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let lost_run = "worker-run-lost";
+        let fixture = delivered_fixture(&relay_url, "replay-ack", lost_run).await;
+        let owned = &fixture.runtime.owned;
+        let stale_binding = owned
+            .agent_store
+            .get_agent(&fixture.agent_id)
+            .unwrap()
+            .remote_execution()
+            .cloned()
+            .expect("agent is leased");
+        let mut refreshed = stale_binding.clone();
+        refreshed.execution_lease_id = "lease-replacement".to_string();
+        refreshed.leased_agent_id = "leased-agent-replacement".to_string();
+        refreshed.active_worker_provider_run_id = None;
+        owned
+            .agent_store
+            .bind_remote_execution(&fixture.agent_id, refreshed)
+            .expect("refresh binds the replacement lease");
+        let rebound = owned.agent_store.get_agent(&fixture.agent_id).unwrap();
+
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let server = tokio::spawn(async move {
+            let submit = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                None,
+            )
+            .await;
+            assert_eq!(
+                submitted_home_prompt(&submit.request),
+                Some(("leased-agent-replacement", prompt_id.as_str())),
+            );
+            send_fake_worker_peer_response(
+                submit,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                submitted(
+                    &prompt_id,
+                    "leased-agent-replacement",
+                    "worker-run-replayed",
+                ),
+            )
+            .await;
+        });
+        fixture
+            .runtime
+            .replay_active_prompt_on_refreshed_binding(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &stale_binding,
+                lost_run,
+                &rebound,
+                "leased agent was not found",
+            )
+            .await
+            .expect("replay reaches the replacement lease");
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("fake worker should see the replay")
+            .expect("fake worker assertions should hold");
+
+        let session = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let active = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &fixture.agent_id)
+            .expect("the replayed prompt stays active");
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            active.durable_delivery_provider_run_id(),
+            Some("worker-run-replayed")
+        );
+        assert!(!active.durable_delivery_reconciliation_pending());
+        let (_, drain_run) = fixture
+            .runtime
+            .remote_prompt_projection_drain_target(&fixture.session_id, &fixture.agent_id)
+            .expect("the replacement run drains");
+        assert_eq!(drain_run, "worker-run-replayed");
+    }
+}

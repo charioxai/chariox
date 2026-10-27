@@ -2,6 +2,18 @@
 use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
+        Operation::Outside(mutation) => super::outside::apply(tx, mutation),
+        Operation::SetDeadline {
+            room,
+            agent,
+            deadline,
+        } => super::deadlines::set(tx, room, agent, deadline),
+        Operation::ReachDeadline {
+            room,
+            agent,
+            now,
+            stopped,
+        } => super::deadlines::reached(tx, room, agent, now, stopped),
         Operation::LeasedProcess(mutation) => super::leased_processes::apply(tx, mutation),
         Operation::CreateLeasedWake {
             task,
@@ -37,6 +49,26 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::TimeoutGoal { task, prompt, now } => {
             super::goals::timeout(tx, task, prompt, now)
         }
+        Operation::BindGoalCheckLease {
+            task,
+            prompt,
+            lease,
+        } => super::goals::bind_check_lease(tx, task, prompt, lease),
+        Operation::RetryGoalCheck {
+            task,
+            prompt,
+            lease,
+            now,
+        } => super::goals::retry_check(tx, task, prompt, lease, now),
+        Operation::BeginOwnerWait { task, prompt, now } => {
+            super::goals::begin_owner_wait(tx, task, prompt, now)
+        }
+        Operation::EndOwnerWait {
+            task,
+            prompt,
+            refusal,
+            now,
+        } => super::goals::end_owner_wait(tx, task, prompt, refusal, now),
         Operation::StartGoal {
             task,
             owner,
@@ -68,6 +100,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut task = if let Some(existing) = for_turn(tx, &room, &agent, &prompt)? {
                 existing
+            } else if let Some(source) =
+                prompt.strip_prefix(crate::session::WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX)
+            {
+                // The output reminder continues the admitted workflow task, including
+                // its helper obligations. Recovery uses the same durable identity.
+                let mut task = for_turn(tx, &room, &agent, source)?
+                    .ok_or_else(|| error("workflow output follow-up has no source task"))?;
+                if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
+                    return Err(error(
+                        "workflow output follow-up cannot resume a retained task",
+                    ));
+                }
+                task.prompt_id = prompt;
+                task.revision += 1;
+                task
             } else {
                 let resumed = tasks(tx)?.into_iter().find(|t| {
                     t.room_id == room
@@ -96,11 +143,29 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if run.is_some() && task.state != ExecutionState::Working {
                 return Err(error("non-working task cannot dispatch a provider turn"));
             }
+            // A rejected local wake retries with the same prompt id, so the
+            // existing-task lookup can also carry a new continuation intent.
+            if task.pending_prompt_id.as_deref() == Some(task.prompt_id.as_str()) {
+                task.pending_prompt_id = None;
+                task.provider_run_id = None;
+                task.revision += 1;
+            }
             // The retained wait is consumed only by an actual provider dispatch;
-            // a refused wake before that returns the task to this wait.
+            // a refused wake before that returns the task to this wait. A named
+            // run proves admission, not provider I/O: a wake still unsubmitted
+            // keeps its wait until BindSubmission.
             if run.is_some() && !super::goals::is_check(&task, &task.prompt_id) {
                 super::goals::clock(&mut task, now);
-                task.wait = None;
+                if task.wait.is_some() {
+                    let unsubmitted_wake: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 AND json_extract(payload,'$.state')='submitting' AND json_extract(payload,'$.submit_epoch') IS NULL ELSE 0 END)",
+                        params![task.room_id, task.agent_id, task.prompt_id],
+                        |row| row.get(0),
+                    ).map_err(sql)?;
+                    if !unsubmitted_wake {
+                        task.wait = None;
+                    }
+                }
             }
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
@@ -277,13 +342,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::Subscribe {
             task,
             prompt,
-            registration,
+            mut registration,
         } => {
             let t = load(tx, &task)?;
             current(&t, &prompt)?;
             if registration.task_id != task || !registration.live {
                 return Err(error("source is not live"));
             }
+            super::subscriptions::bind(tx, &t, &mut registration)?;
             if let Some(id) = &registration.obligation_id {
                 if !t.obligations.iter().any(|o| {
                     &o.id == id
@@ -344,6 +410,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
+            if t.wait.is_some() {
+                return Err(error("Wait already accepted. End this provider turn now without more tools; the kernel delivers the next source or deadline turn."));
+            }
+            if ids.is_empty()
+                && t.obligations
+                    .iter()
+                    .all(|o| !matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            {
+                return Err(error(
+                    "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
+                ));
+            }
             if ids.is_empty()
                 || deadline <= now
                 || deadline > i64::MAX as u64
@@ -373,13 +451,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .any(|r| r.obligation_id.as_deref() == Some(&o.id))
                     })
             {
-                return Err(error(
-                    "yield sources must cover every unresolved obligation",
-                ));
+                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
-            let deadline = deadline.min(now.saturating_add(
-                t.goal.as_ref().map_or(60, |g| g.check_in_minutes) as u64 * 60_000,
-            ));
+            // A goal checks in at its owner's interval. Any other admitted
+            // deadline is honoured: shortening it would spend no-progress
+            // wakes before a long timer is due, and the sweep still checks
+            // source liveness.
+            let deadline = t.goal.as_ref().map_or(deadline, |g| {
+                deadline.min(now.saturating_add(g.check_in_minutes as u64 * 60_000))
+            });
             t.wait = Some(AgentWait {
                 registration_ids: ids,
                 deadline_ms: deadline,
@@ -400,16 +480,28 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             reason,
         } => {
             let mut t = load(tx, &task)?;
-            if t.prompt_id != prompt || t.state != ExecutionState::Working {
-                return Err(error("stale blocked intent"));
+            if t.prompt_id != prompt {
+                return Err(error(
+                    "stale blocked intent: use the current task and prompt",
+                ));
+            }
+            if !matches!(t.state, ExecutionState::Working | ExecutionState::Blocked) {
+                return Err(error("blocked intent requires a working or blocked turn; submit a new prompt for a closed task"));
             }
             if reason.trim().is_empty() {
                 return Err(error("blocked requires an owner action"));
             }
+            let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
+            if t.state == ExecutionState::Blocked && t.reason == reason {
+                return Ok(Outcome::Task(t));
+            }
             super::goals::clock(&mut t, crate::session::unix_epoch_ms());
+            // Refreshing the reason must keep the existing owner Resume/Cancel valid.
+            if t.state == ExecutionState::Working {
+                t.blocked_revision = t.revision + 1;
+            }
             t.state = ExecutionState::Blocked;
-            t.blocked_revision = t.revision + 1;
-            t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
+            t.reason = reason;
             t.revision += 1;
             save(tx, &t)?;
             Ok(Outcome::Task(t))
@@ -461,8 +553,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 });
             }
             if !cancelled && t.state == ExecutionState::Working && t.goal.is_some() {
-                let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.provider_run_id = Some(run);
+                let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.revision += 1;
                 save(tx, &t)?;
                 return Ok(Outcome::Settled {
@@ -490,7 +582,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let valid_wait = if let Some(w) = &t.wait {
                     let regs = registrations(tx, &t.task_id)?;
                     let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
-                    w.deadline_ms > now
+                    // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
+                    // at admission. A late native boundary commits that same
+                    // wait; the normal sweep delivers its elapsed deadline.
+                    w.deadline_ms > w.started_at_ms
                         && !w.registration_ids.is_empty()
                         && w.registration_ids
                             .iter()
@@ -519,7 +614,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else if !t.correction_used {
                     t.correction_used = true;
                     correction = true;
-                    t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
+                    t.pending_prompt_id = Some(format!(
+                        "{}{}",
+                        super::goals::CORRECTION_PROMPT_PREFIX,
+                        t.task_id
+                    ));
                     t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
                 } else {
                     t.state = ExecutionState::Blocked;
@@ -546,12 +645,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
         | Operation::SourceOutcome { .. }
+        | Operation::DelegateUnavailable { .. }
         | Operation::Sweep { .. }
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }
+        | Operation::ArmWake { .. }
         | Operation::VerifyWakes { .. }
         | Operation::FireWakes { .. }
+        | Operation::WakeVerified { .. }
+        | Operation::WakeOccurred { .. }
         | Operation::ProcessStarted { .. }
         | Operation::ProcessMatched { .. }
         | Operation::ProcessExited { .. }
@@ -608,4 +711,37 @@ pub(super) fn recover_source(
         }
     }
     Ok(())
+}
+
+/// A02-S02: a message wakes a yielded agent in a new turn. Waiting again on
+/// the registrations of its earlier task is not this turn's wait: that task
+/// still waits, so the turn only has to end.
+fn yield_refusal(
+    tx: &Transaction<'_>,
+    t: &AgentTaskExecution,
+    ids: &[String],
+    own: &[Registration],
+) -> Result<String, DaemonError> {
+    let foreign: Vec<&String> = ids
+        .iter()
+        .filter(|id| !own.iter().any(|r| &r.id == *id))
+        .collect();
+    let unresolved = t
+        .obligations
+        .iter()
+        .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+    if !foreign.is_empty() && !unresolved {
+        for other in tasks(tx)?.into_iter().filter(|o| {
+            o.task_id != t.task_id
+                && o.room_id == t.room_id
+                && o.agent_id == t.agent_id
+                && o.state == ExecutionState::Waiting
+        }) {
+            let theirs = registrations(tx, &other.task_id)?;
+            if foreign.iter().all(|id| theirs.iter().any(|r| &r.id == *id)) {
+                return Ok("Your earlier task is still waiting on these registrations; this turn has nothing of its own to wait on. Do not yield: finish this turn now (an answer is optional) and the earlier wait continues.".into());
+            }
+        }
+    }
+    Ok("yield sources must cover every unresolved obligation".into())
 }

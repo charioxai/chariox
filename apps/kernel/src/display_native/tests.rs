@@ -758,7 +758,7 @@ fn mp08_lossless_webp_regions_decode_rgb_exact_at_both_repair_efforts() {
     }
     // MP-08/MP-10/MP-11: both repair effort levels preserve every RGB value
     // and reject clips outside the admitted raster.
-    for effort in [25, 50] {
+    for effort in [0, 25, 50] {
         let bytes = raster::webp(&pixels, w * 4, [17, 9, 251, 53], 1, effort).unwrap();
         let (width, height, rgb) = webp_rgb(&bytes);
         assert_eq!((width, height), (251, 53));
@@ -771,6 +771,41 @@ fn mp08_lossless_webp_regions_decode_rgb_exact_at_both_repair_efforts() {
         assert!(raster::webp(&pixels, w * 4, [290, 0, 11, 1], 1, effort).is_err());
         assert!(raster::webp(&pixels, w * 4, [0, 69, 1, 2], 1, effort).is_err());
     }
+}
+#[test]
+fn mp08_repair_strips_encode_at_the_low_lossless_effort() {
+    use super::exact::ExactPlan;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let (w, h) = (300usize, 70usize);
+    let mut pixels = vec![0u8; w * h * 4];
+    for (i, p) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = (i % w, i / w);
+        *p = [(x * 7 + y) as u8, (y * 13) as u8, (x ^ y) as u8, 0x5a];
+    }
+    let rect = [0, 0, w as i32, h as i32];
+    let (low, high) = (
+        raster::webp(&pixels, w * 4, rect, 1, 0).unwrap(),
+        raster::webp(&pixels, w * 4, rect, 1, 50).unwrap(),
+    );
+    assert_ne!(low, high);
+    let plan = ExactPlan {
+        pixels,
+        tiles: Vec::new(),
+        rectangles: vec![[0, 0, w as i32, h as i32]],
+        w: w as i32,
+        h: h as i32,
+        patch: false,
+        repair_only: true,
+        revision: None,
+        started: 0.,
+    };
+    // MP-08/MP-10: every full repair pays this encode, so it stays cheap.
+    let value = plan.finish().unwrap();
+    let tile = &value["repair_tiles"][0];
+    let data = STANDARD
+        .decode(tile["data_base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(data, low);
 }
 #[test]
 fn mp08_scroll_plan_proves_moves_fixed_cells_and_exposed_rows() {

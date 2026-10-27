@@ -554,7 +554,7 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
     .expect("owned create-session path should not wait for the app lock")
     .expect("session creation should succeed");
 
-    let LocalDaemonResponse::SessionCreated { session, agent } = response else {
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(session.workspace_id(), worktree.path().to_str().unwrap());

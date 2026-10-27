@@ -122,6 +122,8 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::GetSessionStateRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        // The label is read before the session, so a state is never older than its revision.
+        let agent_activity_revision = self.owned.session_projection.change_sequence();
         let session = self.owned.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::SessionState {
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
@@ -129,7 +131,7 @@ impl KernelRuntimeState {
                 crate::session::DEFAULT_LOCAL_USER_ID,
             ),
             agent_activity: self.agent_activity_for_session(&session),
-            agent_activity_revision: self.owned.session_projection.change_sequence(),
+            agent_activity_revision,
             session,
         })
     }

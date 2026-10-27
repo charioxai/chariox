@@ -52,6 +52,7 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::AgentAliased { session, .. }
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentProfileUpdated { session, .. }
+        | LocalDaemonResponse::AgentArchived { session, .. }
         | LocalDaemonResponse::AgentForked { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentPromptScheduleCreated { session, .. }
@@ -217,31 +218,16 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::EndSession(request) => &request.session_id,
         _ => return None,
     };
-    let Some(session) = session_projection.get(session_id) else {
+    if session_projection.get(session_id).is_none() {
         if session_projection.has_warmed_list() {
             return Some(Err(DaemonError::SessionNotFound {
                 session_id: session_id.clone(),
             }));
         }
         return None;
-    };
-    let agent_presence_check = match request {
-        LocalDaemonRequest::FocusAgent(request) => {
-            Some((request.session_id.as_str(), request.agent_id.as_str()))
-        }
-        LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => {
-            Some((request.session_id.as_str(), request.agent_id.as_str()))
-        }
-        _ => None,
-    };
-    if let Some((session_id, agent_id)) = agent_presence_check {
-        if !session.agents().iter().any(|agent| agent.id() == agent_id) {
-            return Some(Err(DaemonError::AgentNotInSession {
-                session_id: session_id.to_string(),
-                agent_id: agent_id.to_string(),
-            }));
-        }
     }
+    // Agent membership belongs to the agent store. Workflow/provider projections
+    // can still carry an older agent list when focus or output acknowledgement arrives.
     None
 }
 
@@ -258,12 +244,15 @@ pub(super) fn session_id_for_projection_refresh(
             Some(session_id.clone())
         }
         Ok(LocalDaemonResponse::AgentFocused { agent }) => Some(agent.session_id().to_string()),
-        Ok(LocalDaemonResponse::AgentSpawned { agent })
+        Ok(LocalDaemonResponse::AgentSpawned {
+            agent,
+            event_subscription_error: None,
+        })
         | Ok(LocalDaemonResponse::AgentAliased { agent, .. })
         | Ok(LocalDaemonResponse::AgentConfigUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentProfileUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentDestroyed { agent }) => Some(agent.session_id().to_string()),
-        Ok(LocalDaemonResponse::AgentsSpawned { agents }) => {
+        Ok(LocalDaemonResponse::AgentsSpawned { agents, .. }) => {
             agents.first().map(|agent| agent.session_id().to_string())
         }
         Ok(LocalDaemonResponse::TurnUndone { result }) => Some(result.session_id.clone()),

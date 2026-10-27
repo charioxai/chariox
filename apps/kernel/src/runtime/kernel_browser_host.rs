@@ -410,7 +410,7 @@ impl KernelBrowserHost {
             || (method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
-                    Some("open" | "close" | "navigate" | "input" | "stop")
+                    Some("open" | "close" | "navigate" | "resize" | "input" | "stop")
                 ));
         let mutation_lane = if mutation {
             Some(
@@ -610,7 +610,7 @@ impl KernelBrowserHost {
             || (method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
-                    Some("open" | "close" | "navigate" | "input")
+                    Some("open" | "close" | "navigate" | "resize" | "input")
                 ));
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
@@ -626,7 +626,7 @@ impl KernelBrowserHost {
                     "host.browser",
                     match params["op"].as_str() {
                         Some("open") => serde_json::json!({"op":"start"}),
-                        Some("navigate") => target_state(&params),
+                        Some("navigate" | "resize") => target_state(&params),
                         _ => serde_json::json!({"op":"state"}),
                     },
                     admission.map(|a| a.cancellation.clone()),
@@ -716,7 +716,8 @@ impl KernelBrowserHost {
             || (method == "host.browser" && params["op"] == "input")
             // MP-08/MP-10: a navigation waits for the page's load; mirror credits and
             // state reads keep flowing meanwhile (mutations stay serial on the lane).
-            || (method == "host.browser" && params["op"] == "navigate")
+            || (method == "host.browser"
+                && matches!(params["op"].as_str(), Some("navigate" | "resize")))
         {
             let signal = cancellation
                 .clone()

@@ -456,3 +456,54 @@ async fn stale_active_run_hint_requires_cold_claude_credential_on_worker() {
     }
     assert!(fixture.state.owned.provider_store.list_runs().is_empty());
 }
+
+#[tokio::test]
+async fn leased_permission_session_grant_ends_after_a_scope_round_trip() {
+    use crate::runtime::state::claude_permission_rules::{session_grant, GrantScope};
+    use std::path::Path;
+    let fixture = native_lease_fixture();
+    let state = &fixture.state;
+    let agent = state
+        .update_relay_leased_agent_config(
+            &fixture.leased_agent_id,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+        )
+        .await
+        .unwrap();
+    let scope = GrantScope {
+        working_directory: Some(Path::new("/work/app").to_path_buf()),
+        permission_level: AgentPermissionLevel::Required,
+        execution_mode: AgentExecutionMode::Build,
+    };
+    let grant = session_grant(
+        "Bash",
+        &serde_json::json!({"command":"cargo test"}),
+        Some(Path::new("/work/app")),
+    )
+    .unwrap();
+    for (mode, level) in [
+        (AgentExecutionMode::Plan, AgentPermissionLevel::Required),
+        (AgentExecutionMode::Build, AgentPermissionLevel::Yolo),
+    ] {
+        state
+            .claude_session_grants
+            .remember(&agent.backing_agent_id, scope.clone(), &grant);
+        state
+            .update_relay_leased_agent_config(&fixture.leased_agent_id, mode, level)
+            .await
+            .unwrap();
+        state
+            .update_relay_leased_agent_config(
+                &fixture.leased_agent_id,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Required,
+            )
+            .await
+            .unwrap();
+        assert!(state
+            .claude_session_grants
+            .covering(&agent.backing_agent_id, &scope, &grant)
+            .is_none());
+    }
+}

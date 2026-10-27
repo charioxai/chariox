@@ -7,6 +7,7 @@ import type {
   RuntimeSession,
   SliceRecord,
 } from "./cli-types.js"
+import { formatAgentLabel } from "./agent-label.js"
 import {
   formatAgentInspectSummary,
   formatAgentListSummary,
@@ -361,7 +362,7 @@ test("agent summaries expose session and worker provider run pointers", () => {
 
 test("agent focus command applies focus, launches a run, and reports the focused agent", async () => {
   const agentA = agent({ id: "agent-a", agent_ref: "agent-a" })
-  const agentB = agent({ id: "agent-b", agent_ref: "agent-b", provider: "codex", model: "codex/gpt-5.4" })
+  const agentB = agent({ id: "agent-b", agent_ref: "agent-b", alias: "agent-2", provider: "codex", model: "codex/gpt-5.4" })
   const previousSession = session({ focused_agent_id: agentA.id, agents: [agentA, agentB] })
   const focusedSession = session({ focused_agent_id: agentB.id, agents: [agentA, agentB] })
   let flashedMessage = ""
@@ -394,14 +395,14 @@ test("agent focus command applies focus, launches a run, and reports the focused
     destroyAgent: async () => focusedSession,
     focusAgent: async () => ({ agent: agentB, session: focusedSession }),
     resolveSessionAgent: () => ({ agent: agentB, error: null }),
-    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    formatAgentLabel,
     refreshSplitPaneFocusRepaint: () => {},
   }, ["focus", agentB.id])
 
   assert.equal(launchedAgentId, agentB.id)
   assert.equal(launchedVariant, agentB.effort)
   assert.equal(appliedSessionId, agentB.id)
-  assert.equal(flashedMessage, "focused on agent agent-b")
+  assert.equal(flashedMessage, "focused on agent-2")
 })
 
 test("agent focus command does not launch a local provider run for remote-backed agents", async () => {

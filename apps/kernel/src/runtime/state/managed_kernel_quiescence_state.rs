@@ -598,6 +598,7 @@ impl super::KernelRuntimeState {
         let Some(gate) = &self.owned.managed_kernel_quiescence else {
             return Ok(false);
         };
+        self.owned.room_terminals.report_work();
         gate.reserve_if_current(challenge, || {
             let running_agent_count = self.owned.managed_running_agent_count_unlocked();
             self.owned
@@ -617,6 +618,7 @@ impl super::KernelRuntimeState {
             .managed_kernel_quiescence
             .as_ref()
             .ok_or_else(|| quiescence_error("managed kernel quiescence is not configured"))?;
+        self.owned.room_terminals.report_work();
         gate.apply_release(challenge, outcome, result_sequence, || {
             let running_agent_count = self.owned.managed_running_agent_count_unlocked();
             self.owned

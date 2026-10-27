@@ -81,6 +81,7 @@ mod tests {
 
         sender
             .try_send(KernelOutgoingFrame::Response {
+                kernel: None,
                 request_id: "request-1".to_string(),
                 response: Box::new(None),
                 error: None,
@@ -89,6 +90,7 @@ mod tests {
         sender
             .try_send(KernelOutgoingFrame::Event {
                 event_id: 1,
+                kernel: None,
                 event: Box::new(crate::transport::kernel_protocol::KernelEvent::Heartbeat {
                     session_id: "session-1".to_string(),
                 }),
@@ -120,6 +122,7 @@ mod tests {
             &close_requested,
             &transport_health,
             KernelOutgoingFrame::Response {
+                kernel: None,
                 request_id: "request-1".to_string(),
                 response: Box::new(None),
                 error: None,
@@ -133,6 +136,7 @@ mod tests {
             &close_requested,
             &transport_health,
             KernelOutgoingFrame::Response {
+                kernel: None,
                 request_id: "request-2".to_string(),
                 response: Box::new(None),
                 error: None,

@@ -12,6 +12,9 @@ pub(in crate::runtime::state) struct OwnedAgentConfigUpdate {
     pub(in crate::runtime::state) agent: crate::agent::AgentInstance,
     pub(in crate::runtime::state) terminated_run_ids: Vec<String>,
     pub(in crate::runtime::state) remote_update: Option<OwnedRemoteAgentConfigUpdate>,
+    /// Whether the update changed the working directory, the permission level or the execution
+    /// mode the agent runs under.
+    pub(in crate::runtime::state) scope_changed: bool,
 }
 
 pub(in crate::runtime::state) struct OwnedRemoteAgentConfigUpdate {

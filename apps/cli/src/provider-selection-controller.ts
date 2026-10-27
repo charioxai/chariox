@@ -135,10 +135,30 @@ export function createProviderSelectionController(
     return true
   }
 
+  let modelSelectionGeneration = 0
   return {
     async applyModelSelection(modelId) {
+      const generation = ++modelSelectionGeneration
       const currentSelection = deps.currentProviderSelection()
-      const catalog = deps.providerCatalog()
+      const provider = normalizeBackendProviderId(currentSelection.provider)
+      const accountProfile = currentSelection.accountProfile ?? defaultProviderAccountProfileId(providerAccounts(), provider)
+      const sessionId = deps.sessionState().id
+      const agentId = deps.focusedAgentId()
+      let catalog: ProviderCatalog
+      try {
+        catalog = await loadProviderCatalog(provider, accountProfile)
+      } catch (error) {
+        if (generation === modelSelectionGeneration) deps.flashFooter(formatError(error), "error")
+        return
+      }
+      const current = deps.currentProviderSelection()
+      if (generation !== modelSelectionGeneration
+        || deps.sessionState().id !== sessionId || deps.focusedAgentId() !== agentId
+        || normalizeBackendProviderId(current.provider) !== provider
+        || (current.accountProfile ?? defaultProviderAccountProfileId(providerAccounts(), provider)) !== accountProfile) {
+        return
+      }
+      deps.setProviderCatalog?.(catalog)
       const localFallback = providerCatalogIsLocalFallback(catalog)
       const decision = deriveWaitingRoomModelSelectionDecision({
         modelId,

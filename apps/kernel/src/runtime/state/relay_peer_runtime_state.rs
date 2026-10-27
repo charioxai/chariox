@@ -253,12 +253,20 @@ impl KernelRuntimeState {
         permission_level: AgentPermissionLevel,
     ) -> Result<LeasedAgent, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.update_leased_agent_config(&leased_agent_id, execution_mode, permission_level)
-        })
-        .await
+        let leased_agent = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+                runtime.update_leased_agent_config(
+                    &leased_agent_id,
+                    execution_mode,
+                    permission_level,
+                )
+            })
+            .await?;
+        self.claude_session_grants
+            .forget(&leased_agent.backing_agent_id);
+        Ok(leased_agent)
     }
 
     pub(crate) async fn update_relay_leased_agent_profile(
@@ -1045,7 +1053,7 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {
-            operation: "ensure remote provider account",
+            operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
             message: format!("provider-account provisioning task failed: {error}"),
         })??;
         // A lease may have been removed while its native utility was running.
@@ -1493,6 +1501,9 @@ impl KernelRuntimeState {
                     &completion.completed,
                     leased_agent_id,
                     &worker_provider_run_id,
+                    outcome
+                        .provider_failed
+                        .then_some("the provider run ended unexpectedly"),
                 )
                 .await;
             }

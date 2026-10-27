@@ -33,6 +33,8 @@ use super::KernelRuntimeState;
 
 const DEFAULT_PUBLICATION_RUNTIME_HOST: &str = "127.0.0.1";
 const DEFAULT_PUBLICATION_RUNTIME_PORT: u16 = 3000;
+/// How many ports above the default a start without a requested port may take.
+const PUBLICATION_RUNTIME_PORT_SEARCH: u16 = 99;
 const PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS: u64 = 1_000;
 const PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS: u64 = 60_000;
 /// A recovered runtime that stays up this long clears its backoff.
@@ -52,6 +54,10 @@ const PACKAGE_DIGEST_MISMATCH: &str =
 pub(crate) struct WorkflowPublicationRuntimeProcessStore {
     inner: Arc<Mutex<BTreeMap<String, WorkflowPublicationRuntimeProcess>>>,
     launching: Arc<Mutex<BTreeSet<String>>>,
+    /// A free port is found by probing, so two launches probing at once would
+    /// pick the same one. A launch without a requested port holds this from
+    /// its probe until its gateway listens.
+    port_search: Arc<Mutex<()>>,
     recoveries: Arc<Mutex<BTreeMap<String, WorkflowPublicationRuntimeRecovery>>>,
 }
 
@@ -803,7 +809,6 @@ async fn start_publication_runtime_claimed(
         .unwrap_or(DEFAULT_PUBLICATION_RUNTIME_HOST)
         .to_string();
     let no_ingress = !publication_has_ingress(&publication);
-    let port = publication_runtime_port(request.port, no_ingress);
     if let Some(existing) = runtime_state
         .owned
         .workflow_publication_runtimes
@@ -843,6 +848,17 @@ async fn start_publication_runtime_claimed(
         });
     }
 
+    let _port_search = match (request.port, no_ingress) {
+        (None, false) => Some(
+            runtime_state
+                .owned
+                .workflow_publication_runtimes
+                .hold_port_search()
+                .await,
+        ),
+        _ => None,
+    };
+    let port = publication_runtime_port(&host, request.port, no_ingress)?;
     let kernel_url = publication_runtime_kernel_url(runtime_state, request.kernel_url.as_deref());
     let package_kernel_url = publication_runtime_package_kernel_url(
         &kernel_url,
@@ -2040,12 +2056,43 @@ fn publication_has_ingress(publication: &WorkflowPublicationDefinition) -> bool 
     )
 }
 
-fn publication_runtime_port(requested_port: Option<u16>, no_ingress: bool) -> u16 {
+// A requested port is used as given (and refused when busy). Without one, each trigger takes the
+// first free port from the default, so a second HTTP trigger never collides with the first.
+fn publication_runtime_port(
+    host: &str,
+    requested_port: Option<u16>,
+    no_ingress: bool,
+) -> Result<u16, DaemonError> {
     if no_ingress {
-        0
-    } else {
-        requested_port.unwrap_or(DEFAULT_PUBLICATION_RUNTIME_PORT)
+        return Ok(0);
     }
+    match requested_port {
+        Some(port) => Ok(port),
+        None => first_free_runtime_port(host, DEFAULT_PUBLICATION_RUNTIME_PORT),
+    }
+}
+
+fn first_free_runtime_port(host: &str, first: u16) -> Result<u16, DaemonError> {
+    first_free_runtime_port_in(host, first, PUBLICATION_RUNTIME_PORT_SEARCH, &|port| {
+        TcpListener::bind((host, port)).is_ok()
+    })
+}
+
+fn first_free_runtime_port_in(
+    host: &str,
+    first: u16,
+    span: u16,
+    is_free: &dyn Fn(u16) -> bool,
+) -> Result<u16, DaemonError> {
+    (first..=first.saturating_add(span))
+        .find(|port| *port != 0 && is_free(*port))
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "start workflow publication runtime",
+            message: format!(
+                "no free publication runtime port on {host} from {first} to {}; stop another trigger or request a port",
+                first.saturating_add(span)
+            ),
+        })
 }
 
 fn validate_publication_runtime_bind_address(
@@ -2108,6 +2155,10 @@ impl WorkflowPublicationRuntimeRecovery {
 impl WorkflowPublicationRuntimeProcessStore {
     async fn claim_launch(&self, key: &str) -> bool {
         self.launching.lock().await.insert(key.to_string())
+    }
+
+    async fn hold_port_search(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.port_search).lock_owned().await
     }
 
     async fn launching(&self, key: &str) -> bool {
@@ -2248,7 +2299,6 @@ mod tests {
         validate_bound_release, validate_publication_runtime_bind_address,
         validated_deployment_binding, write_publication_caller_claims_config, BoundReleaseDigests,
         PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore,
-        DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -2287,12 +2337,66 @@ mod tests {
     }
 
     #[test]
-    fn ingress_runtime_port_uses_requested_or_default_port() {
-        assert_eq!(publication_runtime_port(Some(43123), false), 43123);
+    fn ingress_runtime_port_uses_requested_port_or_the_first_free_one_from_the_default() {
         assert_eq!(
-            publication_runtime_port(None, false),
-            DEFAULT_PUBLICATION_RUNTIME_PORT
+            publication_runtime_port("127.0.0.1", Some(43123), false).expect("requested port"),
+            43123
         );
+        let taken = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let taken_port = taken.local_addr().expect("local address").port();
+        let next = super::first_free_runtime_port("127.0.0.1", taken_port).expect("free port");
+        assert!(next > taken_port, "a taken port is skipped, got {next}");
+        assert!(TcpListener::bind(("127.0.0.1", next)).is_ok());
+    }
+
+    #[test]
+    fn a_busy_default_port_does_not_stop_a_start_without_a_requested_port() {
+        let ports = (0..3)
+            .map(|_| TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind"))
+            .collect::<Vec<_>>();
+        let busy = ports
+            .iter()
+            .map(|listener| listener.local_addr().expect("local address").port())
+            .collect::<Vec<_>>();
+        let found = super::first_free_runtime_port("127.0.0.1", busy[0]).expect("free port");
+        assert!(!busy.contains(&found));
+    }
+
+    #[tokio::test]
+    async fn publications_started_together_each_get_their_own_free_port() {
+        let store = WorkflowPublicationRuntimeProcessStore::default();
+        let probe = TcpListener::bind(("127.0.0.1", 0)).expect("probe listener should bind");
+        let first = probe.local_addr().expect("local address").port();
+        drop(probe);
+        // The gateway binds a moment after the kernel chose its port, as a spawned process does.
+        let launch = |store: WorkflowPublicationRuntimeProcessStore| async move {
+            let _search = store.hold_port_search().await;
+            let port = super::first_free_runtime_port("127.0.0.1", first).expect("free port");
+            let gateway = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                TcpListener::bind(("127.0.0.1", port)).expect("the chosen port is still free")
+            });
+            while tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            (port, gateway)
+        };
+
+        let ((a, gateway_a), (b, gateway_b)) = tokio::join!(launch(store.clone()), launch(store));
+
+        assert_ne!(a, b);
+        gateway_a.await.expect("first gateway bound");
+        gateway_b.await.expect("second gateway bound");
+    }
+
+    #[test]
+    fn no_free_port_in_the_search_range_says_which_range_was_tried() {
+        let error = super::first_free_runtime_port_in("127.0.0.1", 3000, 0, &|_| false)
+            .expect_err("nothing is free");
+        assert!(error.to_string().contains("3000"), "{error}");
     }
 
     #[test]
@@ -2305,8 +2409,14 @@ mod tests {
 
     #[test]
     fn schedule_only_runtime_port_is_ephemeral_internal_port() {
-        assert_eq!(publication_runtime_port(Some(43123), true), 0);
-        assert_eq!(publication_runtime_port(None, true), 0);
+        assert_eq!(
+            publication_runtime_port("127.0.0.1", Some(43123), true).unwrap(),
+            0
+        );
+        assert_eq!(
+            publication_runtime_port("127.0.0.1", None, true).unwrap(),
+            0
+        );
     }
 
     #[test]

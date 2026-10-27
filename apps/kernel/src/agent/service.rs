@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::error::DaemonError;
 use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
 use crate::provider::{
@@ -14,12 +16,14 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct AgentService {
     store: AgentStore,
+    pub(super) outside_events: Option<crate::durable_state::DurableKernelStateStore>,
 }
 
 impl AgentService {
     pub fn new() -> Self {
         Self {
             store: AgentStore::new(),
+            outside_events: None,
         }
     }
 
@@ -119,11 +123,14 @@ impl AgentService {
         let mut created_agents = Vec::with_capacity(new_count);
         for (agent_id, request) in agent_ids.into_iter().zip(requests.into_iter()) {
             let agent_ref = generate_agent_ref();
+            let alias = request.alias.or_else(|| {
+                Some(self.next_default_alias(&request.session_id, &mut session_summary.aliases))
+            });
             let mut agent = AgentInstance::new(
                 agent_id,
                 agent_ref,
                 request.session_id,
-                request.alias,
+                alias,
                 request.provider,
                 request.model,
                 request.effort,
@@ -150,6 +157,9 @@ impl AgentService {
         );
         sessions.set_focused_agent(session.id(), focused_agent_id)?;
 
+        for agent in &created_agents {
+            self.publish_outside_membership(agent, crate::local::EventSessionState::AgentAdded)?;
+        }
         Ok(created_agents)
     }
 
@@ -169,7 +179,12 @@ impl AgentService {
         }
 
         // Check max agents limit
-        let current_count = self.store.count_by_session(&request.session_id);
+        let current_count = self
+            .store
+            .get_by_session(&request.session_id)
+            .iter()
+            .filter(|agent| !agent.archived())
+            .count();
         if request.spawned_by_agent_id.is_none() && current_count >= session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
                 session_id: request.session_id.clone(),
@@ -190,13 +205,18 @@ impl AgentService {
         // Calculate position for new agent
         let position = self.calculate_position_for_new_agent(&request.session_id);
 
+        let alias = request.alias.or_else(|| {
+            let mut taken = self.store.session_summary(&request.session_id).aliases;
+            Some(self.next_default_alias(&request.session_id, &mut taken))
+        });
+
         // Create agent
         let agent_ref = generate_agent_ref();
         let mut agent = AgentInstance::new(
             self.store.next_agent_id(),
             agent_ref,
             request.session_id,
-            request.alias,
+            alias,
             request.provider,
             request.model,
             request.effort,
@@ -223,11 +243,13 @@ impl AgentService {
 
         self.store
             .apply_session_layout_and_focus(&session_id, Some(&agent_id));
-        Ok(self
+        let agent = self
             .store
             .get(&agent_id)
             .cloned()
-            .expect("new agent should be stored"))
+            .expect("new agent should be stored");
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentAdded)?;
+        Ok(agent)
     }
 
     pub(crate) fn restore_agent(&mut self, agent: AgentInstance) -> AgentInstance {
@@ -375,12 +397,17 @@ impl AgentService {
         let was_focused = agent.state() == AgentState::Focused
             || session_focused_agent_id.as_deref() == Some(agent_id);
 
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentRemoved)?;
         // Remove the agent
         self.store.remove(agent_id);
 
         // Recalculate positions for remaining agents
-        let mut remaining_agents: Vec<_> =
-            self.store.get_by_session(&session_id).into_iter().collect();
+        let mut remaining_agents: Vec<_> = self
+            .store
+            .get_by_session(&session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived())
+            .collect();
 
         if !remaining_agents.is_empty() {
             recalculate_positions(&mut remaining_agents);
@@ -425,6 +452,48 @@ impl AgentService {
         }
 
         Ok(agent)
+    }
+
+    pub(crate) fn archive_agent(
+        &mut self,
+        agent_id: &str,
+        archived: bool,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self.get_agent(agent_id)?;
+        let session_id = agent.session_id().to_string();
+        let session = sessions.get_session(&session_id)?;
+        let active_count = self
+            .store
+            .get_by_session(&session_id)
+            .iter()
+            .filter(|a| !a.archived())
+            .count();
+        if !archived && agent.archived() && active_count >= session.max_agents() as usize {
+            return Err(DaemonError::AgentLimitReached {
+                session_id,
+                max_agents: session.max_agents(),
+            });
+        }
+        self.store
+            .get_mut(agent_id)
+            .expect("agent checked")
+            .set_archived(archived);
+        let mut active: Vec<_> = self
+            .store
+            .get_by_session(&session_id)
+            .into_iter()
+            .filter(|a| !a.archived())
+            .collect();
+        recalculate_positions(&mut active);
+        for agent in active {
+            self.store
+                .get_mut(agent.id())
+                .expect("stored agent")
+                .set_position(agent.position().clone());
+        }
+        self.repair_stale_session_focus(&session_id, sessions)?;
+        self.get_agent(agent_id)
     }
 
     pub(crate) fn repair_stale_session_focus(
@@ -477,7 +546,7 @@ impl AgentService {
         // Validate agent exists in session
         let _target_agent = agents
             .iter()
-            .find(|a| a.id() == agent_id)
+            .find(|a| a.id() == agent_id && !a.archived())
             .cloned()
             .ok_or_else(|| DaemonError::AgentNotInSession {
                 session_id: session_id.to_string(),
@@ -509,7 +578,12 @@ impl AgentService {
         session_id: &str,
         current_agent_id: &str,
     ) -> Option<AgentInstance> {
-        let agents = self.store.get_by_session(session_id);
+        let agents: Vec<_> = self
+            .store
+            .get_by_session(session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived())
+            .collect();
 
         if let Some(current_index) = agents.iter().position(|a| a.id() == current_agent_id) {
             let next_index = (current_index + 1) % agents.len();
@@ -525,7 +599,12 @@ impl AgentService {
         session_id: &str,
         sessions: &mut SessionService,
     ) -> Result<Option<AgentInstance>, DaemonError> {
-        let agents = self.store.get_by_session(session_id);
+        let agents: Vec<_> = self
+            .store
+            .get_by_session(session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived())
+            .collect();
 
         if agents.is_empty() {
             return Ok(None);
@@ -567,7 +646,8 @@ impl AgentService {
             })?;
 
         agent.set_state(state);
-        Ok(agent.clone())
+        let agent = agent.clone();
+        Ok(agent)
     }
 
     /// Set agent processing state
@@ -585,6 +665,14 @@ impl AgentService {
 
         agent.set_processing(is_processing);
         Ok(agent.clone())
+    }
+
+    /// An event the kernel recorded for the agent moves its liveness
+    /// (coalesced); false when it did not move or the agent is gone.
+    pub fn note_agent_event_activity(&mut self, agent_id: &str, at_ms: u64) -> bool {
+        self.store
+            .get_mut(agent_id)
+            .is_some_and(|agent| agent.note_event_activity(at_ms))
     }
 
     pub fn note_prompt_sent_at(
@@ -781,6 +869,15 @@ impl AgentService {
                 });
             }
         }
+        // Clearing the name gives the agent a fresh default one, so an agent
+        // never shows as a bare id.
+        let alias = alias.or_else(|| {
+            let mut taken = self.store.session_summary(&session_id).aliases;
+            if let Some(own) = self.store.get(agent_id).and_then(|agent| agent.alias()) {
+                taken.remove(&normalized_agent_alias_key(own));
+            }
+            Some(self.next_default_alias(&session_id, &mut taken))
+        });
         let agent = self
             .store
             .get_mut(agent_id)
@@ -789,6 +886,30 @@ impl AgentService {
             })?;
         agent.set_alias(alias);
         Ok(agent.clone())
+    }
+
+    /// Names every visible agent that has no alias, oldest first, so sessions
+    /// saved before default names existed show `agent-<n>` like new ones.
+    /// Returns how many agents were named.
+    pub(crate) fn assign_missing_default_aliases(&mut self) -> usize {
+        let mut unnamed = self
+            .store
+            .list()
+            .into_iter()
+            .filter(|agent| agent.alias().is_none() && agent.visible_in_freeform())
+            .collect::<Vec<_>>();
+        unnamed.sort_by(|left, right| {
+            (left.created_at_ms(), left.id()).cmp(&(right.created_at_ms(), right.id()))
+        });
+        let named = unnamed.len();
+        for agent in unnamed {
+            let mut taken = self.store.session_summary(agent.session_id()).aliases;
+            let alias = self.next_default_alias(agent.session_id(), &mut taken);
+            if let Some(agent) = self.store.get_mut(agent.id()) {
+                agent.set_alias(Some(alias));
+            }
+        }
+        named
     }
 
     pub fn add_agent_substitute(
@@ -1108,6 +1229,27 @@ impl AgentService {
             .unwrap_or_else(|| GridPosition::new(0, 0, 1, 1))
     }
 
+    /// The lowest `agent-<n>` free in the session: not another agent's alias,
+    /// id or ref. Only the kernel hands out this form; `is_alias_taken_by_other`
+    /// keeps refusing it from users. A rename frees the name for the next agent.
+    fn next_default_alias(&self, session_id: &str, taken: &mut HashSet<String>) -> String {
+        let identities = self
+            .store
+            .get_by_session(session_id)
+            .iter()
+            .flat_map(|agent| [agent.id().to_lowercase(), agent.agent_ref().to_lowercase()])
+            .collect::<HashSet<_>>();
+        let mut number = 1u64;
+        loop {
+            let candidate = format!("agent-{number}");
+            if !taken.contains(&candidate) && !identities.contains(&candidate) {
+                taken.insert(candidate.clone());
+                return candidate;
+            }
+            number += 1;
+        }
+    }
+
     fn is_alias_taken(&self, session_id: &str, alias: &str) -> bool {
         self.is_alias_taken_by_other(session_id, "", alias)
     }
@@ -1122,6 +1264,11 @@ impl AgentService {
         }) {
             return true;
         }
+        self.is_reference_taken_by_other(session_id, agent_id, alias)
+    }
+
+    fn is_reference_taken_by_other(&self, session_id: &str, agent_id: &str, alias: &str) -> bool {
+        let normalized = normalized_agent_alias_key(alias);
         self.store.get_by_session(session_id).iter().any(|agent| {
             agent.id() != agent_id
                 && (normalized_agent_alias_key(agent.id()) == normalized
@@ -1558,5 +1705,163 @@ mod workflow_copy_alias_tests {
                 .state(),
             AgentState::Focused
         );
+    }
+}
+
+#[cfg(test)]
+mod default_agent_alias_tests {
+    use super::*;
+    use crate::config::DaemonConfig;
+    use crate::session::CreateSessionRequest;
+
+    fn setup() -> (AgentService, SessionService, String) {
+        let service = AgentService::new();
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        (service, sessions, session.id().to_string())
+    }
+
+    fn spawn(
+        service: &mut AgentService,
+        sessions: &mut SessionService,
+        session_id: &str,
+    ) -> String {
+        service
+            .create_agent(CreateAgentRequest::new(session_id, "codex"), sessions)
+            .expect("agent should be created")
+            .alias()
+            .expect("kernel should name the agent")
+            .to_string()
+    }
+
+    fn restored(
+        service: &mut AgentService,
+        session_id: &str,
+        alias: Option<&str>,
+        created_at_ms: u64,
+    ) -> AgentInstance {
+        let id = service.store.next_agent_id();
+        let agent = AgentInstance::new(
+            id,
+            generate_agent_ref(),
+            session_id,
+            alias.map(str::to_string),
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let mut value = serde_json::to_value(&agent).expect("agent should serialize");
+        value["created_at_ms"] = created_at_ms.into();
+        let agent = serde_json::from_value(value).expect("agent should deserialize");
+        service.restore_agent(agent)
+    }
+
+    #[test]
+    fn default_and_spawned_agents_are_named_in_creation_order() {
+        let (mut service, mut sessions, session_id) = setup();
+        assert_eq!(spawn(&mut service, &mut sessions, &session_id), "agent-1");
+        assert_eq!(spawn(&mut service, &mut sessions, &session_id), "agent-2");
+        let batch = service
+            .create_agents(
+                vec![
+                    CreateAgentRequest::new(&session_id, "codex"),
+                    CreateAgentRequest::new(&session_id, "codex").with_alias("lead"),
+                    CreateAgentRequest::new(&session_id, "codex"),
+                ],
+                &mut sessions,
+            )
+            .expect("batch should be created");
+        let names = batch
+            .iter()
+            .map(|agent| agent.alias().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["agent-3", "lead", "agent-4"]);
+    }
+
+    #[test]
+    fn numbering_is_per_session() {
+        let (mut service, mut sessions, first) = setup();
+        let second = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree-2"))
+            .expect("second session should be created")
+            .id()
+            .to_string();
+        spawn(&mut service, &mut sessions, &first);
+        assert_eq!(spawn(&mut service, &mut sessions, &second), "agent-1");
+    }
+
+    #[test]
+    fn a_taken_number_is_skipped() {
+        let (mut service, mut sessions, session_id) = setup();
+        restored(&mut service, &session_id, Some("agent-2"), 1);
+        assert_eq!(spawn(&mut service, &mut sessions, &session_id), "agent-1");
+        assert_eq!(spawn(&mut service, &mut sessions, &session_id), "agent-3");
+    }
+
+    #[test]
+    fn a_rename_frees_the_name_for_the_next_agent() {
+        let (mut service, mut sessions, session_id) = setup();
+        let first = service
+            .create_agent(CreateAgentRequest::new(&session_id, "codex"), &mut sessions)
+            .expect("agent should be created");
+        spawn(&mut service, &mut sessions, &session_id);
+        service
+            .alias_agent(first.id(), Some("lead".to_string()))
+            .expect("rename should succeed");
+        assert_eq!(spawn(&mut service, &mut sessions, &session_id), "agent-1");
+    }
+
+    #[test]
+    fn clearing_the_alias_gives_a_fresh_default_name() {
+        let (mut service, mut sessions, session_id) = setup();
+        let first = service
+            .create_agent(CreateAgentRequest::new(&session_id, "codex"), &mut sessions)
+            .expect("agent should be created");
+        let cleared = service
+            .alias_agent(first.id(), None)
+            .expect("clearing should succeed");
+        assert_eq!(cleared.alias(), Some("agent-1"));
+    }
+
+    #[test]
+    fn a_person_cannot_pick_an_agent_number_name() {
+        let (mut service, mut sessions, session_id) = setup();
+        let agent = service
+            .create_agent(CreateAgentRequest::new(&session_id, "codex"), &mut sessions)
+            .expect("agent should be created");
+        for alias in ["agent-1", "agent-7", "Agent-42"] {
+            assert!(matches!(
+                service.alias_agent(agent.id(), Some(alias.to_string())),
+                Err(DaemonError::AgentAliasConflict { .. })
+            ));
+        }
+        assert!(service
+            .create_agent(
+                CreateAgentRequest::new(&session_id, "codex").with_alias("agent-9"),
+                &mut sessions,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn restored_agents_without_alias_are_named_oldest_first() {
+        let (mut service, _sessions, session_id) = setup();
+        let newer = restored(&mut service, &session_id, None, 20);
+        let older = restored(&mut service, &session_id, None, 10);
+        restored(&mut service, &session_id, Some("agent-1"), 30);
+        assert_eq!(service.assign_missing_default_aliases(), 2);
+        assert_eq!(
+            service.get_agent(older.id()).unwrap().alias(),
+            Some("agent-2")
+        );
+        assert_eq!(
+            service.get_agent(newer.id()).unwrap().alias(),
+            Some("agent-3")
+        );
+        assert_eq!(service.assign_missing_default_aliases(), 0);
     }
 }

@@ -299,6 +299,7 @@ function createHarness(options: {
   respondToInteraction?: FocusedInteractionChoiceControllerDeps["respondToInteraction"]
   providerLogin?: FocusedInteractionChoiceControllerDeps["providerLogin"]
   composerText?: string
+  localInteractions?: RuntimeInteraction[]
 } = {}) {
   const selectedIndexes = new Map<string, number>()
   const customReplies = new Map<string, string>()
@@ -321,6 +322,7 @@ function createHarness(options: {
     isAttached: () => options.attached ?? true,
     getComposerText: () => options.composerText ?? "",
     getSessionId: () => "session-1",
+    getActiveInteractions: () => options.localInteractions ?? [],
     getSelectedIndex: (interactionId) => selectedIndexes.get(interactionId),
     setSelectedIndex: (interactionId, index) => {
       selectedIndexes.set(interactionId, index)
@@ -449,4 +451,16 @@ test("MP-08/MP-11 a failed choice re-enables retry with its error", async () => 
   assert.equal(h.footerMessages().at(-1)?.tone, "error")
   await h.controller.submitChoice(0)
   assert.equal(attempts, 2)
+})
+
+test("focused interaction answer keeps the next question the kernel asked before the response arrived", async () => {
+  const answered = interactionFixture()
+  const next = { ...interactionFixture(), id: "vault-unlock-lease-1", requested_at_ms: (answered.requested_at_ms ?? 0) + 5 }
+  const h = createHarness({
+    interaction: answered,
+    localInteractions: [answered, next],
+    respondToInteraction: async () => ({ ...runtimeSession("session-answered"), active_interactions: [answered] }),
+  })
+  await h.controller.submitChoice(0)
+  assert.deepEqual(h.appliedSessions().at(-1)?.active_interactions?.map(item => item.id), ["vault-unlock-lease-1"])
 })

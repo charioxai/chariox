@@ -392,7 +392,14 @@ pub(super) fn execute_output_poll_command(
             resolved_variant: None,
             resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
             resolved_usage: poll.resolved_usage,
-            account_usage: None,
+            account_usage: (!poll.account_rate_limits.is_empty()).then(|| {
+                let limits = serde_json::Value::Array(poll.account_rate_limits);
+                crate::provider::codex_client::normalize_codex_usage(
+                    run.account_profile(),
+                    Some(&limits),
+                    None,
+                )
+            }),
             resolved_resume_state,
         }));
     }
@@ -500,6 +507,7 @@ mod tests {
             terminal_failure: None,
             notices: Vec::new(),
             resolved_usage: None,
+            account_rate_limits: Vec::new(),
         }
     }
 
