@@ -137,7 +137,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 220 unions the staging 216 line with the external agents 215 line.
 /// MP-08/MP-10/MP-11: allocated 232 carries the local 629 browser resize command.
 /// Peer 232 also carries protocol 627 attachment byte sizes in shared history.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 232;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 235;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

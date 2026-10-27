@@ -28,8 +28,21 @@ impl OwnedProcessSignals {
     }
 
     fn capture(child: &Child, launched_exclusive_session: bool) -> io::Result<Self> {
+        Self::capture_pid(child.id(), launched_exclusive_session)
+    }
+
+    /// The caller launched this async child with a successful setsid hook.
+    pub(crate) fn for_tokio_session_child(child: &tokio::process::Child) -> io::Result<Self> {
+        Self::capture_pid(
+            child
+                .id()
+                .ok_or_else(|| io::Error::other("child already reaped"))?,
+            true,
+        )
+    }
+
+    fn capture_pid(pid: u32, launched_exclusive_session: bool) -> io::Result<Self> {
         let rows = snapshot()?;
-        let pid = child.id();
         if pid <= 1 || pid > i32::MAX as u32 {
             return Err(io::Error::other("invalid child PID"));
         }

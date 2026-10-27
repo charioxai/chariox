@@ -5498,3 +5498,71 @@ kernels forwarding these operations require peer 232. The encrypted carrier's
 12 MiB prompt request admission changes bounds without adding a wire shape.
 Older history without `size_bytes` remains readable. The protocol fixtures and
 shape/hash tests cover both changes under this shared pair.
+
+
+### Binary Room exec (local 632 / peer 235)
+
+MP-08 / MP-09 / MP-10 / MP-11: `RoomTerminal` also carries non-PTY commands.
+The existing Room owner, external-grant and worker-lease checks apply unchanged;
+a caller unable to open that Room's terminal cannot exec there. `room_exec_v1`
+advertises this additive contract. The relay still carries opaque encrypted
+requests and responses, using its existing bounded framing and flow control.
+
+- `exec_open { command: [program, ...args] }` starts argv directly in the Room's
+  project directory; `exec_opened { exec_id }` identifies the running command.
+- `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
+  has `exec_id`, `state` (`running` or `finished`), `age_ms` and `buffered_bytes`.
+  It uses the same Room authority and worker forwarding as all exec operations.
+- `exec_write { exec_id, offset, data_base64 }` accepts at most 256 KiB at the
+  next stdin byte offset; `exec_input { next_offset }` acknowledges admission to
+  the bounded input queue. A repeated last write with identical bytes is safe.
+  `exec_input_busy` means retry that same offset after draining output. No byte
+  count or time limit applies to the whole stream.
+- `exec_stdin_close { exec_id, offset }` queues EOF after accepted writes.
+- `exec_read { exec_id, after_cursor, wait_ms }` acknowledges all output through
+  that cursor and returns `exec_output { chunks, next_cursor, outcome }`.
+  Each chunk is `{ cursor, stream: stdout|stderr, data_base64 }`; cursors start
+  at one and increase across both streams. Per-stream bytes stay ordered;
+  cross-stream order records read arrival, not OS write chronology. A page has
+  at most 256 KiB of raw data. Waits cap at 240 s. Empty pages retain the cursor.
+  Output is replayable until acknowledged; stale or never-issued cursors fail
+  explicitly. `outcome` is present only on a page containing the final output,
+  after process reaping and both output pipes settle: `exited { code }`,
+  `signaled { signal }` or `failed { message }`.
+- `exec_cancel { exec_id }` cancels the owned process and closes its pipes;
+  already-buffered output remains available. Cancellation before pipe EOF publishes
+  `failed` with `command canceled before its output ended; the stream is incomplete`,
+  even if the process exited zero. Lease expiry uses `expired` in that message;
+  an actual pipe read error retains its I/O failure reason.
+  `exec_close { exec_id }` cancels and
+  releases the record. Room end and kernel shutdown cancel all owned execs.
+
+Each exec retains at most 1 MiB / 128 chunks of unacknowledged raw output,
+one 32 KiB read per output pipe and eight stdin chunks (at most 2 MiB queued,
+plus one 256 KiB write in flight). Full output buffers stop
+reading the child pipes; full input queues refuse new admission. Slow readers
+therefore apply backpressure without dropping bytes. There are at most sixteen
+records per Room and sixty-four per kernel, including completed records: close
+collected commands. List execs to discover abandoned IDs, then close them to
+reclaim their processes. A record expires five minutes after its last output
+read request, including completed records. A read renews that lease on entry;
+listing, stdin writes and the completion of an old long poll do not. Expiry removes the record, kills the
+owned process tree and reaps it before releasing managed work. A disconnected
+reader can resume within that bound using its exec ID, accepted stdin offset
+and last consumed output cursor; disconnect never reruns the command. Records
+and bytes are memory-only: a kernel restart invalidates them and a crash leaves
+command outcomes unknown. These bytes never enter Room history or the persistent
+gateway ledger. Open uses the existing at-most-once ledger; chunk,
+EOF, list, read, cancel and close operations are repeatable without growing it.
+Managed placement uses the same implementation; running execs count as work and
+respect the existing quiescence fence, preserving automatic shutdown policy.
+
+`chariox exec [--kernel NAME] --session ROOM [--host-agent AGENT] -- argv...`
+wires binary stdin/stdout/stderr directly, drains both output pipes while feeding
+stdin, closes stdin on EOF, and returns the remote code (128 + signal on Unix).
+While a local stdout or stderr write is pending, the CLI renews the reader lease
+every minute with a non-waiting read at its last locally consumed cursor. The
+renewal's page is left unconsumed; the CLI settles any in-flight renewal before
+its next normal read acknowledges more bytes.
+SIGINT/SIGTERM cancel the remote command before closing it. Transport loss is
+reported with the exec ID and cursors; commands are never automatically replayed.

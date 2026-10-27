@@ -15,13 +15,13 @@ struct Link {
 }
 
 #[derive(Default)]
-pub(super) struct ManagedWork {
+pub(crate) struct ManagedWork {
     link: OnceLock<Link>,
     working: AtomicBool,
 }
 
 impl ManagedWork {
-    pub(super) fn link(
+    pub(crate) fn link(
         &self,
         gate: Arc<ManagedKernelQuiescenceGate>,
         work_changed: Weak<dyn Fn() + Send + Sync>,
@@ -32,7 +32,7 @@ impl ManagedWork {
     /// Hold the guard while a command is committed: a stop cannot be reserved
     /// in between, and none is admitted once it is. Ordinary kernels have no
     /// fence.
-    pub(super) fn admission(&self) -> Result<Option<ManagedKernelAdmissionGuard<'_>>, DaemonError> {
+    pub(crate) fn admission(&self) -> Result<Option<ManagedKernelAdmissionGuard<'_>>, DaemonError> {
         self.link
             .get()
             .map(|link| link.gate.admission_guard())
@@ -41,7 +41,7 @@ impl ManagedWork {
 
     /// Tell the kernel when the answer to "is a command running" changed.
     /// Called without any terminal lock held.
-    pub(super) fn report(&self, is_working: impl FnOnce() -> bool) {
+    pub(crate) fn report(&self, is_working: impl FnOnce() -> bool) {
         let Some(link) = self.link.get() else {
             return;
         };

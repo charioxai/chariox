@@ -155,6 +155,13 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    // Exec byte pages and stdin acknowledgements are owned by the bounded
+    // stream, not this transport cache. Only starting a command needs a receipt.
+    if matches!(request, LocalDaemonRequest::RoomTerminal(terminal)
+        if terminal.operation.is_exec() && !matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecOpen { .. }))
+    {
+        return false;
+    }
     if crate::runtime::state::is_outside_event_request(request) {
         return false;
     }

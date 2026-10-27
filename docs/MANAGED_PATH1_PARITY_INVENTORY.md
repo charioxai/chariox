@@ -1,5 +1,33 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 binary Room exec (2026-10-27)
+
+`RoomTerminal` binary exec operations enter the same owner/Room-agent checks in
+`runtime/state/room_terminal_runtime_state.rs` and the same worker-lease bridge
+as terminal open. `room_exec/` owns argv, stdin offsets, bounded stdout/stderr
+pages, cancellation and reaping identically on ordinary and managed kernels.
+The relay adds no execution authority or payload inspection. Byte pages bypass
+transport caches and the gateway ledger; command open retains its existing
+at-most-once receipt. The shared file-transfer chunk bound applies.
+
+The existing `room_terminal/managed_work.rs` admission fence also gates exec;
+`runtime/state/managed_activity_runtime_state.rs` counts running exec work until
+process reaping and pipe settlement. Room end and kernel shutdown cancel that
+work. Room-scoped `exec_list` exposes IDs, state, age and retained bytes for
+recovery. Five minutes without an output read expires any record and cancels
+its process tree; listing and stdin writes do not renew it. Expiry releases
+managed work only after reaping and pipe settlement. The CLI handles SIGHUP
+alongside SIGINT/SIGTERM. Canceled, unfinished pipes report an incomplete stream,
+distinguishing cancellation, lease expiry and actual pipe read errors. While
+local output writes are pending, the CLI renews the lease at its last consumed
+cursor; SIGKILL still abandons the reader and permits expiry. Transport loss
+retains normalized failure codes and resume cursors. This is the existing mandatory-shutdown exception: no new placement rule,
+provider adapter, history format, credential path or Cloud stop policy is added.
+The wire contract is local 632 / peer 235, advertised by `room_exec_v1`.
+See `docs/PROTOCOL.md` (Binary Room exec) and the executable scenarios in
+`scripts/e2e-stack/room-exec/README.md`; they do not close the whole MP matrix.
+
+
 
 ## MP-08 / MP-09 / MP-10 / MP-11 bounded prompt attachments (2026-10-26)
 
