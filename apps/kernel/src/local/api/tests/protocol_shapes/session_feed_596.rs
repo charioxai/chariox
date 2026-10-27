@@ -74,7 +74,7 @@ fn fixture_events() -> serde_json::Value {
     };
     serde_json::json!({
         "items": ["MP-08", "MP-10", "MP-11"],
-        "local_protocol": 629,
+        "local_protocol": LOCAL_DAEMON_PROTOCOL_VERSION,
         "allocation": "614/220 union (feature predecessor 596/202): agent_turn_changed, home_extension_audit_appended, home_extension_audit_lagged, heartbeat_interval_ms",
         "agent_turn_changed": serde_json::to_value(turn_changed).unwrap(),
         "home_extension_audit_appended": serde_json::to_value(audit_appended).unwrap(),
