@@ -9,11 +9,12 @@ import { resolve, join, dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
+import { DatabaseSync } from "node:sqlite"
 
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) {
   const key = process.argv[i]
-  if (key === "--expect-base") flags.set(key, true)
+  if (["--expect-base", "--review-regressions", "--expect-review-base"].includes(key)) flags.set(key, true)
   else flags.set(key, process.argv[++i])
 }
 function required(key) {
@@ -87,12 +88,13 @@ async function role(name) {
   const dir = join(root, name), ports = []
   for (let i = 0; i < 4; i++) ports.push(await freePort())
   for (const sub of ["chariox", "home", "tmp", "work", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
-  writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/chariox/vault.json"\nunlock_policy = "kernel_init"\n`, { mode: 0o600 })
+  writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[state]\npath = "${dir}/chariox/state.db"\n`, { mode: 0o600 })
   const localEnv = { ...env, HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"),
     XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"),
     CHARIOX_HOME: join(dir, "chariox"), CHARIOX_LOG_DIR: join(dir, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"),
     CHARIOX_DAEMON_SOCKET: join(dir, "daemon.sock"), CHARIOX_DAEMON_ALIAS: `extev-${name}`, CHARIOX_MACHINE_ALIAS: `extev-${name}`,
-    CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]) }
+    CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
+    ...(flags.has("--review-regressions") && name === "home" ? { CHARIOX_TEST_OUTSIDE_PENDING_LIMIT: "4" } : {}) }
   const r = { dir, env: localEnv, passkey: randomBytes(24).toString("hex") }
   r.child = start(binary, localEnv, name)
   r.client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: localEnv, controlRequestRetryDeadlineMs: 1000 })
@@ -179,6 +181,19 @@ try {
   let r = await cli(home, ["access", "request", "--until-exit", "--holder-pid", String(process.pid)])
   assert.equal(r.code, 0, r.err)
   const target = worker.status.daemon_id
+  const sourceEvents = new Map()
+  function rememberSourceCursors() {
+    // Imported payloads retain source cursors; the CLI presents home cursors.
+    // Read only redacted terminal records, never kernel configuration or secrets.
+    const db = new DatabaseSync(join(home.dir, "chariox/state.db"), { readOnly: true })
+    try {
+      const rows = db.prepare("SELECT payload FROM agent_inbox WHERE room_id='' AND json_extract(payload,'$.type')='terminal'").all()
+      for (const row of rows) {
+        const e = JSON.parse(row.payload)
+        if (e.kernel === target) sourceEvents.set(e.refs.terminal_id, e)
+      }
+    } finally { db.close() }
+  }
   if (flags.has("--smoke-script")) await smoke(home, target)
   const remote = async body => {
     const r = await cli(home, ["request", "--kernel", target, "--command-id", randomUUID()], body)
@@ -188,10 +203,30 @@ try {
   }
   const made = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "health-target", no_subscribe: true } })).SessionCreated
   const session = made.session.id
+  async function refusedSubscription(existing) {
+    const before = await cli(home, ["events", "list"])
+    const since = before.value?.next_cursor || 0
+    const refused = await cli(home, ["events", "subscribe", "--kernel", target, "--session", randomUUID()])
+    assert.notEqual(refused.code, 0, "missing remote target must be refused")
+    await delay(600)
+    const after = await cli(home, ["events", "wait", "--since", String(since), "--timeout", "0"])
+    const health = after.value.events.filter(e => e.type === "kernel_health")
+    if (flags.has("--expect-review-base")) {
+      assert(health.some(e => !e.value.online), "review base must reproduce the false offline event")
+    } else {
+      assert.equal(after.code, 5, "a refusal must leave the inbox idle")
+      assert.equal(health.length, 0, "a refusal must not change kernel health")
+    }
+    note("refused-subscription", { existing, code: refused.code, health })
+    // Drain the red-only false events before checking genuine disconnects.
+    assert.equal((await cli(home, ["events", "ack", String(after.value.next_cursor)])).code, 0)
+  }
+  if (flags.has("--review-regressions")) await refusedSubscription(false)
   r = await cli(home, ["events", "subscribe", "--kernel", target, "--session", session])
   assert.equal(r.code, 0, r.err)
   assert.equal(r.value.subscription.kernels[0].online, true)
-  r = await cli(home, ["events", "wait", "--since", "0", "--timeout", "0"])
+  if (flags.has("--review-regressions")) await refusedSubscription(true)
+  r = await cli(home, ["events", "wait", ...(flags.has("--review-regressions") ? [] : ["--since", "0"]), "--timeout", "0"])
   assert([0, 5].includes(r.code), r.err)
   let cursor = r.value.next_cursor
   // Establish ordering relative to an ordinary user-visible terminal exit.
@@ -202,6 +237,7 @@ try {
   r = await terminalWait
   assert.equal(r.code, 0, r.err)
   assert(r.value.events.some(e => e.type === "terminal" && e.value.exit_code === 23))
+  if (flags.has("--review-regressions")) rememberSourceCursors()
   cursor = r.value.next_cursor
   await cli(home, ["terminal", "close", "--kernel", target, "--session", session, "--terminal", terminal.value.terminal.terminal_id])
   r = await cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "0"])
@@ -253,10 +289,45 @@ try {
   }
   note("recovery-wait", { ms: Date.now() - recoveryStarted, code: r.code, batch: r.value })
   cursor = r.value.next_cursor
+  if (flags.has("--review-regressions")) {
+    async function retainedEvents() {
+      let batch = await cli(home, ["events", "list"])
+      for (let retry = 0; batch.code === 7 && retry < 8; retry++) {
+        const failure = JSON.parse(batch.err).error
+        assert.equal(failure.code, "cursor_expired")
+        batch = await cli(home, ["events", "list", "--since", String(failure.oldest_cursor - 1)])
+      }
+      assert.equal(batch.code, 0, batch.err)
+      return batch
+    }
+    for (let i = 0; i < 5; i++) {
+      const opened = await cli(home, ["terminal", "open", "--kernel", target, "--session", session, "--", "/bin/sh", "-c", `exit ${30 + i}`])
+      assert.equal(opened.code, 0, opened.err)
+      await until(async () => {
+        const batch = await retainedEvents()
+        return batch.value?.events.some(e => e.type === "terminal" && e.value.exit_code === 30 + i)
+      }, "terminal imported before next overflow")
+      rememberSourceCursors()
+      assert.equal((await cli(home, ["terminal", "close", "--kernel", target, "--session", session, "--terminal", opened.value.terminal.terminal_id])).code, 0)
+    }
+    const merged = await retainedEvents()
+    const gap = merged.value.events.find(e => e.type === "gap" && e.kernel === target)
+    assert(gap, "overflow must retain a source gap")
+    const retained = merged.value.events.filter(e => e.type === "terminal").map(e => e.refs.terminal_id)
+    const source = [...sourceEvents.values()].sort((a, b) => a.cursor - b.cursor)
+    assert.equal(source.length, 6, "every generated remote terminal event must have its source cursor recorded")
+    const dropped = source.filter(e => !retained.includes(e.refs.terminal_id))
+    assert(dropped.length > 0)
+    const expected = { kernel: target, dropped: dropped.length, from: dropped[0].cursor, to: dropped.at(-1).cursor }
+    if (flags.has("--expect-review-base")) assert.notDeepEqual(gap.value, expected, "review base must reproduce mixed gap metadata")
+    else assert.deepEqual(gap.value, expected, "gap range and count must contain remote source events only")
+    note("source-gap", { actual: gap.value, expected, source, merged: merged.value })
+    cursor = merged.value.next_cursor
+  }
   assert.equal((await cli(home, ["events", "ack", String(cursor)])).code, 0)
   assert.equal((await cli(home, ["events", "unsubscribe", "--all"])).code, 0)
   await remote({ EndSession: { session_id: session } })
-  note(flags.has("--expect-base") ? "BASE-RED-CONFIRMED" : "PASS")
+  note(flags.has("--expect-base") ? "BASE-RED-CONFIRMED" : flags.has("--expect-review-base") ? "REVIEW-BASE-RED-CONFIRMED" : "PASS")
 } catch (error) {
   note("FAIL", { message: error.message }); process.exitCode = 1
 } finally {

@@ -5460,6 +5460,9 @@ cursors, retain normal ordering and acknowledgement rules, wake an outstanding
 `WaitEvents`, and never enter another grant's inbox. Removed targets and ended
 subscriptions collect no later health events. Callers that depend on these wakes
 require gateway protocol 631; existing CLI callers keep their supported minimum.
+Retention excludes home-observed health records from source gap ranges and
+dropped counts. If only health records expire, the home cursor floor advances
+without creating a source gap; subscription status retains the current health.
 The relay remains an opaque carrier and clients need no health polling.
 
 File writes and file transfers alone are not inbox events. Lane coordination

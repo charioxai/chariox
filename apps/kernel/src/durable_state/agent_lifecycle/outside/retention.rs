@@ -42,6 +42,11 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
             .0;
         for (sequence, payload) in rows {
             let event: OutsideEvent = decode(&payload)?;
+            // Health is observed by the home kernel, outside the source's
+            // sequence space. Dropping it must not imply lost source events.
+            if matches!(event.value, OutsideEventValue::KernelHealth { .. }) {
+                continue;
+            }
             let source = if event.cursor == 0 {
                 sequence
             } else {
@@ -90,11 +95,11 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         params![part.id, sql_integer(last)?],
     )
     .map_err(sql)?;
-    let oldest = groups
+    let floor = groups
         .values()
-        .map(|group| group.sequence)
+        .map(|group| group.sequence.saturating_sub(1))
         .min()
-        .ok_or_else(|| error("inbox retention range missing"))?;
+        .unwrap_or(last);
     for group in groups.into_values() {
         let mut event = group.event;
         event.cursor = group.sequence;
@@ -113,6 +118,6 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         // A gap occupies the source's last removed sequence, before every retained event.
         tx.execute("INSERT INTO agent_inbox(sequence,room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,'',?2,?3,?4,?5)",params![sql_integer(group.sequence)?,part.id,event.kernel,format!("gap-{}",group.sequence),encode(&event)?]).map_err(sql)?;
     }
-    part.floor = part.floor.max(oldest.saturating_sub(1));
+    part.floor = part.floor.max(floor);
     Ok(())
 }

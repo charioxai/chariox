@@ -220,6 +220,101 @@ fn outside_retention_returns_an_expired_cursor_and_an_ordered_gap() {
 }
 
 #[test]
+fn outside_retention_excludes_health_from_remote_gap_ranges() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    for (n, online) in [(1000, true), (1001, false), (1002, true), (1003, false)] {
+        f.store
+            .outside_mutate(Mutation::KernelHealth {
+                id: "grant".into(),
+                kernel: "kernel-a".into(),
+                online,
+                reason: "test".into(),
+            })
+            .unwrap();
+        let mut e = event("x", "x1");
+        e.cursor = n;
+        f.store
+            .outside_mutate(Mutation::Import {
+                id: "grant".into(),
+                kernel: "kernel-a".into(),
+                events: vec![e],
+            })
+            .unwrap();
+    }
+    for (limit, expected) in [(4, (1000, 1001, 2)), (2, (1000, 1002, 3))] {
+        f.store
+            .outside_mutate(Mutation::Bound {
+                id: "grant".into(),
+                limit,
+            })
+            .unwrap();
+        let oldest = f
+            .store
+            .outside_list("grant", Some(0), 1000)
+            .unwrap()
+            .unwrap_err();
+        let batch = f
+            .store
+            .outside_list("grant", Some(oldest - 1), 1000)
+            .unwrap()
+            .unwrap();
+        assert!(batch.events.len() <= limit);
+        let gap = batch.events.iter().find_map(|e| match e.value {
+            OutsideEventValue::Gap {
+                from, to, dropped, ..
+            } => Some((from, to, dropped)),
+            _ => None,
+        });
+        assert_eq!(
+            gap,
+            Some(expected),
+            "remote gap metadata must only count remote source events"
+        );
+        assert!(batch.events.windows(2).all(|p| p[0].cursor < p[1].cursor));
+    }
+}
+
+#[test]
+fn outside_retention_can_drop_only_health_without_a_source_gap() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    for online in [false, true, false, true, false, true] {
+        f.store
+            .outside_mutate(Mutation::KernelHealth {
+                id: "grant".into(),
+                kernel: "kernel-a".into(),
+                online,
+                reason: "test".into(),
+            })
+            .unwrap();
+    }
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 2,
+        })
+        .unwrap();
+    let oldest = f
+        .store
+        .outside_list("grant", Some(0), 1000)
+        .unwrap()
+        .unwrap_err();
+    let batch = f
+        .store
+        .outside_list("grant", Some(oldest - 1), 1000)
+        .unwrap()
+        .unwrap();
+    assert!(batch.events.len() <= 2);
+    assert!(batch
+        .events
+        .iter()
+        .all(|e| matches!(e.value, OutsideEventValue::KernelHealth { .. })));
+    let part = f.store.outside_part("grant").unwrap().unwrap();
+    assert!(part.kernel_health["kernel-a"]);
+}
+
+#[test]
 fn outside_retention_identifies_each_kernel_and_preserves_the_cap() {
     let f = Fixture::new();
     subscribe(&f, "grant", true, vec![target("x", None)]);
