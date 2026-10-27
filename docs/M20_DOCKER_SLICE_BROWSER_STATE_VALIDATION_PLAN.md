@@ -174,6 +174,14 @@ pair and records the binary hash and build mode. The operator must separately
 verify that the binary and image match the intended runtime source; protocol
 equality alone is not source provenance or production-release evidence.
 
+Binaries placed in `apps/kernel/slice-linux-docker/prebuilt/` (with a
+`.managed-release` marker) run in the Debian 12 slice, so a host build on a newer
+distribution (Ubuntu 24.04 links glibc 2.38/2.39) cannot start there. The image
+build rejects such binaries and names the glibc they need. Produce compatible
+ones with `docker buildx build --target managed-release-artifacts --output
+type=local,dest=DIR -f apps/kernel/slice-linux-docker/docker/Dockerfile .`, or
+leave the marker out so the image builds them itself.
+
 `CHARIOX_ROOM_DRILL_MEMORY_MB` accepts a positive u32 MiB value and defaults to
 2048. The actual initial and restored containers must retain that limit, no
 additional swap, and one CPU. Reducing a drill's cap does not bypass kernel
