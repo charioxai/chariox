@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.99.0-bookworm AS builder
 ARG CHARIOX_BUILD_REVISION=development
 ENV CHARIOX_BUILD_REVISION="${CHARIOX_BUILD_REVISION}"
 WORKDIR /opt/chariox

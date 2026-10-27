@@ -87,7 +87,7 @@ pub(super) fn run(arguments: Vec<String>) -> Result<()> {
     }
     for signal in [libc::SIGTERM, libc::SIGINT] {
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-        action.sa_sigaction = stop as usize;
+        action.sa_sigaction = stop as *const () as usize;
         unsafe {
             libc::sigemptyset(&mut action.sa_mask);
         }

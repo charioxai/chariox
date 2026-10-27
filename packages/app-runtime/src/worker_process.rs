@@ -36,7 +36,7 @@ pub mod wasm_config;
 mod worker_platform;
 
 use crate::wire::{Channel, Sender};
-#[cfg(any(test, feature = "test-fixtures"))]
+#[cfg(test)]
 use record::LaunchRecord;
 use std::{
     ffi::CString,

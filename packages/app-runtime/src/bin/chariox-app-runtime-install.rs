@@ -74,7 +74,7 @@ mod command {
         let mut source = None;
         let mut key = None;
         let mut digest = None;
-        for pair in arguments[1..].chunks_exact(2) {
+        for pair in arguments[1..].as_chunks::<2>().0 {
             match pair[0].to_str() {
                 Some("--source") if verb == "install" && source.is_none() => {
                     let path = PathBuf::from(&pair[1]);

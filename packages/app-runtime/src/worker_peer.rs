@@ -296,7 +296,7 @@ impl WorkerPeer {
         let sequence = self
             .control
             .sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
                 sequence.checked_add(1)
             })
             .map_err(|_| PeerError::Closed)?;
