@@ -9,7 +9,7 @@ services:
     image: ghcr.io/dexidp/dex:v2.41.1
     container_name: amunblock-fa-dex
     command: [dex, serve, /etc/dex/config.yaml]
-    network_mode: host
+    ports: ["127.0.0.1:${FA_PORT_OIDC}:5556"]
     volumes: ["${FA_STATE_DIR}/dex.yaml:/etc/dex/config.yaml:ro"]
     mem_limit: 256m
   postgres:
