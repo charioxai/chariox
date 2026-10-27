@@ -1,5 +1,137 @@
 // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: actual native context includes safe actionable receipts.
 use super::*;
+
+// MP-08 / MP-09 / MP-10 / MP-11: settled refusals still contradict invented success.
+#[tokio::test]
+async fn assessment_retains_bounded_rejected_dispatch_evidence() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let apply = |op| store.agent_lifecycle(op).unwrap();
+    let mut request = SessionHistoryEntry::user_prompt(
+        &room,
+        "owner",
+        &agent,
+        "Have cold-peer summarize the README",
+    );
+    request.merge_key = Some("prompt:refused-work".into());
+    runtime
+        .owned
+        .append_operational_history_entry(&request, None, None, None);
+    let answer = SessionHistoryEntry::provider_output(
+        &room,
+        "run",
+        Some(&agent),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "cold-peer summarized the README successfully",
+    );
+    runtime
+        .owned
+        .append_operational_history_entry(&answer, None, None, None);
+    apply(Operation::Begin {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "refused-work".into(),
+        run: Some("run".into()),
+        now: 1,
+    });
+    apply(Operation::StartGoal {
+        task: "refused-work".into(),
+        owner: "owner".into(),
+        objective: "Have cold-peer summarize the README".into(),
+        minutes: 1,
+        now: 1,
+    });
+    for index in 0..66 {
+        let id = format!("receipt-{index}");
+        apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "refused-work".into(),
+            run: Some("run".into()),
+            id: id.clone(),
+            kind: "delegate".into(),
+            resource: Some("cold-peer".into()),
+            now: 1,
+        });
+        apply(Operation::DispatchReceipt {
+            id,
+            accepted: false,
+            resource: None,
+        });
+    }
+    apply(Operation::Settle {
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "refused-work".into(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 2,
+    });
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["coverage"]["total"], 0);
+    assert!(data["obligations"].as_array().unwrap().is_empty());
+    assert!(data["satisfied_obligations"].as_array().unwrap().is_empty());
+    assert_eq!(
+        data["latest_public_answer_tail"],
+        "cold-peer summarized the README successfully"
+    );
+    assert_eq!(
+        data["rejected_dispatch_coverage"],
+        serde_json::json!({"shown":64,"total":66})
+    );
+    let refusals = data["rejected_dispatches"].as_array().unwrap();
+    assert_eq!(refusals.len(), 64);
+    assert_eq!(
+        refusals[0],
+        serde_json::json!({
+            "receipt_id":"receipt-0", "kind":"delegate", "target":"cold-peer",
+            "reason_class":"dispatch_rejected", "effect":"not_admitted",
+        })
+    );
+    assert_eq!(refusals[63]["receipt_id"], "receipt-63");
+    assert!(context.contains("rejected_dispatches is kernel-confirmed evidence"));
+    assert!(context.contains("An answer claiming that a rejected dispatch produced the requested effect cannot be achieved"));
+    assert!(context.contains("A refusal report may be achieved only when the original objective is fulfilled by reporting that refusal"));
+
+    // Admitted failure remains unresolved; successful delivery is not a refusal.
+    let mut task = task;
+    task.obligations[0].dispatch_state = "accepted".into();
+    task.obligations[1].dispatch_state = "accepted".into();
+    task.obligations[1].status = "satisfied".into();
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["coverage"]["total"], 1);
+    assert_eq!(data["obligations"][0]["id"], "receipt-0");
+    assert_eq!(data["satisfied_obligations"][0]["id"], "receipt-1");
+    assert_eq!(
+        data["rejected_dispatch_coverage"],
+        serde_json::json!({"shown":64,"total":64})
+    );
+    assert_eq!(data["rejected_dispatches"][0]["receipt_id"], "receipt-2");
+}
+
 #[tokio::test]
 async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
     use crate::durable_state::agent_lifecycle::{Operation, Registration};
