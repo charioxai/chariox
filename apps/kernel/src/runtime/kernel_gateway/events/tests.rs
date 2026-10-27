@@ -79,6 +79,42 @@ async fn check_health_changes() {
         grant_id: "first".into(),
         harness: "test".into(),
     };
+    for baseline in [false, true] {
+        if baseline {
+            gateway.event_health(&origin, "remote", Ok(())).unwrap();
+        }
+        gateway
+            .event_health(
+                &origin,
+                "remote",
+                Err(GatewayError::Remote {
+                    name: "remote".into(),
+                    code: "events_refused".into(),
+                    message: "target does not exist".into(),
+                    retryable: false,
+                }),
+            )
+            .unwrap();
+        assert!(
+            store
+                .outside_list("first", None, 1000)
+                .unwrap()
+                .unwrap()
+                .events
+                .is_empty(),
+            "a refused subscription must not report the kernel offline"
+        );
+        assert_eq!(
+            store
+                .outside_part("first")
+                .unwrap()
+                .unwrap()
+                .kernel_health
+                .get("remote"),
+            baseline.then_some(&true),
+            "a refusal must leave the health baseline unchanged"
+        );
+    }
     gateway.event_health(&origin, "remote", Ok(())).unwrap();
     assert!(store
         .outside_list("first", None, 1000)

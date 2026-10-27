@@ -5451,7 +5451,7 @@ per-kernel health transitions in the same grant-owned inbox:
 "reason": "kernel_offline" } }`. `kernel` identifies the followed source;
 `session_id` and `machine` are empty for this kernel-level control record, and
 `agent_id` is absent. `reason` is the gateway error code (a reason class, without
-error details), `events_part_failed` for a target's refusal, or `connected` on recovery. The first successful connection
+error details), `events_part_failed` for a retryable target failure, or `connected` on recovery. A non-retryable refusal is returned to the caller without changing the health baseline or appending a health event. The first successful connection
 establishes a baseline; an initial failure and each later online/offline change
 append a durable event. Repeated failures, including a different failure reason,
 do not append duplicates; `GetEventSubscription` retains the current full error.

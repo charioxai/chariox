@@ -160,6 +160,17 @@ impl KernelGateway {
         kernel: &str,
         status: Result<(), GatewayError>,
     ) -> Result<(), crate::error::DaemonError> {
+        // A refused operation says nothing about connectivity and is already
+        // returned to its caller. Preserve the last actual health observation.
+        if matches!(
+            status,
+            Err(GatewayError::Remote {
+                retryable: false,
+                ..
+            })
+        ) {
+            return Ok(());
+        }
         let mut health = self
             .event_parts
             .health
