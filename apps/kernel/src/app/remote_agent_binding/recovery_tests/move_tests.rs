@@ -1851,3 +1851,357 @@ async fn mk03_restart_removes_completed_workspace_archives_but_keeps_native() {
         assert_eq!(std::fs::read(native).unwrap(), b"native state must survive");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_missing_home_mcp_rejects_before_move_activation() {
+    let (fixture, session, original) = crash_fixture().await;
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .grant_mcp(&fixture.agent_id, "mk04-missing-package".into())
+        .unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session.clone(),
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-missing",
+        None,
+        None,
+        &request,
+    );
+    let result = router.dispatch(command, request).await;
+    assert!(
+        result.is_err(),
+        "Move must reject a missing granted home MCP before activation"
+    );
+    let home = fixture.home.lock().await;
+    assert!(home
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .is_none());
+    assert_eq!(
+        std::fs::read(original.join("input")).unwrap(),
+        b"checkpointed workspace\n"
+    );
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_changed_grants_invalidate_prepared_move_after_restart() {
+    let (fixture, session, _) = crash_fixture().await;
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "materialized").unwrap();
+    let home = fixture.home.clone();
+    let agent_id = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref: agent_id,
+                machine_ref,
+            },
+        );
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8);
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-prepared",
+            None,
+            None,
+            &request,
+        );
+        router.dispatch(command, request).await
+    })
+    .await;
+    assert!(crashed.is_err(), "Move must reach the prepared boundary");
+    reboot_app(&fixture.home).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .grant_mcp(&fixture.agent_id, "mk04-new-grant".into())
+        .unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session,
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-changed",
+        None,
+        None,
+        &request,
+    );
+    let error = router
+        .dispatch(command, request)
+        .await
+        .expect_err("Changed grants must invalidate readiness");
+    assert!(
+        error.to_string().contains("changed during Move"),
+        "Must reject the changed requirements, got: {error}"
+    );
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_move_records_exact_resource_readiness_and_commit_receipts() {
+    let (fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    let journal = move_journal(&fixture, &session).await;
+    let composition = &journal["composition"];
+    assert!(composition["requirements"].is_object());
+    assert!(composition["readiness"].is_object());
+    assert_eq!(composition["commit"]["readiness"], composition["readiness"]);
+    assert_eq!(composition["readiness"]["identity"], journal["identity"]);
+    assert_eq!(
+        composition["readiness"]["workspace_sha256"],
+        journal["phase"]["receipt"]["archive_sha256"]
+    );
+    let worker = fixture.workers[0].lock().await;
+    let targets = worker.agent_moves.targets();
+    let target = targets
+        .iter()
+        .find(|target| {
+            target.capture.identity.operation_id
+                == journal["identity"]["operation_id"].as_str().unwrap()
+        })
+        .unwrap();
+    assert!(target.active);
+    assert_eq!(
+        serde_json::to_value(&target.composition.readiness).unwrap(),
+        composition["readiness"]
+    );
+    assert_eq!(
+        serde_json::to_value(&target.composition.commit).unwrap(),
+        composition["commit"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_capability_preparation_cannot_mutate_another_lease() {
+    let (fixture, session, _) = crash_fixture().await;
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "bound").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-lease-boundary",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err(), "Move must reach its bound preparation");
+    let requirements = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap()
+        .composition
+        .requirements
+        .unwrap();
+    let mut worker = fixture.workers[0].lock().await;
+    let target = worker
+        .agent_moves
+        .targets()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    let identity = &target.capture.identity;
+    let worktree = fixture.workspace_root.join("unrelated-worker");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let unrelated = {
+        let mut runtime = crate::app::RemoteLeaseRuntime::new(&mut worker);
+        let lease = runtime
+            .create_execution_lease(
+                &identity.home_kernel_id,
+                &identity.home_session_id,
+                &identity.home_agent_id,
+                false,
+                &identity.owner_user_id,
+            )
+            .unwrap();
+        runtime
+            .create_leased_agent(
+                &lease.id,
+                "dev-stub",
+                "default",
+                Some("default".into()),
+                None,
+                None,
+                None,
+                None,
+                Some(worktree.display().to_string()),
+                None,
+            )
+            .unwrap()
+    };
+    worker
+        .agents()
+        .grant_skill(&unrelated.backing_agent_id, "keep-unrelated-grant".into())
+        .unwrap();
+    let error = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .prepare_agent_move_capabilities(identity, &unrelated.id, &requirements)
+        .unwrap_err();
+    assert!(error.to_string().contains("exact backing lease"));
+    assert_eq!(
+        worker
+            .agents()
+            .get_agent(&unrelated.backing_agent_id)
+            .unwrap()
+            .skill_grants(),
+        vec!["keep-unrelated-grant"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_home_package_hash_change_invalidates_preparation_after_restart() {
+    let (fixture, session, _) = crash_fixture().await;
+    let registry = {
+        let home = fixture.home.lock().await;
+        let session = home.sessions().get_session(&session).unwrap();
+        crate::mcp::CharioxMcpRegistry::new(vec![crate::mcp::CharioxMcpRegistry::project_root(
+            session.workspace_id(),
+        )])
+    };
+    let mut package = crate::mcp::CharioxMcpServerConfig::stdio(
+        "mk04-hash",
+        "/bin/echo",
+        vec!["original".into()],
+    );
+    registry.install(&package).unwrap();
+    let root = {
+        let home = fixture.home.lock().await;
+        home.agents()
+            .grant_mcp(&fixture.agent_id, package.name.clone())
+            .unwrap();
+        home.save_durable_state_snapshot().unwrap();
+        home.config.private_runtime_state_root().join("agent-moves")
+    };
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "materialized").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-hash-capture",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err(), "Move must reach its prepared boundary");
+    reboot_app(&fixture.home).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    package.transport =
+        crate::mcp::CharioxMcpServerConfig::stdio("mk04-hash", "/bin/echo", vec!["changed".into()])
+            .transport;
+    registry.update(&package).unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session,
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-hash-check",
+        None,
+        None,
+        &request,
+    );
+    let error =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8)
+            .dispatch(command, request)
+            .await
+            .unwrap_err();
+    assert!(error.to_string().contains("changed during Move"), "{error}");
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active));
+}

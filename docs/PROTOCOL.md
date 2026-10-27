@@ -5666,3 +5666,22 @@ peer connection suffixes identify the same canonical home kernel.
 The home owns commitment and retries. Publishing files or probing native state
 does not authorize a prompt. Native bytes stay in protected artifacts and peer
 transport; the public client protocol gains no native-history projection.
+
+### MP-08 / MP-09 / MP-10 / MP-11: composed Move resource receipts (634/237)
+
+Move binds its selected account configuration, granted extension manifest,
+skill hashes and Project setup definition before source capture. Home checks
+that selection again across preparation waits and before committing. Home MCP
+authority and authenticated forwarding stay at home; required skills are
+materialized and verified through ordinary worker package admission.
+
+The encrypted AttachTarget reply carries a typed readiness receipt for the
+exact Move identity/generation, requirements digest, workspace/native artifact
+digests, target Project/account and backing agent. Project setup uses the
+ordinary target-native setup engine before readiness. ActivateTarget requires
+that receipt and durably records a separate commit receipt before replying.
+Repeating activation queries the same recorded result rather than starting a
+second execution. Account transfer retains the existing no-overwrite/native
+validation and rollback behavior; no Vault or provider profile tree is copied.
+These private peer carriers require237. Existing public Move requests retain
+their shapes; protocol634 binds the integrated contract.

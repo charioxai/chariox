@@ -35,6 +35,7 @@ use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod agent_move_abort;
+mod agent_move_composition;
 #[cfg(test)]
 mod agent_move_launch_tests;
 mod agent_move_peer;

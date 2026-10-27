@@ -61,9 +61,11 @@ pub enum AgentMovePeerRequest {
     AttachTarget {
         identity: AgentMoveIdentity,
         context: RemoteSkillSyncContext,
+        requirements: Box<super::AgentMoveRequirements>,
     },
     ActivateTarget {
         identity: AgentMoveIdentity,
+        readiness: Box<super::AgentMoveReadiness>,
     },
     RetireSource {
         identity: AgentMoveIdentity,
@@ -84,7 +86,7 @@ impl AgentMovePeerRequest {
             | Self::WriteChunk { identity, .. }
             | Self::PublishTarget { identity }
             | Self::AttachTarget { identity, .. }
-            | Self::ActivateTarget { identity }
+            | Self::ActivateTarget { identity, .. }
             | Self::RetireSource { identity }
             | Self::ReleaseSource { identity, .. }
             | Self::AbortTarget { identity }
@@ -126,9 +128,13 @@ pub enum AgentMovePeerResponse {
     Published {
         receipt: Box<AgentMoveMaterialization>,
     },
-    Attached,
+    Attached {
+        receipt: Box<super::AgentMoveReadiness>,
+    },
     AttachmentMissing,
-    Activated,
+    Activated {
+        receipt: Box<super::AgentMoveCommitReceipt>,
+    },
     SourceRetired,
     SourceReleased,
 }
@@ -139,11 +145,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn mk03_preflight_and_abort_638_240_shape_and_hash() {
-        let bytes = include_bytes!("protocol-638-240.json");
+    fn mk04_resource_readiness_634_237_shape_and_hash() {
+        let bytes = include_bytes!("protocol-634-237.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "b9ee93ca2d30beccce8e7611a4ae131258bb930529c039d5788ec7e8041e9ef1"
+            "1d37057027ced7f3a43e54bf9f438c084301c113d2e7590c7210e03cc3325c71"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(

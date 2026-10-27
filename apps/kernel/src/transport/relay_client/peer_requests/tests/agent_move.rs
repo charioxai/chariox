@@ -159,6 +159,16 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
         },
         Request::ActivateTarget {
             identity: stale.clone(),
+            readiness: Box::new(
+                serde_json::from_value(serde_json::json!({
+                    "identity":stale, "requirements_sha256":"0".repeat(64),
+                    "workspace_sha256":"1".repeat(64), "native_sha256":null,
+                    "target_project_id":"project", "target_account_profile":"selected",
+                    "backing_session_id":"room", "backing_agent_id":"agent",
+                    "environment_setup_operation_id":null
+                }))
+                .unwrap(),
+            ),
         },
     ] {
         let response = send_authenticated_peer_request_for_test(

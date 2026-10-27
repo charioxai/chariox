@@ -10,6 +10,9 @@ use crate::managed_context::development::{
 use crate::provider::NativeCheckpointBinding;
 
 mod artifacts;
+mod composition;
+pub(crate) use composition::{agent_configuration_sha256, AgentMoveComposition};
+pub use composition::{AgentMoveCommitReceipt, AgentMoveReadiness, AgentMoveRequirements};
 pub mod peer;
 mod store;
 pub use artifacts::AgentMoveArtifactKind;
@@ -124,6 +127,8 @@ impl HomeMovePhase {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HomeMoveOperation {
+    #[serde(default)]
+    pub composition: AgentMoveComposition,
     pub identity: AgentMoveIdentity,
     pub revision: u64,
     pub original_agent: AgentInstance,
@@ -148,6 +153,8 @@ pub(crate) struct MoveSource {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct MoveTarget {
+    #[serde(default)]
+    pub composition: AgentMoveComposition,
     pub capture: AgentMoveCapture,
     pub destination_root: PathBuf,
     pub receipt: Option<AgentMoveMaterialization>,

@@ -188,6 +188,7 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .save_target(target.clone())
         .unwrap();
     let operation = HomeMoveOperation {
+        composition: Default::default(),
         identity: identity.clone(),
         revision: 0,
         original_agent: agent.clone(),
@@ -294,6 +295,24 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .target(&identity.operation_id)
         .unwrap();
     target.ready = true;
+    target.active = false;
+    runtime
+        .owned
+        .agent_moves
+        .save_target(target.clone())
+        .unwrap();
+    let requirements = runtime.agent_move_requirements(&agent).await.unwrap();
+    let readiness = runtime
+        .finish_agent_move_readiness(&identity, &requirements)
+        .await
+        .unwrap();
+    target = runtime
+        .owned
+        .agent_moves
+        .target(&identity.operation_id)
+        .unwrap();
+    committed.composition.requirements = Some(requirements);
+    committed.composition.readiness = Some(readiness);
     committed.phase = HomeMovePhase::Committed {
         receipt: target.receipt.clone().unwrap(),
     };
@@ -531,6 +550,7 @@ async fn mk03_restart_promotes_queue_of_already_rolled_back_move() {
         .unwrap();
     app.agent_moves
         .save_home(HomeMoveOperation {
+            composition: Default::default(),
             identity: AgentMoveIdentity {
                 operation_id: "settled-queue".into(),
                 generation: 1,

@@ -148,29 +148,7 @@ impl KernelRuntimeState {
         let Some(checkpoint) = self.owned.agent_moves.native_checkpoint(&target.capture)? else {
             return Ok(());
         };
-        let mut request = crate::provider::LaunchProviderRequest::new(
-            agent.session_id(),
-            "codex",
-            agent.provider(),
-            agent.provider_account_profile(),
-            agent.model().unwrap_or("default"),
-        )
-        .with_agent_id(agent.id())
-        .with_owner_user_id(agent.owner_user_id())
-        .with_variant(agent.effort().map(str::to_string))
-        .with_working_directory(
-            target
-                .receipt
-                .as_ref()
-                .ok_or_else(|| move_error("Move receipt is missing"))?
-                .primary_path()?
-                .to_path_buf(),
-        )
-        .with_resume_state(agent.provider_resume_state().clone());
-        request.agent_move_preparation = Some(target.capture.identity.operation_id.clone());
-        let request = self
-            .prepare_provider_launch_request_with_vault(request, "prepare moved native session")
-            .await?;
+        let request = self.agent_move_native_launch_request(target, agent).await?;
         let account_owner = request
             .provider_account_owner_user_id
             .clone()
@@ -186,6 +164,41 @@ impl KernelRuntimeState {
             .await;
         self.record_waiting_room_change();
         Ok(())
+    }
+
+    pub(in crate::runtime::state) async fn agent_move_native_launch_request(
+        &self,
+        target: &crate::agent_move::MoveTarget,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let provider = crate::provider::provider_id_for_launch(agent.provider());
+        let adapter = crate::provider::adapter_key_for_provider(provider);
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let effective = crate::session::effective_agent_execution_config(&session, Some(agent));
+        let mut request = crate::provider::LaunchProviderRequest::new(
+            agent.session_id(),
+            adapter,
+            provider,
+            agent.provider_account_profile(),
+            agent.model().unwrap_or("default"),
+        )
+        .with_agent_id(agent.id())
+        .with_owner_user_id(agent.owner_user_id())
+        .with_execution_mode(effective.mode)
+        .with_permission_level(effective.permission_level)
+        .with_variant(agent.effort().map(str::to_string))
+        .with_working_directory(
+            target
+                .receipt
+                .as_ref()
+                .ok_or_else(|| move_error("Move receipt is missing"))?
+                .primary_path()?
+                .to_path_buf(),
+        )
+        .with_resume_state(agent.provider_resume_state().clone());
+        request.agent_move_preparation = Some(target.capture.identity.operation_id.clone());
+        self.prepare_provider_launch_request_with_vault(request, "prepare moved native session")
+            .await
     }
 
     pub(super) fn finish_agent_move_native_probe(

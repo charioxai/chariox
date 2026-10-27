@@ -1472,6 +1472,14 @@ impl ProjectEnvironmentSetupStore {
         }
     }
 
+    pub(super) fn execution_is_settled(&self, operation_id: &str, attempt: u32) -> bool {
+        self.entries
+            .lock()
+            .expect("setup state lock should not be poisoned")
+            .get(operation_id)
+            .is_some_and(|entry| entry.status.attempt == attempt && entry.active_executions == 0)
+    }
+
     pub(super) fn begin_execution(
         &self,
         operation_id: &str,

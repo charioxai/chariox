@@ -187,7 +187,12 @@ impl KernelRuntimeState {
                 ),
                 target_public_key,
             };
+            let requirements = self.agent_move_requirements(&agent).await?;
             let operation = HomeMoveOperation {
+                composition: crate::agent_move::AgentMoveComposition {
+                    requirements: Some(requirements),
+                    ..Default::default()
+                },
                 identity,
                 revision: 0,
                 original_agent: agent,
@@ -278,6 +283,9 @@ impl KernelRuntimeState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         loop {
             self.authorize_current_external_command()?;
+            if operation.phase.is_pending() && operation.composition.commit.is_none() {
+                self.verify_agent_move_requirements(&operation).await?;
+            }
             operation = match operation.phase.clone() {
                 HomeMovePhase::Fenced | HomeMovePhase::SourceStopped => {
                     let capture = if let Some(remote) = &operation.source_remote {
@@ -369,7 +377,12 @@ impl KernelRuntimeState {
                     receipt,
                     remote,
                 } => {
-                    if let Some(remote) = &remote {
+                    let requirements = operation
+                        .composition
+                        .requirements
+                        .clone()
+                        .ok_or_else(|| move_error("Move resource requirements are missing"))?;
+                    let readiness = if let Some(remote) = &remote {
                         let context = crate::transport::relay_peer::RemoteSkillSyncContext {
                             home_kernel_id: operation.identity.home_kernel_id.clone(),
                             home_session_id: operation.identity.home_session_id.clone(),
@@ -382,6 +395,7 @@ impl KernelRuntimeState {
                                 Request::AttachTarget {
                                     identity: operation.identity.clone(),
                                     context,
+                                    requirements: Box::new(requirements.clone()),
                                 },
                             )
                             .await?;
@@ -406,11 +420,12 @@ impl KernelRuntimeState {
                             operation = self.owned.agent_moves.save_home(operation)?;
                             continue;
                         }
-                        if response != Response::Attached {
+                        let Response::Attached { receipt: readiness } = response else {
                             return Err(move_error(
-                                "Target did not acknowledge native import and Project membership",
+                                "Target did not acknowledge resource readiness",
                             ));
-                        }
+                        };
+                        *readiness
                     } else {
                         self.attach_agent_move_target(
                             &operation.identity,
@@ -419,7 +434,23 @@ impl KernelRuntimeState {
                             false,
                         )
                         .await?;
+                        self.finish_agent_move_readiness(&operation.identity, &requirements)
+                            .await?
+                    };
+                    if readiness.identity != operation.identity
+                        || readiness.requirements_sha256 != requirements.sha256()?
+                        || readiness.workspace_sha256 != capture.workspace.sha256
+                        || readiness.native_sha256
+                            != capture
+                                .native
+                                .as_ref()
+                                .map(|artifact| artifact.sha256.clone())
+                        || readiness.target_project_id != receipt.target_project_id
+                    {
+                        return Err(move_error("Target resource readiness does not match this Move's requirements and artifacts"));
                     }
+                    self.verify_agent_move_requirements(&operation).await?;
+                    operation.composition.readiness = Some(readiness);
                     // The home fence remains closed across the authority change and its
                     // agent event. Restart repairs publication from this durable phase.
                     operation.phase = HomeMovePhase::Committed { receipt };
@@ -427,23 +458,31 @@ impl KernelRuntimeState {
                     self.owned.agent_moves.save_home(operation)?
                 }
                 HomeMovePhase::Committed { receipt } => {
-                    if operation.target_ref.is_some() {
+                    let readiness = operation.composition.readiness.clone().ok_or_else(|| move_error("Committed Move readiness is missing; reconcile the original generation"))?;
+                    let commit = if operation.target_ref.is_some() {
                         let response = self
                             .move_peer_target(
                                 &operation,
                                 Request::ActivateTarget {
                                     identity: operation.identity.clone(),
+                                    readiness: Box::new(readiness.clone()),
                                 },
                             )
                             .await?;
-                        if response != Response::Activated {
+                        let Response::Activated { receipt: commit } = response else {
                             return Err(move_error(
-                                "Target activation is uncertain; retry this move generation",
+                                "Target activation is uncertain; query this Move generation",
+                            ));
+                        };
+                        if commit.readiness != readiness {
+                            return Err(move_error(
+                                "Target commit does not match its verified readiness",
                             ));
                         }
                         self.owned
                             .kernel_browser_host
                             .revoke_agent(&operation.identity.home_agent_id);
+                        *commit
                     } else {
                         self.owned.retire_agent_move_provider_projection(
                             &operation.identity.home_session_id,
@@ -464,19 +503,11 @@ impl KernelRuntimeState {
                         .await?;
                         self.owned
                             .session_snapshot(&operation.identity.home_session_id)?;
-                        let mut target = self
-                            .owned
-                            .agent_moves
-                            .target(&operation.identity.operation_id)
-                            .ok_or_else(|| move_error("Committed move target is missing"))?;
-                        if !target.ready {
-                            return Err(move_error(
-                                "Committed move target has no native readiness receipt",
-                            ));
-                        }
-                        target.active = true;
-                        self.owned.agent_moves.save_target(target)?;
-                    }
+                        self.activate_agent_move_target(&operation.identity, &readiness)
+                            .await?
+                    };
+                    operation.composition.commit = Some(commit);
+                    operation = self.owned.agent_moves.save_home(operation)?;
                     self.release_agent_move_source(&operation, true, false)
                         .await?;
                     if let Some(source) = &operation.source_remote {

@@ -1,0 +1,297 @@
+{
+<<<<<<<< HEAD:apps/kernel/src/agent_move/protocol-638-240.json
+  "local_protocol": 638,
+  "peer_protocol": 240,
+========
+  "local_protocol": 634,
+  "peer_protocol": 237,
+>>>>>>>> 7ab284422 (Compose Move resource readiness and receipts [skip ci]):apps/kernel/src/agent_move/protocol-634-237.json
+  "abort": {
+    "MoveAgentToLocal": {
+      "session_id": "room",
+      "agent_ref": "agent",
+      "abort_pending": true
+    }
+  },
+  "peer_requests": [
+    {
+      "action": "probe",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "native": {
+        "provider": "codex",
+        "interface": "chariox",
+        "source_os": "linux",
+        "cli_version": "codex-cli 0.159.3",
+        "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "action": "probe_source",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "context": {
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "leased_agent_id": "leased"
+      }
+    },
+    {
+      "action": "release_source",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "allow_capture": false
+    },
+    {
+      "action": "release_source",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "allow_capture": true
+    },
+    {
+      "action": "abort_target",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      }
+    },
+    {
+      "action": "create_lease",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "home_agent_metaagent": false
+    },
+    {
+      "action": "attach_target",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "context": {
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "leased_agent_id": "leased"
+      },
+      "requirements": {
+        "agent_configuration_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "extensions": {},
+        "skills": [],
+        "environment_definition": null
+      }
+    },
+    {
+      "action": "activate_target",
+      "identity": {
+        "operation_id": "move-1",
+        "generation": 1,
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "owner_user_id": "owner",
+        "source_kernel_id": "source",
+        "target_kernel_id": "target",
+        "home_key_thumbprint": "home-key",
+        "source_key_thumbprint": "source-key",
+        "target_key_thumbprint": "target-key",
+        "target_public_key": "target-public"
+      },
+      "readiness": {
+        "identity": {
+          "operation_id": "move-1",
+          "generation": 1,
+          "home_kernel_id": "home",
+          "home_session_id": "room",
+          "home_agent_id": "agent",
+          "owner_user_id": "owner",
+          "source_kernel_id": "source",
+          "target_kernel_id": "target",
+          "home_key_thumbprint": "home-key",
+          "source_key_thumbprint": "source-key",
+          "target_key_thumbprint": "target-key",
+          "target_public_key": "target-public"
+        },
+        "requirements_sha256": "9687dd3d7457802c33f20cae6f3a313d83a1103199b1ca2b83fab8f0c3984ea5",
+        "workspace_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "native_sha256": null,
+        "target_project_id": "target-project",
+        "target_account_profile": "selected",
+        "backing_session_id": "backing-room",
+        "backing_agent_id": "backing-agent",
+        "environment_setup_operation_id": null
+      }
+    }
+  ],
+  "peer_responses": [
+    {
+      "result": "source_compatible",
+      "native": {
+        "provider": "codex",
+        "interface": "chariox",
+        "source_os": "linux",
+        "cli_version": "codex-cli 0.159.3",
+        "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "result": "source_captured"
+    },
+    {
+      "result": "target_aborted"
+    },
+    {
+      "result": "lease_created",
+      "relay_peer_protocol_version": 240,
+      "lease": {
+        "id": "lease",
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "home_agent_id": "agent",
+        "home_agent_metaagent": false,
+        "owner_user_id": "owner",
+        "worker_kernel_id": "target",
+        "machine_id": "machine",
+        "created_at_ms": 1,
+        "last_heartbeat_at_ms": 2
+      }
+    },
+    {
+      "result": "attached",
+      "receipt": {
+        "identity": {
+          "operation_id": "move-1",
+          "generation": 1,
+          "home_kernel_id": "home",
+          "home_session_id": "room",
+          "home_agent_id": "agent",
+          "owner_user_id": "owner",
+          "source_kernel_id": "source",
+          "target_kernel_id": "target",
+          "home_key_thumbprint": "home-key",
+          "source_key_thumbprint": "source-key",
+          "target_key_thumbprint": "target-key",
+          "target_public_key": "target-public"
+        },
+        "requirements_sha256": "9687dd3d7457802c33f20cae6f3a313d83a1103199b1ca2b83fab8f0c3984ea5",
+        "workspace_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "native_sha256": null,
+        "target_project_id": "target-project",
+        "target_account_profile": "selected",
+        "backing_session_id": "backing-room",
+        "backing_agent_id": "backing-agent",
+        "environment_setup_operation_id": null
+      }
+    },
+    {
+      "result": "activated",
+      "receipt": {
+        "readiness": {
+          "identity": {
+            "operation_id": "move-1",
+            "generation": 1,
+            "home_kernel_id": "home",
+            "home_session_id": "room",
+            "home_agent_id": "agent",
+            "owner_user_id": "owner",
+            "source_kernel_id": "source",
+            "target_kernel_id": "target",
+            "home_key_thumbprint": "home-key",
+            "source_key_thumbprint": "source-key",
+            "target_key_thumbprint": "target-key",
+            "target_public_key": "target-public"
+          },
+          "requirements_sha256": "9687dd3d7457802c33f20cae6f3a313d83a1103199b1ca2b83fab8f0c3984ea5",
+          "workspace_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "native_sha256": null,
+          "target_project_id": "target-project",
+          "target_account_profile": "selected",
+          "backing_session_id": "backing-room",
+          "backing_agent_id": "backing-agent",
+          "environment_setup_operation_id": null
+        },
+        "committed_at_ms": 1
+      }
+    }
+  ]
+}

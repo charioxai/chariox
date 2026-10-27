@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "project_environment_move.rs"]
+mod project_environment_move;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -724,6 +726,23 @@ impl KernelRuntimeState {
     }
 
     fn spawn_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
+        if let Some(target) = self
+            .owned
+            .agent_moves
+            .target_for_agent(
+                &execution.execution_session_id,
+                &execution.execution_agent_id,
+            )
+            .filter(|target| {
+                !target.active
+                    && !target.retired
+                    && execution.operation_id
+                        == format!("{}-setup", target.capture.identity.operation_id)
+            })
+        {
+            self.spawn_agent_move_project_setup(target, execution, attempt);
+            return;
+        }
         let Some(guard) = self
             .owned
             .project_environment_setups
@@ -741,6 +760,16 @@ impl KernelRuntimeState {
     }
 
     async fn run_project_environment_setup(&self, execution: SetupExecution, attempt: u32) {
+        self.run_project_environment_setup_with_provider(execution, attempt, None)
+            .await;
+    }
+
+    async fn run_project_environment_setup_with_provider(
+        &self,
+        execution: SetupExecution,
+        attempt: u32,
+        prepared_provider: Option<RuntimeProviderRun>,
+    ) {
         let store = &self.owned.project_environment_setups;
         let Some(_provider_context) = store.lock_provider_context(&execution, attempt).await else {
             return;
@@ -777,14 +806,27 @@ impl KernelRuntimeState {
         if store.is_cancelled(&execution.operation_id, attempt) {
             return;
         }
-        let (_agent, provider_run) = match assert_agent_utility_can_run(
-            self,
-            &execution.execution_session_id,
-            &execution.execution_agent_id,
-            &AgentUtilityKind::ProjectEnvironmentSetup,
-        )
-        .await
-        {
+        let provider_context = match prepared_provider {
+            Some(run)
+                if run.session_id() == execution.execution_session_id
+                    && run.agent_instance_id() == Some(execution.execution_agent_id.as_str())
+                    && run.state() == crate::provider::ProviderRunState::Running =>
+            {
+                Ok(run)
+            }
+            Some(_) => Err(setup_error(
+                "Move setup provider does not match its staged target",
+            )),
+            None => assert_agent_utility_can_run(
+                self,
+                &execution.execution_session_id,
+                &execution.execution_agent_id,
+                &AgentUtilityKind::ProjectEnvironmentSetup,
+            )
+            .await
+            .map(|(_, run)| run),
+        };
+        let provider_run = match provider_context {
             Ok(result) => result,
             Err(_) => {
                 store.mark_failed(

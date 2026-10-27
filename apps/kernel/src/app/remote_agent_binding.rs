@@ -475,6 +475,13 @@ impl DaemonApp {
         if agent.remote_execution().is_none() {
             return Ok(crate::extension::RemoteExtensionManifest::default());
         }
+        self.extension_manifest_for_agent_move(agent)
+    }
+
+    pub(crate) fn extension_manifest_for_agent_move(
+        &self,
+        agent: &AgentInstance,
+    ) -> Result<crate::extension::RemoteExtensionManifest, DaemonError> {
         let session = self.sessions.get_session(agent.session_id())?;
         let mut tools = Vec::new();
 
@@ -1421,10 +1428,8 @@ impl DaemonApp {
         if skill_grants.is_empty() {
             return Ok(());
         }
-        let _ = self.sessions.get_session(agent.session_id())?;
-        let roots = crate::skill::CharioxSkillRegistry::user_root()
-            .map(|root| vec![root])
-            .unwrap_or_default();
+        let session = self.sessions.get_session(agent.session_id())?;
+        let roots = app_skill_registry_roots(session.workspace_id());
         let registry = crate::skill::CharioxSkillRegistry::new(roots);
         let packages = skill_grants
             .iter()
