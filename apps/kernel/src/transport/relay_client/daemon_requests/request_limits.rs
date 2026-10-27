@@ -4,12 +4,13 @@ use chariox_relay::protocol::{EncryptedRelayPayload, RelayError};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+pub(in crate::transport::relay_client) use chariox_relay::frame_transport::MAX_MESSAGE_BYTES;
+
 pub(super) const SMALL_REQUEST_BYTES: usize = 768 * 1024;
 // A 5 MiB attachment takes 6.7 MiB after inline base64. Twelve MiB leaves
 // room for the prompt and metadata, well below the relay's 64 MiB message cap.
 pub(super) const PROMPT_REQUEST_BYTES: usize = 12 * 1024 * 1024;
-pub(in crate::transport::relay_client) const MAX_ENCODED_REQUEST_BYTES: usize =
-    PROMPT_REQUEST_BYTES.div_ceil(3) * 4;
+const MAX_ENCODED_REQUEST_BYTES: usize = PROMPT_REQUEST_BYTES.div_ceil(3) * 4;
 // Account encoded bytes across all connections, including each spawned dispatch.
 // This is stricter than a per-connection budget; opening sockets cannot evade it.
 const RETAINED_ENCODED_BYTES: u32 = 64 * 1024 * 1024;

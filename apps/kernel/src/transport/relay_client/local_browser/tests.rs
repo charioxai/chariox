@@ -326,14 +326,38 @@ fn mp08_mp11_direct_carrier_refuses_oversize_without_closing() {
         let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
         let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
         assert_eq!(verdict["kind"], "local_connected");
+        let attachment = crate::session::PromptAttachment::new(
+            "chariox-terminal://prompt-attachment/alpine-original.jpg",
+            "image/jpeg",
+            Some("alpine-original.jpg".into()),
+        )
+        .with_contents_base64(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            vec![42; 14_679_474],
+        ));
+        let request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
+            session_id: "missing-session".into(),
+            attachment_id: "client".into(),
+            target_agent_id: None,
+            prompt: "Describe the image".into(),
+            attachments: vec![attachment],
+        });
         send_json(&mut socket, serde_json::json!({
             "kind": "client_request", "request_id": "oversize", "target": {"daemon_id": kernel.daemon_id},
-            "encrypted_request": {"sender_public_key": browser.public_key, "nonce": "invalid",
-                "ciphertext": "!".repeat(12 * 1024 * 1024 / 3 * 4 + 1)},
+            "encrypted_request": proof(&browser, &kernel, serde_json::to_value(request).unwrap()),
         })).await;
         let refused = next_json(&mut socket).await;
+        assert_eq!(refused["request_id"], "oversize");
         assert_eq!(refused["error"]["code"], "request_too_large");
         assert_eq!(refused["error"]["retryable"], false);
+        assert!(refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("12 MiB"));
+        assert!(refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("file.transfer"));
         send_json(&mut socket, serde_json::json!({
             "kind": "client_request", "request_id": "after-refusal", "target": {"daemon_id": kernel.daemon_id},
             "encrypted_request": proof(&browser, &kernel, serde_json::to_value(LocalDaemonRequest::ListSessions(ListSessionsRequest)).unwrap()),
@@ -354,8 +378,7 @@ fn mp08_mp11_direct_carrier_rejects_huge_frame_header_without_body() {
         assert_eq!(verdict["kind"], "local_connected");
         // Send only a masked frame header: rejecting it must not wait for or
         // allocate the declared body. The stream is plain loopback WebSocket.
-        let declared =
-            super::super::daemon_requests::request_limits::MAX_ENCODED_REQUEST_BYTES as u64 * 2;
+        let declared = chariox_relay::frame_transport::MAX_MESSAGE_BYTES as u64 * 2;
         let mut header = vec![0x81, 0xff];
         header.extend_from_slice(&declared.to_be_bytes());
         header.extend_from_slice(&[0; 4]);

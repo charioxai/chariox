@@ -15,11 +15,13 @@ A 64 MiB aggregate budget for retained encoded ciphertext is reserved before
 decoding and held through asynchronous dispatch across all connections. A new
 connection cannot bypass it. Oversized requests receive a clear non-retryable
 `request_too_large`; budget exhaustion receives retryable `request_busy`.
-The same-machine browser carrier derives its message and frame caps from that
-encoded request limit, with 64 KiB for envelope and clean oversize refusal.
-A 4.8 MB inline attachment reaches shared dispatch directly; slightly oversized
-requests are refused without closing the carrier. Abusive declared frame lengths
-are rejected before reading their body. This changes no serialized shape.
+The same-machine browser carrier shares the relay's 64 MiB message and frame cap,
+re-exported through `request_limits`, so a realistic oversized request reaches the
+common length-only refusal. A 4.8 MB inline attachment reaches shared dispatch
+directly; a 14.7 MB attachment receives `request_too_large` without closing the
+carrier, and a following request succeeds on the same socket. Authentication
+retains its 16 KiB handshake bound. Abusive declared frame lengths are rejected
+before reading their body. This changes no serialized shape.
 The relay remains an opaque transport. Existing 256 KiB machine file chunks and
 512 KiB App package chunks (128 MiB archives) keep their existing protocols.
 
