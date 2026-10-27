@@ -270,7 +270,7 @@ async fn exec_cancel_never_reports_truncated_output_as_success() {
     let service = RoomExecService::default();
     // The extra pipe read fits in the OS pipe after the bounded buffer fills,
     // allowing a successful process exit while its output task stays parked.
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::TestWorktree::new("exec-cancel-exited-output");
     let marker = directory.path().join("exited");
     let id = open(
         &service,
