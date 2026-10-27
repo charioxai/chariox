@@ -30,7 +30,7 @@ const startedProcesses = []
 function track(child, kind) {
   if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw new Error('invalid owned process PID')
   active.add(child)
-  const row = { kind, pid: child.pid, code: null, signal: null }
+  const row = { kind, pid: child.pid, code: null, signal: null, timed_out: false }
   startedProcesses.push(row)
   child.done = new Promise((resolve, reject) => {
     child.once('error', reject)
@@ -40,7 +40,8 @@ function track(child, kind) {
     })
   })
   child.done.catch(() => undefined)
-  const deadline = setTimeout(() => signal(child, 'SIGTERM'), 120_000)
+  // A 200 MiB stream alone needs over three minutes at 8 Mbit/s.
+  const deadline = setTimeout(() => { row.timed_out = true; signal(child, 'SIGTERM') }, 600_000)
   child.done.finally(() => clearTimeout(deadline)).catch(() => undefined)
   child.stdin?.on('error', () => undefined)
   return child
