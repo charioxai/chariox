@@ -109,7 +109,7 @@ test("MP-08/MP-10: a headed Room paints the full physical desktop at source DPR2
       ...(headed ? { applyCanonicalDisplay: async () => {} } : {}) });
     try {
       await browser.reconcile({ ...viewport, device_scale_factor: 2, desktop_pixel_width: 2560, desktop_pixel_height: 1600 });
-      const metrics = connection.calls.find(call => call.method === 'Emulation.setDeviceMetricsOverride').params;
+      const metrics = connection.calls.find(call => call.method === 'Emulation.setDeviceMetricsOverride' && call.params.width > 0).params;
       assert.equal(metrics.deviceScaleFactor, 2);
       assert.equal(metrics.scale, headed ? 2 : undefined, 'a 1x X desktop must paint the emulated 2x view at physical size');
     } finally { await browser.close(); }
@@ -146,7 +146,7 @@ test("MP-08/MP-10/MP-11: headed page bottom fits below the toolbar at every sour
     let toolbar = 87;
     connection.send = async (method, params, sessionId) => {
       const result = await send(method, params, sessionId);
-      if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: width * dpr, height: height * dpr + (oversized ? toolbar : 0) } };
+      if (method === 'Browser.getWindowForTarget') return { windowId: 1, bounds: { left: 0, top: 0, width: width * dpr, height: height * dpr + (oversized ? toolbar : 0), windowState: toolbar ? 'maximized' : 'fullscreen' } };
       if (method === 'Browser.getWindowBounds') return { bounds: { windowState: toolbar ? 'maximized' : 'fullscreen' } };
       if (method === 'Runtime.evaluate' && params.expression === '({ width: innerWidth, height: innerHeight })') return { result: { value: {
         width: width * dpr, height: height * dpr - (oversized ? 0 : toolbar),

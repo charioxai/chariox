@@ -150,6 +150,7 @@ export class BrowserCdpClient {
     this.inputCapture = new BrowserInputCapture();
     this.appliedViewport = null;
     this.viewportByTarget = new Map();
+    this.contentInsetsByWindow = new Map();
     this.layoutQueue = new Map();
     this.layoutByTarget = new Map();
     this.canonical = null;
@@ -260,7 +261,7 @@ export class BrowserCdpClient {
       if (!connection.isOpen()) {
         this.connection = null;
         this.appliedViewport = null;
-        this.viewportByTarget.clear();
+        this.viewportByTarget.clear(); this.contentInsetsByWindow.clear();
         this.focusWorldsByTarget.clear();
         this.sessionsByTarget.clear();
         this.targetsBySession.clear();
@@ -290,7 +291,7 @@ export class BrowserCdpClient {
     const connection = this.connection;
     this.connection = null;
     this.appliedViewport = null;
-    this.viewportByTarget.clear();
+    this.viewportByTarget.clear(); this.contentInsetsByWindow.clear();
     this.focusWorldsByTarget.clear();
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
@@ -411,7 +412,7 @@ export class BrowserCdpClient {
   async openConnection() {
     this.rendererRecovery.close();
     this.appliedViewport = null;
-    this.viewportByTarget.clear();
+    this.viewportByTarget.clear(); this.contentInsetsByWindow.clear();
     this.focusWorldsByTarget.clear();
     this.unsubscribeFromConnection?.();
     this.unsubscribeFromConnection = null;
@@ -550,25 +551,35 @@ export class BrowserCdpClient {
 
   async setPageMetrics(connection, sessionId, metrics) {
     if (this.applyCanonicalDisplay) {
-      // Clearing the previous emulation exposes Chromium's actual content area
-      // in host pixels, including the space lost to its toolbar and decorations.
-      await connection.send("Emulation.clearDeviceMetricsOverride", {}, sessionId);
-      const tree = await connection.send("Page.getFrameTree", {}, sessionId);
-      const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
-        frameId: tree.frameTree.frame.id, worldName: "chariox-content-viewport",
-      }, sessionId);
-      const { result } = await connection.send("Runtime.evaluate", {
-        expression: "({ width: innerWidth, height: innerHeight })", contextId: executionContextId, returnByValue: true,
-      }, sessionId);
-      const content = result?.value;
-      if (![content?.width, content?.height].every(n => Number.isFinite(n) && n > 0)) {
-        throw new BrowserControllerError("viewport_apply_failed", "Chromium content area is unavailable; retry the browser viewport");
-      }
-      const { bounds } = await connection.send("Browser.getWindowForTarget", {}, sessionId);
-      const desktop = this.canonical;
-      if (desktop && ![bounds?.left, bounds?.top, bounds?.width, bounds?.height].every(Number.isFinite)) {
+      let { windowId, bounds } = await connection.send("Browser.getWindowForTarget", {}, sessionId);
+      if (![bounds?.left, bounds?.top, bounds?.width, bounds?.height].every(Number.isFinite)) {
         throw new BrowserControllerError("viewport_apply_failed", "Chromium window bounds are unavailable; restore its window and retry");
       }
+      let insets = this.contentInsetsByWindow.get(windowId);
+      if (!insets || insets.state !== bounds.windowState) {
+        // The first native measurement owns the chrome insets. Emulated page
+        // sizes must never become the next native measurement after a resize.
+        await connection.send("Emulation.setDeviceMetricsOverride", {
+          width: 0, height: 0, deviceScaleFactor: 0, scale: 1, mobile: false, dontSetVisibleSize: true,
+        }, sessionId);
+        await connection.send("Emulation.clearDeviceMetricsOverride", {}, sessionId);
+        const tree = await connection.send("Page.getFrameTree", {}, sessionId);
+        const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
+          frameId: tree.frameTree.frame.id, worldName: "chariox-content-viewport",
+        }, sessionId);
+        const { result } = await connection.send("Runtime.evaluate", {
+          expression: "({ width: innerWidth, height: innerHeight })", contextId: executionContextId, returnByValue: true,
+        }, sessionId);
+        const content = result?.value;
+        if (![content?.width, content?.height].every(n => Number.isFinite(n) && n > 0)
+            || content.width > bounds.width || content.height > bounds.height) {
+          throw new BrowserControllerError("viewport_apply_failed", "Chromium content area is unavailable; retry the browser viewport");
+        }
+        insets = { state: bounds.windowState, width: bounds.width - content.width, height: bounds.height - content.height };
+        this.contentInsetsByWindow.set(windowId, insets);
+      }
+      const content = { width: bounds.width - insets.width, height: bounds.height - insets.height };
+      const desktop = this.canonical;
       const visibleWidth = desktop ? Math.min(content.width,
         desktop.desktop_pixel_width - Math.max(0, bounds.left) - (bounds.width - content.width)) : content.width;
       const visibleHeight = desktop ? Math.min(content.height,
