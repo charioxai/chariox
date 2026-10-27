@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash, randomBytes } from 'node:crypto'
 import * as api from '../../../packages/kernel-client/dist/index.js'
-import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
+import { isolatedKernelConfigToml } from './lib/drill-kernel-storage.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const opts = Object.fromEntries(process.argv.slice(2).map(value => {
@@ -44,7 +44,7 @@ for (const name of ['CHARIOX_KERNEL_LOCAL_AUTH_TOKEN', 'CHARIOX_KERNEL_LOCAL_AUT
   delete env[name]
 }
 const vaultPhrase = randomBytes(24).toString('hex')
-await writeIsolatedKernelConfig({ xdgConfigHome: env.XDG_CONFIG_HOME, storageRoot: path.join(stateRoot, 'storage'), extraToml: ['[credential_vault]', `path = ${JSON.stringify(path.join(stateRoot, 'vault'))}`, 'unlock_policy = "kernel_init"'] })
+await writeFile(path.join(stateRoot, 'config.toml'), isolatedKernelConfigToml(path.join(stateRoot, 'storage'), ['[credential_vault]', `path = ${JSON.stringify(path.join(stateRoot, 'vault'))}`, 'unlock_policy = "kernel_init"']), { mode: 0o600 })
 let child, client, room, agent, attachment, stage = 'bootstrap'
 const children = []
 const secret = opts['credential-stdin'] ? readFileSync(0, 'utf8').trim() : null
