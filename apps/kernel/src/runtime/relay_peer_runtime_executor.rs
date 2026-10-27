@@ -242,7 +242,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
     expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
-        provider_resume_state: Option<crate::provider::ProviderResumeState>,
+    provider_resume_state: Option<crate::provider::ProviderResumeState>,
     prompt: &str,
     hidden_system_context: &str,
     attachments: Vec<RelayPromptAttachment>,

@@ -214,7 +214,9 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
             model: Some("gpt-5.5".to_string()),
             effort: None,
         },
-        provider_resume_state: Some(crate::provider::ProviderResumeState::from_codex_thread_id("archived-home-thread")),
+        provider_resume_state: Some(crate::provider::ProviderResumeState::from_codex_thread_id(
+            "archived-home-thread",
+        )),
         prompt: "edit a file".to_string(),
         hidden_system_context: "scheduled hidden context".to_string(),
         attachments: Vec::new(),
@@ -273,7 +275,10 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
         snapshot.pointer("/1/required_skills/0/name"),
         Some(&serde_json::json!("review"))
     );
-    assert_eq!(snapshot.pointer("/1/provider_resume_state/codex_thread_id"), Some(&serde_json::json!("archived-home-thread")));
+    assert_eq!(
+        snapshot.pointer("/1/provider_resume_state/codex_thread_id"),
+        Some(&serde_json::json!("archived-home-thread"))
+    );
     assert_eq!(
         snapshot.pointer("/1/hidden_system_context"),
         Some(&serde_json::json!("scheduled hidden context"))
@@ -633,8 +638,15 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
 fn relay_peer_archive_resume_state_shape_and_hash() {
     use sha2::Digest;
     let expected = serde_json::json!({"leased_agent_id":"lease-resume","expected_profile":{"provider":"codex","account_profile":"work","model":null,"effort":null},"provider_resume_state":{"codex_thread_id":"archived-home-thread"},"prompt":"continue","attachments":[],"kind":"submit_leased_prompt"});
-    let request: crate::transport::relay_peer::RelayPeerRequest = serde_json::from_value(expected.clone()).unwrap();
+    let request: crate::transport::relay_peer::RelayPeerRequest =
+        serde_json::from_value(expected.clone()).unwrap();
     let actual = serde_json::to_value(request).unwrap();
     assert_eq!(actual, expected);
-    assert_eq!(format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&actual).unwrap())), "080b343893530af219c938b707114556454089ad8ba4e2f6ce3e2d198aa655ec");
+    assert_eq!(
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&actual).unwrap())
+        ),
+        "080b343893530af219c938b707114556454089ad8ba4e2f6ce3e2d198aa655ec"
+    );
 }

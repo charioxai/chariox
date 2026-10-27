@@ -167,7 +167,7 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
     let submission = router.relay_submit_leased_prompt(
         &lease.id,
         profile.clone(),
-            None,
+        None,
         "keep my admitted profile",
         "",
         Vec::new(),
@@ -235,7 +235,7 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
     let mut submission = Box::pin(router.relay_submit_leased_prompt(
         &lease.id,
         profile.clone(),
-            None,
+        None,
         "cancel before admission",
         "",
         Vec::new(),
@@ -799,9 +799,30 @@ async fn fresh_leased_prompt_resumes_home_thread_after_archive() {
     let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
     let saved = crate::provider::ProviderResumeState::from_codex_thread_id("archived-home-thread");
-    let (run, _) = router.relay_submit_leased_prompt(
-        &lease.id, profile, Some(saved.clone()), "resume after archive", "", Vec::new(),
-        None, None, Vec::new(), None, crate::extension::RemoteExtensionManifest::default(), None,
-    ).await.unwrap();
-    assert_eq!(app.lock().await.providers().get_run(&run).unwrap().resume_state(), &saved);
+    let (run, _) = router
+        .relay_submit_leased_prompt(
+            &lease.id,
+            profile,
+            Some(saved.clone()),
+            "resume after archive",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        app.lock()
+            .await
+            .providers()
+            .get_run(&run)
+            .unwrap()
+            .resume_state(),
+        &saved
+    );
 }

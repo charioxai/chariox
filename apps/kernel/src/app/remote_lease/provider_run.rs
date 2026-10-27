@@ -352,7 +352,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         } else if existing.is_none() {
             // A fresh lease resumes the authoritative home thread after archive.
-            request = request.with_resume_state(self.app.agents.get_agent(&leased_agent.backing_agent_id)?.provider_resume_state().clone());
+            request = request.with_resume_state(
+                self.app
+                    .agents
+                    .get_agent(&leased_agent.backing_agent_id)?
+                    .provider_resume_state()
+                    .clone(),
+            );
         }
         let session = self
             .app
