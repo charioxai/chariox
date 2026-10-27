@@ -2247,6 +2247,7 @@ async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
         data["latest_public_answer_messages"],
         serde_json::json!(["4"])
     );
+    assert!(context.contains("do not choose continue solely because the count cannot be recomputed or tied to the receipt"));
     assert_eq!(data["answer_coverage"]["complete"], true);
     assert_eq!(data["completed_kernel_calls"].as_array().unwrap().len(), 1);
     assert_eq!(
