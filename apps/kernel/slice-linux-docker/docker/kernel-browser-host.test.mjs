@@ -2749,3 +2749,17 @@ test('MP-08 / MP-10 user-domain App open and bridge polling keep the native Chro
   await host.handle({id:3,method:'browser.app.calls',params:{wait_ms:0}});
   assert(!sent.some(call=>call.method==='Browser.setWindowBounds' && call.params.bounds.windowState==='fullscreen'));
 }));
+
+test('MP-08 / MP-10 opening and reopening an App refresh its native window before exposure', () => using(async ({host}) => {
+  host.chromium.display = {};
+  let nativeTarget = null;
+  host.chromeWindows.resolve = async () => { nativeTarget = [...host.tabs.values()].at(-1)?.target_id ?? null };
+  const params = {origin_label:'native-app',installation_id:'installation-1',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<canvas/>').toString('base64')}]};
+  const first = await host.handle({id:1,method:'browser.app.open',params});
+  assert.equal(first.ok,true,JSON.stringify(first));
+  assert.equal(nativeTarget,first.result.target_id);
+  nativeTarget = 'retired-window';
+  const reopened = await host.handle({id:2,method:'browser.app.open',params});
+  assert.equal(reopened.ok,true,JSON.stringify(reopened));
+  assert.equal(nativeTarget,reopened.result.target_id);
+}));

@@ -1233,6 +1233,7 @@ export class KernelBrowserHost {
         if (result.ok) {
           await this.reconcile();
           if (request.method === "browser.app.open") {
+            await this.rebindWindows();
             result.result.tab_id = [...this.tabs.values()].find(tab => tab.target_id === result.result.target_id)?.tab_id;
             result.result.generation = this.generation;
           }
