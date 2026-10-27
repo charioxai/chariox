@@ -991,6 +991,7 @@ async fn assert_queued_prompt_reaches_committed_profile(leased: bool) {
                     model: Some("haiku".into()),
                     effort: None,
                 },
+            None,
                 "next home request",
                 "",
                 Vec::new(),
