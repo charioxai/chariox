@@ -60,7 +60,7 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
                 matches!(
                     response,
                     Ok(RelayPeerResponse::AgentMove {
-                        response: crate::agent_move::peer::AgentMovePeerResponse::Compatible
+                        response: crate::agent_move::peer::AgentMovePeerResponse::Compatible { .. }
                     })
                 ),
                 "canonical temporary home must be admitted: {response:?}"

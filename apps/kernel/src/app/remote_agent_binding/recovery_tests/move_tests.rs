@@ -2454,7 +2454,7 @@ async fn mk04_locked_required_vault_rejects_before_publication_and_activation() 
         worker.config.clone()
     };
     crate::secret::create_chariox_encrypted_vault_for_test(
-        &target_config.user_config.credential_vault.path,
+        std::path::Path::new(&target_config.user_config.credential_vault.path),
         "synthetic-fixture-passphrase",
     )
     .unwrap();
