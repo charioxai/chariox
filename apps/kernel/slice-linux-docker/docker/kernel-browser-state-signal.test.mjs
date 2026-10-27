@@ -15,7 +15,7 @@ test('MP-08/MP-10 a parked state read wakes on a signal, at its deadline or when
 test('MP-08/MP-10 only page Tab and top-level navigation events wake a state read',()=>{
  const page={targetInfo:{type:'page'}},worker={targetInfo:{type:'service_worker'}};
  for(const message of [{method:'Target.targetCreated',params:page},{method:'Target.targetInfoChanged',params:page},{method:'Target.targetDestroyed',params:{targetId:'t'}},
-  {method:'Page.frameNavigated',params:{frame:{id:'f'}}},{method:'Target.detachedFromTarget',params:{}},{method:'Inspector.detached'},{method:'Chariox.browserDisconnected'}])
+  {method:'Page.frameNavigated',params:{frame:{id:'f'}}},{method:'Page.javascriptDialogOpening'},{method:'Page.javascriptDialogClosed'}, {method:'Target.detachedFromTarget',params:{}},{method:'Inspector.detached'},{method:'Chariox.browserDisconnected'}])
   assert.equal(stateChangingEvent(message),true,message.method);
  for(const message of [{method:'Target.targetInfoChanged',params:worker},{method:'Target.targetCreated',params:{targetInfo:{type:'iframe'}}},{method:'Page.frameNavigated',params:{frame:{id:'f',parentId:'p'}}},
   {method:'Page.frameStartedLoading',params:{}},{method:'Page.frameStoppedLoading',params:{}},{method:'Page.loadEventFired',params:{}},

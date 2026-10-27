@@ -669,3 +669,22 @@ fn browser_resize_protocol629_snapshot() {
     foreign["KernelBrowser"]["command"]["window_id"] = serde_json::json!(42);
     assert!(serde_json::from_value::<LocalDaemonRequest>(foreign).is_err());
 }
+
+// MP-08/MP-09/MP-10/MP-11: one browser dialog state and answer for viewers and agents.
+#[test]
+fn browser_dialog_protocol630_snapshot() {
+    let bytes = include_bytes!("browser-dialog-630.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "70fda0c32a9f9c3c9f895189095f7ca82caaaea2a8896518542474c9f3a45734"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let mut invalid = snapshot["request"].clone();
+    invalid["KernelBrowser"]["command"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dialog_id");
+    assert!(serde_json::from_value::<LocalDaemonRequest>(invalid).is_err());
+}

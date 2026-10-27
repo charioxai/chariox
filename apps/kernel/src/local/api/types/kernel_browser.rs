@@ -198,6 +198,16 @@ pub enum KernelBrowserCommand {
         generation: u64,
         input: KernelBrowserInput,
     },
+    /// Protocol 630/233: answer the current kernel-owned page dialog.
+    Dialog {
+        tab_id: String,
+        generation: u64,
+        document_id: String,
+        dialog_id: String,
+        action: KernelBrowserDialogAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_text: Option<String>,
+    },
     Screenshot {
         tab_id: String,
         generation: u64,
@@ -214,6 +224,13 @@ pub enum KernelBrowserCommand {
         subscription_id: String,
         generation: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelBrowserDialogAction {
+    Accept,
+    Dismiss,
 }
 
 /// MP-08/MP-10/MP-11: allocated519; only owner-issued references select regions.
