@@ -5416,7 +5416,7 @@ Only agent/task states, interaction state, terminal job exits, delivered steers 
 session changes are collected. Passkey interactions carry the section 8 approval pointer, without
 the prompt body. Session agents retain their existing session-scoped event tools.
 
-Typed failure cause (EA2-75, local protocol 613, relay peer 219): a turn that
+Typed failure cause (EA2-75, local protocol 640, relay peer 242): a turn that
 fails says why in one general shape, `failure { cause, retryable, message }`.
 `cause` is `overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`,
 `network` or `other`. `retryable` is whether a later attempt may succeed without
