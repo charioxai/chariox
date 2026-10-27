@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import readline from 'node:readline';
+import { namespaceLauncher } from './kernel-browser-linux.mjs';
 import os from 'node:os';
 import path from 'node:path';
-import { LinuxOwnedDesktop, desktopEnvironment, desktopBusAddress, ownsDesktopDisplay } from './linux-owned-desktop.mjs';
+import { LinuxOwnedDesktop, desktopEnvironment, desktopBusAddress, ownsDesktopDisplay, desktopCommand } from './linux-owned-desktop.mjs';
 import { validOwnedPid, processIdentity, descendants, signalOwned, settleOwned } from './linux-owned-process.mjs';
 
 test('MP-11 a fabricated desktop binding and live PID cannot mint display ownership',()=>{
@@ -161,4 +162,13 @@ test('MP-08/MP-10 retiring browser processes preserves other desktop application
   assert(browser.exitCode!==null||browser.signalCode!==null);assert.equal(app.exitCode,null);assert.equal(app.signalCode,null);
   assert.equal(desktop.children.some(record=>record.child===app),true);assert.equal(desktop.binding(),identity);
  }finally{await desktop.stop();await rm(root,{recursive:true,force:true});}
+});
+
+// Ubuntu restricts userns at exec; the installed launcher carries its scoped profile.
+test('MP-08 / MP-11 owned Xvfb enters the installed browser namespace before bubblewrap', () => {
+  const command = desktopCommand('bwrap', ['--dev-bind', '/', '/', '--', 'Xvfb']);
+  assert.deepEqual(command.args.slice(1), [
+    namespaceLauncher(), '--user', '--map-root-user', '--mount', '--',
+    'bwrap', '--dev-bind', '/', '/', '--', 'Xvfb',
+  ]);
 });
